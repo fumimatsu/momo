@@ -10,6 +10,9 @@
 #include <third_party/libyuv/include/libyuv.h>
 
 #include "v4l2_native_buffer.h"
+#include <libcamera/control_ids.h>
+#include <libcamera/controls.h>
+#include <vector>                // std::vector
 
 rtc::scoped_refptr<LibcameraCapturer> LibcameraCapturer::Create(
     LibcameraCapturerConfig config) {
@@ -138,6 +141,20 @@ int32_t LibcameraCapturer::StartCapture(LibcameraCapturerConfig config) {
   if (!configuration_) {
     RTC_LOG(LS_ERROR) << __FUNCTION__ << " Failed to generateConfiguration";
     return -1;
+  }
+
+  // ここで解像度、fps等が config で指定されていると仮定する。
+  // 例: --framerate=60 の場合、1秒(1,000,000µs) ÷ 60 = 約16667µs
+  if (config.framerate > 0) {
+    // フレーム期間を計算（60fpsの場合は約16667μs）
+    int64_t frame_duration = 1000000 / config.framerate;
+    // 固定サイズの配列を用意
+    int64_t limitsArray[2] = { 250, frame_duration };
+    // libcamera::Span<const int64_t, 2> を生成
+    libcamera::Span<const int64_t, 2> spanLimits(limitsArray, 2);
+    // controls_ は実体が libcamera::ControlList なのでキャストして利用
+    auto cl = reinterpret_cast<libcamera::ControlList*>(controls_.get());
+    cl->set(libcamera::controls::FrameDurationLimits, spanLimits);
   }
 
   auto cfg = libcamerac_CameraConfiguration_at(configuration_.get(), 0);

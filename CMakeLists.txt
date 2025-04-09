@@ -567,14 +567,14 @@ elseif (TARGET_OS STREQUAL "linux")
 
       if (USE_V4L2_ENCODER)
         add_library(camerac SHARED)
-        target_include_directories(camerac PRIVATE ${CMAKE_SYSROOT}/usr/include/libcamera)
+        target_include_directories(camerac PUBLIC ${CMAKE_SYSROOT}/usr/include/libcamera)
         set_target_properties(camerac PROPERTIES CXX_STANDARD 17 C_STANDARD 99)
         target_sources(camerac
           PRIVATE
             src/libcamerac/libcamerac.cpp
         )
         target_link_libraries(camerac
-          PRIVATE
+          PUBLIC
             camera
             camera-base
         )
