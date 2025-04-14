@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Momo P2P</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background-color: black;
+        color: white;
+        overflow: hidden; /* スクロールバーを非表示にする */
+      }
+      /* エラー表示用の領域。video 要素の上部に固定 */
+      #error-message {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        padding: 10px;
+        background-color: rgba(255, 0, 0, 0.8);
+        z-index: 10;
+        font-size: 14px;
+        display: none;
+      }
+      video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- エラー表示用 -->
+    <div id="error-message"></div>
+    <!-- 映像表示用 -->
+    <video id="remote_video" autoplay playsinline></video>
+    <script src="./webrtc.js"></script>
+  </body>
+</html>
