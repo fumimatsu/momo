@@ -78,6 +78,7 @@ LibcameraCapturer::LibcameraCapturer()
       camera_started_(false) {}
 
 LibcameraCapturer::~LibcameraCapturer() {
+  StopCapture();
   Release();
 }
 
@@ -120,6 +121,24 @@ int32_t LibcameraCapturer::Init(int camera_id) {
 }
 
 void LibcameraCapturer::Release() {
+  requests_.clear();
+  while (!frame_buffer_.empty()) {
+    frame_buffer_.pop();
+  }
+
+  for (auto& [_, spans] : mapped_buffers_) {
+    for (auto& span : spans) {
+      if (span.buffer != nullptr && span.length > 0) {
+        munmap(span.buffer, span.length);
+      }
+    }
+  }
+  mapped_buffers_.clear();
+
+  allocator_.reset();
+  stream_ = nullptr;
+  configuration_.reset();
+
   if (acquired_)
     libcamerac_Camera_release(camera_.get());
   acquired_ = false;

@@ -10,6 +10,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/http/message.hpp>
 #include <boost/beast/http/string_body.hpp>
@@ -59,6 +60,7 @@ class MetricsSession : public std::enable_shared_from_this<MetricsSession> {
 
     // msg オブジェクトは書き込みが完了するまで生きている必要があるので、
     // メンバに入れてライフタイムを延ばしてやる
+    sp->keep_alive(false);
     res_ = sp;
 
     // Write the response
@@ -73,14 +75,19 @@ class MetricsSession : public std::enable_shared_from_this<MetricsSession> {
                std::size_t bytes_transferred,
                bool close);
   void DoClose();
+  void SendMetricsResponse(
+      const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report);
+  void SendMetricsTimeout();
 
  private:
   boost::asio::io_context& ioc_;
   boost::asio::ip::tcp::socket socket_;
   boost::asio::strand<boost::asio::ip::tcp::socket::executor_type> strand_;
+  boost::asio::steady_timer stats_timer_;
   boost::beast::flat_buffer buffer_;
   boost::beast::http::request<boost::beast::http::string_body> req_;
   std::shared_ptr<void> res_;
+  bool response_sent_ = false;
 
   RTCManager* rtc_manager_;
   MetricsSessionConfig config_;

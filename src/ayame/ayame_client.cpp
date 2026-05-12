@@ -80,12 +80,18 @@ AyameClient::AyameClient(boost::asio::io_context& ioc,
 }
 
 AyameClient::~AyameClient() {
+  shutting_down_ = true;
   destructed_ = true;
+  watchdog_.Disable();
   // ここで OnIceConnectionStateChange が呼ばれる
   connection_ = nullptr;
 }
 
 void AyameClient::Reset() {
+  if (shutting_down_) {
+    return;
+  }
+  watchdog_.Disable();
   connection_ = nullptr;
   is_send_offer_ = false;
   has_is_exist_user_flag_ = false;
@@ -102,6 +108,9 @@ void AyameClient::Reset() {
 
 void AyameClient::Connect() {
   RTC_LOG(LS_INFO) << __FUNCTION__;
+  if (shutting_down_) {
+    return;
+  }
 
   watchdog_.Enable(30);
 
@@ -111,6 +120,9 @@ void AyameClient::Connect() {
 }
 
 void AyameClient::ReconnectAfter() {
+  if (shutting_down_) {
+    return;
+  }
   int interval = 5 * (2 * retry_count_);
   if (interval > 30) {
     interval = 30;
@@ -122,6 +134,9 @@ void AyameClient::ReconnectAfter() {
 }
 
 void AyameClient::OnWatchdogExpired() {
+  if (shutting_down_) {
+    return;
+  }
   RTC_LOG(LS_WARNING) << __FUNCTION__;
 
   RTC_LOG(LS_INFO) << __FUNCTION__ << " reconnecting...:";
@@ -130,6 +145,9 @@ void AyameClient::OnWatchdogExpired() {
 }
 
 void AyameClient::OnConnect(boost::system::error_code ec) {
+  if (shutting_down_) {
+    return;
+  }
   if (ec) {
     ReconnectAfter();
     return MOMO_BOOST_ERROR(ec, "Handshake");
@@ -141,12 +159,18 @@ void AyameClient::OnConnect(boost::system::error_code ec) {
 }
 
 void AyameClient::DoRead() {
+  if (shutting_down_ || !ws_) {
+    return;
+  }
   ws_->Read(std::bind(&AyameClient::OnRead, shared_from_this(),
                       std::placeholders::_1, std::placeholders::_2,
                       std::placeholders::_3));
 }
 
 void AyameClient::DoRegister() {
+  if (shutting_down_ || !ws_) {
+    return;
+  }
   boost::json::value json_message = {
       {"type", "register"},
       {"clientId", Util::GenerateRandomChars()},
@@ -165,6 +189,9 @@ void AyameClient::DoRegister() {
 }
 
 void AyameClient::DoSendPong() {
+  if (shutting_down_ || !ws_) {
+    return;
+  }
   boost::json::value json_message = {{"type", "pong"}};
   ws_->WriteText(boost::json::serialize(json_message));
 }
@@ -321,14 +348,44 @@ void AyameClient::SetCodecPreferences() {
 }
 
 void AyameClient::Close() {
+  Close(true, nullptr);
+}
+
+void AyameClient::Shutdown(std::function<void()> on_close) {
+  RTC_LOG(LS_INFO) << __FUNCTION__;
+  shutting_down_ = true;
+  destructed_ = true;
+  watchdog_.Disable();
+  connection_ = nullptr;
+  Close(false, std::move(on_close));
+}
+
+void AyameClient::Close(bool reconnect, std::function<void()> on_close) {
+  if (!ws_) {
+    if (on_close) {
+      on_close();
+    }
+    return;
+  }
+  if (!reconnect) {
+    watchdog_.Disable();
+  }
   ws_->Close(std::bind(&AyameClient::OnClose, shared_from_this(),
-                       std::placeholders::_1));
+                       std::placeholders::_1, reconnect, std::move(on_close)));
 }
 
 // WebSocket が閉じられたときのコールバック
-void AyameClient::OnClose(boost::system::error_code ec) {
+void AyameClient::OnClose(boost::system::error_code ec,
+                          bool reconnect,
+                          std::function<void()> on_close) {
   if (ec)
     MOMO_BOOST_ERROR(ec, "Close");
+  if (shutting_down_ || !reconnect) {
+    if (on_close) {
+      on_close();
+    }
+    return;
+  }
   // retry_count_ は ReconnectAfter(); が以前に呼ばれている場合はインクリメントされている可能性がある。
   // WebSocket につないでいない時間をなるべく短くしたいので、
   // WebSocket を閉じたときは一度インクリメントされている可能性のある retry_count_ を0 にして
@@ -344,6 +401,9 @@ void AyameClient::OnRead(boost::system::error_code ec,
                          std::size_t bytes_transferred,
                          std::string text) {
   RTC_LOG(LS_INFO) << __FUNCTION__ << ": " << ec;
+  if (shutting_down_) {
+    return;
+  }
 
   boost::ignore_unused(bytes_transferred);
 
@@ -441,7 +501,7 @@ void AyameClient::OnIceConnectionStateChange(
     webrtc::PeerConnectionInterface::IceConnectionState new_state) {
   RTC_LOG(LS_INFO) << __FUNCTION__ << " state:" << new_state;
   // デストラクタだと shared_from_this が機能しないので無視する
-  if (destructed_) {
+  if (destructed_ || shutting_down_) {
     return;
   }
   boost::asio::post(ioc_, std::bind(&AyameClient::DoIceConnectionStateChange,
@@ -450,6 +510,9 @@ void AyameClient::OnIceConnectionStateChange(
 void AyameClient::OnIceCandidate(const std::string sdp_mid,
                                  const int sdp_mlineindex,
                                  const std::string sdp) {
+  if (shutting_down_ || !ws_) {
+    return;
+  }
   // ayame では candidate sdp の交換で `ice` プロパティを用いる。 `candidate` ではないので注意
   boost::json::value json_message = {
       {"type", "candidate"},
@@ -463,6 +526,9 @@ void AyameClient::OnIceCandidate(const std::string sdp_mid,
 
 void AyameClient::DoIceConnectionStateChange(
     webrtc::PeerConnectionInterface::IceConnectionState new_state) {
+  if (shutting_down_) {
+    return;
+  }
   RTC_LOG(LS_INFO) << __FUNCTION__ << ": newState="
                    << Util::IceConnectionStateToString(new_state);
 

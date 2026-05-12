@@ -56,6 +56,7 @@ class P2PSession : public std::enable_shared_from_this<P2PSession> {
 
     // msg オブジェクトは書き込みが完了するまで生きている必要があるので、
     // メンバに入れてライフタイムを延ばしてやる
+    sp->keep_alive(false);
     res_ = sp;
 
     // Write the response

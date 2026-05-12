@@ -1,5 +1,9 @@
 #include "v4l2_runner.h"
 
+// Standard Library
+#include <cerrno>
+#include <cstring>
+
 // Linux
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -60,10 +64,17 @@ int V4L2Runner::Enqueue(v4l2_buffer* v4l2_buf, OnCompleteCallback on_complete) {
 }
 
 std::optional<int> V4L2Runner::PopAvailableBufferIndex() {
-  return output_buffers_available_.pop();
+  std::optional<int> index = output_buffers_available_.pop();
+  if (!index) {
+    RTC_LOG(LS_WARNING) << "[POLL][" << name_ << "] no available output buffer"
+                        << " pending_callbacks=" << on_completes_.size()
+                        << " src_count=" << src_count_;
+  }
+  return index;
 }
 
 void V4L2Runner::PollProcess() {
+  int consecutive_timeouts = 0;
   while (true) {
     RTC_LOG(LS_VERBOSE) << "[POLL][" << name_ << "] Start poll";
     pollfd p = {fd_, POLLIN | POLLPRI, 0};
@@ -74,6 +85,28 @@ void V4L2Runner::PollProcess() {
     if (ret == -1) {
       RTC_LOG(LS_ERROR) << "[POLL][" << name_
                         << "] unexpected error ret=" << ret;
+      break;
+    }
+    if (ret == 0) {
+      consecutive_timeouts++;
+      size_t available_output_buffers = output_buffers_available_.size();
+      size_t pending_output_buffers = src_count_ - available_output_buffers;
+      size_t pending_callbacks = on_completes_.size();
+      if (pending_output_buffers > 0 &&
+          (consecutive_timeouts == 1 || consecutive_timeouts % 10 == 0)) {
+        RTC_LOG(LS_WARNING)
+            << "[POLL][" << name_ << "] timeout"
+            << " consecutive_timeouts=" << consecutive_timeouts
+            << " pending_output_buffers=" << pending_output_buffers
+            << " available_output_buffers=" << available_output_buffers
+            << " pending_callbacks=" << pending_callbacks;
+      }
+      continue;
+    }
+    consecutive_timeouts = 0;
+    if (p.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      RTC_LOG(LS_ERROR) << "[POLL][" << name_
+                        << "] poll error revents=" << p.revents;
       break;
     }
     if (p.revents & POLLPRI) {

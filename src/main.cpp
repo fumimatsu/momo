@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <iostream>
@@ -315,8 +316,8 @@ int main(int argc, char* argv[]) {
     }
 
     boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
-    signals.async_wait(
-        [&](const boost::system::error_code&, int) { ioc.stop(); });
+    boost::asio::steady_timer shutdown_timer(ioc);
+    bool shutting_down = false;
 
     std::shared_ptr<SoraClient> sora_client;
     std::shared_ptr<AyameClient> ayame_client;
@@ -421,6 +422,36 @@ int main(int argc, char* argv[]) {
                             stats_collector, std::move(metrics_config))
           ->Run();
     }
+
+    signals.async_wait([&](const boost::system::error_code& ec, int) {
+      if (ec || shutting_down) {
+        return;
+      }
+      shutting_down = true;
+      signals.cancel();
+
+      shutdown_timer.expires_after(std::chrono::seconds(3));
+      shutdown_timer.async_wait(
+          [&](const boost::system::error_code& timer_ec) {
+            if (!timer_ec) {
+              RTC_LOG(LS_WARNING) << "shutdown timeout";
+              ioc.stop();
+            }
+          });
+
+      auto stop_ioc = [&]() {
+        shutdown_timer.cancel();
+        ioc.stop();
+      };
+
+      if (sora_client) {
+        sora_client->Close(stop_ioc);
+      } else if (ayame_client) {
+        ayame_client->Shutdown(stop_ioc);
+      } else {
+        stop_ioc();
+      }
+    });
 
     if (sdl_renderer) {
       sdl_renderer->SetDispatchFunction([&ioc](std::function<void()> f) {

@@ -98,6 +98,7 @@ class Websocket {
 
   void DoClose(close_callback_t on_close);
   void OnClose(close_callback_t on_close, boost::system::error_code ec);
+  void ForceClose();
 
   void ConnectProxy(const std::string& url, connect_callback_t on_connect);
   void OnResolveProxy(boost::system::error_code ec,

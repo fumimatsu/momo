@@ -60,8 +60,10 @@ void P2PSession::OnRead(boost::system::error_code ec,
   if (ec == boost::beast::http::error::end_of_stream)
     return DoClose();
 
-  if (ec)
-    return MOMO_BOOST_ERROR(ec, "read");
+  if (ec) {
+    MOMO_BOOST_ERROR(ec, "read");
+    return DoClose();
+  }
 
   // WebSocket の upgrade リクエスト
   if (req_.target() == "/ws") {
@@ -152,8 +154,10 @@ void P2PSession::OnWrite(boost::system::error_code ec,
                          bool close) {
   boost::ignore_unused(bytes_transferred);
 
-  if (ec)
-    return MOMO_BOOST_ERROR(ec, "write");
+  if (ec) {
+    MOMO_BOOST_ERROR(ec, "write");
+    return DoClose();
+  }
 
   if (close)
     return DoClose();
@@ -166,4 +170,5 @@ void P2PSession::OnWrite(boost::system::error_code ec,
 void P2PSession::DoClose() {
   boost::system::error_code ec;
   socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+  socket_.close(ec);
 }

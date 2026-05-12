@@ -9,6 +9,7 @@
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/beast/core.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/websocket/stream.hpp>
 
@@ -83,6 +84,7 @@ Websocket::Websocket(https_proxy_tag,
 
 Websocket::~Websocket() {
   RTC_LOG(LS_INFO) << "Websocket::~Websocket this=" << (void*)this;
+  ForceClose();
 }
 
 bool Websocket::IsSSL() const {
@@ -485,4 +487,28 @@ void Websocket::OnClose(close_callback_t on_close,
                    << " ec=" << ec.message();
 
   on_close(ec);
+}
+
+void Websocket::ForceClose() {
+  boost::system::error_code ec;
+  if (resolver_) {
+    resolver_->cancel();
+  }
+  if (proxy_socket_ && proxy_socket_->is_open()) {
+    proxy_socket_->cancel(ec);
+    ec.clear();
+    proxy_socket_->close(ec);
+  }
+  if (wss_) {
+    auto& socket = boost::beast::get_lowest_layer(*wss_);
+    socket.cancel(ec);
+    ec.clear();
+    socket.close(ec);
+  }
+  if (ws_) {
+    auto& socket = boost::beast::get_lowest_layer(*ws_);
+    socket.cancel(ec);
+    ec.clear();
+    socket.close(ec);
+  }
 }

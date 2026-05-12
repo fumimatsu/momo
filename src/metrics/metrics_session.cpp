@@ -9,6 +9,8 @@
 #include <boost/beast/version.hpp>
 #include <boost/json.hpp>
 
+#include <chrono>
+
 #ifdef _WIN32
 #include <codecvt>
 #endif
@@ -24,6 +26,7 @@ MetricsSession::MetricsSession(boost::asio::io_context& ioc,
     : ioc_(ioc),
       socket_(std::move(socket)),
       strand_(socket_.get_executor()),
+      stats_timer_(ioc),
       rtc_manager_(rtc_manager),
       stats_collector_(stats_collector),
       config_(std::move(config)) {}
@@ -54,25 +57,30 @@ void MetricsSession::OnRead(boost::system::error_code ec,
   if (ec == boost::beast::http::error::end_of_stream)
     return DoClose();
 
-  if (ec)
-    return MOMO_BOOST_ERROR(ec, "read");
+  if (ec) {
+    MOMO_BOOST_ERROR(ec, "read");
+    return DoClose();
+  }
 
   if (req_.method() == boost::beast::http::verb::get) {
     if (req_.target() == "/metrics") {
       std::shared_ptr<MetricsSession> self(shared_from_this());
-      stats_collector_->GetStats(
-          [self](const webrtc::scoped_refptr<const webrtc::RTCStatsReport>&
-                     report) {
-            std::string stats = report ? report->ToJson() : "[]";
-            boost::json::value json_message = {
-                {"version", MomoVersion::GetClientName()},
-                {"libwebrtc", MomoVersion::GetLibwebrtcName()},
-                {"environment", MomoVersion::GetEnvironmentName()},
-                {"stats", boost::json::parse(stats)}};
-
-            self->SendResponse(
-                CreateOKWithJSON(self->req_, std::move(json_message)));
-          });
+      response_sent_ = false;
+      stats_timer_.expires_after(std::chrono::seconds(2));
+      stats_timer_.async_wait(boost::asio::bind_executor(
+          strand_, [self](const boost::system::error_code& ec) {
+            if (ec) {
+              return;
+            }
+            self->SendMetricsTimeout();
+          }));
+      stats_collector_->GetStats([self](
+                                     const webrtc::scoped_refptr<
+                                         const webrtc::RTCStatsReport>& report) {
+        boost::asio::post(self->strand_, [self, report]() {
+          self->SendMetricsResponse(report);
+        });
+      });
     } else {
       SendResponse(Util::NotFound(req_, req_.target()));
     }
@@ -86,8 +94,10 @@ void MetricsSession::OnWrite(boost::system::error_code ec,
                              bool close) {
   boost::ignore_unused(bytes_transferred);
 
-  if (ec)
-    return MOMO_BOOST_ERROR(ec, "write");
+  if (ec) {
+    MOMO_BOOST_ERROR(ec, "write");
+    return DoClose();
+  }
 
   if (close)
     return DoClose();
@@ -99,7 +109,35 @@ void MetricsSession::OnWrite(boost::system::error_code ec,
 
 void MetricsSession::DoClose() {
   boost::system::error_code ec;
+  stats_timer_.cancel();
   socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+  socket_.close(ec);
+}
+
+void MetricsSession::SendMetricsResponse(
+    const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) {
+  if (response_sent_) {
+    return;
+  }
+  response_sent_ = true;
+  stats_timer_.cancel();
+
+  std::string stats = report ? report->ToJson() : "[]";
+  boost::json::value json_message = {
+      {"version", MomoVersion::GetClientName()},
+      {"libwebrtc", MomoVersion::GetLibwebrtcName()},
+      {"environment", MomoVersion::GetEnvironmentName()},
+      {"stats", boost::json::parse(stats)}};
+
+  SendResponse(CreateOKWithJSON(req_, std::move(json_message)));
+}
+
+void MetricsSession::SendMetricsTimeout() {
+  if (response_sent_) {
+    return;
+  }
+  response_sent_ = true;
+  SendResponse(Util::ServerError(req_, "GetStats timed out"));
 }
 
 boost::beast::http::response<boost::beast::http::string_body>
@@ -110,7 +148,7 @@ MetricsSession::CreateOKWithJSON(
       boost::beast::http::status::ok, 11};
   res.set(boost::beast::http::field::server, BOOST_BEAST_VERSION_STRING);
   res.set(boost::beast::http::field::content_type, "application/json");
-  res.keep_alive(req.keep_alive());
+  res.keep_alive(false);
   res.body() = boost::json::serialize(json_message);
   res.prepare_payload();
 

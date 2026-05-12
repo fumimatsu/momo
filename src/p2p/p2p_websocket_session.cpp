@@ -30,6 +30,7 @@ P2PWebsocketSession::P2PWebsocketSession(boost::asio::io_context& ioc,
 
 P2PWebsocketSession::~P2PWebsocketSession() {
   RTC_LOG(LS_INFO) << __FUNCTION__;
+  Close();
 }
 
 void P2PWebsocketSession::Run(
@@ -75,11 +76,16 @@ void P2PWebsocketSession::OnRead(boost::system::error_code ec,
 
   boost::ignore_unused(bytes_transferred);
 
-  if (ec == boost::beast::websocket::error::closed)
+  if (ec == boost::beast::websocket::error::closed) {
+    Close();
     return;
+  }
 
-  if (ec)
-    return MOMO_BOOST_ERROR(ec, "Read");
+  if (ec) {
+    MOMO_BOOST_ERROR(ec, "Read");
+    Close();
+    return;
+  }
 
   // これ以降はエラーが起きて処理を中断したとしても DoRead() する
   struct Guard {
@@ -140,6 +146,12 @@ void P2PWebsocketSession::OnRead(boost::system::error_code ec,
   }
 }
 
+void P2PWebsocketSession::Close() {
+  watchdog_.Disable();
+  connection_ = nullptr;
+  rtc_state_ = webrtc::PeerConnectionInterface::kIceConnectionClosed;
+}
+
 std::shared_ptr<RTCConnection> P2PWebsocketSession::CreateRTCConnection() {
   webrtc::PeerConnectionInterface::RTCConfiguration rtc_config;
   webrtc::PeerConnectionInterface::IceServers servers;
@@ -151,7 +163,9 @@ std::shared_ptr<RTCConnection> P2PWebsocketSession::CreateRTCConnection() {
   rtc_config.servers = servers;
   auto connection = rtc_manager_->CreateConnection(rtc_config, this);
   rtc_manager_->InitTracks(connection.get(), std::nullopt);
+  rtc_manager_->SetParameters();
 
+  rtc_state_ = webrtc::PeerConnectionInterface::kIceConnectionNew;
   return connection;
 }
 
@@ -162,6 +176,12 @@ void P2PWebsocketSession::OnIceConnectionStateChange(
                    << Util::IceConnectionStateToString(new_state);
 
   rtc_state_ = new_state;
+  if (new_state ==
+          webrtc::PeerConnectionInterface::kIceConnectionFailed ||
+      new_state ==
+          webrtc::PeerConnectionInterface::kIceConnectionClosed) {
+    watchdog_.Disable();
+  }
 }
 
 void P2PWebsocketSession::OnIceCandidate(const std::string sdp_mid,

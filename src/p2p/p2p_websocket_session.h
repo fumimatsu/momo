@@ -54,6 +54,7 @@ class P2PWebsocketSession
   void OnRead(boost::system::error_code ec,
               std::size_t bytes_transferred,
               std::string recv_string);
+  void Close();
 
   std::shared_ptr<RTCConnection> CreateRTCConnection();
 
@@ -74,7 +75,8 @@ class P2PWebsocketSession
   P2PWebsocketSessionConfig config_;
 
   std::shared_ptr<RTCConnection> connection_;
-  webrtc::PeerConnectionInterface::IceConnectionState rtc_state_;
+  webrtc::PeerConnectionInterface::IceConnectionState rtc_state_ =
+      webrtc::PeerConnectionInterface::kIceConnectionNew;
 };
 
 #endif  // P2P_WEBSOCKET_SESSION_H_

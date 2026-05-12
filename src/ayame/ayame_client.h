@@ -55,6 +55,7 @@ class AyameClient : public std::enable_shared_from_this<AyameClient>,
   void Reset();
   void Connect();
   void Close();
+  void Shutdown(std::function<void()> on_close);
 
   void GetStats(std::function<void(
                     const webrtc::scoped_refptr<const webrtc::RTCStatsReport>&)>
@@ -72,10 +73,13 @@ class AyameClient : public std::enable_shared_from_this<AyameClient>,
   void DoSendPong();
   void SetIceServersFromConfig(boost::json::value json_message);
   void CreatePeerConnection();
+  void Close(bool reconnect, std::function<void()> on_close);
 
  private:
   void OnConnect(boost::system::error_code ec);
-  void OnClose(boost::system::error_code ec);
+  void OnClose(boost::system::error_code ec,
+               bool reconnect,
+               std::function<void()> on_close);
   void OnRead(boost::system::error_code ec,
               std::size_t bytes_transferred,
               std::string text);
@@ -98,6 +102,7 @@ class AyameClient : public std::enable_shared_from_this<AyameClient>,
   std::unique_ptr<Websocket> ws_;
 
   std::atomic_bool destructed_ = {false};
+  std::atomic_bool shutting_down_ = {false};
 
   RTCManager* manager_;
   std::shared_ptr<RTCConnection> connection_;
