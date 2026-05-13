@@ -122,6 +122,8 @@ void RTCConnection::CreateOffer(OnCreateSuccessFunc on_success,
   RTCDataManager* data_manager = observer_->DataManager();
   if (data_manager != nullptr) {
     webrtc::DataChannelInit config;
+    config.ordered = false;
+    config.maxRetransmits = 0;
     auto result = connection_->CreateDataChannelOrError("serial", &config);
     if (!result.ok()) {
       RTC_LOG(LS_ERROR) << "CreateDataChannel() failed: "
