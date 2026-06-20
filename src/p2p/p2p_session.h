@@ -42,6 +42,7 @@ class P2PSession : public std::enable_shared_from_this<P2PSession> {
   void Run();
 
   std::shared_ptr<RTCConnection> GetRTCConnection() const;
+  bool IsClosed() const;
 
  private:
   void DoRead();
@@ -85,6 +86,7 @@ class P2PSession : public std::enable_shared_from_this<P2PSession> {
   P2PSessionConfig config_;
 
   std::shared_ptr<P2PWebsocketSession> ws_session_;
+  bool closed_ = false;
 };
 
 #endif  // P2P_SESSION_H_

@@ -1,15 +1,23 @@
 #include "p2p_server.h"
 
+#include <algorithm>
+
 #include "util.h"
 
 void P2PServer::GetStats(
     std::function<void(
         const webrtc::scoped_refptr<const webrtc::RTCStatsReport>&)> callback) {
-  if (p2p_session_ && p2p_session_->GetRTCConnection()) {
-    p2p_session_->GetRTCConnection()->GetStats(std::move(callback));
-  } else {
-    callback(nullptr);
+  for (auto it = p2p_sessions_.rbegin(); it != p2p_sessions_.rend(); ++it) {
+    if (!*it || (*it)->IsClosed()) {
+      continue;
+    }
+    auto connection = (*it)->GetRTCConnection();
+    if (connection) {
+      connection->GetStats(std::move(callback));
+      return;
+    }
   }
+  callback(nullptr);
 }
 
 P2PServer::P2PServer(boost::asio::io_context& ioc,
@@ -70,10 +78,18 @@ void P2PServer::OnAccept(boost::system::error_code ec) {
     return;
   }
 
+  p2p_sessions_.erase(
+      std::remove_if(p2p_sessions_.begin(), p2p_sessions_.end(),
+                     [](const std::shared_ptr<P2PSession>& session) {
+                       return !session || session->IsClosed();
+                     }),
+      p2p_sessions_.end());
+
   P2PSessionConfig config = config_;
-  p2p_session_ =
-      P2PSession::Create(ioc_, std::move(socket_), rtc_manager_, config_);
-  p2p_session_->Run();
+  auto p2p_session =
+      P2PSession::Create(ioc_, std::move(socket_), rtc_manager_, config);
+  p2p_sessions_.push_back(p2p_session);
+  p2p_session->Run();
 
   DoAccept();
 }

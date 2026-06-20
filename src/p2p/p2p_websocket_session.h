@@ -43,6 +43,7 @@ class P2PWebsocketSession
   void Run(boost::beast::http::request<boost::beast::http::string_body> req);
 
   std::shared_ptr<RTCConnection> GetRTCConnection() const;
+  bool IsClosed() const;
 
  private:
   void OnWatchdogExpired();
@@ -77,6 +78,7 @@ class P2PWebsocketSession
   std::shared_ptr<RTCConnection> connection_;
   webrtc::PeerConnectionInterface::IceConnectionState rtc_state_ =
       webrtc::PeerConnectionInterface::kIceConnectionNew;
+  bool closed_ = false;
 };
 
 #endif  // P2P_WEBSOCKET_SESSION_H_

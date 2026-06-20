@@ -235,6 +235,7 @@ int main(int argc, char* argv[]) {
 
   rtcm_config.no_video_device = args.no_video_device;
   rtcm_config.no_audio_device = args.no_audio_device;
+  rtcm_config.no_audio_input = args.no_audio_input;
 
   rtcm_config.fixed_resolution = args.fixed_resolution;
   rtcm_config.simulcast = args.sora_simulcast;

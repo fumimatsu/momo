@@ -48,6 +48,102 @@ sudo apt-get install libegl1-mesa-dev
 sudo apt-get install libgles2-mesa
 ```
 
+### FPV 向けの基本設定
+
+Raspberry Pi Zero 2 W と Raspberry Pi 4B を FPV 用途で利用する場合は、遅延の揺れを減らすために以下の設定を行ってください。
+
+- GUI を無効化して CUI 起動にする
+- Wi-Fi の省電力を無効化する
+- CPU governor を `performance` に固定する
+- 不要な NFS / rpcbind / Bluetooth サービスを停止する
+- `momo.service` を `network-online.target` 後に起動する
+- `.local` 名で接続したい場合は `avahi-daemon` を残す
+
+GUI を無効化します。
+
+```bash
+sudo systemctl set-default multi-user.target
+sudo systemctl disable --now display-manager.service 2>/dev/null || true
+sudo systemctl disable --now lightdm.service 2>/dev/null || true
+```
+
+NetworkManager を利用している場合は、接続名を確認して Wi-Fi の省電力を無効化します。IPv4 固定運用で IPv6 を利用しない場合は IPv6 も無効化します。
+
+```bash
+nmcli -g NAME,TYPE,DEVICE connection show --active
+sudo nmcli connection modify "<接続名>" 802-11-wireless.powersave 2 ipv6.method disabled
+sudo nmcli connection reload
+```
+
+CPU governor を `performance` に固定します。
+
+```bash
+sudo tee /etc/systemd/system/cpu-performance.service >/dev/null <<'EOF'
+[Unit]
+Description=Set CPU governor to performance for FPV
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do [ -w "$governor" ] && echo performance > "$governor"; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now cpu-performance.service
+```
+
+FPV 専用機で利用しないサービスを停止します。`momo-fpv-10.local` のような `.local` 名を使う場合は `avahi-daemon` を停止しないでください。
+
+```bash
+sudo systemctl disable --now nfs-blkmap rpcbind bluetooth 2>/dev/null || true
+```
+
+`momo.service` を `network-online.target` 後に起動するようにします。
+
+```bash
+sudo mkdir -p /etc/systemd/system/momo.service.d
+sudo tee /etc/systemd/system/momo.service.d/30-network-online.conf >/dev/null <<'EOF'
+[Unit]
+After=network-online.target
+Wants=network-online.target
+EOF
+sudo systemctl daemon-reload
+```
+
+設定後に再起動して、以下のようになっていることを確認してください。
+
+```bash
+sudo reboot
+```
+
+```bash
+systemctl get-default
+systemctl is-active display-manager 2>/dev/null || true
+systemctl is-active lightdm 2>/dev/null || true
+systemctl is-enabled avahi-daemon 2>/dev/null || true
+systemctl is-enabled nfs-blkmap rpcbind bluetooth 2>/dev/null || true
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
+nmcli -g 802-11-wireless.powersave,ipv6.method connection show "<接続名>"
+```
+
+期待する状態は以下です。
+
+```text
+multi-user.target
+inactive
+inactive
+enabled
+disabled
+disabled
+disabled
+performance
+disable
+disabled
+```
+
 ### Raspberry-Pi-OS で Raspberry Pi 用カメラなどの CSI カメラを利用する場合
 
 これは USB カメラを利用する場合は不要なオプションです。

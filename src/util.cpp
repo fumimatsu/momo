@@ -92,6 +92,8 @@ void Util::ParseArgs(int argc,
                "Do not use video device");
   app.add_flag("--no-audio-device", args.no_audio_device,
                "Do not use audio device");
+  app.add_flag("--no-audio-input", args.no_audio_input,
+               "Do not create local audio input track");
   app.add_flag("--list-devices", args.list_devices,
                "List available video devices and exit");
 #if defined(USE_FAKE_CAPTURE_DEVICE)

@@ -16,6 +16,8 @@ class RTCConnection {
         observer_(std::move(observer)),
         connection_(connection) {}
   ~RTCConnection();
+  void Close();
+  void CloseDetached();
 
   typedef std::function<void(webrtc::SessionDescriptionInterface*)>
       OnCreateSuccessFunc;

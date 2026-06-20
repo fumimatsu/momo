@@ -53,6 +53,7 @@ struct RTCManagerConfig {
 
   bool no_video_device = false;
   bool no_audio_device = false;
+  bool no_audio_input = false;
 
   bool fixed_resolution = false;
   bool simulcast = false;

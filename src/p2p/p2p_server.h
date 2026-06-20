@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 // Boost
 #include <boost/asio/io_context.hpp>
@@ -50,7 +51,7 @@ class P2PServer : public std::enable_shared_from_this<P2PServer>,
   RTCManager* rtc_manager_;
   P2PServerConfig config_;
 
-  std::shared_ptr<P2PSession> p2p_session_;
+  std::vector<std::shared_ptr<P2PSession>> p2p_sessions_;
 };
 
 #endif

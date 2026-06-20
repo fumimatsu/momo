@@ -75,6 +75,7 @@ class Websocket {
   void Read(read_callback_t on_read);
   void WriteText(std::string text, write_callback_t on_write = nullptr);
   void Close(close_callback_t on_close);
+  void ForceClose();
 
   websocket_t& NativeSocket();
   ssl_websocket_t& NativeSecureSocket();
@@ -98,7 +99,6 @@ class Websocket {
 
   void DoClose(close_callback_t on_close);
   void OnClose(close_callback_t on_close, boost::system::error_code ec);
-  void ForceClose();
 
   void ConnectProxy(const std::string& url, connect_callback_t on_connect);
   void OnResolveProxy(boost::system::error_code ec,

@@ -24,6 +24,13 @@ std::shared_ptr<RTCConnection> P2PSession::GetRTCConnection() const {
   }
 }
 
+bool P2PSession::IsClosed() const {
+  if (ws_session_) {
+    return ws_session_->IsClosed();
+  }
+  return closed_;
+}
+
 P2PSession::P2PSession(boost::asio::io_context& ioc,
                        boost::asio::ip::tcp::socket socket,
                        RTCManager* rtc_manager,
@@ -168,6 +175,7 @@ void P2PSession::OnWrite(boost::system::error_code ec,
 }
 
 void P2PSession::DoClose() {
+  closed_ = true;
   boost::system::error_code ec;
   socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
   socket_.close(ec);

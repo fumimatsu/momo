@@ -5,6 +5,8 @@
 #include <api/scoped_refptr.h>
 #include <rtc_base/ref_counted_object.h>
 
+#include <thread>
+
 // stats のコールバックを受け取るためのクラス
 class RTCStatsCallback : public webrtc::RTCStatsCollectorCallback {
  public:
@@ -112,7 +114,34 @@ class SetSessionDescriptionThunk
 };
 
 RTCConnection::~RTCConnection() {
-  connection_->Close();
+  Close();
+}
+
+void RTCConnection::Close() {
+  if (connection_) {
+    connection_->Close();
+    connection_ = nullptr;
+  }
+  observer_ = nullptr;
+}
+
+void RTCConnection::CloseDetached() {
+  if (!connection_) {
+    observer_ = nullptr;
+    return;
+  }
+
+  auto connection = connection_;
+  auto observer = std::move(observer_);
+  connection_ = nullptr;
+  std::thread([connection = std::move(connection),
+               observer = std::move(observer)]() mutable {
+    if (connection) {
+      connection->Close();
+      connection = nullptr;
+    }
+    observer = nullptr;
+  }).detach();
 }
 
 void RTCConnection::CreateOffer(OnCreateSuccessFunc on_success,

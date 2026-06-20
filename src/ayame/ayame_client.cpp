@@ -35,6 +35,14 @@ bool IsAuxiliaryCodec(const std::string& codec_name,
   return std::find(auxiliary_codecs.begin(), auxiliary_codecs.end(),
                    codec_name) != auxiliary_codecs.end();
 }
+
+void CloseConnectionDetached(std::shared_ptr<RTCConnection>& connection) {
+  if (!connection) {
+    return;
+  }
+  connection->CloseDetached();
+  connection = nullptr;
+}
 }  // namespace
 
 bool AyameClient::ParseURL(URLParts& parts) const {
@@ -84,7 +92,7 @@ AyameClient::~AyameClient() {
   destructed_ = true;
   watchdog_.Disable();
   // ここで OnIceConnectionStateChange が呼ばれる
-  connection_ = nullptr;
+  CloseConnectionDetached(connection_);
 }
 
 void AyameClient::Reset() {
@@ -92,7 +100,7 @@ void AyameClient::Reset() {
     return;
   }
   watchdog_.Disable();
-  connection_ = nullptr;
+  CloseConnectionDetached(connection_);
   is_send_offer_ = false;
   has_is_exist_user_flag_ = false;
   ice_servers_.clear();
@@ -356,7 +364,7 @@ void AyameClient::Shutdown(std::function<void()> on_close) {
   shutting_down_ = true;
   destructed_ = true;
   watchdog_.Disable();
-  connection_ = nullptr;
+  CloseConnectionDetached(connection_);
   Close(false, std::move(on_close));
 }
 
@@ -489,7 +497,7 @@ void AyameClient::OnRead(boost::system::error_code ec,
     DoSendPong();
   } else if (type == "bye") {
     RTC_LOG(LS_INFO) << __FUNCTION__ << ": bye";
-    connection_ = nullptr;
+    CloseConnectionDetached(connection_);
     Close();
   }
   DoRead();

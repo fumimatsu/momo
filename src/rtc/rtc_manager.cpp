@@ -168,7 +168,7 @@ RTCManager::RTCManager(
   factory_options.crypto_options.srtp.enable_gcm_crypto_suites = true;
   factory_->SetOptions(factory_options);
 
-  if (!config_.no_audio_device) {
+  if (!config_.no_audio_device && !config_.no_audio_input) {
     webrtc::AudioOptions ao;
     if (config_.disable_echo_cancellation)
       ao.echo_cancellation = false;
@@ -319,11 +319,14 @@ void RTCManager::InitTracks(RTCConnection* conn,
   // 未設定か sendonly か sendrecv の場合はトラックを追加
   if (!direction.has_value() || direction == "sendonly" ||
       direction == "sendrecv") {
+    bool added_audio_track = false;
     if (audio_track_) {
       webrtc::RTCErrorOr<webrtc::scoped_refptr<webrtc::RtpSenderInterface>>
           audio_sender = connection->AddTrack(audio_track_, {stream_id});
       if (!audio_sender.ok()) {
         RTC_LOG(LS_WARNING) << __FUNCTION__ << ": Cannot add audio_track_";
+      } else {
+        added_audio_track = true;
       }
     }
 
@@ -349,6 +352,19 @@ void RTCManager::InitTracks(RTCConnection* conn,
               << __FUNCTION__
               << ": Failed to set transceiver direction: " << error.message();
         }
+      }
+    }
+
+    if (direction == "sendrecv" && !added_audio_track &&
+        !config_.no_audio_device) {
+      webrtc::RtpTransceiverInit init;
+      init.direction = webrtc::RtpTransceiverDirection::kRecvOnly;
+      auto audio_result =
+          connection->AddTransceiver(webrtc::MediaType::AUDIO, init);
+      if (!audio_result.ok()) {
+        RTC_LOG(LS_WARNING)
+            << __FUNCTION__
+            << ": Cannot add recvonly audio transceiver";
       }
     }
   } else {  // recvonly

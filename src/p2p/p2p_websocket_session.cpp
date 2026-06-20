@@ -17,6 +17,10 @@ std::shared_ptr<RTCConnection> P2PWebsocketSession::GetRTCConnection() const {
   }
 }
 
+bool P2PWebsocketSession::IsClosed() const {
+  return closed_;
+}
+
 P2PWebsocketSession::P2PWebsocketSession(boost::asio::io_context& ioc,
                                          boost::asio::ip::tcp::socket socket,
                                          RTCManager* rtc_manager,
@@ -40,6 +44,9 @@ void P2PWebsocketSession::Run(
 }
 
 void P2PWebsocketSession::OnWatchdogExpired() {
+  if (closed_ || !ws_) {
+    return;
+  }
   boost::json::value ping_message = {
       {"type", "ping"},
   };
@@ -49,6 +56,9 @@ void P2PWebsocketSession::OnWatchdogExpired() {
 
 void P2PWebsocketSession::DoAccept(
     boost::beast::http::request<boost::beast::http::string_body> req) {
+  if (closed_ || !ws_) {
+    return;
+  }
   ws_->Accept(std::move(req),
               std::bind(&P2PWebsocketSession::OnAccept, shared_from_this(),
                         std::placeholders::_1));
@@ -57,13 +67,18 @@ void P2PWebsocketSession::DoAccept(
 void P2PWebsocketSession::OnAccept(boost::system::error_code ec) {
   RTC_LOG(LS_INFO) << __FUNCTION__ << ": " << ec;
 
-  if (ec)
-    return MOMO_BOOST_ERROR(ec, "Accept");
+  if (ec) {
+    MOMO_BOOST_ERROR(ec, "Accept");
+    return Close();
+  }
 
   DoRead();
 }
 
 void P2PWebsocketSession::DoRead() {
+  if (closed_ || !ws_) {
+    return;
+  }
   ws_->Read(std::bind(&P2PWebsocketSession::OnRead, shared_from_this(),
                       std::placeholders::_1, std::placeholders::_2,
                       std::placeholders::_3));
@@ -110,6 +125,9 @@ void P2PWebsocketSession::OnRead(boost::system::error_code ec,
     connection_->SetOffer(sdp, [this]() {
       connection_->CreateAnswer(
           [this](webrtc::SessionDescriptionInterface* desc) {
+            if (closed_ || !ws_) {
+              return;
+            }
             std::string sdp;
             desc->ToString(&sdp);
             boost::json::value json_desc = {{"type", "answer"}, {"sdp", sdp}};
@@ -133,8 +151,12 @@ void P2PWebsocketSession::OnRead(boost::system::error_code ec,
     std::string candidate = ice.at("candidate").as_string().c_str();
     connection_->AddIceCandidate(sdp_mid, sdp_mlineindex, candidate);
   } else if (type == "close" || type == "bye") {
-    connection_ = nullptr;
+    Close();
+    return;
   } else if (type == "register") {
+    if (closed_ || !ws_) {
+      return;
+    }
     boost::json::value accept_message = {
         {"type", "accept"},
         {"isExistUser", true},
@@ -147,9 +169,16 @@ void P2PWebsocketSession::OnRead(boost::system::error_code ec,
 }
 
 void P2PWebsocketSession::Close() {
+  if (closed_) {
+    return;
+  }
+  closed_ = true;
   watchdog_.Disable();
   connection_ = nullptr;
   rtc_state_ = webrtc::PeerConnectionInterface::kIceConnectionClosed;
+  if (ws_) {
+    ws_->ForceClose();
+  }
 }
 
 std::shared_ptr<RTCConnection> P2PWebsocketSession::CreateRTCConnection() {
@@ -163,7 +192,6 @@ std::shared_ptr<RTCConnection> P2PWebsocketSession::CreateRTCConnection() {
   rtc_config.servers = servers;
   auto connection = rtc_manager_->CreateConnection(rtc_config, this);
   rtc_manager_->InitTracks(connection.get(), std::nullopt);
-  rtc_manager_->SetParameters();
 
   rtc_state_ = webrtc::PeerConnectionInterface::kIceConnectionNew;
   return connection;
@@ -180,7 +208,7 @@ void P2PWebsocketSession::OnIceConnectionStateChange(
           webrtc::PeerConnectionInterface::kIceConnectionFailed ||
       new_state ==
           webrtc::PeerConnectionInterface::kIceConnectionClosed) {
-    watchdog_.Disable();
+    Close();
   }
 }
 
@@ -188,6 +216,10 @@ void P2PWebsocketSession::OnIceCandidate(const std::string sdp_mid,
                                          const int sdp_mlineindex,
                                          const std::string sdp) {
   RTC_LOG(LS_INFO) << __FUNCTION__;
+
+  if (closed_ || !ws_) {
+    return;
+  }
 
   boost::json::object json_cand = {{"type", "candidate"}};
   json_cand["ice"] = {{"candidate", sdp},
