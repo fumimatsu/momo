@@ -40,7 +40,10 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
     enable_aruco_ = false;
   }
 #endif
-  if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK)) {
+  // 映像表示はジョイスティック機能に依存させない。配布先の SDL が
+  // joystick backend を含まない場合でも、Pilot の映像 Viewer 自体は
+  // 起動して状態を表示できる必要がある。
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
     RTC_LOG(LS_ERROR) << __FUNCTION__ << ": SDL_Init failed " << SDL_GetError();
     return;
   }

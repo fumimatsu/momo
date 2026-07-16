@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -277,6 +278,26 @@ func (r *relay) clearUpstream(pc *webrtc.PeerConnection) {
 	}
 }
 
+// 新しい Viewer は relay に蓄積されていない差分フレームから受信を始める。
+// 上流 Momo に IDR を要求しないと、次の自然発生キーフレームまで映像を
+// 復号できず、黒画面のままになる。
+func (r *relay) requestKeyframe() {
+	r.upstreamMu.RLock()
+	pc := r.upstreamPC
+	ssrc := r.upstreamSSRC.Load()
+	r.upstreamMu.RUnlock()
+	if pc == nil || ssrc == 0 {
+		return
+	}
+	if err := pc.WriteRTCP([]rtcp.Packet{
+		&rtcp.PictureLossIndication{SenderSSRC: 1, MediaSSRC: ssrc},
+	}); err != nil {
+		log.Printf("source %q: request upstream keyframe: %v", r.name, err)
+	} else {
+		log.Printf("source %q: requested upstream keyframe for SSRC=%d", r.name, ssrc)
+	}
+}
+
 func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
@@ -420,6 +441,9 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("viewer %d (%s) peer connection state: %s", client.id, client.role, state.String())
+		if state == webrtc.PeerConnectionStateConnected {
+			r.requestKeyframe()
+		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			r.removeViewer(client.id)
 		}
