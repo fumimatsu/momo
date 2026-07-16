@@ -1,0 +1,20 @@
+{
+  "index": 0,
+  "steeringAxis": 0,
+  "steeringInvert": false,
+  "steeringGain": 1.0,
+  "steeringDeadzone": 0.03,
+  "steeringCenter": 0.0,
+  "steeringLeft": -1.0,
+  "steeringRight": 1.0,
+  "throttleAxis": 5,
+  "throttleInvert": false,
+  "throttleIdle": 1.0,
+  "throttlePressed": -1.0,
+  "brakeAxis": 6,
+  "brakeInvert": false,
+  "brakeIdle": 1.0,
+  "brakePressed": -1.0,
+  "pedalDeadzone": 0.05,
+  "driveButton": 8
+}

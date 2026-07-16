@@ -47,6 +47,10 @@
 
 #include "ayame/ayame_client.h"
 #include "metrics/metrics_server.h"
+#include "p2p/p2p_multi_receiver_client.h"
+#include "p2p/pilot_data_channel.h"
+#include "p2p/pilot_input.h"
+#include "p2p/p2p_receiver_client.h"
 #include "p2p/p2p_server.h"
 #include "rtc/rtc_manager.h"
 #include "sora/sora_client.h"
@@ -96,11 +100,24 @@ int main(int argc, char* argv[]) {
   MomoArgs args;
 
   bool use_p2p = false;
+  bool use_p2p_receiver = false;
+  bool use_p2p_multi_receiver = false;
+  bool use_p2p_pilot = false;
   bool use_ayame = false;
   bool use_sora = false;
   int log_level = webrtc::LS_NONE;
 
-  Util::ParseArgs(argc, argv, use_p2p, use_ayame, use_sora, log_level, args);
+  Util::ParseArgs(argc, argv, use_p2p, use_p2p_receiver,
+                  use_p2p_multi_receiver, use_p2p_pilot, use_ayame, use_sora, log_level,
+                  args);
+
+  if (use_p2p_receiver || use_p2p_multi_receiver || use_p2p_pilot) {
+    // 受信専用モードではローカルのカメラ・音声入力を作らない。
+    args.no_video_device = true;
+    args.no_audio_device = true;
+    args.no_audio_input = true;
+    args.use_sdl = true;
+  }
 
 #if defined(__linux__)
   // --list-devices オプションの処理
@@ -294,7 +311,10 @@ int main(int argc, char* argv[]) {
   std::unique_ptr<SDLRenderer> sdl_renderer = nullptr;
   if (args.use_sdl) {
     sdl_renderer.reset(new SDLRenderer(args.window_width, args.window_height,
-                                       args.fullscreen));
+                                       args.fullscreen,
+                                       use_p2p_receiver && args.aruco,
+                                       args.flip_vertical,
+                                       args.flip_horizontal));
   }
 
   std::unique_ptr<RTCManager> rtc_manager(new RTCManager(
@@ -321,8 +341,12 @@ int main(int argc, char* argv[]) {
     bool shutting_down = false;
 
     std::shared_ptr<SoraClient> sora_client;
+    std::shared_ptr<P2PReceiverClient> p2p_receiver_client;
+    std::shared_ptr<P2PMultiReceiverClient> p2p_multi_receiver_client;
     std::shared_ptr<AyameClient> ayame_client;
     std::shared_ptr<P2PServer> p2p_server;
+    std::shared_ptr<PilotDataChannel> pilot_data_channel;
+    std::unique_ptr<PilotInput> pilot_input;
 
     MetricsServerConfig metrics_config;
     std::shared_ptr<StatsCollector> stats_collector;
@@ -393,6 +417,55 @@ int main(int argc, char* argv[]) {
       stats_collector = p2p_server;
     }
 
+    if (use_p2p_receiver) {
+      P2PReceiverClientConfig config;
+      config.endpoint = args.p2p_receiver_endpoint;
+      config.no_google_stun = args.no_google_stun;
+      p2p_receiver_client = P2PReceiverClient::Create(
+          ioc, rtc_manager.get(), std::move(config));
+      p2p_receiver_client->Connect();
+    }
+
+    if (use_p2p_pilot) {
+      PilotInputConfig input_config;
+      std::string input_error;
+      if (!LoadPilotInputConfig(args.p2p_pilot_input_config, &input_config,
+                                &input_error)) {
+        std::cerr << input_error << std::endl;
+        return 1;
+      }
+      pilot_data_channel = std::make_shared<PilotDataChannel>();
+      pilot_input = std::make_unique<PilotInput>(ioc, pilot_data_channel,
+                                                 input_config,
+                                                 sdl_renderer.get(),
+                                                 args.p2p_pilot_label);
+
+      P2PReceiverClientConfig config;
+      config.endpoint = args.p2p_pilot_endpoint;
+      config.no_google_stun = args.no_google_stun;
+      config.configure_connection = [pilot_data_channel](
+                                      std::shared_ptr<RTCConnection> connection) {
+        pilot_data_channel->AttachDataChannels(connection);
+      };
+      p2p_receiver_client = P2PReceiverClient::Create(
+          ioc, rtc_manager.get(), std::move(config));
+      p2p_receiver_client->Connect();
+      pilot_input->Start();
+    }
+
+    if (use_p2p_multi_receiver) {
+      P2PMultiReceiverClientConfig config;
+      config.no_google_stun = args.no_google_stun;
+      for (const std::string& source : args.p2p_multi_receiver_sources) {
+        const size_t separator = source.find('=');
+        config.sources.push_back(
+            {source.substr(0, separator), source.substr(separator + 1)});
+      }
+      p2p_multi_receiver_client = P2PMultiReceiverClient::Create(
+          ioc, rtc_manager.get(), sdl_renderer.get(), std::move(config));
+      p2p_multi_receiver_client->Connect();
+    }
+
     if (use_ayame) {
       AyameClientConfig config;
       config.insecure = args.insecure;
@@ -447,6 +520,13 @@ int main(int argc, char* argv[]) {
 
       if (sora_client) {
         sora_client->Close(stop_ioc);
+      } else if (p2p_receiver_client) {
+        if (pilot_input) {
+          pilot_input->Stop();
+        }
+        p2p_receiver_client->Shutdown(stop_ioc);
+      } else if (p2p_multi_receiver_client) {
+        p2p_multi_receiver_client->Shutdown(stop_ioc);
       } else if (ayame_client) {
         ayame_client->Shutdown(stop_ioc);
       } else {

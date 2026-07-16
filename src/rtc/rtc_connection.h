@@ -27,7 +27,9 @@ class RTCConnection {
   typedef std::function<void(webrtc::RTCError)> OnSetFailureFunc;
 
   void CreateOffer(OnCreateSuccessFunc on_success = nullptr,
-                   OnCreateFailureFunc on_failure = nullptr);
+                   OnCreateFailureFunc on_failure = nullptr,
+                   bool offer_to_receive_audio = true,
+                   bool create_data_channel = true);
   void SetOffer(const std::string sdp,
                 OnSetSuccessFunc on_success = nullptr,
                 OnSetFailureFunc on_failure = nullptr);

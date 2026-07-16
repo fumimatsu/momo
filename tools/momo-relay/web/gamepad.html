@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FPV RC Gamepad Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101214;
+      color: #f4f6f8;
+    }
+
+    body {
+      margin: 0;
+      padding: 24px;
+    }
+
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .status {
+      color: #9fb3c8;
+      font-size: 14px;
+    }
+
+    .notice {
+      margin-bottom: 18px;
+      color: #d6e2f0;
+      line-height: 1.55;
+    }
+
+    .guide {
+      margin: 0 0 18px;
+      padding: 14px;
+      border: 1px solid #39424d;
+      border-radius: 8px;
+      background: #171b20;
+    }
+
+    .guide-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .guide h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .guide p {
+      margin: 0 0 10px;
+      color: #d6e2f0;
+      line-height: 1.55;
+    }
+
+    .guide ol {
+      margin: 0;
+      padding-left: 22px;
+      color: #d6e2f0;
+      line-height: 1.55;
+    }
+
+    .language-switch {
+      display: flex;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .language-switch button {
+      min-height: 30px;
+      padding: 0 10px;
+      font-size: 13px;
+    }
+
+    .language-switch button.active {
+      border-color: #7adf8f;
+      background: #1d3b29;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 16px;
+    }
+
+    button {
+      min-height: 34px;
+      padding: 0 12px;
+      color: #f4f6f8;
+      border: 1px solid #46515f;
+      border-radius: 6px;
+      background: #222933;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .viewer-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 12px;
+      color: #f4f6f8;
+      border: 1px solid #46515f;
+      border-radius: 6px;
+      background: #1d3348;
+      text-decoration: none;
+    }
+
+    button:hover {
+      background: #2b3440;
+    }
+
+    .mapping-options label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      color: #d6e2f0;
+      font-size: 14px;
+    }
+
+    .mapping-options input[type="number"] {
+      width: 72px;
+      min-height: 30px;
+      padding: 0 8px;
+      color: #f4f6f8;
+      border: 1px solid #46515f;
+      border-radius: 6px;
+      background: #10151b;
+    }
+
+    .assign-status {
+      color: #7adf8f;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      min-height: 18px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 14px;
+    }
+
+    .pad {
+      border: 1px solid #39424d;
+      border-radius: 8px;
+      padding: 14px;
+      background: #171b20;
+    }
+
+    .pad h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    .meta {
+      color: #afbfce;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.45;
+      word-break: break-all;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 76px 76px 76px 76px 70px 1fr;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+    }
+
+    .row.header {
+      color: #91a4b7;
+      margin-top: 12px;
+    }
+
+    .row.recent {
+      color: #ffffff;
+      text-shadow: 0 0 8px rgba(95, 192, 255, 0.75);
+    }
+
+    .bar {
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #2c343e;
+    }
+
+    .fill {
+      width: 50%;
+      height: 100%;
+      background: #5fc0ff;
+    }
+
+    .button-on .fill {
+      background: #7adf8f;
+    }
+
+    .actions {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: -2px 0 6px 86px;
+    }
+
+    .actions button {
+      min-height: 28px;
+      padding: 0 9px;
+      font-size: 12px;
+    }
+
+    .actions button.assigned {
+      border-color: #7adf8f;
+      background: #1d3b29;
+      color: #ffffff;
+    }
+
+    .mapping {
+      margin: 18px 0 0;
+      border: 1px solid #39424d;
+      border-radius: 8px;
+      background: #171b20;
+    }
+
+    .mapping h2 {
+      margin: 0;
+      padding: 12px 14px;
+      font-size: 16px;
+      border-bottom: 1px solid #39424d;
+    }
+
+    .mapping pre {
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      color: #d6e2f0;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .empty {
+      padding: 18px;
+      color: #f4c66a;
+      border: 1px dashed #5f5642;
+      border-radius: 8px;
+      background: #1d1a12;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 data-i18n="title">FPV RC Gamepad Test</h1>
+    <div id="status" class="status">waiting</div>
+  </header>
+  <section class="guide" aria-labelledby="guideTitle">
+    <div class="guide-header">
+      <h2 id="guideTitle" data-i18n="guideTitle">Setup flow</h2>
+      <div class="language-switch" aria-label="Language">
+        <button class="languageButton" type="button" data-lang="ja">日本語</button>
+        <button class="languageButton" type="button" data-lang="en">English</button>
+      </div>
+    </div>
+    <p data-i18n="guideLead">Use this page to find which wheel axes and buttons should control the FPV RC Viewer.</p>
+    <ol>
+      <li data-i18n="step1">Connect the wheel or controller to this device, then click this page once.</li>
+      <li data-i18n="step2">Move only one control at a time. The row that lights up is the axis or button to assign.</li>
+      <li data-i18n="step3">Set Steering, Throttle, Brake, Drive, and paddle buttons from the buttons under each row.</li>
+      <li data-i18n="step4">Use invert, gain, and deadzone if the direction or sensitivity is wrong.</li>
+      <li data-i18n="step5">Press Save for Viewer, then open the Viewer. The saved mapping is used automatically.</li>
+    </ol>
+  </section>
+  <div class="notice" data-i18n="notice">
+    Move only one control at a time. Use min/max/recent changes to identify steering, throttle, brake, and drive buttons.
+  </div>
+  <div class="toolbar">
+    <button id="resetCalibration" type="button" data-i18n="resetCalibration">Reset calibration</button>
+    <button id="copyMapping" type="button" data-i18n="copyMapping">Copy mapping</button>
+    <button id="saveMapping" type="button" data-i18n="saveMapping">Save for Viewer</button>
+    <button id="clearMapping" type="button" data-i18n="clearMapping">Clear saved</button>
+    <a id="openViewer" class="viewer-link" href="./pilot.html" target="_blank" rel="noreferrer" data-i18n="openViewer">Open Viewer</a>
+    <div id="assignStatus" class="assign-status"></div>
+  </div>
+  <div class="toolbar mapping-options">
+    <label><input id="steeringInvert" type="checkbox"> <span data-i18n="steeringInvert">Steering invert</span></label>
+    <label><input id="throttleInvert" type="checkbox"> <span data-i18n="throttleInvert">Throttle invert</span></label>
+    <label><input id="brakeInvert" type="checkbox"> <span data-i18n="brakeInvert">Brake invert</span></label>
+    <label><span data-i18n="steeringGain">Steering gain</span> <input id="steeringGain" type="number" min="0.2" max="8" step="0.05" value="4"></label>
+    <label><span data-i18n="steeringDeadzone">Steering deadzone</span> <input id="steeringDeadzone" type="number" min="0" max="0.5" step="0.01" value="0.03"></label>
+    <label><span data-i18n="pedalDeadzone">Pedal deadzone</span> <input id="pedalDeadzone" type="number" min="0" max="0.5" step="0.01" value="0.05"></label>
+  </div>
+  <div class="toolbar">
+    <button class="captureButton" type="button" data-label="idle" data-i18n="captureIdle">Capture idle</button>
+    <button class="captureButton" type="button" data-label="steering_left" data-i18n="captureSteeringLeft">Capture steering left</button>
+    <button class="captureButton" type="button" data-label="steering_right" data-i18n="captureSteeringRight">Capture steering right</button>
+    <button class="captureButton" type="button" data-label="throttle_released" data-i18n="captureThrottleReleased">Capture throttle released</button>
+    <button class="captureButton" type="button" data-label="throttle_pressed" data-i18n="captureThrottlePressed">Capture throttle pressed</button>
+    <button class="captureButton" type="button" data-label="brake_released" data-i18n="captureBrakeReleased">Capture brake released</button>
+    <button class="captureButton" type="button" data-label="brake_pressed" data-i18n="captureBrakePressed">Capture brake pressed</button>
+  </div>
+  <main id="pads" class="grid"></main>
+  <section class="mapping">
+    <h2 data-i18n="generatedMapping">Generated mapping</h2>
+    <pre id="mappingOutput">{}</pre>
+  </section>
+  <script src="./gamepad.js"></script>
+</body>
+</html>

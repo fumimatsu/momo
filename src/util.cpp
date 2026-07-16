@@ -1,6 +1,7 @@
 #include "util.h"
 
 #include <regex>
+#include <set>
 
 // CLI11
 #include <CLI/CLI.hpp>
@@ -44,6 +45,9 @@ static void add_optional_bool(CLI::App* app,
 void Util::ParseArgs(int argc,
                      char* argv[],
                      bool& use_p2p,
+                     bool& use_p2p_receiver,
+                     bool& use_p2p_multi_receiver,
+                     bool& use_p2p_pilot,
                      bool& use_ayame,
                      bool& use_sora,
                      int& log_level,
@@ -251,6 +255,12 @@ void Util::ParseArgs(int argc,
 
   auto p2p_app = app.add_subcommand(
       "p2p", "P2P mode for momo development with simple HTTP server");
+  auto p2p_receiver_app = app.add_subcommand(
+      "p2p-recv", "Receive one video stream from a Momo P2P server");
+  auto p2p_multi_receiver_app = app.add_subcommand(
+      "p2p-recv-multi", "Receive up to four P2P video streams in a fixed grid");
+  auto p2p_pilot_app = app.add_subcommand(
+      "p2p-pilot", "Receive relay video and send wheel commands as a Pilot");
   auto ayame_app = app.add_subcommand(
       "ayame", "Mode for working with WebRTC Signaling Server Ayame");
   auto sora_app =
@@ -262,6 +272,63 @@ void Util::ParseArgs(int argc,
       ->check(CLI::ExistingDirectory);
   p2p_app->add_option("--port", args.p2p_port, "Port number (default: 8080)")
       ->check(CLI::Range(0, 65535));
+
+  p2p_receiver_app->add_option(
+      "--endpoint", args.p2p_receiver_endpoint,
+      "Momo P2P WebSocket endpoint (default: ws://127.0.0.1:8080/ws)");
+  p2p_receiver_app->add_flag(
+      "--aruco", args.aruco,
+      "Detect DICT_4X4_50 ArUco markers and draw their IDs");
+  p2p_receiver_app->add_flag(
+      "--flip-vertical", args.flip_vertical,
+      "Flip the received video vertically");
+  p2p_receiver_app->add_flag(
+      "--flip-horizontal", args.flip_horizontal,
+      "Flip the received video horizontally");
+
+  auto is_valid_p2p_multi_source = CLI::Validator(
+      [](std::string input) -> std::string {
+        const size_t separator = input.find('=');
+        if (separator == std::string::npos || separator == 0 ||
+            separator == input.size() - 1) {
+          return "Must be NAME=WS_URL.";
+        }
+        const std::string endpoint = input.substr(separator + 1);
+        if (endpoint.rfind("ws://", 0) != 0 &&
+            endpoint.rfind("wss://", 0) != 0) {
+          return "WS_URL must start with ws:// or wss://.";
+        }
+        return std::string();
+      },
+      "NAME=WS_URL");
+  p2p_multi_receiver_app
+      ->add_option("--source", args.p2p_multi_receiver_sources,
+                   "Source in NAME=WS_URL format; specify up to four times")
+      ->take_all()
+      ->required()
+      ->check(is_valid_p2p_multi_source);
+  p2p_multi_receiver_app->add_flag(
+      "--flip-vertical", args.flip_vertical,
+      "Flip every received video vertically");
+  p2p_multi_receiver_app->add_flag(
+      "--flip-horizontal", args.flip_horizontal,
+      "Flip every received video horizontally");
+
+  p2p_pilot_app->add_option(
+      "--endpoint", args.p2p_pilot_endpoint,
+      "Relay Pilot WebSocket endpoint (for example ws://HOST:8090/ws?role=pilot&device=11.4)");
+  p2p_pilot_app->add_option(
+      "--input-config", args.p2p_pilot_input_config,
+      "Gamepad mapping JSON compatible with the Web Input page");
+  p2p_pilot_app->add_option(
+      "--label", args.p2p_pilot_label,
+      "Device label shown in the Native Pilot overlay");
+  p2p_pilot_app->add_flag(
+      "--flip-vertical", args.flip_vertical,
+      "Flip the received video vertically");
+  p2p_pilot_app->add_flag(
+      "--flip-horizontal", args.flip_horizontal,
+      "Flip the received video horizontally");
 
   ayame_app
       ->add_option("--signaling-url", args.ayame_signaling_url, "Signaling URL")
@@ -387,6 +454,23 @@ void Util::ParseArgs(int argc,
     args.p2p_document_root = boost::filesystem::current_path().string();
   }
 
+  if (p2p_multi_receiver_app->parsed()) {
+    if (args.p2p_multi_receiver_sources.size() > 4) {
+      std::cerr << "p2p-recv-multi accepts at most four --source options"
+                << std::endl;
+      exit(1);
+    }
+    std::set<std::string> source_names;
+    for (const std::string& source : args.p2p_multi_receiver_sources) {
+      const std::string name = source.substr(0, source.find('='));
+      if (!source_names.insert(name).second) {
+        std::cerr << "p2p-recv-multi source name is duplicated: " << name
+                  << std::endl;
+        exit(1);
+      }
+    }
+  }
+
   if (version) {
     std::cout << MomoVersion::GetClientName() << std::endl;
     std::cout << std::endl;
@@ -420,7 +504,10 @@ void Util::ParseArgs(int argc,
     return;
   }
 
-  if (!p2p_app->parsed() && !sora_app->parsed() && !ayame_app->parsed()) {
+  if (!p2p_app->parsed() && !p2p_receiver_app->parsed() &&
+      !p2p_multi_receiver_app->parsed() && !p2p_pilot_app->parsed() &&
+      !sora_app->parsed() &&
+      !ayame_app->parsed()) {
     std::cout << app.help() << std::endl;
     exit(1);
   }
@@ -431,6 +518,18 @@ void Util::ParseArgs(int argc,
 
   if (p2p_app->parsed()) {
     use_p2p = true;
+  }
+
+  if (p2p_receiver_app->parsed()) {
+    use_p2p_receiver = true;
+  }
+
+  if (p2p_multi_receiver_app->parsed()) {
+    use_p2p_multi_receiver = true;
+  }
+
+  if (p2p_pilot_app->parsed()) {
+    use_p2p_pilot = true;
   }
 
   if (ayame_app->parsed()) {

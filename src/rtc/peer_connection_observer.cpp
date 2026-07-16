@@ -53,6 +53,7 @@ void PeerConnectionObserver::OnTrack(
   webrtc::scoped_refptr<webrtc::MediaStreamTrackInterface> track =
       transceiver->receiver()->track();
   if (track->kind() == webrtc::MediaStreamTrackInterface::kVideoKind) {
+    RTC_LOG(LS_INFO) << "PeerConnectionObserver::OnTrack: received video track";
     webrtc::VideoTrackInterface* video_track =
         static_cast<webrtc::VideoTrackInterface*>(track.get());
     video_tracks_.push_back(video_track);

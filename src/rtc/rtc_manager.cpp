@@ -245,10 +245,14 @@ class RawCryptString : public webrtc::revive::CryptStringImpl {
 
 std::shared_ptr<RTCConnection> RTCManager::CreateConnection(
     webrtc::PeerConnectionInterface::RTCConfiguration rtc_config,
-    RTCMessageSender* sender) {
+    RTCMessageSender* sender,
+    VideoTrackReceiver* receiver) {
   rtc_config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
+  VideoTrackReceiver* effective_receiver =
+      receiver != nullptr ? receiver : receiver_;
   std::unique_ptr<PeerConnectionObserver> observer(
-      new PeerConnectionObserver(sender, receiver_, &data_manager_dispatcher_));
+      new PeerConnectionObserver(sender, effective_receiver,
+                                 &data_manager_dispatcher_));
   webrtc::PeerConnectionDependencies dependencies(observer.get());
 
   // WebRTC の SSL 接続の検証は自前のルート証明書(rtc_base/ssl_roots.h)でやっていて、

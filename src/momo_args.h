@@ -48,6 +48,8 @@ struct MomoArgs {
   int window_width = 640;
   int window_height = 480;
   bool fullscreen = false;
+  bool flip_vertical = false;
+  bool flip_horizontal = false;
   std::string serial_device = "";
   unsigned int serial_rate = 9600;
   bool insecure = false;
@@ -82,6 +84,12 @@ struct MomoArgs {
 
   std::string p2p_document_root;
   int p2p_port = 8080;
+  std::string p2p_receiver_endpoint = "ws://127.0.0.1:8080/ws";
+  std::vector<std::string> p2p_multi_receiver_sources;
+  std::string p2p_pilot_endpoint = "ws://127.0.0.1:8090/ws?role=pilot";
+  std::string p2p_pilot_input_config = "input.json";
+  std::string p2p_pilot_label = "";
+  bool aruco = false;
 
   std::string ayame_signaling_url;
   std::string ayame_room_id;

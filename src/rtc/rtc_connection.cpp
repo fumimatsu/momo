@@ -145,11 +145,13 @@ void RTCConnection::CloseDetached() {
 }
 
 void RTCConnection::CreateOffer(OnCreateSuccessFunc on_success,
-                                OnCreateFailureFunc on_failure) {
+                                OnCreateFailureFunc on_failure,
+                                bool offer_to_receive_audio,
+                                bool create_data_channel) {
   // CreateOffer を行うのは Ayame だけのため、ここで Offer の場合には DataChannel を作ることとした
   // Momo の性質上 ReOffer することは無いので問題ないと思われる
   RTCDataManager* data_manager = observer_->DataManager();
-  if (data_manager != nullptr) {
+  if (create_data_channel && data_manager != nullptr) {
     webrtc::DataChannelInit config;
     config.ordered = false;
     config.maxRetransmits = 0;
@@ -166,8 +168,10 @@ void RTCConnection::CreateOffer(OnCreateSuccessFunc on_success,
   RTCOfferAnswerOptions options = RTCOfferAnswerOptions();
   options.offer_to_receive_video =
       RTCOfferAnswerOptions::kOfferToReceiveMediaTrue;
-  options.offer_to_receive_audio =
-      RTCOfferAnswerOptions::kOfferToReceiveMediaTrue;
+  options.offer_to_receive_audio = offer_to_receive_audio
+                                       ? RTCOfferAnswerOptions::
+                                             kOfferToReceiveMediaTrue
+                                       : 0;
 
   auto with_set_local_desc = [this, on_success = std::move(on_success)](
                                  webrtc::SessionDescriptionInterface* desc) {

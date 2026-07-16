@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#050608">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Momo FPV">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <title>Momo FPV Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      background: #050608;
+      color: #f4f7fb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #050608;
+    }
+
+    #remote_video {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: #050608;
+      transform-origin: center center;
+      transform: rotate(var(--video-rotate, 0deg)) scaleX(var(--video-scale-x, 1));
+    }
+
+    body.flip-video #remote_video {
+      --video-rotate: 180deg;
+    }
+
+    body.mirror-video #remote_video {
+      --video-scale-x: -1;
+    }
+
+    .hud {
+      position: fixed;
+      inset: auto calc(16px + env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+      pointer-events: none;
+    }
+
+    .panel {
+      display: grid;
+      grid-template-columns: minmax(230px, 34vw) auto minmax(110px, 15vw);
+      grid-template-areas:
+        "steering actions throttle"
+        "steering actions throttle";
+      gap: 12px;
+      align-items: end;
+      width: 100%;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      pointer-events: auto;
+    }
+
+    .status {
+      position: fixed;
+      top: calc(16px + env(safe-area-inset-top));
+      left: calc(16px + env(safe-area-inset-left));
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 3px;
+      min-width: 0;
+      font-size: 18px;
+      line-height: 1.1;
+      letter-spacing: 0;
+      color: #ffffff;
+      text-shadow:
+        0 0 2px #000000,
+        1px 1px 2px #000000,
+        -1px -1px 2px #000000;
+      pointer-events: none;
+    }
+
+    .status span {
+      color: #ffffff;
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      align-items: baseline;
+    }
+
+    .status-row > div {
+      white-space: nowrap;
+    }
+
+    .status .debug-only {
+      display: none;
+    }
+
+    body.debug-osd .status .debug-only {
+      display: block;
+    }
+
+    .status strong {
+      display: inline-block;
+      min-width: 96px;
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    .control {
+      display: contents;
+      font-size: 18px;
+      text-shadow:
+        0 0 2px #000000,
+        1px 1px 2px #000000;
+    }
+
+    .rc-axis {
+      display: grid;
+      gap: 8px;
+      align-items: center;
+      color: #ffffff;
+      opacity: 0.64;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .rc-axis label {
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .rc-axis output {
+      min-width: 60px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .rc-axis-steering {
+      grid-area: steering;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "label value"
+        "range range";
+      align-self: end;
+      max-width: 460px;
+    }
+
+    .rc-axis-throttle {
+      grid-area: throttle;
+      grid-template-rows: auto minmax(230px, 36vh) auto;
+      justify-items: center;
+      align-self: end;
+    }
+
+    .rc-axis input[type="range"] {
+      width: 100%;
+      min-height: 56px;
+      accent-color: #ffffff;
+      cursor: pointer;
+    }
+
+    .rc-axis-steering label {
+      grid-area: label;
+    }
+
+    .rc-axis-steering output {
+      grid-area: value;
+    }
+
+    .rc-axis-steering input[type="range"] {
+      grid-area: range;
+    }
+
+    .rc-axis-throttle input[type="range"] {
+      appearance: slider-vertical;
+      -webkit-appearance: slider-vertical;
+      width: 56px;
+      height: 260px;
+      min-height: 0;
+      writing-mode: vertical-lr;
+      direction: rtl;
+    }
+
+    .rc-actions {
+      grid-area: actions;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      align-self: end;
+    }
+
+    .rc-gear {
+      display: flex;
+      flex: 0 0 100%;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      color: #ffffff;
+      font-weight: 700;
+      text-shadow: 0 0 2px #000000;
+    }
+
+    .rc-gear-label {
+      min-width: 72px;
+      text-align: right;
+      opacity: 0.82;
+    }
+
+    .rc-gear button {
+      width: 34px;
+      min-width: 34px;
+      padding: 0;
+      font-weight: 700;
+    }
+
+    .rc-gear button[aria-pressed="true"] {
+      border-color: rgba(88, 255, 153, 0.9);
+      background: rgba(0, 126, 61, 0.86);
+      color: #ffffff;
+      opacity: 0.94;
+    }
+
+    input,
+    button {
+      min-height: 32px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(0, 0, 0, 0.08);
+      color: #f4f7fb;
+    }
+
+    input[type="text"] {
+      width: 180px;
+      padding: 0 8px;
+      opacity: 0.46;
+    }
+
+    input[type="range"] {
+      appearance: none;
+      height: 54px;
+      border: 0;
+      background: transparent;
+    }
+
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.65);
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.24);
+      box-shadow: 0 0 3px #000000;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 54px;
+      height: 54px;
+      margin-top: -22px;
+      border: 2px solid rgba(255, 255, 255, 0.95);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.18);
+      box-shadow:
+        0 0 4px #000000,
+        inset 0 0 0 12px rgba(255, 255, 255, 0.18);
+    }
+
+    input[type="range"]::-moz-range-track {
+      height: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.65);
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.24);
+      box-shadow: 0 0 3px #000000;
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 54px;
+      height: 54px;
+      border: 2px solid rgba(255, 255, 255, 0.95);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.18);
+      box-shadow:
+        0 0 4px #000000,
+        inset 0 0 0 12px rgba(255, 255, 255, 0.18);
+    }
+
+    button {
+      padding: 0 12px;
+      cursor: pointer;
+      opacity: 0.46;
+    }
+
+    #btnDrive {
+      min-width: 104px;
+      min-height: 38px;
+      border-width: 2px;
+      font-weight: 700;
+      opacity: 0.94;
+      text-shadow: 0 0 2px #000000;
+      box-shadow:
+        0 0 4px rgba(0, 0, 0, 0.8),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+
+    #btnDrive[aria-pressed="false"] {
+      border-color: rgba(255, 92, 92, 0.86);
+      background: rgba(128, 18, 24, 0.82);
+      color: #ffffff;
+    }
+
+    #btnDrive[aria-pressed="true"] {
+      border-color: rgba(88, 255, 153, 0.9);
+      background: rgba(0, 126, 61, 0.86);
+      color: #ffffff;
+    }
+
+    button:disabled,
+    input:disabled {
+      cursor: default;
+      opacity: 0.48;
+    }
+
+    #btnDrive:disabled {
+      opacity: 0.72;
+      filter: grayscale(0.2);
+    }
+
+    .primary {
+      background: rgba(29, 111, 223, 0.2);
+      border-color: rgba(69, 136, 246, 0.38);
+    }
+
+    .danger {
+      background: rgba(122, 32, 38, 0.2);
+      border-color: rgba(166, 58, 66, 0.38);
+    }
+
+    .top {
+      position: fixed;
+      top: calc(16px + env(safe-area-inset-top));
+      left: auto;
+      right: calc(16px + env(safe-area-inset-right));
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .top-controls {
+      max-width: min(520px, calc(100vw - 32px));
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      opacity: 0.36;
+      text-shadow: 0 0 2px #000000;
+      pointer-events: auto;
+    }
+
+    .top-controls:hover,
+    .panel:hover .rc-axis,
+    .panel:hover input,
+    .panel:hover button {
+      opacity: 1;
+    }
+
+    .debug-controls {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      opacity: 0.46;
+      text-shadow: 0 0 2px #000000;
+    }
+
+    body.debug-osd .debug-controls {
+      display: inline-flex;
+    }
+
+    select {
+      min-height: 32px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(0, 0, 0, 0.08);
+      color: #f4f7fb;
+    }
+
+    .top-controls:hover .debug-controls,
+    .debug-controls:hover {
+      opacity: 1;
+    }
+
+    .mic-control {
+      display: inline-grid;
+      grid-template-columns: auto auto;
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "button volume"
+        "meter volume";
+      gap: 4px 8px;
+      align-items: center;
+      margin-left: 6px;
+      vertical-align: middle;
+      opacity: 0.86;
+    }
+
+    .mic-control button {
+      grid-area: button;
+      min-width: 68px;
+      font-weight: 700;
+    }
+
+    .mic-control button[aria-pressed="true"] {
+      border-color: rgba(88, 255, 153, 0.9);
+      background: rgba(0, 126, 61, 0.86);
+      color: #ffffff;
+      opacity: 1;
+    }
+
+    .mic-meter {
+      grid-area: meter;
+      display: grid;
+      grid-template-columns: repeat(8, 4px);
+      gap: 3px;
+      height: 18px;
+      align-items: end;
+      padding: 2px 4px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 3px;
+      background: rgba(0, 0, 0, 0.24);
+    }
+
+    .mic-meter span {
+      display: block;
+      width: 4px;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.22);
+    }
+
+    .mic-meter span:nth-child(2n) {
+      height: 10px;
+    }
+
+    .mic-meter span:nth-child(3n) {
+      height: 14px;
+    }
+
+    .mic-meter[data-level="1"] span:nth-child(-n+2),
+    .mic-meter[data-level="2"] span:nth-child(-n+4),
+    .mic-meter[data-level="3"] span:nth-child(-n+6),
+    .mic-meter[data-level="4"] span:nth-child(-n+8) {
+      background: rgba(88, 255, 153, 0.9);
+      box-shadow: 0 0 4px rgba(88, 255, 153, 0.7);
+    }
+
+    .mic-volume {
+      grid-area: volume;
+      width: 92px;
+      min-height: 30px;
+    }
+
+    .hidden-endpoint {
+      display: none;
+    }
+
+    @media (max-width: 720px) {
+      .hud {
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        grid-template-columns: minmax(180px, 1fr) minmax(88px, 22vw);
+        grid-template-areas:
+          "steering throttle"
+          "actions actions";
+        max-width: none;
+      }
+
+      .status {
+        grid-template-columns: 1fr;
+        min-width: 0;
+        width: 100%;
+      }
+
+      .control {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .rc-axis-steering {
+        max-width: none;
+      }
+
+      .rc-axis-throttle {
+        grid-template-rows: auto minmax(190px, 30vh) auto;
+      }
+
+      .rc-axis-throttle input[type="range"] {
+        width: 56px;
+        height: 220px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <video id="remote_video" autoplay muted playsinline></video>
+
+  <div class="top">
+    <div class="top-controls">
+      <input id="endpoint" class="hidden-endpoint" type="text" autocomplete="off" spellcheck="false">
+      <button id="btnFullscreen" type="button">Fullscreen</button>
+      <button id="btnFlip" type="button">Flip</button>
+      <button id="btnMirror" type="button">Mirror</button>
+      <button id="btnAudio" type="button">Audio</button>
+      <button id="btnAudioFilter" type="button">Filter</button>
+      <span class="mic-control" aria-label="Microphone to car speaker">
+        <button id="btnMic" type="button" aria-pressed="false">Mic</button>
+        <span id="micMeter" class="mic-meter" data-level="0" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span>
+        </span>
+        <input id="micVolume" class="mic-volume" type="range" min="0" max="200" step="1" value="100" aria-label="Microphone volume">
+      </span>
+      <button id="btnDebug" type="button">Debug</button>
+      <span class="debug-controls">
+        <label>
+          Mode
+          <select id="modeSelect" disabled>
+            <option value="">refresh</option>
+          </select>
+        </label>
+        <button id="btnApplyMode" type="button" disabled>Apply</button>
+        <button id="btnRefreshMode" type="button">Refresh Mode</button>
+        <button id="btnRefreshDevice" type="button">Refresh Device</button>
+        <button id="btnInputSetup" type="button">Input</button>
+      </span>
+    </div>
+  </div>
+
+  <div class="hud">
+    <div class="panel">
+      <div class="status">
+        <div class="status-row">
+          <div><span>ID</span> <strong id="hostState">n/a</strong></div>
+          <div><span>Time</span> <strong id="timeState">n/a</strong></div>
+        </div>
+        <div class="debug-only"><span>WebSocket</span> <strong id="wsState">closed</strong></div>
+        <div class="debug-only"><span>ICE</span> <strong id="iceState">new</strong></div>
+        <div class="debug-only"><span>DataChannel</span> <strong id="dcState">closed</strong></div>
+        <div class="status-row">
+          <div><span>Link</span> <strong id="linkState">starting</strong></div>
+          <div><span>Video</span> <strong id="videoState">waiting</strong></div>
+        </div>
+        <div class="status-row">
+          <div><span>FPS</span> <strong id="fpsState">0.0</strong></div>
+          <div><span>Delay</span> <strong id="latencyState">n/a</strong></div>
+        </div>
+        <div class="debug-only"><span>Render</span> <strong id="renderFpsState">0.0</strong></div>
+        <div class="debug-only"><span>Net</span> <strong id="netState">0kbps</strong></div>
+        <div class="debug-only"><span>Jitter</span> <strong id="jitterState">0ms</strong></div>
+        <div class="debug-only"><span>RTT</span> <strong id="rttState">n/a</strong></div>
+        <div class="debug-only"><span>DC RTT</span> <strong id="dcRttState">n/a</strong></div>
+        <div class="debug-only"><span>Dropped</span> <strong id="dropState">0</strong></div>
+        <div class="debug-only"><span>Uptime</span> <strong id="uptimeState">0s</strong></div>
+        <div class="debug-only"><span>Retry</span> <strong id="retryState">none</strong></div>
+        <div class="debug-only"><span>Last</span> <strong id="lastEventState">start</strong></div>
+        <div class="debug-only"><span>Diag</span> <strong id="diagState">n/a</strong></div>
+        <div class="debug-only"><span>VideoAge</span> <strong id="videoAgeState">n/a</strong></div>
+        <div class="debug-only"><span>RC</span> <strong id="rcState">manual</strong></div>
+        <div class="debug-only"><span>Telemetry</span> <strong id="telemetryState">n/a</strong></div>
+        <div class="debug-only"><span>Mode</span> <strong id="modeState">n/a</strong></div>
+        <div class="debug-only"><span>Device</span> <strong id="deviceState">n/a</strong></div>
+      </div>
+
+      <div class="control" aria-label="RC controls">
+        <div class="rc-axis rc-axis-steering">
+          <label for="steering">Steering</label>
+          <input id="steering" type="range" min="1000" max="2000" step="1" value="1500">
+          <output id="steeringValue" for="steering">1500</output>
+        </div>
+
+        <div class="rc-axis rc-axis-throttle">
+          <label for="throttle">Throttle</label>
+          <input id="throttle" type="range" min="1300" max="2000" step="1" value="1500">
+          <output id="throttleValue" for="throttle">1500</output>
+        </div>
+      </div>
+
+      <div class="rc-actions">
+        <div class="rc-gear" aria-label="Throttle gear">
+          <span id="gearState" class="rc-gear-label">Gear 1</span>
+          <button class="gear-button" type="button" data-gear="1" aria-pressed="true">1</button>
+          <button class="gear-button" type="button" data-gear="2" aria-pressed="false">2</button>
+          <button class="gear-button" type="button" data-gear="3" aria-pressed="false">3</button>
+          <button class="gear-button" type="button" data-gear="4" aria-pressed="false">4</button>
+          <button class="gear-button" type="button" data-gear="5" aria-pressed="false">5</button>
+        </div>
+        <button id="btnReconnect" type="button">Connect</button>
+        <button id="btnDrive" type="button" aria-pressed="false" disabled>Drive Off</button>
+      </div>
+      <input id="data_text" type="hidden" value="S:1500,T:1500" autocomplete="off" spellcheck="false">
+    </div>
+  </div>
+
+<script src="./pilot.js"></script>
+</body>
+</html>

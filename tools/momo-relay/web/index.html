@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Momo Local Relay Viewer</title>
+    <style>
+      body { margin: 16px; background: #121212; color: #eee; font-family: sans-serif; }
+      main { max-width: 1100px; margin: auto; }
+      video { width: 100%; max-height: 70vh; background: #000; }
+      button, input { font: inherit; padding: 8px; }
+      #log { height: 220px; overflow: auto; white-space: pre-wrap; background: #202020; padding: 10px; }
+      .row { display: flex; gap: 8px; margin: 10px 0; }
+      input { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Momo Local Relay Viewer</h1>
+      <p id="status">接続準備中</p>
+      <video id="video" autoplay playsinline muted></video>
+      <div class="row">
+        <input id="command" autocomplete="off" placeholder="Momo へ送るテキスト DataChannel データ">
+        <button id="send">送信</button>
+      </div>
+      <pre id="log"></pre>
+    </main>
+    <script>
+      const role = new URLSearchParams(location.search).get('role') === 'pilot' ? 'pilot' : 'observer';
+      const status = document.querySelector('#status');
+      const logElement = document.querySelector('#log');
+      const video = document.querySelector('#video');
+      const commandInput = document.querySelector('#command');
+      const sendButton = document.querySelector('#send');
+      const log = (text) => {
+        logElement.textContent += `[${new Date().toLocaleTimeString()}] ${text}\n`;
+        logElement.scrollTop = logElement.scrollHeight;
+      };
+      const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${wsScheme}://${location.host}/ws?role=${role}`);
+      const pc = new RTCPeerConnection();
+      const telemetry = pc.createDataChannel('momo-telemetry', { ordered: false, maxRetransmits: 0 });
+      const command = pc.createDataChannel('momo-command', { ordered: false, maxRetransmits: 0 });
+      pc.addTransceiver('video', { direction: 'recvonly' });
+      pc.ontrack = (event) => {
+        video.srcObject = event.streams[0] || new MediaStream([event.track]);
+        log(`映像トラックを受信: ${event.track.kind} / ${event.track.readyState}`);
+      };
+      pc.onconnectionstatechange = () => { status.textContent = `映像接続: ${pc.connectionState} / role: ${role}`; };
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) ws.send(JSON.stringify({ type: 'candidate', ice: candidate.toJSON() }));
+      };
+      const describe = async (data) => {
+        if (typeof data === 'string') return data;
+        const bytes = new Uint8Array(await data.arrayBuffer());
+        return `0x${[...bytes].map((v) => v.toString(16).padStart(2, '0')).join(' ')}`;
+      };
+      telemetry.binaryType = 'arraybuffer';
+      command.binaryType = 'arraybuffer';
+      telemetry.onmessage = async ({ data }) => log(`Momo -> 全 Viewer: ${await describe(data)}`);
+      command.onmessage = async ({ data }) => log(`Viewer -> Momo: ${await describe(data)}`);
+      ws.onopen = async () => {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+      };
+      ws.onmessage = async ({ data }) => {
+        const message = JSON.parse(data);
+        if (message.type === 'answer') await pc.setRemoteDescription({ type: 'answer', sdp: message.sdp });
+        else if (message.type === 'candidate') await pc.addIceCandidate(message.ice);
+        else if (message.type === 'error') log(`中継器エラー: ${message.error}`);
+      };
+      ws.onclose = () => log('シグナリング接続が閉じました');
+      const send = () => {
+        if (role !== 'pilot') { log('observer は送信できません'); return; }
+        if (command.readyState !== 'open') { log('command DataChannel は未接続です'); return; }
+        command.send(commandInput.value);
+        commandInput.value = '';
+      };
+      sendButton.onclick = send;
+      commandInput.onkeydown = (event) => { if (event.key === 'Enter') send(); };
+      if (role !== 'pilot') { commandInput.disabled = true; sendButton.disabled = true; }
+      window.relayDebug = { pc, video };
+    </script>
+  </body>
+</html>
