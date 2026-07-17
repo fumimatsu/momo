@@ -150,6 +150,33 @@ V1 Header は合成フレーム全体の sequence しか持たない。したが
 
 Unity は `timestamp_ns` と Plugin が返す `sequence` を記録し、合成出力そのものが止まったことだけを検出する。機体ごとの異常状態は Watchdog API で受ける。将来 Header を V2 にするときは、各スロットの device id、接続状態、最終 decoded timestamp を追加する。
 
+## 実機なしの Unity 接続試験
+
+Momo、Relay、Observer がない別環境でも、共有メモリ Reader Plugin と Unity 側の FHD Texture までは実装・検証できる。`tools/mads-observer-shared-frame-test.ps1` は V1 Header と 3 バッファを実際の Observer と同じ形式で作り、FHD の不透明な緑を公開する。既定の更新頻度は 50 fps を目標にするが、PowerShell の `Start-Sleep` を使うため厳密な 50 fps 性能試験には使わない。
+
+Observer が起動していないことを確認してから、PowerShell で実行する。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\mads-observer-shared-frame-test.ps1
+```
+
+実際の Observer と同時に試す場合は、名前を分ける。Unity Plugin 側も同じ名前を指定する。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\mads-observer-shared-frame-test.ps1 `
+  -MappingName 'Local\MomoObserverFrameTestV1'
+```
+
+確認手順は以下のとおり。
+
+1. Plugin が mapping を開き、magic `MFP1`、version `1`、`1920 × 1080`、stride `7680`、3 buffers を検証する。
+2. Unity の `Texture2D` が緑一色の FHD で表示されることを確認する。
+3. Plugin が返す sequence が継続して増えることを確認する。1 フレームで sequence は開始・完了の 2 回増える。
+4. `fullBgraMat` から 4 個の固定 ROI を作り、すべて緑の `960 × 528` であることを確認する。
+5. テスト Producer を終了し、Plugin が新しい完全フレームを受け取れなくなったことを検出する。
+
+緑一色の試験で検証できるのは、名前空間、アクセス権、Header、3 バッファ同期、メモリサイズ、Unity Texture 更新、ROI 座標である。BGRA の色順、上下左右の向き、ArUco 検出、機体ごとの映像停止は実映像か別のカラーテストで検証する。
+
 ## 受け入れ試験
 
 1. Unity が Header の magic、version、解像度、stride を検証してから開始する。
