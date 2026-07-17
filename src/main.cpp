@@ -314,7 +314,10 @@ int main(int argc, char* argv[]) {
                                        args.fullscreen,
                                        use_p2p_receiver && args.aruco,
                                        args.flip_vertical,
-                                       args.flip_horizontal));
+                                       args.flip_horizontal,
+                                       use_p2p_multi_receiver
+                                           ? args.shared_frame_name
+                                           : ""));
   }
 
   std::unique_ptr<RTCManager> rtc_manager(new RTCManager(

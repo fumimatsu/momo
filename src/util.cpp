@@ -155,6 +155,9 @@ void Util::ParseArgs(int argc,
   app.add_option("--window-height", args.window_height,
                  "Window height for videos (if SDL is available)")
       ->check(CLI::Range(180, 16384));
+  app.add_option("--shared-frame-name", args.shared_frame_name,
+                 "Windows shared-memory mapping name for p2p-recv-multi "
+                 "(1920x1080 BGRA, triple buffered)");
   app.add_flag("--fullscreen", args.fullscreen,
                "Use fullscreen window for videos (if SDL is available)");
   app.add_flag("--version", version, "Show version information");

@@ -28,6 +28,10 @@ const (
 	commandLabel   = "momo-command"
 	telemetryLabel = "momo-telemetry"
 	upstreamLabel  = "serial"
+
+	defaultRTPStallTimeout      = 5 * time.Second
+	defaultUpstreamStartTimeout = 20 * time.Second
+	keyframeRecoveryGrace       = 2 * time.Second
 )
 
 var h264Codec = webrtc.RTPCodecCapability{
@@ -68,6 +72,11 @@ type relay struct {
 	upstreamPC   *webrtc.PeerConnection
 	upstreamDC   *webrtc.DataChannel
 	upstreamSSRC atomic.Uint32
+
+	rtpStallTimeout      time.Duration
+	upstreamStartTimeout time.Duration
+	upstreamGeneration   atomic.Uint64
+	lastRTPUnixNano      atomic.Int64
 }
 
 type relayServer struct {
@@ -85,7 +94,8 @@ func (values *sourceFlag) Set(value string) error {
 	return nil
 }
 
-func newRelay(name string, upstreamURL string, allowObserverCommand bool) (*relay, error) {
+func newRelay(name string, upstreamURL string, allowObserverCommand bool,
+	rtpStallTimeout time.Duration, upstreamStartTimeout time.Duration) (*relay, error) {
 	api, err := newH264API()
 	if err != nil {
 		return nil, err
@@ -101,6 +111,8 @@ func newRelay(name string, upstreamURL string, allowObserverCommand bool) (*rela
 		videoTrack:           videoTrack,
 		api:                  api,
 		viewers:              make(map[uint64]*viewer),
+		rtpStallTimeout:      rtpStallTimeout,
+		upstreamStartTimeout: upstreamStartTimeout,
 	}, nil
 }
 
@@ -147,6 +159,9 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		return fmt.Errorf("create upstream peer connection: %w", err)
 	}
 	defer pc.Close()
+	generation := r.upstreamGeneration.Add(1)
+	r.lastRTPUnixNano.Store(0)
+	r.upstreamSSRC.Store(0)
 
 	var writeMu sync.Mutex
 	sendSignal := func(message signalMessage) error {
@@ -168,6 +183,9 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		log.Printf("source %q: upstream peer connection state: %s", r.name, state.String())
 	})
 	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if r.upstreamGeneration.Load() != generation {
+			return
+		}
 		if track.Kind() != webrtc.RTPCodecTypeVideo {
 			return
 		}
@@ -177,11 +195,24 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		}
 		r.upstreamSSRC.Store(uint32(track.SSRC()))
 		log.Printf("source %q: receiving upstream H264 track: SSRC=%d codec=%s", r.name, track.SSRC(), track.Codec().SDPFmtpLine)
+		// Momo の再起動後は既存 Viewer の接続が維持されるため、
+		// Viewer 接続時だけの PLI では復号器が差分フレームを受け続ける。
+		// 新しい上流トラックを受けた時点でも IDR を要求する。
+		r.requestKeyframe()
+		go func() {
+			for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
+				time.Sleep(delay)
+				r.requestKeyframe()
+			}
+		}()
 		for {
 			packet, _, err := track.ReadRTP()
 			if err != nil {
 				log.Printf("upstream H264 RTP ended: %v", err)
 				return
+			}
+			if r.upstreamGeneration.Load() == generation {
+				r.lastRTPUnixNano.Store(time.Now().UnixNano())
 			}
 			if err := r.videoTrack.WriteRTP(packet); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Printf("fan out upstream RTP: %v", err)
@@ -194,6 +225,9 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		return fmt.Errorf("create upstream data channel: %w", err)
 	}
 	upstreamDC.OnOpen(func() {
+		if r.upstreamGeneration.Load() != generation {
+			return
+		}
 		r.upstreamMu.Lock()
 		r.upstreamPC = pc
 		r.upstreamDC = upstreamDC
@@ -225,6 +259,9 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 	if err := sendSignal(signalMessage{Type: "offer", SDP: offer.SDP}); err != nil {
 		return fmt.Errorf("send upstream offer: %w", err)
 	}
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go r.watchUpstreamRTP(ctx, generation, pc, ws, watchdogDone)
 
 	var pendingCandidates []webrtc.ICECandidateInit
 	remoteDescriptionSet := false
@@ -265,6 +302,61 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		case "close", "bye":
 			r.clearUpstream(pc)
 			return errors.New("upstream closed signaling session")
+		}
+	}
+}
+
+// WebRTC の PeerConnection は ICE が connected のままでも、RTP の受信だけが
+// 無期限に止まることがある。ReadRTP はこの状態で戻らないため、source ごとの
+// 最終 RTP 時刻を監視して WebSocket と PeerConnection を閉じ、既存の再接続
+// ループへ制御を戻す。
+func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
+	pc *webrtc.PeerConnection, ws *websocket.Conn, done <-chan struct{}) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	startedAt := time.Now()
+	var keyframeRequestedAt time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case now := <-ticker.C:
+			if r.upstreamGeneration.Load() != generation {
+				return
+			}
+
+			lastRTP := r.lastRTPUnixNano.Load()
+			stallTimeout := r.upstreamStartTimeout
+			stalledFor := now.Sub(startedAt)
+			if lastRTP != 0 {
+				stallTimeout = r.rtpStallTimeout
+				stalledFor = now.Sub(time.Unix(0, lastRTP))
+			}
+			if stalledFor < stallTimeout {
+				keyframeRequestedAt = time.Time{}
+				continue
+			}
+
+			if keyframeRequestedAt.IsZero() {
+				keyframeRequestedAt = now
+				log.Printf("source %q: no upstream RTP for %s; request keyframe before reconnect",
+					r.name, stalledFor.Round(time.Millisecond))
+				r.requestKeyframe()
+				continue
+			}
+			if now.Sub(keyframeRequestedAt) < keyframeRecoveryGrace {
+				continue
+			}
+
+			log.Printf("source %q: upstream RTP remained stalled for %s; reconnecting source",
+				r.name, stalledFor.Round(time.Millisecond))
+			r.clearUpstream(pc)
+			_ = pc.Close()
+			_ = ws.Close()
+			return
 		}
 	}
 }
@@ -443,6 +535,15 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		log.Printf("viewer %d (%s) peer connection state: %s", client.id, client.role, state.String())
 		if state == webrtc.PeerConnectionStateConnected {
 			r.requestKeyframe()
+			// 接続直後の IDR が欠けると、H.264 の復号器は次の IDR まで
+			// 映像を出せない。LAN 内でも ICE/DTLS の確立直後はこの状態に
+			// なり得るため、短時間だけ PLI を再送する。
+			go func() {
+				for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
+					time.Sleep(delay)
+					r.requestKeyframe()
+				}
+			}()
 		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			r.removeViewer(client.id)
@@ -549,12 +650,19 @@ func main() {
 	var upstream string
 	var listen string
 	var allowObserverCommand bool
+	var rtpStallTimeout time.Duration
+	var upstreamStartTimeout time.Duration
 	var sources sourceFlag
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
+	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
+	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
 	flag.Parse()
+	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 {
+		log.Fatal("-rtp-stall-timeout and -upstream-start-timeout must be positive")
+	}
 	if upstream != "" {
 		sources = append(sources, "default="+upstream)
 	}
@@ -572,7 +680,8 @@ func main() {
 		if _, exists := serverRelay.sources[name]; exists {
 			log.Fatalf("duplicate source name: %q", name)
 		}
-		relay, err := newRelay(name, sourceURL, allowObserverCommand)
+		relay, err := newRelay(name, sourceURL, allowObserverCommand,
+			rtpStallTimeout, upstreamStartTimeout)
 		if err != nil {
 			log.Fatal(err)
 		}

@@ -1,9 +1,15 @@
 #include "sdl_renderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <csignal>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 // WebRTC
 #include <api/video/i420_buffer.h>
@@ -17,11 +23,171 @@
 
 #define STD_ASPECT 1.33
 #define WIDE_ASPECT 1.78
-#define FRAME_INTERVAL (1000 / 30)
+#define FRAME_INTERVAL (1000 / 50)
+
+namespace {
+
+constexpr int kSharedFrameWidth = 1920;
+constexpr int kSharedFrameHeight = 1080;
+constexpr int kSharedFrameStride = kSharedFrameWidth * 4;
+constexpr int kSharedFrameBufferCount = 3;
+constexpr int kSharedSlotWidth = 960;
+constexpr int kSharedSlotHeight = 540;
+constexpr int kSharedSourceHeight = 528;
+constexpr int kSharedSourceVerticalOffset =
+    (kSharedSlotHeight - kSharedSourceHeight) / 2;
+constexpr uint32_t kSharedFrameMagic = 0x3146504d;  // "MFP1"
+constexpr uint32_t kSharedFramePixelFormat = 0x41524742;  // "BGRA"
+
+#if defined(_WIN32)
+struct SharedFrameHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t header_size;
+  uint32_t width;
+  uint32_t height;
+  uint32_t stride;
+  uint32_t pixel_format;
+  uint32_t buffer_count;
+  volatile LONG active_buffer;
+  volatile LONG reserved;
+  volatile LONG64 sequence;
+  volatile LONG64 timestamp_ns;
+  uint8_t reserved_tail[8];
+};
+static_assert(sizeof(SharedFrameHeader) == 64);
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) {
+    return std::wstring();
+  }
+  const int required = MultiByteToWideChar(CP_UTF8, 0, value.data(),
+                                            value.size(), nullptr, 0);
+  if (required <= 0) {
+    return std::wstring();
+  }
+  std::wstring result(required, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, value.data(), value.size(), result.data(),
+                      required);
+  return result;
+}
+#endif
+
+}  // namespace
+
+class SharedFrameWriter {
+ public:
+  explicit SharedFrameWriter(const std::string& name) {
+#if defined(_WIN32)
+    const std::wstring wide_name = Utf8ToWide(name);
+    if (wide_name.empty()) {
+      RTC_LOG(LS_ERROR) << "Shared frame mapping name is invalid";
+      return;
+    }
+
+    const size_t mapping_size =
+        sizeof(SharedFrameHeader) +
+        static_cast<size_t>(kSharedFrameStride) * kSharedFrameHeight *
+            kSharedFrameBufferCount;
+    mapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr,
+                                  PAGE_READWRITE,
+                                  static_cast<DWORD>(mapping_size >> 32),
+                                  static_cast<DWORD>(mapping_size),
+                                  wide_name.c_str());
+    if (mapping_ == nullptr) {
+      RTC_LOG(LS_ERROR) << "CreateFileMappingW failed: " << GetLastError();
+      return;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+      RTC_LOG(LS_ERROR) << "Shared frame mapping already has another writer: "
+                        << name;
+      CloseHandle(mapping_);
+      mapping_ = nullptr;
+      return;
+    }
+    view_ = static_cast<uint8_t*>(
+        MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, mapping_size));
+    if (view_ == nullptr) {
+      RTC_LOG(LS_ERROR) << "MapViewOfFile failed: " << GetLastError();
+      CloseHandle(mapping_);
+      mapping_ = nullptr;
+      return;
+    }
+
+    auto* header = reinterpret_cast<SharedFrameHeader*>(view_);
+    std::memset(header, 0, sizeof(*header));
+    header->magic = kSharedFrameMagic;
+    header->version = 1;
+    header->header_size = sizeof(*header);
+    header->width = kSharedFrameWidth;
+    header->height = kSharedFrameHeight;
+    header->stride = kSharedFrameStride;
+    header->pixel_format = kSharedFramePixelFormat;
+    header->buffer_count = kSharedFrameBufferCount;
+    RTC_LOG(LS_INFO) << "Shared frame writer opened: " << name << " "
+                     << kSharedFrameWidth << "x" << kSharedFrameHeight;
+#else
+    RTC_LOG(LS_WARNING) << "Shared frame output is only supported on Windows";
+    static_cast<void>(name);
+#endif
+  }
+
+  ~SharedFrameWriter() {
+#if defined(_WIN32)
+    if (view_ != nullptr) {
+      UnmapViewOfFile(view_);
+    }
+    if (mapping_ != nullptr) {
+      CloseHandle(mapping_);
+    }
+#endif
+  }
+
+  bool IsOpen() const {
+#if defined(_WIN32)
+    return view_ != nullptr;
+#else
+    return false;
+#endif
+  }
+
+  void Write(const uint8_t* frame, size_t size, int64_t timestamp_ns) {
+#if defined(_WIN32)
+    const size_t frame_size =
+        static_cast<size_t>(kSharedFrameStride) * kSharedFrameHeight;
+    if (view_ == nullptr || size != frame_size) {
+      return;
+    }
+
+    auto* header = reinterpret_cast<SharedFrameHeader*>(view_);
+    InterlockedIncrement64(&header->sequence);  // odd: write in progress
+    uint8_t* destination = view_ + sizeof(SharedFrameHeader) +
+                           static_cast<size_t>(next_buffer_) * frame_size;
+    std::memcpy(destination, frame, frame_size);
+    header->timestamp_ns = timestamp_ns;
+    MemoryBarrier();
+    InterlockedExchange(&header->active_buffer, next_buffer_);
+    MemoryBarrier();
+    InterlockedIncrement64(&header->sequence);  // even: complete frame
+    next_buffer_ = (next_buffer_ + 1) % kSharedFrameBufferCount;
+#else
+    static_cast<void>(frame);
+    static_cast<void>(size);
+    static_cast<void>(timestamp_ns);
+#endif
+  }
+
+ private:
+#if defined(_WIN32)
+  HANDLE mapping_ = nullptr;
+  uint8_t* view_ = nullptr;
+  LONG next_buffer_ = 0;
+#endif
+};
 
 SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
                          bool enable_aruco, bool flip_vertical,
-                         bool flip_horizontal)
+                         bool flip_horizontal, std::string shared_frame_name)
     : running_(true),
       window_(nullptr),
       renderer_(nullptr),
@@ -40,6 +206,16 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
     enable_aruco_ = false;
   }
 #endif
+  if (!shared_frame_name.empty()) {
+    shared_frame_writer_ =
+        std::make_unique<SharedFrameWriter>(shared_frame_name);
+    if (shared_frame_writer_->IsOpen()) {
+      shared_frame_buffer_.resize(
+          static_cast<size_t>(kSharedFrameStride) * kSharedFrameHeight);
+    } else {
+      shared_frame_writer_.reset();
+    }
+  }
   // 映像表示はジョイスティック機能に依存させない。配布先の SDL が
   // joystick backend を含まない場合でも、Pilot の映像 Viewer 自体は
   // 起動して状態を表示できる必要がある。
@@ -106,7 +282,7 @@ void SDLRenderer::SetFullScreen(bool fullscreen) {
 void SDLRenderer::PollEvent() {
   SDL_Event e;
   // 必ずメインスレッドから呼び出す
-  while (SDL_PollEvent(&e) > 0) {
+  while (SDL_PollEvent(&e)) {
     if (e.type == SDL_EVENT_WINDOW_RESIZED &&
         e.window.windowID == SDL_GetWindowID(window_)) {
       webrtc::MutexLock lock(&sinks_lock_);
@@ -209,6 +385,7 @@ int SDLRenderer::RenderThread() {
 
         SDL_DestroyTexture(texture);
       }
+      WriteSharedFrame();
       RenderSourceOverlay();
       SDL_RenderPresent(renderer_);
 
@@ -217,7 +394,9 @@ int SDLRenderer::RenderThread() {
       }
     }
     duration = SDL_GetTicks() - start_time;
-    SDL_Delay(FRAME_INTERVAL - (duration % FRAME_INTERVAL));
+    if (duration < FRAME_INTERVAL) {
+      SDL_Delay(FRAME_INTERVAL - duration);
+    }
   }
 
   SDL_DestroyRenderer(renderer_);
@@ -243,7 +422,10 @@ SDLRenderer::Sink::Sink(SDLRenderer* renderer,
       scaled_(false),
       width_(0),
       height_(0),
+      source_width_(0),
+      source_height_(0),
       fps_window_start_(std::chrono::steady_clock::now()),
+      last_frame_time_(std::chrono::steady_clock::time_point::min()),
       fps_window_frame_count_(0),
       fps_(0.0),
       source_name_(std::move(source_name)),
@@ -283,6 +465,24 @@ void SDLRenderer::Sink::OnFrame(const webrtc::VideoFrame& frame) {
   }
 
   webrtc::MutexLock lock(GetMutex());
+  last_frame_time_ = now;
+  webrtc::scoped_refptr<webrtc::I420BufferInterface> source_buffer =
+      frame.video_frame_buffer()->ToI420();
+  if (frame.rotation() != webrtc::kVideoRotation_0) {
+    source_buffer =
+        webrtc::I420Buffer::Rotate(*source_buffer, frame.rotation());
+  }
+  if (source_buffer->width() != source_width_ ||
+      source_buffer->height() != source_height_) {
+    source_width_ = source_buffer->width();
+    source_height_ = source_buffer->height();
+    source_image_.reset(new uint8_t[source_width_ * source_height_ * 4]);
+  }
+  libyuv::ConvertFromI420(
+      source_buffer->DataY(), source_buffer->StrideY(), source_buffer->DataU(),
+      source_buffer->StrideU(), source_buffer->DataV(), source_buffer->StrideV(),
+      source_image_.get(), source_width_ * 4, source_width_, source_height_,
+      libyuv::FOURCC_ARGB);
   if (outline_changed_ || frame.width() != input_width_ ||
       frame.height() != input_height_) {
     int width, height;
@@ -412,6 +612,49 @@ int SDLRenderer::Sink::GetSlotIndex() const {
 
 double SDLRenderer::Sink::GetFps() const {
   return fps_;
+}
+
+bool SDLRenderer::Sink::IsReceiving(
+    std::chrono::steady_clock::time_point now) const {
+  return last_frame_time_ != std::chrono::steady_clock::time_point::min() &&
+         now - last_frame_time_ < std::chrono::seconds(1);
+}
+
+bool SDLRenderer::Sink::CopySourceTo(uint8_t* destination,
+                                     int destination_stride,
+                                     int destination_width,
+                                     int destination_height,
+                                     bool flip_vertical,
+                                     bool flip_horizontal) const {
+  if (source_image_ == nullptr || source_width_ == 0 || source_height_ == 0) {
+    return false;
+  }
+
+  const bool is_same_size = source_width_ == destination_width &&
+                            source_height_ == destination_height;
+  for (int y = 0; y < destination_height; ++y) {
+    int source_y = y * source_height_ / destination_height;
+    if (flip_vertical) {
+      source_y = source_height_ - 1 - source_y;
+    }
+    auto* destination_row =
+        reinterpret_cast<uint32_t*>(destination + y * destination_stride);
+    const auto* source_row = reinterpret_cast<const uint32_t*>(
+        source_image_.get() + source_y * source_width_ * 4);
+    if (is_same_size && !flip_horizontal) {
+      std::memcpy(destination_row, source_row,
+                  static_cast<size_t>(destination_width) * 4);
+      continue;
+    }
+    for (int x = 0; x < destination_width; ++x) {
+      int source_x = x * source_width_ / destination_width;
+      if (flip_horizontal) {
+        source_x = source_width_ - 1 - source_x;
+      }
+      destination_row[x] = source_row[source_x];
+    }
+  }
+  return true;
 }
 
 void SDLRenderer::SetOutlines() {
@@ -597,15 +840,58 @@ SDLRenderer::Sink* SDLRenderer::FindSinkForSource(
   return nullptr;
 }
 
+void SDLRenderer::WriteSharedFrame() {
+  if (shared_frame_writer_ == nullptr || shared_frame_buffer_.empty()) {
+    return;
+  }
+
+  // BGRA: 緑の余白は Unity 側で 960x528 の有効領域を切り出す目印にする。
+  auto* pixels = reinterpret_cast<uint32_t*>(shared_frame_buffer_.data());
+  std::fill(pixels, pixels + kSharedFrameWidth * kSharedFrameHeight,
+            0xff00ff00U);
+
+  const int slot_count = std::min(static_cast<int>(fixed_slots_.size()), 4);
+  for (int slot_index = 0; slot_index < slot_count; ++slot_index) {
+    Sink* sink = FindSinkForSource(fixed_slots_[slot_index].name);
+    if (sink == nullptr) {
+      continue;
+    }
+    webrtc::MutexLock frame_lock(sink->GetMutex());
+    const int slot_x = (slot_index % 2) * kSharedSlotWidth;
+    const int slot_y = (slot_index / 2) * kSharedSlotHeight +
+                       kSharedSourceVerticalOffset;
+    sink->CopySourceTo(
+        shared_frame_buffer_.data() + slot_y * kSharedFrameStride + slot_x * 4,
+        kSharedFrameStride, kSharedSlotWidth, kSharedSourceHeight,
+        flip_vertical_.load(), flip_horizontal_.load());
+  }
+
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  const int64_t timestamp_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+  shared_frame_writer_->Write(shared_frame_buffer_.data(),
+                              shared_frame_buffer_.size(), timestamp_ns);
+}
+
 void SDLRenderer::RenderSourceOverlay() {
+  const auto now = std::chrono::steady_clock::now();
+  const bool blink_on =
+      (std::chrono::duration_cast<std::chrono::milliseconds>(
+           now.time_since_epoch())
+           .count() /
+       500) %
+          2 ==
+      0;
   for (int i = 0; i < fixed_slots_.size(); ++i) {
     const SourceSlot& slot = fixed_slots_[i];
     const OutlineRect outline = GetSlotOutline(i);
     Sink* sink = FindSinkForSource(slot.name);
     double fps = 0.0;
+    bool receiving = false;
     if (sink != nullptr) {
       webrtc::MutexLock frame_lock(sink->GetMutex());
       fps = sink->GetFps();
+      receiving = sink->IsReceiving(now);
     }
 
     const char* state = "OFFLINE";
@@ -623,11 +909,18 @@ void SDLRenderer::RenderSourceOverlay() {
 
     SDL_FRect background = {
         static_cast<float>(outline.x), static_cast<float>(outline.y),
-        208.0f, 20.0f};
+        224.0f, 20.0f};
     SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 220);
     SDL_RenderFillRect(renderer_, &background);
+    const bool indicator_on = receiving && blink_on;
+    SDL_SetRenderDrawColor(renderer_, indicator_on ? 64 : 72,
+                           indicator_on ? 255 : 72,
+                           indicator_on ? 96 : 72, 255);
+    SDL_FRect indicator = {static_cast<float>(outline.x + 5),
+                           static_cast<float>(outline.y + 6), 8.0f, 8.0f};
+    SDL_RenderFillRect(renderer_, &indicator);
     SDL_SetRenderDrawColor(renderer_, red, green, 64, 255);
-    SDL_RenderDebugTextFormat(renderer_, static_cast<float>(outline.x + 4),
+    SDL_RenderDebugTextFormat(renderer_, static_cast<float>(outline.x + 18),
                               static_cast<float>(outline.y + 6),
                               "%s %s FPS %.1f", slot.name.c_str(), state,
                               fps);

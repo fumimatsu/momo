@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,6 +26,8 @@
 #include "aruco/aruco_detector.h"
 #endif
 
+class SharedFrameWriter;
+
 class SDLRenderer : public VideoTrackReceiver {
  public:
   enum class SourceState {
@@ -35,7 +38,8 @@ class SDLRenderer : public VideoTrackReceiver {
 
   SDLRenderer(int width, int height, bool fullscreen,
               bool enable_aruco = false, bool flip_vertical = false,
-              bool flip_horizontal = false);
+              bool flip_horizontal = false,
+              std::string shared_frame_name = "");
   ~SDLRenderer();
 
   void SetDispatchFunction(std::function<void(std::function<void()>)> dispatch);
@@ -81,6 +85,10 @@ class SDLRenderer : public VideoTrackReceiver {
     const std::string& GetSourceName() const;
     int GetSlotIndex() const;
     double GetFps() const;
+    bool IsReceiving(std::chrono::steady_clock::time_point now) const;
+    bool CopySourceTo(uint8_t* destination, int destination_stride,
+                      int destination_width, int destination_height,
+                      bool flip_vertical, bool flip_horizontal) const;
 
    private:
     SDLRenderer* renderer_;
@@ -96,12 +104,16 @@ class SDLRenderer : public VideoTrackReceiver {
     int input_height_;
     bool scaled_;
     std::unique_ptr<uint8_t[]> image_;
+    std::unique_ptr<uint8_t[]> source_image_;
+    int source_width_;
+    int source_height_;
     int offset_x_;
     int offset_y_;
     int width_;
     int height_;
     std::atomic<uint64_t> frame_count_{0};
     std::chrono::steady_clock::time_point fps_window_start_;
+    std::chrono::steady_clock::time_point last_frame_time_;
     uint64_t fps_window_frame_count_;
     double fps_;
     std::string source_name_;
@@ -115,6 +127,7 @@ class SDLRenderer : public VideoTrackReceiver {
   bool IsFullScreen();
   void SetFullScreen(bool fullscreen);
   void PollEvent();
+  void WriteSharedFrame();
   struct SourceSlot {
     std::string name;
     SourceState state;
@@ -147,6 +160,8 @@ class SDLRenderer : public VideoTrackReceiver {
   int rows_;
   int cols_;
   bool enable_aruco_;
+  std::unique_ptr<SharedFrameWriter> shared_frame_writer_;
+  std::vector<uint8_t> shared_frame_buffer_;
   std::vector<SourceSlot> fixed_slots_;
   webrtc::Mutex overlay_lock_;
   std::string overlay_text_ RTC_GUARDED_BY(overlay_lock_);
