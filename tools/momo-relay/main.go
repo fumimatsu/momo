@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -32,6 +33,7 @@ const (
 	defaultRTPStallTimeout      = 5 * time.Second
 	defaultUpstreamStartTimeout = 20 * time.Second
 	keyframeRecoveryGrace       = 2 * time.Second
+	defaultVideoTimestampStep   = uint32(90000 / 50)
 )
 
 var h264Codec = webrtc.RTPCodecCapability{
@@ -73,10 +75,21 @@ type relay struct {
 	upstreamDC   *webrtc.DataChannel
 	upstreamSSRC atomic.Uint32
 
-	rtpStallTimeout      time.Duration
-	upstreamStartTimeout time.Duration
-	upstreamGeneration   atomic.Uint64
-	lastRTPUnixNano      atomic.Int64
+	rtpStallTimeout        time.Duration
+	upstreamStartTimeout   time.Duration
+	upstreamGeneration     atomic.Uint64
+	lastVideoFrameUnixNano atomic.Int64
+	lastRTPTimestamp       atomic.Uint32
+
+	rtpRewriteMu          sync.Mutex
+	rtpRewriteInitialized bool
+	rtpRewriteGeneration  uint64
+	rtpSequenceOffset     uint16
+	rtpTimestampOffset    uint32
+	lastOutputSequence    uint16
+	lastOutputTimestamp   uint32
+	lastInputTimestamp    uint32
+	lastTimestampStep     uint32
 }
 
 type relayServer struct {
@@ -160,7 +173,8 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 	}
 	defer pc.Close()
 	generation := r.upstreamGeneration.Add(1)
-	r.lastRTPUnixNano.Store(0)
+	r.lastVideoFrameUnixNano.Store(0)
+	r.lastRTPTimestamp.Store(0)
 	r.upstreamSSRC.Store(0)
 
 	var writeMu sync.Mutex
@@ -212,7 +226,14 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 				return
 			}
 			if r.upstreamGeneration.Load() == generation {
-				r.lastRTPUnixNano.Store(time.Now().UnixNano())
+				previousTimestamp := r.lastRTPTimestamp.Swap(packet.Timestamp)
+				if r.lastVideoFrameUnixNano.Load() == 0 ||
+					previousTimestamp != packet.Timestamp {
+					r.lastVideoFrameUnixNano.Store(time.Now().UnixNano())
+				}
+			}
+			if !r.rewriteRTPHeader(generation, &packet.Header) {
+				return
 			}
 			if err := r.videoTrack.WriteRTP(packet); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 				log.Printf("fan out upstream RTP: %v", err)
@@ -306,10 +327,45 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 	}
 }
 
+// TrackLocalStaticRTP は出力 SSRC だけを Viewer ごとに置き換え、上流の
+// sequence number と timestamp はそのまま送る。Momo を再起動するとこれらが
+// 先頭へ戻るため、接続済み Viewer の jitter buffer は再接続後の RTP を古い
+// パケットとして捨てる。source 世代をまたぐ時だけ offset を更新し、下流で
+// sequence number と timestamp が連続するようにする。
+func (r *relay) rewriteRTPHeader(generation uint64, header *rtp.Header) bool {
+	r.rtpRewriteMu.Lock()
+	defer r.rtpRewriteMu.Unlock()
+
+	if r.upstreamGeneration.Load() != generation {
+		return false
+	}
+
+	if !r.rtpRewriteInitialized {
+		r.rtpRewriteInitialized = true
+		r.rtpRewriteGeneration = generation
+		r.lastInputTimestamp = header.Timestamp
+		r.lastTimestampStep = defaultVideoTimestampStep
+	} else if r.rtpRewriteGeneration != generation {
+		r.rtpSequenceOffset = r.lastOutputSequence + 1 - header.SequenceNumber
+		r.rtpTimestampOffset = r.lastOutputTimestamp + r.lastTimestampStep - header.Timestamp
+		r.rtpRewriteGeneration = generation
+		r.lastInputTimestamp = header.Timestamp
+	} else if header.Timestamp != r.lastInputTimestamp {
+		r.lastTimestampStep = header.Timestamp - r.lastInputTimestamp
+		r.lastInputTimestamp = header.Timestamp
+	}
+
+	header.SequenceNumber += r.rtpSequenceOffset
+	header.Timestamp += r.rtpTimestampOffset
+	r.lastOutputSequence = header.SequenceNumber
+	r.lastOutputTimestamp = header.Timestamp
+	return true
+}
+
 // WebRTC の PeerConnection は ICE が connected のままでも、RTP の受信だけが
-// 無期限に止まることがある。ReadRTP はこの状態で戻らないため、source ごとの
-// 最終 RTP 時刻を監視して WebSocket と PeerConnection を閉じ、既存の再接続
-// ループへ制御を戻す。
+// 無期限に止まることがある。停止後も古い RTP の再送が届く場合があるため、
+// パケット到着ではなく RTP timestamp が進んだ最終時刻を監視する。止まった
+// source の WebSocket と PeerConnection を閉じ、既存の再接続ループへ制御を戻す。
 func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
 	pc *webrtc.PeerConnection, ws *websocket.Conn, done <-chan struct{}) {
 	ticker := time.NewTicker(time.Second)
@@ -328,12 +384,12 @@ func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
 				return
 			}
 
-			lastRTP := r.lastRTPUnixNano.Load()
+			lastVideoFrame := r.lastVideoFrameUnixNano.Load()
 			stallTimeout := r.upstreamStartTimeout
 			stalledFor := now.Sub(startedAt)
-			if lastRTP != 0 {
+			if lastVideoFrame != 0 {
 				stallTimeout = r.rtpStallTimeout
-				stalledFor = now.Sub(time.Unix(0, lastRTP))
+				stalledFor = now.Sub(time.Unix(0, lastVideoFrame))
 			}
 			if stalledFor < stallTimeout {
 				keyframeRequestedAt = time.Time{}
@@ -342,7 +398,7 @@ func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
 
 			if keyframeRequestedAt.IsZero() {
 				keyframeRequestedAt = now
-				log.Printf("source %q: no upstream RTP for %s; request keyframe before reconnect",
+				log.Printf("source %q: no upstream video frames for %s; request keyframe before reconnect",
 					r.name, stalledFor.Round(time.Millisecond))
 				r.requestKeyframe()
 				continue
@@ -351,7 +407,7 @@ func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
 				continue
 			}
 
-			log.Printf("source %q: upstream RTP remained stalled for %s; reconnecting source",
+			log.Printf("source %q: upstream video frames remained stalled for %s; reconnecting source",
 				r.name, stalledFor.Round(time.Millisecond))
 			r.clearUpstream(pc)
 			_ = pc.Close()
