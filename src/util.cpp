@@ -310,6 +310,26 @@ void Util::ParseArgs(int argc,
       ->take_all()
       ->required()
       ->check(is_valid_p2p_multi_source);
+  const auto is_valid_p2p_multi_source_flip = CLI::Validator(
+      [](std::string input) -> std::string {
+        const size_t separator = input.find('=');
+        if (separator == std::string::npos || separator == 0 ||
+            separator == input.size() - 1) {
+          return "Must be NAME=H, NAME=V, NAME=HV, or NAME=none.";
+        }
+        const std::string mode = input.substr(separator + 1);
+        if (mode != "H" && mode != "V" && mode != "HV" &&
+            mode != "VH" && mode != "none") {
+          return "Flip mode must be H, V, HV, or none.";
+        }
+        return std::string();
+      },
+      "NAME=FLIP");
+  p2p_multi_receiver_app
+      ->add_option("--source-flip", args.p2p_multi_receiver_source_flips,
+                   "Override flip for one source: NAME=H, V, HV, or none")
+      ->take_all()
+      ->check(is_valid_p2p_multi_source_flip);
   p2p_multi_receiver_app->add_flag(
       "--flip-vertical", args.flip_vertical,
       "Flip every received video vertically");
@@ -468,6 +488,21 @@ void Util::ParseArgs(int argc,
       const std::string name = source.substr(0, source.find('='));
       if (!source_names.insert(name).second) {
         std::cerr << "p2p-recv-multi source name is duplicated: " << name
+                  << std::endl;
+        exit(1);
+      }
+    }
+    std::set<std::string> source_flip_names;
+    for (const std::string& source_flip :
+         args.p2p_multi_receiver_source_flips) {
+      const std::string name = source_flip.substr(0, source_flip.find('='));
+      if (source_names.find(name) == source_names.end()) {
+        std::cerr << "p2p-recv-multi source-flip has unknown source: " << name
+                  << std::endl;
+        exit(1);
+      }
+      if (!source_flip_names.insert(name).second) {
+        std::cerr << "p2p-recv-multi source-flip is duplicated: " << name
                   << std::endl;
         exit(1);
       }

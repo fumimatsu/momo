@@ -76,10 +76,14 @@ std::optional<int> V4L2Runner::PopAvailableBufferIndex() {
 void V4L2Runner::PollProcess() {
   int consecutive_timeouts = 0;
   while (true) {
+    if (abort_poll_) {
+      break;
+    }
+
     RTC_LOG(LS_VERBOSE) << "[POLL][" << name_ << "] Start poll";
     pollfd p = {fd_, POLLIN | POLLPRI, 0};
     int ret = poll(&p, 1, 500);
-    if (abort_poll_ && output_buffers_available_.size() == src_count_) {
+    if (abort_poll_) {
       break;
     }
     if (ret == -1) {

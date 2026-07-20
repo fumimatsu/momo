@@ -55,6 +55,7 @@ def install_deps(
     local_webrtc_build_dir: Optional[str],
     local_webrtc_build_args: List[str],
     disable_fake_capture_device: bool,
+    disable_cuda: bool,
 ):
     with cd(BASE_DIR):
         momo_version = read_version_string("VERSION")
@@ -250,7 +251,7 @@ def install_deps(
             add_path(os.path.join(install_dir, "cmake", "bin"))
 
         # CUDA
-        if platform.target.os == "windows":
+        if platform.target.os == "windows" and not disable_cuda:
             install_cuda_args = {
                 "version": deps["CUDA_VERSION"],
                 "version_file": os.path.join(install_dir, "cuda.version"),
@@ -486,6 +487,7 @@ def _build(args):
         local_webrtc_build_dir=args.local_webrtc_build_dir,
         local_webrtc_build_args=args.local_webrtc_build_args,
         disable_fake_capture_device=args.disable_fake_capture_device,
+        disable_cuda=args.disable_cuda,
     )
 
     configuration = "Release"
@@ -594,6 +596,10 @@ def _build(args):
                     cmake_args.append(
                         f"-DCUDA_TOOLKIT_ROOT_DIR={cmake_path(os.path.join(install_dir, 'cuda'))}"
                     )
+
+        if args.opencv_dir is not None:
+            cmake_args.append("-DUSE_OPENCV_ARUCO=ON")
+            cmake_args.append(f"-DOpenCV_DIR={cmake_path(args.opencv_dir)}")
 
         if platform.target.os in ("windows", "ubuntu") and platform.target.arch == "x86_64":
             cmake_args.append("-DUSE_VPL_ENCODER=ON")
@@ -705,6 +711,12 @@ def main():
     add_webrtc_build_arguments(bp)
     bp.add_argument("--package", action="store_true")
     bp.add_argument("--disable-cuda", action="store_true")
+    bp.add_argument(
+        "--opencv-dir",
+        type=str,
+        default=None,
+        help="OpenCVConfig.cmake directory (enables ArUco detection)",
+    )
     bp.add_argument(
         "--disable-fake-capture-device",
         action="store_true",

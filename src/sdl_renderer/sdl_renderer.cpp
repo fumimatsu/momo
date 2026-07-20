@@ -371,13 +371,17 @@ int SDLRenderer::RenderThread() {
 
         // ArUco モードでは Sink 側で先に映像を反転してから文字やマーカーを
         // 描画しているため、ここでは再反転しない。
+        bool flip_vertical = flip_vertical_.load();
+        bool flip_horizontal = flip_horizontal_.load();
+        GetEffectiveFlip(sink->GetSourceName(), &flip_vertical,
+                         &flip_horizontal);
         const SDL_FlipMode flip = enable_aruco_
                                       ? SDL_FLIP_NONE
                                       : static_cast<SDL_FlipMode>(
-                                            (flip_vertical_.load()
+                                            (flip_vertical
                                                  ? SDL_FLIP_VERTICAL
                                                  : SDL_FLIP_NONE) |
-                                            (flip_horizontal_.load()
+                                            (flip_horizontal
                                                  ? SDL_FLIP_HORIZONTAL
                                                  : SDL_FLIP_NONE));
         SDL_RenderTextureRotated(renderer_, texture, &image_rect, &draw_rect,
@@ -807,6 +811,33 @@ bool SDLRenderer::IsFlipHorizontal() const {
   return flip_horizontal_.load();
 }
 
+void SDLRenderer::ConfigureSourceFlips(
+    const std::vector<std::string>& source_flips) {
+  webrtc::MutexLock lock(&source_flips_lock_);
+  source_flips_.clear();
+  for (const std::string& source_flip : source_flips) {
+    const size_t separator = source_flip.find('=');
+    const std::string name = source_flip.substr(0, separator);
+    const std::string mode = source_flip.substr(separator + 1);
+    source_flips_[name] = {mode.find('V') != std::string::npos,
+                           mode.find('H') != std::string::npos};
+  }
+}
+
+void SDLRenderer::GetEffectiveFlip(const std::string& source_name,
+                                   bool* flip_vertical,
+                                   bool* flip_horizontal) const {
+  *flip_vertical = flip_vertical_.load();
+  *flip_horizontal = flip_horizontal_.load();
+  webrtc::MutexLock lock(&source_flips_lock_);
+  const auto source_flip = source_flips_.find(source_name);
+  if (source_flip == source_flips_.end()) {
+    return;
+  }
+  *flip_vertical = source_flip->second.first;
+  *flip_horizontal = source_flip->second.second;
+}
+
 SDLRenderer::OutlineRect SDLRenderer::GetSlotOutline(int slot_index) const {
   const int slot_count = fixed_slots_.size();
   const int cols = slot_count == 1 ? 1 : 2;
@@ -860,10 +891,14 @@ void SDLRenderer::WriteSharedFrame() {
     const int slot_x = (slot_index % 2) * kSharedSlotWidth;
     const int slot_y = (slot_index / 2) * kSharedSlotHeight +
                        kSharedSourceVerticalOffset;
+    bool flip_vertical = flip_vertical_.load();
+    bool flip_horizontal = flip_horizontal_.load();
+    GetEffectiveFlip(fixed_slots_[slot_index].name, &flip_vertical,
+                     &flip_horizontal);
     sink->CopySourceTo(
         shared_frame_buffer_.data() + slot_y * kSharedFrameStride + slot_x * 4,
         kSharedFrameStride, kSharedSlotWidth, kSharedSourceHeight,
-        flip_vertical_.load(), flip_horizontal_.load());
+        flip_vertical, flip_horizontal);
   }
 
   const auto now = std::chrono::system_clock::now().time_since_epoch();

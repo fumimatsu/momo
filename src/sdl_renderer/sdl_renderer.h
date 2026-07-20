@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // SDL
@@ -51,6 +52,7 @@ class SDLRenderer : public VideoTrackReceiver {
   void AddTrack(webrtc::VideoTrackInterface* track) override;
   void RemoveTrack(webrtc::VideoTrackInterface* track) override;
   void ConfigureFixedSlots(const std::vector<std::string>& source_names);
+  void ConfigureSourceFlips(const std::vector<std::string>& source_flips);
   void AddTrackForSource(webrtc::VideoTrackInterface* track,
                          const std::string& source_name);
   void SetSourceState(const std::string& source_name, SourceState state);
@@ -58,6 +60,8 @@ class SDLRenderer : public VideoTrackReceiver {
   double GetPrimaryFps();
   bool IsFlipVertical() const;
   bool IsFlipHorizontal() const;
+  void GetEffectiveFlip(const std::string& source_name, bool* flip_vertical,
+                        bool* flip_horizontal) const;
 
  protected:
   class Sink : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
@@ -155,6 +159,9 @@ class SDLRenderer : public VideoTrackReceiver {
   std::function<void(std::function<void()>)> dispatch_;
   std::atomic<bool> flip_vertical_;
   std::atomic<bool> flip_horizontal_;
+  mutable webrtc::Mutex source_flips_lock_;
+  std::unordered_map<std::string, std::pair<bool, bool>> source_flips_
+      RTC_GUARDED_BY(source_flips_lock_);
   int width_;
   int height_;
   int rows_;

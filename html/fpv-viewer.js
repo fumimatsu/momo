@@ -8,12 +8,14 @@
   const ROOM_FULL_RETRY_MAX_DELAY_MS = getNumberParam('roomFullRetryMaxMs', 30000);
   const VIDEO_FREEZE_TIMEOUT_MS = getNumberParam('videoFreezeMs', 12000);
   const CONNECT_GRACE_MS = getNumberParam('connectGraceMs', 15000);
-  const SIGNALING_MODE = getStringParam(['signaling', 'signalingMode'], 'relay').toLowerCase();
+  const SIGNALING_MODE = getStringParam(['signaling', 'signalingMode'], 'p2p').toLowerCase();
   const AUTO_RECONNECT = getBooleanParam('autoReconnect', true);
   const AUTO_RECONNECT_ON_VIDEO_LOST = getBooleanParam('videoReconnect', SIGNALING_MODE === 'ayame');
+  const RACE_CONTROL_URL = getStringParam(['raceUrl'], '');
+  const RACE_CONTROL_TOKEN = getStringParam(['raceToken', 'viewerToken'], '');
   const RACE_CAR_ID = getStringParam(['carId', 'raceCarId'], '');
+  const RACE_RECONNECT_DELAY_MS = 3000;
   const DEVICE_STATUS_MODE = getDeviceStatusMode();
-  const CONTROL_UI_MODE = normalizeControlUiMode(getStringParam(['controlUi'], 'auto'));
   const RC_TX_INTERVAL_MS = getNumberParam('rcTxMs', 20);
   const RC_STEERING_THROW = getNumberParam('rcSteeringThrow', 400);
   const RC_THROTTLE_THROW = getNumberParam('rcThrottleThrow', 300);
@@ -21,41 +23,23 @@
   const RC_BRAKE_VALUE = getNumberParam('rcBrakeValue', 1300);
   const RC_BRAKE_DURATION_MS = getNumberParam('rcBrakeMs', 1000);
   const RC_BRAKE_THRESHOLD = getNumberParam('rcBrakeThreshold', 1700);
-  const RC_THROTTLE_GEAR_MIN_VALUES = [1200, 1200, 1000, 1000, 1000];
+  const RC_THROTTLE_GEAR_MIN_VALUES = [1400, 1400, 1300, 1300, 1300];
   const RC_THROTTLE_GEAR_MAX_VALUES = [1600, 1700, 1800, 1900, 2000];
-  const RC_GEAR_COUNT = Math.max(1, Math.min(5, getIntegerParam('rcGearCount', 5)));
-  const RC_INITIAL_GEAR = Math.max(1, Math.min(RC_GEAR_COUNT, getIntegerParam('rcGear', 1)));
+  const RC_INITIAL_GEAR = Math.max(1, Math.min(5, getIntegerParam('rcGear', 1)));
   const RC_STEERING_NEUTRAL_DEADBAND_US = getNumberParamAllowZero('rcSteeringNeutralDeadband', 10);
   const RC_THROTTLE_NEUTRAL_DEADBAND_US = getNumberParamAllowZero('rcThrottleNeutralDeadband', 10);
-  const GAMEPAD_PROFILE_STORAGE_KEY_LEGACY = 'fpvGamepadMapping';
-  const GAMEPAD_PROFILE_STORAGE_KEY = getGamepadProfileStorageKey();
+  const GAMEPAD_PROFILE_STORAGE_KEY = 'fpvGamepadMapping';
   const GAMEPAD_PROFILE = loadGamepadProfile();
   const GAMEPAD_ENABLED = getBooleanParam('gamepad', true);
   const GAMEPAD_INDEX = getNumberParamWithProfile('gamepadIndex', 'index', 0, true);
   const GAMEPAD_STEERING_AXIS = getNumberParamWithProfile('gamepadSteeringAxis', 'steeringAxis', 0, true);
   const GAMEPAD_STEERING_INVERT = getBooleanParamWithProfile('gamepadSteeringInvert', 'steeringInvert', false);
+  const GAMEPAD_STEERING_GAIN = getNumberParamWithProfile('gamepadSteeringGain', 'steeringGain', 3.75);
   const GAMEPAD_STEERING_DEADZONE = getNumberParamWithProfile('gamepadSteeringDeadzone', 'steeringDeadzone', 0.03);
-  const GAMEPAD_STEERING_CENTER = getNumberParamWithProfile('gamepadSteeringCenter', 'steeringCenter', 0);
-  const GAMEPAD_STEERING_LEFT = getNumberParamWithProfile('gamepadSteeringLeft', 'steeringLeft', -1);
-  const GAMEPAD_STEERING_RIGHT = getNumberParamWithProfile('gamepadSteeringRight', 'steeringRight', 1);
-  const GAMEPAD_STEERING_CALIBRATED =
-    hasNumberParamWithProfile('gamepadSteeringCenter', 'steeringCenter') &&
-    hasNumberParamWithProfile('gamepadSteeringLeft', 'steeringLeft') &&
-    hasNumberParamWithProfile('gamepadSteeringRight', 'steeringRight');
-  const GAMEPAD_STEERING_GAIN = getEffectiveSteeringGain(
-    getNumberParamWithProfile('gamepadSteeringGain', 'steeringGain', GAMEPAD_STEERING_CALIBRATED ? 1.0 : 3.75),
-    GAMEPAD_STEERING_CALIBRATED,
-  );
   const GAMEPAD_THROTTLE_AXIS = getNumberParamWithProfile('gamepadThrottleAxis', 'throttleAxis', 5, true);
   const GAMEPAD_THROTTLE_INVERT = getBooleanParamWithProfile('gamepadThrottleInvert', 'throttleInvert', false);
-  const GAMEPAD_THROTTLE_IDLE = getNumberParamWithProfile('gamepadThrottleIdle', 'throttleIdle', 1);
-  const GAMEPAD_THROTTLE_PRESSED = getNumberParamWithProfile('gamepadThrottlePressed', 'throttlePressed', -1);
-  const GAMEPAD_THROTTLE_IDLE_CONFIGURED = hasNumberParamWithProfile('gamepadThrottleIdle', 'throttleIdle');
   const GAMEPAD_BRAKE_AXIS = getNumberParamWithProfile('gamepadBrakeAxis', 'brakeAxis', 6, true);
   const GAMEPAD_BRAKE_INVERT = getBooleanParamWithProfile('gamepadBrakeInvert', 'brakeInvert', false);
-  const GAMEPAD_BRAKE_IDLE = getNumberParamWithProfile('gamepadBrakeIdle', 'brakeIdle', 1);
-  const GAMEPAD_BRAKE_PRESSED = getNumberParamWithProfile('gamepadBrakePressed', 'brakePressed', -1);
-  const GAMEPAD_BRAKE_IDLE_CONFIGURED = hasNumberParamWithProfile('gamepadBrakeIdle', 'brakeIdle');
   const GAMEPAD_PEDAL_DEADZONE = getNumberParamWithProfile('gamepadPedalDeadzone', 'pedalDeadzone', 0.05);
   const GAMEPAD_DRIVE_BUTTON = getNumberParamWithProfile('gamepadDriveButton', 'driveButton', 8, true);
   const GAMEPAD_DRIVE_BUTTON_ENABLED = getBooleanParam('gamepadDriveButtonEnabled', true);
@@ -82,10 +66,6 @@
   const AUDIO_FILTER_FREQS = getStringListParam(['audioFilterFreqs'], ['50', '100', '150'])
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value) && value > 0);
-  const MEDIA_CONTROLS_VISIBLE = getBooleanParam(
-    'audioControls',
-    getBooleanParam('mediaControls', true),
-  );
   const MIC_DEFAULT_VOLUME = Math.max(0, Math.min(200, getNumberParamAllowZero('micVolume', 100)));
   const MIC_METER_INTERVAL_MS = 100;
   const ROOM_LOCK_ENABLED = getBooleanParam('roomLock', SIGNALING_MODE === 'ayame');
@@ -125,14 +105,6 @@
   const telemetryState = document.getElementById('telemetryState');
   const modeState = document.getElementById('modeState');
   const deviceState = document.getElementById('deviceState');
-  const racePhase = document.getElementById('racePhase');
-  const raceLapCount = document.getElementById('raceLapCount');
-  const raceCurrentLap = document.getElementById('raceCurrentLap');
-  const raceLastLap = document.getElementById('raceLastLap');
-  const raceBestLap = document.getElementById('raceBestLap');
-  const raceTotalTime = document.getElementById('raceTotalTime');
-  const racePosition = document.getElementById('racePosition');
-  const raceLapHistory = document.getElementById('raceLapHistory');
   const btnReconnect = document.getElementById('btnReconnect');
   const btnFullscreen = document.getElementById('btnFullscreen');
   const btnFlip = document.getElementById('btnFlip');
@@ -140,7 +112,6 @@
   const btnAudio = document.getElementById('btnAudio');
   const btnAudioFilter = document.getElementById('btnAudioFilter');
   const btnMic = document.getElementById('btnMic');
-  const micControl = btnMic?.closest('.mic-control');
   const micVolumeInput = document.getElementById('micVolume');
   const micMeter = document.getElementById('micMeter');
   const btnDebug = document.getElementById('btnDebug');
@@ -155,23 +126,23 @@
   const btnDisconnect = document.getElementById('btnDisconnect');
   const gearState = document.getElementById('gearState');
   const gearButtons = Array.from(document.querySelectorAll('.gear-button'));
-  const driveHud = document.getElementById('driveHud');
-  const driveHudMode = document.getElementById('driveHudMode');
-  const driveHudSteeringMarker = document.getElementById('driveHudSteeringMarker');
-  const driveHudSteering = document.getElementById('driveHudSteering');
-  const driveHudThrottle = document.getElementById('driveHudThrottle');
-  const driveHudThrottleValue = document.getElementById('driveHudThrottleValue');
-  const driveHudBrake = document.getElementById('driveHudBrake');
-  const driveHudBrakeValue = document.getElementById('driveHudBrakeValue');
-  const driveHudGear = document.getElementById('driveHudGear');
-  const driveHudGearSteps = Array.from(document.querySelectorAll('.drive-gear-step'));
-  const driveHudConnection = document.getElementById('driveHudConnection');
+  const raceOsd = document.getElementById('raceOsd');
+  const raceCarId = document.getElementById('raceCarId');
+  const racePhase = document.getElementById('racePhase');
+  const raceLap = document.getElementById('raceLap');
+  const racePosition = document.getElementById('racePosition');
+  const raceAllTime = document.getElementById('raceAllTime');
+  const raceCurrentLap = document.getElementById('raceCurrentLap');
+  const raceLapTimes = document.getElementById('raceLapTimes');
 
   let ws = null;
   let peerConnection = null;
   let dataChannel = null;
-  let telemetryChannel = null;
-  let raceChannel = null;
+  let raceWebSocket = null;
+  let raceReconnectTimer = null;
+  let raceSampledAt = 0;
+  let raceClockRunning = false;
+  let raceValues = null;
   let candidates = [];
   let hasReceivedSdp = false;
   let fpsFrameCount = 0;
@@ -234,11 +205,6 @@
   let gamepadSeen = false;
   let lastGamepadAt = 0;
   let lastGamepadStatus = 'n/a';
-  const driveHudState = {
-    steering: 0,
-    throttle: 0,
-    brake: 0,
-  };
   let ayameIceServers = [];
   let audioContext = null;
   let audioSourceNode = null;
@@ -261,24 +227,9 @@
   let roomLockStatusTimer = null;
   let roomLockHeartbeatTimer = null;
   let roomLockHeartbeatFailures = 0;
-  let activeRaceRunId = '';
-  const raceState = {
-    phase: 'STANDBY',
-    lap: null,
-    lapCount: null,
-    position: null,
-    fieldSize: null,
-    totalTimeMs: null,
-    currentLapMs: null,
-    lastLapMs: null,
-    bestLapMs: null,
-    laps: [],
-    clockRunning: false,
-    sampledAt: 0,
-  };
   const gamepadPedalIdle = {
-    throttle: GAMEPAD_THROTTLE_IDLE,
-    brake: GAMEPAD_BRAKE_IDLE,
+    throttle: 1,
+    brake: 1,
   };
 
   function getUrlParams() {
@@ -294,33 +245,6 @@
       }
     });
     return params;
-  }
-
-  function updateOsdScale() {
-    const viewport = window.visualViewport;
-    const width = viewport?.width || window.innerWidth;
-    const height = viewport?.height || window.innerHeight;
-    const scale = Math.max(1, Math.min(2, width / 1920, height / 1080));
-    document.documentElement.style.setProperty('--osd-scale', scale.toFixed(4));
-    window.requestAnimationFrame(() => {
-      const driveHudHeight = driveHud?.offsetHeight || 0;
-      const scaledOverflow = driveHudHeight * Math.max(0, scale - 1);
-      document.documentElement.style.setProperty(
-        '--drive-hud-bottom',
-        `${Math.round(20 + scaledOverflow)}px`,
-      );
-    });
-  }
-
-  function normalizeControlUiMode(value) {
-    const mode = String(value || '').toLowerCase();
-    return ['auto', 'manual', 'drive'].includes(mode) ? mode : 'auto';
-  }
-
-  function getGamepadProfileStorageKey() {
-    const device = new URLSearchParams(location.search).get('device')?.trim();
-    return device ? `${GAMEPAD_PROFILE_STORAGE_KEY_LEGACY}:${encodeURIComponent(device)}`
-                  : GAMEPAD_PROFILE_STORAGE_KEY_LEGACY;
   }
 
   function loadGamepadProfile() {
@@ -353,14 +277,6 @@
     return defaultValue;
   }
 
-  function hasNumberParamWithProfile(paramName, profileName) {
-    const params = getUrlParams();
-    if (params.has(paramName)) {
-      return Number.isFinite(Number(params.get(paramName)));
-    }
-    return Number.isFinite(GAMEPAD_PROFILE[profileName]);
-  }
-
   function getBooleanParamWithProfile(paramName, profileName, defaultValue) {
     const params = getUrlParams();
     const raw = params.get(paramName);
@@ -372,16 +288,6 @@
       return profileValue;
     }
     return defaultValue;
-  }
-
-  function getEffectiveSteeringGain(rawGain, calibrated) {
-    if (!calibrated) {
-      return rawGain;
-    }
-    if (Math.abs(rawGain - 4.0) < 0.001 || Math.abs(rawGain - 3.75) < 0.001) {
-      return 1.0;
-    }
-    return rawGain;
   }
 
   function getInitialHost() {
@@ -501,14 +407,6 @@
 
   function isAyameSignaling() {
     return SIGNALING_MODE === 'ayame';
-  }
-
-  function isRelaySignaling() {
-    return SIGNALING_MODE === 'relay';
-  }
-
-  function getRelayDevice() {
-    return getStringParam(['device'], '');
   }
 
   function getDeviceStatusMode() {
@@ -853,197 +751,6 @@
     element.textContent = value;
   }
 
-  function normalizeRaceNumber(value) {
-    const number = Number(value);
-    return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
-  }
-
-  function formatRaceTime(milliseconds) {
-    const value = normalizeRaceNumber(milliseconds);
-    if (value === null) {
-      return '--:--.---';
-    }
-    const minutes = Math.floor(value / 60000);
-    const seconds = Math.floor((value % 60000) / 1000);
-    const millis = value % 1000;
-    return `${minutes}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
-  }
-
-  function getDisplayedRaceTime(milliseconds) {
-    if (!raceState.clockRunning || raceState.sampledAt === 0) {
-      return milliseconds;
-    }
-    const base = normalizeRaceNumber(milliseconds);
-    return base === null ? null : base + Math.max(0, performance.now() - raceState.sampledAt);
-  }
-
-  function normalizeRaceLaps(laps) {
-    if (!Array.isArray(laps)) {
-      return null;
-    }
-    return laps
-      .map((entry, index) => {
-        const value = typeof entry === 'number' ? entry : entry?.timeMs;
-        const timeMs = normalizeRaceNumber(value);
-        if (timeMs === null) {
-          return null;
-        }
-        const lap = normalizeRaceNumber(typeof entry === 'number' ? index + 1 : entry.lap) || index + 1;
-        return { lap, timeMs };
-      })
-      .filter((entry) => entry !== null)
-      .slice(-5)
-      .reverse();
-  }
-
-  function renderRaceHud() {
-    const lap = raceState.lap === null ? '--' : String(raceState.lap);
-    const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
-    const position = raceState.position === null ? '--' : String(raceState.position);
-    const fieldSize = raceState.fieldSize === null ? '--' : String(raceState.fieldSize);
-    setText(racePhase, raceState.phase);
-    setText(raceLapCount, `LAP ${lap} / ${lapCount}`);
-    setText(raceCurrentLap, formatRaceTime(getDisplayedRaceTime(raceState.currentLapMs)));
-    setText(raceLastLap, formatRaceTime(raceState.lastLapMs));
-    setText(raceBestLap, formatRaceTime(raceState.bestLapMs));
-    setText(raceTotalTime, formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs)));
-    if (racePosition) {
-      racePosition.replaceChildren(document.createTextNode(position));
-      const total = document.createElement('em');
-      total.textContent = `/${fieldSize}`;
-      racePosition.append(total);
-    }
-    if (!raceLapHistory) {
-      return;
-    }
-    raceLapHistory.replaceChildren();
-    if (raceState.laps.length === 0) {
-      const empty = document.createElement('li');
-      empty.className = 'is-empty';
-      empty.textContent = 'WAITING FOR RACE DATA';
-      raceLapHistory.append(empty);
-      return;
-    }
-    for (const entry of raceState.laps) {
-      const item = document.createElement('li');
-      if (raceState.bestLapMs !== null && entry.timeMs === raceState.bestLapMs) {
-        item.classList.add('is-best');
-      }
-      const label = document.createElement('span');
-      label.textContent = `LAP ${entry.lap}`;
-      const value = document.createElement('strong');
-      value.textContent = formatRaceTime(entry.timeMs);
-      item.append(label, value);
-      raceLapHistory.append(item);
-    }
-  }
-
-  function displayRacePhase(phase) {
-    switch (String(phase || '').toLowerCase()) {
-      case 'idle': return 'STANDBY';
-      case 'ready': return 'READY';
-      case 'countdown': return 'COUNTDOWN';
-      case 'green': return 'RUNNING';
-      case 'paused': return 'PAUSED';
-      case 'finished': return 'FINISHED';
-      default: return String(phase || 'STANDBY').toUpperCase().slice(0, 24);
-    }
-  }
-
-  function adaptRaceStateV2(state) {
-    if (state?.type !== 'race_state' || state?.version !== 2 || !Array.isArray(state.standings)) {
-      return null;
-    }
-    const carId = String(state.viewerCarId || RACE_CAR_ID || '').trim();
-    const standing = carId ? state.standings.find((item) => item?.carId === carId) : null;
-    const runId = typeof state.raceRunId === 'string' ? state.raceRunId : '';
-    const isNewRun = Boolean(runId && runId !== activeRaceRunId);
-    if (runId) {
-      activeRaceRunId = runId;
-    }
-    const lap = normalizeRaceNumber(standing?.lap);
-    const lastLapMs = normalizeRaceNumber(standing?.lapTimeMs);
-    return {
-      reset: isNewRun,
-      phase: displayRacePhase(state.phase),
-      lap,
-      lapCount: normalizeRaceNumber(state.raceInfo?.totalLaps),
-      position: normalizeRaceNumber(standing?.position) || null,
-      fieldSize: state.standings.length,
-      totalTimeMs: normalizeRaceNumber(standing?.allTimeMs),
-      currentLapMs: normalizeRaceNumber(standing?.currentLapMs),
-      lastLapMs,
-      bestLapMs: normalizeRaceNumber(standing?.bestLapMs),
-      clockRunning: state.phase === 'green' && standing?.status === 'racing',
-      laps: lap !== null && lap > 0 && lastLapMs !== null && lastLapMs > 0
-        ? [{ lap, timeMs: lastLapMs }]
-        : [],
-    };
-  }
-
-  function setRaceState(nextState) {
-    if (!nextState || typeof nextState !== 'object') {
-      return false;
-    }
-    const v2State = adaptRaceStateV2(nextState);
-    if (v2State !== null) {
-      nextState = v2State;
-    }
-    if (nextState.reset === true) {
-      raceState.phase = 'STANDBY';
-      raceState.lap = null;
-      raceState.lapCount = null;
-      raceState.position = null;
-      raceState.fieldSize = null;
-      raceState.totalTimeMs = null;
-      raceState.currentLapMs = null;
-      raceState.lastLapMs = null;
-      raceState.bestLapMs = null;
-      raceState.laps = [];
-      raceState.clockRunning = false;
-    }
-    if (typeof nextState.phase === 'string' && nextState.phase.trim()) {
-      raceState.phase = nextState.phase.trim().toUpperCase().slice(0, 24);
-    }
-    raceState.clockRunning = Object.prototype.hasOwnProperty.call(nextState, 'clockRunning')
-      ? nextState.clockRunning === true
-      : raceState.phase === 'RUNNING';
-    for (const field of ['lap', 'lapCount', 'position', 'fieldSize', 'totalTimeMs',
-      'currentLapMs', 'lastLapMs', 'bestLapMs']) {
-      if (Object.prototype.hasOwnProperty.call(nextState, field)) {
-        raceState[field] = nextState[field] === null ? null : normalizeRaceNumber(nextState[field]);
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(nextState, 'laps')) {
-      const laps = normalizeRaceLaps(nextState.laps);
-      if (laps !== null) {
-        raceState.laps = laps;
-      }
-    }
-    raceState.sampledAt = performance.now();
-    renderRaceHud();
-    return true;
-  }
-
-  function handleRaceStateMessage(message) {
-    if (typeof message !== 'string') {
-      return false;
-    }
-    const payload = message.startsWith('RACE:') ? message.slice(5) : message;
-    if (!message.startsWith('RACE:') && !payload.trimStart().startsWith('{')) {
-      return false;
-    }
-    try {
-      const state = JSON.parse(payload);
-      if (!message.startsWith('RACE:') && state?.type !== 'race_state') {
-        return false;
-      }
-      return setRaceState(state);
-    } catch (_) {
-      return false;
-    }
-  }
-
   function updateConnectionUi() {
     setText(wsState, ws ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] : 'closed');
     setText(iceState, peerConnection ? peerConnection.iceConnectionState : 'new');
@@ -1083,14 +790,7 @@
     if (btnDisconnect) {
       btnDisconnect.disabled = !active;
     }
-    if (driveHudMode) {
-      driveHudMode.disabled = !canSend && !rcDriveEnabled;
-    }
-    if (driveHudConnection) {
-      driveHudConnection.disabled = !active;
-    }
     updateMicUi();
-    updateDriveHud();
   }
 
   function updateTimerUi() {
@@ -1469,9 +1169,6 @@
   }
 
   function handleDataChannelMessage(message) {
-    if (handleRaceStateMessage(message)) {
-      return;
-    }
     if (typeof message === 'string' && message.startsWith('PONG:')) {
       handleDcPong(message);
       return;
@@ -1504,86 +1201,12 @@
       gearState.textContent = `Gear ${currentGear}`;
     }
     for (const button of gearButtons) {
-      const gear = Number(button.dataset.gear);
-      button.hidden = gear > RC_GEAR_COUNT;
-      button.setAttribute('aria-pressed', gear === currentGear ? 'true' : 'false');
-    }
-    updateDriveHud();
-  }
-
-  function isGamepadDriveActive() {
-    return GAMEPAD_ENABLED && rcDriveEnabled && gamepadSeen && performance.now() - lastGamepadAt <= 500;
-  }
-
-  function isDriveUiVisible() {
-    if (CONTROL_UI_MODE === 'manual') {
-      return false;
-    }
-    if (CONTROL_UI_MODE === 'drive') {
-      return true;
-    }
-    return isGamepadDriveActive();
-  }
-
-  function updateControlUiMode() {
-    const driveUiVisible = isDriveUiVisible();
-    document.body.classList.toggle('drive-ui', driveUiVisible);
-    if (driveHud) {
-      driveHud.hidden = !driveUiVisible;
-    }
-    updateDriveHud();
-    updateOsdScale();
-  }
-
-  function setDriveHudLevel(element, value) {
-    if (!element) {
-      return;
-    }
-    element.style.setProperty('--drive-level', String(Math.max(0, Math.min(1, value))));
-  }
-
-  function updateDriveHud() {
-    const steering = Math.max(-1, Math.min(1, driveHudState.steering));
-    const throttle = Math.max(0, Math.min(1, driveHudState.throttle));
-    const brake = Math.max(0, Math.min(1, driveHudState.brake));
-    const gamepadActive = isGamepadDriveActive();
-    if (driveHudMode) {
-      driveHudMode.textContent = rcDriveEnabled ? 'DRIVE ON' : 'DRIVE OFF';
-      driveHudMode.setAttribute('aria-pressed', rcDriveEnabled ? 'true' : 'false');
-    }
-    if (driveHudSteeringMarker) {
-      driveHudSteeringMarker.style.left = `${(50 + steering * 45).toFixed(1)}%`;
-    }
-    if (driveHudSteering) {
-      driveHudSteering.textContent = `${Math.round(steering * 100)}%`;
-    }
-    setDriveHudLevel(driveHudThrottle, throttle);
-    setDriveHudLevel(driveHudBrake, brake);
-    if (driveHudThrottleValue) {
-      driveHudThrottleValue.textContent = `${Math.round(throttle * 100)}%`;
-    }
-    if (driveHudBrakeValue) {
-      driveHudBrakeValue.textContent = `${Math.round(brake * 100)}%`;
-    }
-    if (driveHudGear) {
-      driveHudGear.setAttribute('aria-label', `Throttle gear ${currentGear} of ${RC_GEAR_COUNT}`);
-    }
-    for (const step of driveHudGearSteps) {
-      const gear = Number(step.dataset.gear);
-      const available = gear <= RC_GEAR_COUNT;
-      step.hidden = !available;
-      step.classList.toggle('is-active', available && gear === currentGear);
-      step.setAttribute('aria-current', available && gear === currentGear ? 'true' : 'false');
-    }
-    if (driveHudConnection) {
-      const connected = dataChannel && dataChannel.readyState === 'open';
-      driveHudConnection.textContent = connected ? 'DISCONNECT' : 'DISCONNECTED';
-      driveHudConnection.dataset.active = connected ? 'true' : 'false';
+      button.setAttribute('aria-pressed', button.dataset.gear === String(currentGear) ? 'true' : 'false');
     }
   }
 
   function setThrottleGear(gear) {
-    const nextGear = Math.max(1, Math.min(RC_GEAR_COUNT, Number(gear) || 1));
+    const nextGear = Math.max(1, Math.min(5, Number(gear) || 1));
     if (nextGear === currentGear) {
       updateGearUi();
       return;
@@ -1631,7 +1254,6 @@
     steeringInput.value = String(clampRcValue(steering));
     throttleInput.value = String(clampRcAxisValue('throttle', throttle));
     syncCommandFromSliders();
-    updateDriveHud();
   }
 
   function setRcAxis(axis, value) {
@@ -1794,7 +1416,6 @@
       heartbeatRoomLease();
     }
     updateRcUi();
-    updateControlUiMode();
   }
 
   function toggleDrive() {
@@ -1894,10 +1515,10 @@
     if (!gamepad) {
       return;
     }
-    if (GAMEPAD_THROTTLE_AXIS >= 0 && !GAMEPAD_THROTTLE_IDLE_CONFIGURED) {
+    if (GAMEPAD_THROTTLE_AXIS >= 0) {
       gamepadPedalIdle.throttle = getGamepadAxis(gamepad, GAMEPAD_THROTTLE_AXIS, gamepadPedalIdle.throttle);
     }
-    if (GAMEPAD_BRAKE_AXIS >= 0 && !GAMEPAD_BRAKE_IDLE_CONFIGURED) {
+    if (GAMEPAD_BRAKE_AXIS >= 0) {
       gamepadPedalIdle.brake = getGamepadAxis(gamepad, GAMEPAD_BRAKE_AXIS, gamepadPedalIdle.brake);
     }
     recordEvent(
@@ -1906,30 +1527,13 @@
     );
   }
 
-  function normalizePedalAxis(value, invert, idleValue, pressedValue) {
+  function normalizePedalAxis(value, invert, idleValue) {
     const raw = invert ? -value : value;
     const idle = invert ? -idleValue : idleValue;
-    const defaultPressed = idleValue >= 0 ? -1 : 1;
-    const pressed = invert ? -pressedValue : pressedValue;
-    const fallbackPressed = invert ? -defaultPressed : defaultPressed;
-    const span = Math.abs(pressed - idle) >= 0.001
-      ? pressed - idle
-      : fallbackPressed - idle;
-    const normalized = (raw - idle) / (Math.abs(span) >= 0.001 ? span : 1);
+    const normalized = idle >= 0
+      ? (idle - raw) / Math.max(0.001, idle + 1)
+      : (raw - idle) / Math.max(0.001, 1 - idle);
     return applyDeadzone(Math.max(0, Math.min(1, normalized)), GAMEPAD_PEDAL_DEADZONE);
-  }
-
-  function normalizeSteeringAxis(value) {
-    const raw = GAMEPAD_STEERING_INVERT ? -value : value;
-    const center = GAMEPAD_STEERING_INVERT ? -GAMEPAD_STEERING_CENTER : GAMEPAD_STEERING_CENTER;
-    const left = GAMEPAD_STEERING_INVERT ? -GAMEPAD_STEERING_RIGHT : GAMEPAD_STEERING_LEFT;
-    const right = GAMEPAD_STEERING_INVERT ? -GAMEPAD_STEERING_LEFT : GAMEPAD_STEERING_RIGHT;
-    const leftSpan = Math.max(0.001, Math.abs(center - left));
-    const rightSpan = Math.max(0.001, Math.abs(right - center));
-    const normalized = raw < center
-      ? -Math.min(1, Math.abs(raw - center) / leftSpan)
-      : Math.min(1, Math.abs(raw - center) / rightSpan);
-    return Math.max(-1, Math.min(1, applyDeadzone(normalized, GAMEPAD_STEERING_DEADZONE) * GAMEPAD_STEERING_GAIN));
   }
 
   function formatGamepadStatus(gamepad, steering, throttle, brake) {
@@ -1939,38 +1543,31 @@
 
   function applyGamepadCommand(gamepad) {
     const rawSteering = getGamepadAxis(gamepad, GAMEPAD_STEERING_AXIS);
-    const steering = normalizeSteeringAxis(rawSteering);
+    const steeringDirection = GAMEPAD_STEERING_INVERT ? -1 : 1;
+    const steering =
+      Math.max(-1, Math.min(1, applyDeadzone(rawSteering, GAMEPAD_STEERING_DEADZONE) * GAMEPAD_STEERING_GAIN * steeringDirection));
     const throttle = GAMEPAD_THROTTLE_AXIS >= 0
       ? normalizePedalAxis(
         getGamepadAxis(gamepad, GAMEPAD_THROTTLE_AXIS, gamepadPedalIdle.throttle),
         GAMEPAD_THROTTLE_INVERT,
-        gamepadPedalIdle.throttle,
-        GAMEPAD_THROTTLE_PRESSED
+        gamepadPedalIdle.throttle
       )
       : 0;
     const brake = GAMEPAD_BRAKE_AXIS >= 0
       ? normalizePedalAxis(
         getGamepadAxis(gamepad, GAMEPAD_BRAKE_AXIS, gamepadPedalIdle.brake),
         GAMEPAD_BRAKE_INVERT,
-        gamepadPedalIdle.brake,
-        GAMEPAD_BRAKE_PRESSED
+        gamepadPedalIdle.brake
       )
       : 0;
 
-    const steeringPwm = 1500 + steering * RC_STEERING_THROW;
+    const steeringPwm = 1500 + steering * 500;
     const throttlePwm = brake > 0
-      ? 1500 - brake * (1500 - getThrottleGearMin())
-      : 1500 + throttle * (getThrottleGearMax() - 1500);
+      ? 1500 - brake * (1500 - RC_THROTTLE_MIN)
+      : 1500 + throttle * 500;
 
     cancelThrottleBrake();
     setRcInputs(steeringPwm, throttlePwm);
-    driveHudState.steering = Math.max(
-      -1,
-      Math.min(1, (steeringPwm - 1500) / Math.max(1, Math.abs(RC_STEERING_THROW)))
-    );
-    driveHudState.throttle = throttle;
-    driveHudState.brake = brake;
-    updateDriveHud();
     lastGamepadStatus = formatGamepadStatus(gamepad, steering, throttle, brake);
   }
 
@@ -1983,7 +1580,6 @@
       if (gamepadSeen && performance.now() - lastGamepadAt > 500) {
         lastGamepadStatus = 'gamepad lost';
       }
-      updateControlUiMode();
       return;
     }
 
@@ -2005,7 +1601,6 @@
     } else {
       lastGamepadStatus = `gp#${gamepad.index} ready`;
     }
-    updateControlUiMode();
   }
 
   function startGamepadPoller() {
@@ -2285,8 +1880,6 @@
     const sendSignalingClose = options.sendSignalingClose === true;
     const currentWs = ws;
     const currentDataChannel = dataChannel;
-    const currentTelemetryChannel = telemetryChannel;
-    const currentRaceChannel = raceChannel;
     const currentPeerConnection = peerConnection;
 
     if (currentWs) {
@@ -2299,16 +1892,6 @@
       currentDataChannel.onopen = null;
       currentDataChannel.onclose = null;
       currentDataChannel.onmessage = null;
-    }
-    if (currentTelemetryChannel) {
-      currentTelemetryChannel.onopen = null;
-      currentTelemetryChannel.onclose = null;
-      currentTelemetryChannel.onmessage = null;
-    }
-    if (currentRaceChannel) {
-      currentRaceChannel.onopen = null;
-      currentRaceChannel.onclose = null;
-      currentRaceChannel.onmessage = null;
     }
     if (currentPeerConnection) {
       currentPeerConnection.ontrack = null;
@@ -2331,18 +1914,6 @@
       } catch (_) {
       }
     }
-    if (currentTelemetryChannel) {
-      try {
-        currentTelemetryChannel.close();
-      } catch (_) {
-      }
-    }
-    if (currentRaceChannel) {
-      try {
-        currentRaceChannel.close();
-      } catch (_) {
-      }
-    }
     if (currentPeerConnection) {
       try {
         currentPeerConnection.close();
@@ -2358,8 +1929,6 @@
       }
     }
     dataChannel = null;
-    telemetryChannel = null;
-    raceChannel = null;
     audioSender = null;
     peerConnection = null;
     ws = null;
@@ -2463,15 +2032,7 @@
   function createWebSocketUrl() {
     const host = endpointInput.value.trim() || DEFAULT_HOST;
     const protocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    if (!isRelaySignaling()) {
-      return `${protocol}${host}/ws`;
-    }
-    const query = new URLSearchParams({ role: 'pilot' });
-    const device = getRelayDevice();
-    if (device) {
-      query.set('device', device);
-    }
-    return `${protocol}${host}/ws?${query}`;
+    return `${protocol}${host}/ws`;
   }
 
   function createSignalingWebSocketUrl() {
@@ -2785,9 +2346,7 @@
         scheduleReconnect('dc closed');
         updateUiState();
       };
-      dataChannel.onmessage = isRelaySignaling()
-        ? () => {}
-        : (event) => handleDataChannelMessage(event.data);
+      dataChannel.onmessage = (event) => handleDataChannelMessage(event.data);
       if (dataChannel.readyState === 'open') {
         connectedAt = performance.now();
         pendingDcPings.clear();
@@ -2799,65 +2358,12 @@
       updateUiState();
     };
 
-    const attachTelemetryChannel = (channel) => {
-      if (telemetryChannel && telemetryChannel !== channel) {
-        telemetryChannel.onopen = null;
-        telemetryChannel.onclose = null;
-        telemetryChannel.onmessage = null;
-      }
-      telemetryChannel = channel;
-      telemetryChannel.onopen = () => {
-        recordEvent('telemetry dc open');
-        updateUiState();
-      };
-      telemetryChannel.onclose = () => {
-        recordEvent('telemetry dc close');
-        scheduleReconnect('dc closed');
-        updateUiState();
-      };
-      telemetryChannel.onmessage = (event) => handleDataChannelMessage(event.data);
-      updateUiState();
-    };
+    peer.ondatachannel = (event) => attachDataChannel(event.channel);
 
-    const attachRaceChannel = (channel) => {
-      if (raceChannel && raceChannel !== channel) {
-        raceChannel.onopen = null;
-        raceChannel.onclose = null;
-        raceChannel.onmessage = null;
-      }
-      raceChannel = channel;
-      raceChannel.onopen = () => {
-        recordEvent('race dc open');
-      };
-      raceChannel.onclose = () => {
-        recordEvent('race dc close');
-      };
-      raceChannel.onmessage = (event) => handleRaceStateMessage(event.data);
-    };
-
-    peer.ondatachannel = (event) => {
-      if (event.channel.label === 'momo-race') {
-        attachRaceChannel(event.channel);
-      } else if (event.channel.label === 'momo-telemetry') {
-        attachTelemetryChannel(event.channel);
-      } else {
-        attachDataChannel(event.channel);
-      }
-    };
-
-    attachDataChannel(peer.createDataChannel(isRelaySignaling() ? 'momo-command' : 'serial', {
+    attachDataChannel(peer.createDataChannel('serial', {
       ordered: false,
       maxRetransmits: 0,
     }));
-    if (isRelaySignaling()) {
-      attachTelemetryChannel(peer.createDataChannel('momo-telemetry', {
-        ordered: false,
-        maxRetransmits: 0,
-      }));
-      attachRaceChannel(peer.createDataChannel('momo-race', {
-        ordered: true,
-      }));
-    }
 
     const mediaStream = new MediaStream();
     remoteVideo.srcObject = mediaStream;
@@ -2895,13 +2401,11 @@
 
     const videoTransceiver = peer.addTransceiver('video', { direction: 'recvonly' });
     preferVideoCodec(videoTransceiver, getPreferredVideoCodec());
-    if (!isRelaySignaling()) {
-      const audioTransceiver = peer.addTransceiver('audio', { direction: 'sendrecv' });
-      audioSender = audioTransceiver.sender;
-      attachMicTrackToSender().catch((error) => {
-        recordEvent('mic attach failed', error.message || String(error));
-      });
-    }
+    const audioTransceiver = peer.addTransceiver('audio', { direction: 'sendrecv' });
+    audioSender = audioTransceiver.sender;
+    attachMicTrackToSender().catch((error) => {
+      recordEvent('mic attach failed', error.message || String(error));
+    });
 
     return peer;
   }
@@ -3378,26 +2882,7 @@
   function openInputSetup() {
     setDriveEnabled(false);
     const url = new URL('gamepad.html', location.href);
-    const device = getRelayDevice();
-    if (device) {
-      url.searchParams.set('device', device);
-    }
     window.open(url.toString(), '_blank', 'noopener');
-  }
-
-  function setElementHidden(element, hidden) {
-    if (!element) {
-      return;
-    }
-    element.hidden = hidden;
-    element.style.display = hidden ? 'none' : '';
-  }
-
-  function applyMediaControlsVisibility() {
-    const hidden = !MEDIA_CONTROLS_VISIBLE;
-    setElementHidden(btnAudio, hidden);
-    setElementHidden(btnAudioFilter, hidden);
-    setElementHidden(micControl, hidden);
   }
 
   function formatMode(mode) {
@@ -3491,6 +2976,118 @@
 
   steeringInput.addEventListener('input', syncCommandFromSliders);
   throttleInput.addEventListener('input', syncCommandFromThrottleSlider);
+  function normalizeRaceValue(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
+  }
+
+  function formatRaceTime(milliseconds) {
+    const value = normalizeRaceValue(milliseconds);
+    if (value === null) {
+      return '--:--.---';
+    }
+    const minutes = Math.floor(value / 60000);
+    const seconds = Math.floor((value % 60000) / 1000);
+    return `${minutes}:${String(seconds).padStart(2, '0')}.${String(value % 1000).padStart(3, '0')}`;
+  }
+
+  function raceDisplayTime(value) {
+    if (!raceClockRunning || raceSampledAt === 0) {
+      return value;
+    }
+    const base = normalizeRaceValue(value);
+    return base === null ? null : base + Math.max(0, performance.now() - raceSampledAt);
+  }
+
+  function racePhaseLabel(phase) {
+    switch (String(phase || '').toLowerCase()) {
+      case 'idle': return 'STANDBY';
+      case 'ready': return 'READY';
+      case 'countdown': return 'COUNTDOWN';
+      case 'green': return 'RUNNING';
+      case 'paused': return 'PAUSED';
+      case 'finished': return 'FINISHED';
+      default: return 'STANDBY';
+    }
+  }
+
+  function renderRaceState() {
+    if (!raceValues) {
+      raceOsd?.classList.remove('is-visible');
+      return;
+    }
+    raceOsd?.classList.add('is-visible');
+    raceCarId.textContent = raceValues.carId || 'RACE';
+    racePhase.textContent = racePhaseLabel(raceValues.phase);
+    raceLap.textContent = `${raceValues.lap === null ? '--' : raceValues.lap} / ${raceValues.totalLaps === null ? '--' : raceValues.totalLaps}`;
+    racePosition.textContent = `${raceValues.position === null ? '--' : raceValues.position} / ${raceValues.fieldSize}`;
+    raceAllTime.textContent = formatRaceTime(raceDisplayTime(raceValues.allTimeMs));
+    raceCurrentLap.textContent = formatRaceTime(raceDisplayTime(raceValues.currentLapMs));
+    raceLapTimes.textContent = `${formatRaceTime(raceValues.lapTimeMs)} / ${formatRaceTime(raceValues.bestLapMs)}`;
+  }
+
+  function applyRaceState(state) {
+    if (!state || state.type !== 'race_state' || state.version !== 2 || !Array.isArray(state.standings)) {
+      return;
+    }
+    const standing = RACE_CAR_ID ? state.standings.find((item) => item?.carId === RACE_CAR_ID) : null;
+    raceValues = {
+      carId: RACE_CAR_ID,
+      phase: state.phase,
+      lap: normalizeRaceValue(standing?.lap),
+      totalLaps: normalizeRaceValue(state.raceInfo?.totalLaps),
+      position: normalizeRaceValue(standing?.position) || null,
+      fieldSize: state.standings.length,
+      allTimeMs: normalizeRaceValue(standing?.allTimeMs),
+      currentLapMs: normalizeRaceValue(standing?.currentLapMs),
+      lapTimeMs: normalizeRaceValue(standing?.lapTimeMs),
+      bestLapMs: normalizeRaceValue(standing?.bestLapMs),
+    };
+    raceClockRunning = state.phase === 'green' && standing?.status === 'racing';
+    raceSampledAt = performance.now();
+    renderRaceState();
+  }
+
+  function scheduleRaceReconnect() {
+    if (!RACE_CONTROL_URL || raceReconnectTimer) {
+      return;
+    }
+    raceReconnectTimer = window.setTimeout(() => {
+      raceReconnectTimer = null;
+      connectRaceControl();
+    }, RACE_RECONNECT_DELAY_MS);
+  }
+
+  function connectRaceControl() {
+    if (!RACE_CONTROL_URL || raceWebSocket) {
+      return;
+    }
+    const headersUnsupported = RACE_CONTROL_TOKEN !== '';
+    let url = RACE_CONTROL_URL;
+    if (headersUnsupported) {
+      const target = new URL(url, location.href);
+      target.searchParams.set('viewerToken', RACE_CONTROL_TOKEN);
+      url = target.toString();
+    }
+    const socket = new WebSocket(url);
+    raceWebSocket = socket;
+    socket.onmessage = (event) => {
+      try {
+        applyRaceState(JSON.parse(event.data));
+      } catch (_) {
+      }
+    };
+    socket.onclose = () => {
+      if (raceWebSocket === socket) {
+        raceWebSocket = null;
+        scheduleRaceReconnect();
+      }
+    };
+    socket.onerror = () => socket.close();
+  }
+
+  window.setInterval(renderRaceState, 100);
+
   steeringInput.addEventListener('pointerdown', (event) => onRcPointerDown('steering', event));
   throttleInput.addEventListener('pointerdown', (event) => onRcPointerDown('throttle', event));
   steeringInput.addEventListener('pointerup', onRcPointerEnd);
@@ -3502,12 +3099,6 @@
   steeringInput.addEventListener('blur', () => onRcControlBlur('steering'));
   throttleInput.addEventListener('blur', () => onRcControlBlur('throttle'));
   btnDrive.addEventListener('click', toggleDrive);
-  if (driveHudMode) {
-    driveHudMode.addEventListener('click', toggleDrive);
-  }
-  if (driveHudConnection) {
-    driveHudConnection.addEventListener('click', disconnect);
-  }
   for (const button of gearButtons) {
     button.addEventListener('click', () => setThrottleGear(button.dataset.gear));
   }
@@ -3625,43 +3216,21 @@
   setVideoMirror(isMirrorEnabledByDefault());
   setAudioEnabled(false);
   setAudioFilterEnabled(AUDIO_FILTER_DEFAULT);
-  applyMediaControlsVisibility();
-  window.momoRaceHud = {
-    setState: setRaceState,
-    reset: () => setRaceState({ reset: true }),
-    getState: () => ({ ...raceState, laps: raceState.laps.slice() }),
-  };
-  window.addEventListener('momo-race-state', (event) => setRaceState(event.detail));
-  renderRaceHud();
-  window.setInterval(() => {
-    if (raceState.phase === 'RUNNING') {
-      renderRaceHud();
-    }
-  }, 100);
-  if (isRelaySignaling()) {
-    document.body.classList.add('relay-mode');
-    const device = getRelayDevice();
-    if (device) {
-      document.title = `${document.title} - ${device}`;
-    }
-    for (const control of [btnAudio, btnAudioFilter, btnMic, micVolumeInput,
-      btnApplyMode, btnRefreshMode, btnRefreshDevice]) {
-      if (control) {
-        control.disabled = true;
-      }
-    }
-    recordEvent('relay mode', 'video + telemetry + RC command');
-  }
   setDebugOsd(isDebugEnabledByDefault());
-  updateOsdScale();
-  window.addEventListener('resize', updateOsdScale);
-  window.visualViewport?.addEventListener('resize', updateOsdScale);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       visibleSince = performance.now();
     }
   });
-  window.addEventListener('pagehide', shutdownForPageHide);
+  window.addEventListener('pagehide', () => {
+    if (raceReconnectTimer) {
+      window.clearTimeout(raceReconnectTimer);
+      raceReconnectTimer = null;
+    }
+    try { raceWebSocket?.close(); } catch (_) {}
+    raceWebSocket = null;
+    shutdownForPageHide();
+  });
   startFpsMonitor();
   startLinkMonitor();
   startStatsMonitor();
@@ -3671,7 +3240,7 @@
   startRoomLockStatusMonitor();
   startGamepadPoller();
   updateGearUi();
-  updateControlUiMode();
+  connectRaceControl();
   if (AUTO_START) {
     connect().catch((error) => {
       recordEvent('connect failed', error.message || String(error));

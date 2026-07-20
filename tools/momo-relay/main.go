@@ -28,6 +28,7 @@ var webAssets embed.FS
 const (
 	commandLabel   = "momo-command"
 	telemetryLabel = "momo-telemetry"
+	raceLabel      = "momo-race"
 	upstreamLabel  = "serial"
 
 	defaultRTPStallTimeout      = 5 * time.Second
@@ -55,11 +56,13 @@ type viewer struct {
 	pc        *webrtc.PeerConnection
 	telemetry atomic.Pointer[webrtc.DataChannel]
 	command   atomic.Pointer[webrtc.DataChannel]
+	race      atomic.Pointer[webrtc.DataChannel]
 }
 
 type relay struct {
 	name                 string
 	upstreamURL          string
+	raceCarID            string
 	allowObserverCommand bool
 
 	videoTrack *webrtc.TrackLocalStaticRTP
@@ -90,10 +93,18 @@ type relay struct {
 	lastOutputTimestamp   uint32
 	lastInputTimestamp    uint32
 	lastTimestampStep     uint32
+
+	raceStateMu sync.RWMutex
+	raceState   string
 }
 
 type relayServer struct {
 	sources map[string]*relay
+}
+
+type raceStateEnvelope struct {
+	Type    string `json:"type"`
+	Version int    `json:"version"`
 }
 
 type sourceFlag []string
@@ -107,7 +118,7 @@ func (values *sourceFlag) Set(value string) error {
 	return nil
 }
 
-func newRelay(name string, upstreamURL string, allowObserverCommand bool,
+func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCommand bool,
 	rtpStallTimeout time.Duration, upstreamStartTimeout time.Duration) (*relay, error) {
 	api, err := newH264API()
 	if err != nil {
@@ -120,6 +131,7 @@ func newRelay(name string, upstreamURL string, allowObserverCommand bool,
 	return &relay{
 		name:                 name,
 		upstreamURL:          upstreamURL,
+		raceCarID:            raceCarID,
 		allowObserverCommand: allowObserverCommand,
 		videoTrack:           videoTrack,
 		api:                  api,
@@ -458,6 +470,44 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	}
 }
 
+// Race Control の状態は操縦テレメトリーと分離した reliable DataChannel で配る。
+// 順位やフラグは最新値を確実に渡す必要があり、低遅延・非信頼の telemetry channel
+// に混在させると再送されず、Viewer が古い状態のまま残るためである。
+func (r *relay) publishRaceState(message string) {
+	r.raceStateMu.Lock()
+	r.raceState = message
+	r.raceStateMu.Unlock()
+	r.broadcastRaceState(message)
+}
+
+func (r *relay) currentRaceState() string {
+	r.raceStateMu.RLock()
+	defer r.raceStateMu.RUnlock()
+	return r.raceState
+}
+
+func (r *relay) broadcastRaceState(message string) {
+	r.viewersMu.RLock()
+	defer r.viewersMu.RUnlock()
+	for _, client := range r.viewers {
+		if channel := client.race.Load(); channel != nil {
+			if err := channel.SendText(message); err != nil {
+				log.Printf("send race state to viewer %d: %v", client.id, err)
+			}
+		}
+	}
+}
+
+func (r *relay) sendCurrentRaceState(client *viewer, channel *webrtc.DataChannel) {
+	message := r.currentRaceState()
+	if message == "" {
+		return
+	}
+	if err := channel.SendText(message); err != nil {
+		log.Printf("send cached race state to viewer %d: %v", client.id, err)
+	}
+}
+
 func (r *relay) broadcastCommand(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
@@ -622,6 +672,13 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				r.handleCommand(client, message)
 			})
 			channel.OnClose(func() { client.command.CompareAndSwap(channel, nil) })
+		case raceLabel:
+			channel.OnOpen(func() {
+				client.race.Store(channel)
+				log.Printf("viewer %d race channel opened", client.id)
+				r.sendCurrentRaceState(client, channel)
+			})
+			channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
 		default:
 			log.Printf("viewer %d opened unsupported DataChannel %q", client.id, channel.Label())
 		}
@@ -702,6 +759,81 @@ func parseSource(value string) (string, string, error) {
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
 }
 
+func raceMessageForCar(state []byte, carID string) (string, error) {
+	if strings.TrimSpace(carID) == "" {
+		return "", errors.New("race car ID is empty")
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(state, &payload); err != nil {
+		return "", fmt.Errorf("decode race state: %w", err)
+	}
+	carIDJSON, err := json.Marshal(carID)
+	if err != nil {
+		return "", fmt.Errorf("encode race car ID: %w", err)
+	}
+	payload["viewerCarId"] = carIDJSON
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode race state: %w", err)
+	}
+	return "RACE:" + string(encoded), nil
+}
+
+func (server *relayServer) startRaceControl(ctx context.Context, raceURL string, viewerToken string) {
+	if strings.TrimSpace(raceURL) == "" {
+		return
+	}
+	go func() {
+		for {
+			if err := server.connectRaceControl(ctx, raceURL, viewerToken); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("Race Control disconnected: %v; retrying in 3 seconds", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
+	}()
+}
+
+func (server *relayServer) connectRaceControl(ctx context.Context, raceURL string, viewerToken string) error {
+	headers := http.Header{}
+	if strings.TrimSpace(viewerToken) != "" {
+		headers.Set("Authorization", "Bearer "+strings.TrimSpace(viewerToken))
+	}
+	log.Printf("connecting Race Control: %s", raceURL)
+	ws, _, err := websocket.DefaultDialer.DialContext(ctx, raceURL, headers)
+	if err != nil {
+		return fmt.Errorf("connect Race Control WebSocket: %w", err)
+	}
+	defer ws.Close()
+
+	for {
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("read Race Control WebSocket: %w", err)
+		}
+		var envelope raceStateEnvelope
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			log.Printf("ignore malformed Race Control message: %v", err)
+			continue
+		}
+		if envelope.Type != "race_state" || envelope.Version != 2 {
+			log.Printf("ignore unsupported Race Control message: type=%q version=%d", envelope.Type, envelope.Version)
+			continue
+		}
+		for _, source := range server.sources {
+			message, err := raceMessageForCar(data, source.raceCarID)
+			if err != nil {
+				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
+				continue
+			}
+			source.publishRaceState(message)
+		}
+	}
+}
+
 func main() {
 	var upstream string
 	var listen string
@@ -709,9 +841,15 @@ func main() {
 	var rtpStallTimeout time.Duration
 	var upstreamStartTimeout time.Duration
 	var sources sourceFlag
+	var raceCars sourceFlag
+	var raceURL string
+	var raceViewerToken string
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
+	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
+	flag.StringVar(&raceURL, "race-url", "", "Race Control WebSocket URL for race_state v2 distribution")
+	flag.StringVar(&raceViewerToken, "race-viewer-token", "", "Race Control Viewer Bearer token")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
@@ -727,6 +865,17 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	raceCarBySource := make(map[string]string, len(raceCars))
+	for _, raceCarValue := range raceCars {
+		name, carID, err := parseSource(raceCarValue)
+		if err != nil {
+			log.Fatalf("invalid -race-car: %v", err)
+		}
+		if _, exists := raceCarBySource[name]; exists {
+			log.Fatalf("duplicate Race Control source mapping: %q", name)
+		}
+		raceCarBySource[name] = carID
+	}
 	serverRelay := &relayServer{sources: make(map[string]*relay, len(sources))}
 	for _, sourceValue := range sources {
 		name, sourceURL, err := parseSource(sourceValue)
@@ -736,7 +885,11 @@ func main() {
 		if _, exists := serverRelay.sources[name]; exists {
 			log.Fatalf("duplicate source name: %q", name)
 		}
-		relay, err := newRelay(name, sourceURL, allowObserverCommand,
+		raceCarID := raceCarBySource[name]
+		if raceURL != "" && raceCarID == "" {
+			log.Fatalf("Race Control is enabled but source %q has no -race-car mapping", name)
+		}
+		relay, err := newRelay(name, sourceURL, raceCarID, allowObserverCommand,
 			rtpStallTimeout, upstreamStartTimeout)
 		if err != nil {
 			log.Fatal(err)
@@ -744,6 +897,7 @@ func main() {
 		serverRelay.sources[name] = relay
 		relay.start(ctx)
 	}
+	serverRelay.startRaceControl(ctx, raceURL, raceViewerToken)
 
 	webRoot, err := fs.Sub(webAssets, "web")
 	if err != nil {

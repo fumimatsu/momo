@@ -459,6 +459,8 @@ int main(int argc, char* argv[]) {
     if (use_p2p_multi_receiver) {
       P2PMultiReceiverClientConfig config;
       config.no_google_stun = args.no_google_stun;
+      sdl_renderer->ConfigureSourceFlips(
+          args.p2p_multi_receiver_source_flips);
       for (const std::string& source : args.p2p_multi_receiver_sources) {
         const size_t separator = source.find('=');
         config.sources.push_back(

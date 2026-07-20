@@ -43,6 +43,7 @@ webrtc_logs_*
 /_source
 /_install
 /_package
+/_tools
 
 # Claude Code
 CLAUDE.local.md
