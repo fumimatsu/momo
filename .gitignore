@@ -50,3 +50,14 @@ CLAUDE.local.md
 
 # Serena
 .serena
+
+# Local Relay / Observer runtime output
+/Enqueue
+/dist/
+/fpv-*.png
+/momo-fpv-*.png
+/tools/mads-observer-shared-frame-test.*.log
+/tools/momo-relay/.toolchain/
+/tools/momo-relay/*.stdout.log
+/tools/momo-relay/*.stderr.log
+/tools/momo-relay/*.exe~
