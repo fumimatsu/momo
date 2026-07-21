@@ -198,14 +198,19 @@
       padding: 9px 11px 10px;
       transform: scale(var(--osd-scale));
       transform-origin: bottom right;
+      pointer-events: auto;
     }
 
     .race-history ol {
       display: grid;
       gap: 4px;
       margin: 7px 0 0;
-      padding: 0;
+      max-height: 98px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 0 4px 0 0;
       list-style: none;
+      touch-action: pan-y;
     }
 
     .race-history li {

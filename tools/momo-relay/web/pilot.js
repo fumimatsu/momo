@@ -262,6 +262,7 @@
   let roomLockHeartbeatTimer = null;
   let roomLockHeartbeatFailures = 0;
   let activeRaceRunId = '';
+  const receivedRaceLapHistory = new Map();
   const raceState = {
     phase: 'STANDBY',
     lap: null,
@@ -300,7 +301,11 @@
     const viewport = window.visualViewport;
     const width = viewport?.width || window.innerWidth;
     const height = viewport?.height || window.innerHeight;
-    const scale = Math.max(1, Math.min(2, width / 1920, height / 1080));
+    // FHD を基準にしていた従来値では、1440p のウルトラワイドで OSD が小さすぎた。
+    // 720p 以下は従来どおり、FHD 以上は従来比 1.5 倍まで拡大する。
+    const isUltrawide = width / Math.max(height, 1) >= 2;
+    const ultrawideBoost = isUltrawide ? 1.12 : 1;
+    const scale = Math.max(1, Math.min(3, ultrawideBoost * 1.5 * width / 1920, ultrawideBoost * 1.5 * height / 1080));
     document.documentElement.style.setProperty('--osd-scale', scale.toFixed(4));
     window.requestAnimationFrame(() => {
       const driveHudHeight = driveHud?.offsetHeight || 0;
@@ -892,8 +897,7 @@
         return { lap, timeMs };
       })
       .filter((entry) => entry !== null)
-      .slice(-5)
-      .reverse();
+      .sort((left, right) => right.lap - left.lap);
   }
 
   function renderRaceHud() {
@@ -958,11 +962,24 @@
     const standing = carId ? state.standings.find((item) => item?.carId === carId) : null;
     const runId = typeof state.raceRunId === 'string' ? state.raceRunId : '';
     const isNewRun = Boolean(runId && runId !== activeRaceRunId);
+    if (isNewRun) {
+      receivedRaceLapHistory.clear();
+    }
     if (runId) {
       activeRaceRunId = runId;
     }
     const lap = normalizeRaceNumber(standing?.lap);
     const lastLapMs = normalizeRaceNumber(standing?.lapTimeMs);
+    // MADSYSTEM はラップ確定後に LapNum を次周回へ進めてから snapshot を送る。
+    // 例: lap=2 と lapTimeMs は「1 周目の確定タイム」を表す。
+    const completedLap = lap === null ? null : Math.max(1, lap - 1);
+    if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
+      receivedRaceLapHistory.set(completedLap, lastLapMs);
+    }
+    const laps = Array.from(receivedRaceLapHistory, ([completedLap, timeMs]) => ({
+      lap: completedLap,
+      timeMs,
+    }));
     return {
       reset: isNewRun,
       phase: displayRacePhase(state.phase),
@@ -975,9 +992,7 @@
       lastLapMs,
       bestLapMs: normalizeRaceNumber(standing?.bestLapMs),
       clockRunning: state.phase === 'green' && standing?.status === 'racing',
-      laps: lap !== null && lap > 0 && lastLapMs !== null && lastLapMs > 0
-        ? [{ lap, timeMs: lastLapMs }]
-        : [],
+      laps,
     };
   }
 
