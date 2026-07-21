@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $viewerRoot = (Resolve-Path -LiteralPath $ViewerRepository).Path
 $sourceDirectory = Join-Path $viewerRoot 'variants\relay'
 $destinationDirectory = Join-Path $repoRoot 'tools\momo-relay\web'
-$sourceFiles = @('pilot.html', 'pilot.js')
+$sourceFiles = @('pilot.html', 'pilot.js', 'ffb-bridge.js')
 
 foreach ($name in $sourceFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $sourceDirectory $name))) {

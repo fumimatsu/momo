@@ -8,7 +8,7 @@
 | `momo` | Momo 本体、Relay、Observer | Relay Pilot の配布先を持つ |
 | `momo-fpv` | Pi 設定、ファームウェア、直結 Viewer の運用配布 | Relay Pilot の正本を持たない |
 
-Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` である。`momo/tools/momo-relay/web/` は Relay binary に埋め込む配布コピーであり、直接編集しない。
+Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` である。`pilot.html`、`pilot.js`、`ffb-bridge.js` を 1 組として扱う。`momo/tools/momo-relay/web/` は Relay binary に埋め込む配布コピーであり、直接編集しない。
 
 ## 更新手順
 

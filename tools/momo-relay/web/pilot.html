@@ -255,6 +255,24 @@
       pointer-events: auto;
     }
 
+    .ffb-test-panel {
+      display: grid;
+      grid-template-columns: auto minmax(160px, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+      width: min(760px, 100%);
+      margin: 10px auto 0;
+      padding: 8px 10px;
+      background: rgba(0, 0, 0, 0.50);
+      color: #ffffff;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 12px;
+      pointer-events: auto;
+    }
+
+    .ffb-test-panel strong { color: #ffca57; }
+    .ffb-test-panel .ffb-status { grid-column: 1 / -1; color: #c7d2df; overflow-wrap: anywhere; }
+
     .status {
       position: fixed;
       top: calc(16px + env(safe-area-inset-top));
@@ -1178,8 +1196,21 @@
       </div>
       <input id="data_text" type="hidden" value="S:1500,T:1500" autocomplete="off" spellcheck="false">
     </div>
+    <div id="ffbTestPanel" class="ffb-test-panel" hidden aria-label="Force feedback steering test">
+      <strong>FFB TEST</strong>
+      <select id="ffbDevice" aria-label="Force feedback device"><option value="">Connect bridge first</option></select>
+      <button id="btnFfbConnect" type="button">Connect FFB</button>
+      <button id="btnFfbAcquire" type="button" disabled>Acquire</button>
+      <label><input id="ffbInvert" type="checkbox" checked> Reverse</label>
+      <button id="btnFfbEnable" type="button" disabled>Enable FFB</button>
+      <button id="btnFfbPulseNegative" type="button" disabled>Pulse −</button>
+      <button id="btnFfbPulsePositive" type="button" disabled>Pulse +</button>
+      <button id="btnFfbStop" type="button" disabled>Stop FFB</button>
+      <span id="ffbState" class="ffb-status">FFB test disabled</span>
+    </div>
   </div>
 
+<script src="./ffb-bridge.js"></script>
 <script src="./pilot.js"></script>
 </body>
 </html>

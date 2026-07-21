@@ -1,6 +1,6 @@
 # Local Relay Web UI 運用
 
-`web/` は Relay バイナリへ `go:embed` で埋め込まれる。`pilot.html` または `pilot.js` を変更しただけでは、起動済み Relay の UI は変わらない。Relay を再ビルドして再起動した後に反映される。
+`web/` は Relay バイナリへ `go:embed` で埋め込まれる。`pilot.html`、`pilot.js`、`ffb-bridge.js` を変更しただけでは、起動済み Relay の UI は変わらない。Relay を再ビルドして再起動した後に反映される。
 
 `web/` は配布コピーである。正本は `momo-fpv-viewer/variants/relay/` にあり、更新時は
 `tools/sync-relay-viewer.ps1` を使う。詳細は [Viewer の正本と Relay 配布](../../docs/viewer-integration.md) を参照する。
