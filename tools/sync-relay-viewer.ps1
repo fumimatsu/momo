@@ -8,13 +8,20 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $viewerRoot = (Resolve-Path -LiteralPath $ViewerRepository).Path
-$sourceDirectory = Join-Path $viewerRoot 'variants\relay'
 $destinationDirectory = Join-Path $repoRoot 'tools\momo-relay\web'
-$sourceFiles = @('pilot.html', 'pilot.js', 'ffb-bridge.js')
+$sourceFiles = @(
+    [ordered]@{ Source = 'variants\relay\pilot.html'; Destination = 'pilot.html' },
+    [ordered]@{ Source = 'variants\relay\pilot.js'; Destination = 'pilot.js' },
+    [ordered]@{ Source = 'variants\relay\ffb-bridge.js'; Destination = 'ffb-bridge.js' },
+    [ordered]@{ Source = 'gamepad.html'; Destination = 'gamepad.html' },
+    [ordered]@{ Source = 'gamepad.js'; Destination = 'gamepad.js' },
+    [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' }
+)
 
-foreach ($name in $sourceFiles) {
-    if (-not (Test-Path -LiteralPath (Join-Path $sourceDirectory $name))) {
-        throw "Relay Viewer source was not found: $(Join-Path $sourceDirectory $name)"
+foreach ($file in $sourceFiles) {
+    $sourcePath = Join-Path $viewerRoot $file.Source
+    if (-not (Test-Path -LiteralPath $sourcePath)) {
+        throw "Relay Viewer source was not found: $sourcePath"
     }
 }
 
@@ -37,8 +44,8 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Could not resolve Viewer source commit.'
 }
 
-foreach ($name in $sourceFiles) {
-    Copy-Item -LiteralPath (Join-Path $sourceDirectory $name) -Destination (Join-Path $destinationDirectory $name) -Force
+foreach ($file in $sourceFiles) {
+    Copy-Item -LiteralPath (Join-Path $viewerRoot $file.Source) -Destination (Join-Path $destinationDirectory $file.Destination) -Force
 }
 
 $metadata = [ordered]@{
@@ -46,7 +53,7 @@ $metadata = [ordered]@{
     sourceCommit = $commit
     sourceDirty = $dirty.Count -gt 0
     variant = 'relay-pilot'
-    files = $sourceFiles
+    files = @($sourceFiles | ForEach-Object { $_.Destination })
 }
 $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destinationDirectory 'viewer-source.json') -Encoding utf8
 Write-Host "Synchronized Relay Viewer from $commit"
