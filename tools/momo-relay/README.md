@@ -5,6 +5,28 @@
 `web/` は配布コピーである。正本は `momo-fpv-viewer/variants/relay/` にあり、更新時は
 `tools/sync-relay-viewer.ps1` を使う。詳細は [Viewer の正本と Relay 配布](../../docs/viewer-integration.md) を参照する。
 
+外部 Pilot を Ayame / TURN 経由で接続する将来構成は、[Relay 経由 Ayame 外部 Pilot 設計](../../doc/RELAY_AYAME_EXTERNAL_PILOT_DESIGN.md) を参照する。現段階では未実装であり、Local Relay の 4 台計測・運用を優先する。
+
+Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面の設計は、[Relay Operations Dashboard 設計](../../doc/RELAY_OPERATIONS_DASHBOARD_DESIGN.md) を参照する。
+
+## Operations Dashboard
+
+Relay を再ビルドして起動すると、運営用の読み取り専用画面を配信する。
+
+```text
+http://<relay-host>:8090/operations.html
+```
+
+`/operations.html` と `/api/v1/status` は既定で loopback からしか開けない。別の運営PCから見る時は、
+Relay 起動時に管理 LAN の CIDR を明示する。
+
+```powershell
+.\tools\start-mads-observer.ps1 -RebuildRelay -OperationsAllowCidr '192.168.11.0/24'
+```
+
+Windows Firewall も同じ管理用サブネットだけに制限する。Relay、Pi、Observer をインターネットへ
+公開するための機能ではない。
+
 Relay の Pilot URL は query string を使う。Pi 直結 Momo の静的ファイル配信と違い、hash は使わない。
 
 ```text

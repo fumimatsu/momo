@@ -4,6 +4,7 @@ param(
     [string]$Device115 = '192.168.11.5',
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
+    [string]$OperationsAllowCidr = '127.0.0.1/32',
     [switch]$RebuildRelay
 )
 
@@ -69,7 +70,8 @@ if ($relayRunning.Count -eq 0) {
         '-source', "11.5=ws://$Device115`:8080/ws",
         '-race-car', '11.3=CP-1',
         '-race-car', '11.4=CP-2',
-        '-race-car', '11.5=CP-3'
+        '-race-car', '11.5=CP-3',
+        '-operations-allow-cidr', $OperationsAllowCidr
     )
     if (-not [string]::IsNullOrWhiteSpace($RaceControlUrl)) {
         $relayArgs += '-race-url', $RaceControlUrl.Trim()

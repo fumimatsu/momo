@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Relay Operations</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #0b0d0f;
+      --surface: #13171a;
+      --surface-strong: #1a2024;
+      --line: #30383e;
+      --line-strong: #46515a;
+      --text: #edf1f2;
+      --muted: #9aa7ad;
+      --cyan: #3bc8dc;
+      --green: #5bd36c;
+      --amber: #f6c54c;
+      --red: #ef625d;
+      --blue: #6baee8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--canvas);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+    button { font: inherit; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-height: 70px;
+      padding: 12px 22px;
+      border-bottom: 1px solid var(--line-strong);
+      background: #101416;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      min-width: 0;
+    }
+    .brand-mark {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border: 1px solid var(--cyan);
+      color: var(--cyan);
+      font-size: 18px;
+    }
+    h1 { margin: 0; font-size: 22px; font-weight: 750; }
+    .subhead { color: var(--muted); font-size: 12px; }
+    .summary { display: flex; flex: 1; justify-content: center; gap: 18px; flex-wrap: wrap; }
+    .summary-item { display: flex; align-items: baseline; gap: 6px; color: var(--muted); font-size: 12px; }
+    .summary-item strong { color: var(--text); font-size: 16px; }
+    .summary-item strong.good { color: var(--green); }
+    .summary-item strong.warn { color: var(--amber); }
+    .summary-item strong.bad { color: var(--red); }
+    .view-switch { display: flex; gap: 6px; }
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #171c20;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 19px;
+    }
+    .icon-button[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); background: #13262a; }
+    .main { padding: 18px 22px 26px; }
+    .status-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .status-line strong { color: var(--text); }
+    .status-line.error strong { color: var(--red); }
+    .source-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(295px, 1fr));
+      gap: 12px;
+    }
+    .source-card {
+      min-height: 294px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--line-strong);
+      border-radius: 6px;
+      background: var(--surface);
+      padding: 14px;
+    }
+    .source-card.state-streaming { border-left-color: var(--green); }
+    .source-card.state-waiting, .source-card.state-connecting { border-left-color: var(--cyan); }
+    .source-card.state-stale { border-left-color: var(--amber); }
+    .source-card.state-recovering, .source-card.state-disconnected { border-left-color: var(--red); }
+    .card-head { display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 12px; }
+    .source-id { color: var(--text); font-size: 46px; font-weight: 800; line-height: .85; }
+    .car-id { color: var(--muted); font-size: 12px; margin-top: 7px; }
+    .state-label { font-size: 14px; font-weight: 750; white-space: nowrap; }
+    .state-streaming { color: var(--green); }
+    .state-waiting, .state-connecting { color: var(--cyan); }
+    .state-stale { color: var(--amber); }
+    .state-recovering, .state-disconnected { color: var(--red); }
+    .state-dot { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: currentColor; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); margin-top: 15px; }
+    .metric { min-width: 0; padding: 11px 8px 10px 0; }
+    .metric + .metric { border-left: 1px solid var(--line); padding-left: 9px; }
+    .metric-label { display: block; color: var(--muted); font-size: 10px; font-weight: 700; }
+    .metric-value { display: block; margin-top: 5px; color: var(--text); font-size: 19px; font-weight: 720; overflow-wrap: anywhere; }
+    .metric-value.compact { font-size: 14px; }
+    .channel-row { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1.25fr; gap: 8px; padding: 11px 0; border-top: 1px solid var(--line); }
+    .channel { min-width: 0; color: var(--muted); font-size: 11px; }
+    .channel b { display: block; margin-top: 4px; color: var(--text); font-size: 13px; }
+    .channel b.yes { color: var(--green); }
+    .channel b.no { color: var(--muted); }
+    .recovery { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .recovery strong { color: var(--text); }
+    .recovery .fault { color: var(--red); text-align: right; overflow-wrap: anywhere; }
+    .list-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+    table { width: 100%; min-width: 1040px; border-collapse: collapse; text-align: left; }
+    th, td { padding: 12px 13px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: middle; }
+    th { color: var(--muted); font-size: 10px; font-weight: 750; background: #171c20; }
+    tr:last-child td { border-bottom: 0; }
+    td strong { font-size: 15px; }
+    .list-state { display: inline-flex; align-items: center; gap: 7px; font-weight: 750; }
+    .list-state .state-dot { width: 8px; height: 8px; margin: 0; }
+    .muted { color: var(--muted); }
+    .hidden { display: none !important; }
+    @media (max-width: 760px) {
+      .topbar { align-items: flex-start; gap: 12px; padding: 12px 14px; }
+      .summary { display: none; }
+      .main { padding: 14px; }
+      h1 { font-size: 18px; }
+      .source-grid { grid-template-columns: 1fr; }
+      .status-line { align-items: flex-start; flex-direction: column; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">▦</div>
+      <div><h1>RELAY OPERATIONS</h1><div class="subhead">LOCAL TRANSPORT MONITOR</div></div>
+    </div>
+    <div id="summary" class="summary" aria-live="polite"></div>
+    <div class="view-switch" aria-label="表示形式">
+      <button id="gridButton" class="icon-button" type="button" aria-label="カード表示" title="カード表示" aria-pressed="true">▦</button>
+      <button id="listButton" class="icon-button" type="button" aria-label="一覧表示" title="一覧表示" aria-pressed="false">☷</button>
+    </div>
+  </header>
+  <main class="main">
+    <div id="statusLine" class="status-line"><span>STATUS API</span><strong>CONNECTING</strong></div>
+    <section id="grid" class="source-grid" aria-live="polite"></section>
+    <section id="list" class="list-wrap hidden" aria-label="Relay source一覧"></section>
+  </main>
+  <script>
+    (() => {
+      const POLL_MS = 1000;
+      const VIEW_STORAGE_KEY = 'momo-relay-operations-view';
+      const grid = document.getElementById('grid');
+      const list = document.getElementById('list');
+      const gridButton = document.getElementById('gridButton');
+      const listButton = document.getElementById('listButton');
+      const summary = document.getElementById('summary');
+      const statusLine = document.getElementById('statusLine');
+      let activeView = localStorage.getItem(VIEW_STORAGE_KEY) === 'list' ? 'list' : 'grid';
+      let lastSnapshot = null;
+      let refreshInFlight = false;
+
+      function element(name, className, text) {
+        const node = document.createElement(name);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function statusClass(value) { return `state-${String(value || 'waiting').toLowerCase()}`; }
+      function rate(value) { return Number.isFinite(value) ? value.toFixed(1) : '--'; }
+      function age(value) { return Number.isFinite(value) ? `${value} ms` : '--'; }
+      function bool(value) { return value ? 'OPEN' : 'OFF'; }
+      function totalPli(recovery) {
+        const counts = recovery?.pliRequests || {};
+        return (counts.newTrack || 0) + (counts.viewerConnect || 0) + (counts.watchdog || 0);
+      }
+
+      function metric(label, value, compact) {
+        const node = element('div', 'metric');
+        node.append(element('span', 'metric-label', label), element('strong', `metric-value${compact ? ' compact' : ''}`, value));
+        return node;
+      }
+
+      function channel(label, value, on) {
+        const node = element('div', 'channel', label);
+        node.append(element('b', on ? 'yes' : 'no', value));
+        return node;
+      }
+
+      function card(source) {
+        const state = String(source.state || 'WAITING');
+        const stateClass = statusClass(state);
+        const root = element('article', `source-card ${stateClass}`);
+        const head = element('div', 'card-head');
+        const sourceBox = element('div');
+        sourceBox.append(element('div', 'source-id', source.id || '--'), element('div', 'car-id', source.raceCarId || 'CAR ID --'));
+        const upstream = element('div');
+        upstream.append(element('div', 'metric-label', 'UPSTREAM'), element('strong', 'metric-value compact', source.upstream?.peerState || 'new'));
+        const stateBox = element('div', stateClass);
+        stateBox.append(element('div', 'state-label', state), element('div', 'state-dot'));
+        head.append(sourceBox, upstream, stateBox);
+        root.append(head);
+
+        const metrics = element('div', 'metric-grid');
+        metrics.append(
+          metric('LAST RTP', age(source.upstream?.lastRtpAgeMs)),
+          metric('RX AU FPS', rate(source.upstream?.ingressAccessUnitFps)),
+          metric('RELAY WRITE FPS', rate(source.upstream?.relayWriteAccessUnitFps))
+        );
+        root.append(metrics);
+
+        const channels = element('div', 'channel-row');
+        channels.append(
+          channel('PILOT', source.downstream?.connectedPilots ? 'CONNECTED' : source.downstream?.pilotLeaseReserved ? 'RESERVED' : 'NONE', Boolean(source.downstream?.connectedPilots)),
+          channel('OBSERVERS', String(source.downstream?.connectedObservers || 0), (source.downstream?.connectedObservers || 0) > 0),
+          channel('NEGOTIATING', String(source.downstream?.negotiatingPeers || 0), (source.downstream?.negotiatingPeers || 0) > 0),
+          channel('TELEMETRY / RACE', `${source.downstream?.telemetryChannelsOpen || 0} / ${source.downstream?.raceChannelsOpen || 0}`, Boolean(source.downstream?.telemetryChannelsOpen || source.downstream?.raceChannelsOpen))
+        );
+        root.append(channels);
+
+        const recovery = element('div', 'recovery');
+        recovery.append(
+          element('span', '', `PLI ${totalPli(source.recovery)}  STALL ${source.recovery?.rtpStalls || 0}`),
+          element('span', '', `RETRY ${source.recovery?.retryAttempts || 0}`),
+          element('strong', source.recovery?.lastErrorCode ? 'fault' : '', source.recovery?.lastErrorCode || `GEN ${source.upstream?.generation || 0}`)
+        );
+        root.append(recovery);
+        return root;
+      }
+
+      function cell(text, className) { return element('td', className || '', text); }
+
+      function listTable(sources) {
+        const table = element('table');
+        const header = element('thead');
+        const headerRow = element('tr');
+        ['SOURCE', 'STATE', 'UPSTREAM', 'LAST RTP', 'RX FPS', 'WRITE FPS', 'PILOT', 'OBSERVER / CONNECTING', 'TLM / RACE', 'RECOVERY'].forEach((label) => headerRow.append(cell(label)));
+        header.append(headerRow);
+        const body = element('tbody');
+        sources.forEach((source) => {
+          const row = element('tr');
+          const state = String(source.state || 'WAITING');
+          const stateCell = element('td');
+          const label = element('span', `list-state ${statusClass(state)}`);
+          label.append(element('span', 'state-dot'), document.createTextNode(state));
+          stateCell.append(label);
+          row.append(
+            cell(source.raceCarId ? `${source.id}  ${source.raceCarId}` : source.id || '--'),
+            stateCell,
+            cell(`${source.upstream?.peerState || 'new'} / ${bool(source.upstream?.serialOpen)}`),
+            cell(age(source.upstream?.lastRtpAgeMs)),
+            cell(rate(source.upstream?.ingressAccessUnitFps)),
+            cell(rate(source.upstream?.relayWriteAccessUnitFps)),
+            cell(source.downstream?.connectedPilots ? 'CONNECTED' : source.downstream?.pilotLeaseReserved ? 'CONNECTING' : '--'),
+            cell(`${source.downstream?.connectedObservers || 0} / ${source.downstream?.negotiatingPeers || 0}`),
+            cell(`${source.downstream?.telemetryChannelsOpen || 0} / ${source.downstream?.raceChannelsOpen || 0}`),
+            cell(source.recovery?.lastErrorCode || `PLI ${totalPli(source.recovery)} / R${source.recovery?.retryAttempts || 0}`)
+          );
+          body.append(row);
+        });
+        table.append(header, body);
+        return table;
+      }
+
+      function renderSummary(sources) {
+        const totals = { STREAMING: 0, WAITING: 0, CONNECTING: 0, STALE: 0, RECOVERING: 0, DISCONNECTED: 0 };
+        sources.forEach((source) => { totals[String(source.state || 'WAITING')] = (totals[String(source.state || 'WAITING')] || 0) + 1; });
+        summary.replaceChildren(
+          summaryItem('SOURCES', String(sources.length), ''),
+          summaryItem('STREAMING', String(totals.STREAMING || 0), 'good'),
+          summaryItem('WARNING', String((totals.STALE || 0) + (totals.CONNECTING || 0) + (totals.WAITING || 0)), 'warn'),
+          summaryItem('FAULT', String((totals.RECOVERING || 0) + (totals.DISCONNECTED || 0)), 'bad')
+        );
+      }
+
+      function summaryItem(label, value, tone) {
+        const node = element('div', 'summary-item', label);
+        node.append(element('strong', tone, value));
+        return node;
+      }
+
+      function render(snapshot) {
+        const sources = Array.isArray(snapshot?.sources) ? snapshot.sources : [];
+        grid.replaceChildren(...sources.map(card));
+        list.replaceChildren(listTable(sources));
+        renderSummary(sources);
+        const time = snapshot?.serverTime ? new Date(snapshot.serverTime).toLocaleTimeString() : '--:--:--';
+        statusLine.classList.remove('error');
+        statusLine.replaceChildren(element('span', '', `STATUS API / ${sources.length} SOURCES`), element('strong', '', time));
+        applyView();
+      }
+
+      function applyView() {
+        const listActive = activeView === 'list';
+        grid.classList.toggle('hidden', listActive);
+        list.classList.toggle('hidden', !listActive);
+        gridButton.setAttribute('aria-pressed', String(!listActive));
+        listButton.setAttribute('aria-pressed', String(listActive));
+      }
+
+      function setView(view) {
+        activeView = view;
+        localStorage.setItem(VIEW_STORAGE_KEY, view);
+        applyView();
+      }
+
+      async function refresh() {
+        if (refreshInFlight) return;
+        refreshInFlight = true;
+        try {
+          const response = await fetch('/api/v1/status', { cache: 'no-store' });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          lastSnapshot = await response.json();
+          render(lastSnapshot);
+        } catch (error) {
+          if (lastSnapshot) render(lastSnapshot);
+          statusLine.classList.add('error');
+          statusLine.replaceChildren(element('span', '', 'STATUS API'), element('strong', '', `UNAVAILABLE: ${error.message}`));
+        } finally {
+          refreshInFlight = false;
+        }
+      }
+
+      gridButton.addEventListener('click', () => setView('grid'));
+      listButton.addEventListener('click', () => setView('list'));
+      applyView();
+      refresh();
+      window.setInterval(refresh, POLL_MS);
+    })();
+  </script>
+</body>
+</html>

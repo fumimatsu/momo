@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ const (
 	defaultUpstreamStartTimeout = 20 * time.Second
 	keyframeRecoveryGrace       = 2 * time.Second
 	defaultVideoTimestampStep   = uint32(90000 / 50)
+	operationsPollWindow        = time.Second
 )
 
 var h264Codec = webrtc.RTPCodecCapability{
@@ -54,9 +56,100 @@ type viewer struct {
 	id        uint64
 	role      string
 	pc        *webrtc.PeerConnection
+	state     atomic.Int32
 	telemetry atomic.Pointer[webrtc.DataChannel]
 	command   atomic.Pointer[webrtc.DataChannel]
 	race      atomic.Pointer[webrtc.DataChannel]
+}
+
+type sourceLifecycle int32
+
+const (
+	sourceWaiting sourceLifecycle = iota
+	sourceConnecting
+	sourceConnected
+	sourceRetryWait
+	sourceRecovering
+)
+
+func (state sourceLifecycle) String() string {
+	switch state {
+	case sourceWaiting:
+		return "waiting"
+	case sourceConnecting:
+		return "connecting"
+	case sourceConnected:
+		return "connected"
+	case sourceRetryWait:
+		return "retry_wait"
+	case sourceRecovering:
+		return "recovering"
+	default:
+		return "waiting"
+	}
+}
+
+type sourceVideoHealth int32
+
+const (
+	videoNotStarted sourceVideoHealth = iota
+	videoReceiving
+	videoStalled
+)
+
+func (health sourceVideoHealth) String() string {
+	switch health {
+	case videoReceiving:
+		return "receiving"
+	case videoStalled:
+		return "stalled"
+	default:
+		return "not_started"
+	}
+}
+
+type viewerConnectionState int32
+
+const (
+	viewerNegotiating viewerConnectionState = iota
+	viewerConnected
+)
+
+type frameRateWindow struct {
+	mu          sync.Mutex
+	ingress     []time.Time
+	relayWrites []time.Time
+}
+
+func (window *frameRateWindow) recordIngress(now time.Time) {
+	window.mu.Lock()
+	defer window.mu.Unlock()
+	window.ingress = append(window.ingress, now)
+	window.ingress = pruneFrameTimes(window.ingress, now)
+}
+
+func (window *frameRateWindow) recordRelayWrite(now time.Time) {
+	window.mu.Lock()
+	defer window.mu.Unlock()
+	window.relayWrites = append(window.relayWrites, now)
+	window.relayWrites = pruneFrameTimes(window.relayWrites, now)
+}
+
+func (window *frameRateWindow) snapshot(now time.Time) (float64, float64) {
+	window.mu.Lock()
+	defer window.mu.Unlock()
+	window.ingress = pruneFrameTimes(window.ingress, now)
+	window.relayWrites = pruneFrameTimes(window.relayWrites, now)
+	return float64(len(window.ingress)), float64(len(window.relayWrites))
+}
+
+func pruneFrameTimes(samples []time.Time, now time.Time) []time.Time {
+	cutoff := now.Add(-operationsPollWindow)
+	first := 0
+	for first < len(samples) && !samples[first].After(cutoff) {
+		first++
+	}
+	return samples[first:]
 }
 
 type relay struct {
@@ -83,6 +176,16 @@ type relay struct {
 	upstreamGeneration     atomic.Uint64
 	lastVideoFrameUnixNano atomic.Int64
 	lastRTPTimestamp       atomic.Uint32
+	lifecycle              atomic.Int32
+	videoHealth            atomic.Int32
+	upstreamPeerState      atomic.Value
+	lastErrorCode          atomic.Value
+	connectionAttempts     atomic.Uint64
+	pliNewTrack            atomic.Uint64
+	pliViewerConnect       atomic.Uint64
+	pliWatchdog            atomic.Uint64
+	rtpStalls              atomic.Uint64
+	frameRate              frameRateWindow
 
 	rtpRewriteMu          sync.Mutex
 	rtpRewriteInitialized bool
@@ -99,7 +202,8 @@ type relay struct {
 }
 
 type relayServer struct {
-	sources map[string]*relay
+	sources     map[string]*relay
+	sourceOrder []string
 }
 
 type raceStateEnvelope struct {
@@ -118,6 +222,102 @@ func (values *sourceFlag) Set(value string) error {
 	return nil
 }
 
+type operationsAccessPolicy struct {
+	networks []*net.IPNet
+}
+
+func parseOperationsAccessPolicy(values []string) (operationsAccessPolicy, error) {
+	if len(values) == 0 {
+		values = []string{"127.0.0.1/32", "::1/128"}
+	}
+	policy := operationsAccessPolicy{networks: make([]*net.IPNet, 0, len(values))}
+	for _, value := range values {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(value))
+		if err != nil {
+			return operationsAccessPolicy{}, fmt.Errorf("invalid operations allow CIDR %q: %w", value, err)
+		}
+		policy.networks = append(policy.networks, network)
+	}
+	return policy, nil
+}
+
+func (policy operationsAccessPolicy) allows(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range policy.networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func (policy operationsAccessPolicy) wrap(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if !policy.allows(req.RemoteAddr) {
+			http.Error(w, "operations access denied", http.StatusForbidden)
+			return
+		}
+		next(w, req)
+	}
+}
+
+type operationsStatus struct {
+	Version    int                     `json:"version"`
+	ServerTime time.Time               `json:"serverTime"`
+	Sources    []sourceOperationsState `json:"sources"`
+}
+
+type sourceOperationsState struct {
+	ID          string                    `json:"id"`
+	RaceCarID   string                    `json:"raceCarId,omitempty"`
+	State       string                    `json:"state"`
+	Lifecycle   string                    `json:"lifecycle"`
+	VideoHealth string                    `json:"videoHealth"`
+	Upstream    upstreamOperationsState   `json:"upstream"`
+	Downstream  downstreamOperationsState `json:"downstream"`
+	Recovery    recoveryOperationsState   `json:"recovery"`
+}
+
+type upstreamOperationsState struct {
+	PeerState               string  `json:"peerState"`
+	SerialOpen              bool    `json:"serialOpen"`
+	LastRtpAgeMs            *int64  `json:"lastRtpAgeMs"`
+	IngressAccessUnitFPS    float64 `json:"ingressAccessUnitFps"`
+	RelayWriteAccessUnitFPS float64 `json:"relayWriteAccessUnitFps"`
+	Generation              uint64  `json:"generation"`
+	StallTimeoutMs          int64   `json:"stallTimeoutMs"`
+	StartTimeoutMs          int64   `json:"startTimeoutMs"`
+}
+
+type downstreamOperationsState struct {
+	PilotLeaseReserved bool `json:"pilotLeaseReserved"`
+	NegotiatingPeers   int  `json:"negotiatingPeers"`
+	ConnectedPilots    int  `json:"connectedPilots"`
+	ConnectedObservers int  `json:"connectedObservers"`
+	TelemetryOpen      int  `json:"telemetryChannelsOpen"`
+	RaceOpen           int  `json:"raceChannelsOpen"`
+}
+
+type pliRequestCounts struct {
+	NewTrack      uint64 `json:"newTrack"`
+	ViewerConnect uint64 `json:"viewerConnect"`
+	Watchdog      uint64 `json:"watchdog"`
+}
+
+type recoveryOperationsState struct {
+	PLIRequests   pliRequestCounts `json:"pliRequests"`
+	RTPStalls     uint64           `json:"rtpStalls"`
+	RetryAttempts uint64           `json:"retryAttempts"`
+	LastErrorCode *string          `json:"lastErrorCode"`
+}
+
 func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCommand bool,
 	rtpStallTimeout time.Duration, upstreamStartTimeout time.Duration) (*relay, error) {
 	api, err := newH264API()
@@ -128,7 +328,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 	if err != nil {
 		return nil, fmt.Errorf("create local H264 track: %w", err)
 	}
-	return &relay{
+	relay := &relay{
 		name:                 name,
 		upstreamURL:          upstreamURL,
 		raceCarID:            raceCarID,
@@ -138,7 +338,12 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		viewers:              make(map[uint64]*viewer),
 		rtpStallTimeout:      rtpStallTimeout,
 		upstreamStartTimeout: upstreamStartTimeout,
-	}, nil
+	}
+	relay.lifecycle.Store(int32(sourceWaiting))
+	relay.videoHealth.Store(int32(videoNotStarted))
+	relay.upstreamPeerState.Store("new")
+	relay.lastErrorCode.Store("")
+	return relay, nil
 }
 
 func newH264API() (*webrtc.API, error) {
@@ -159,7 +364,14 @@ func newH264API() (*webrtc.API, error) {
 func (r *relay) start(ctx context.Context) {
 	go func() {
 		for {
-			if err := r.connectUpstream(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			r.lifecycle.Store(int32(sourceConnecting))
+			r.videoHealth.Store(int32(videoNotStarted))
+			r.connectionAttempts.Add(1)
+			err := r.connectUpstream(ctx)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				if sourceLifecycle(r.lifecycle.Load()) != sourceRecovering {
+					r.lifecycle.Store(int32(sourceRetryWait))
+				}
 				log.Printf("upstream disconnected: %v; retrying in 3 seconds", err)
 			}
 			select {
@@ -175,12 +387,14 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 	log.Printf("source %q: connecting upstream Momo: %s", r.name, r.upstreamURL)
 	ws, _, err := websocket.DefaultDialer.DialContext(ctx, r.upstreamURL, nil)
 	if err != nil {
+		r.setLastErrorCode("upstream_signaling_failed")
 		return fmt.Errorf("connect upstream signaling: %w", err)
 	}
 	defer ws.Close()
 
 	pc, err := r.api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
+		r.setLastErrorCode("upstream_peer_failed")
 		return fmt.Errorf("create upstream peer connection: %w", err)
 	}
 	defer pc.Close()
@@ -188,6 +402,7 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 	r.lastVideoFrameUnixNano.Store(0)
 	r.lastRTPTimestamp.Store(0)
 	r.upstreamSSRC.Store(0)
+	r.upstreamPeerState.Store("new")
 
 	var writeMu sync.Mutex
 	sendSignal := func(message signalMessage) error {
@@ -206,6 +421,18 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		}
 	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if r.upstreamGeneration.Load() != generation {
+			return
+		}
+		r.upstreamPeerState.Store(state.String())
+		if state == webrtc.PeerConnectionStateConnected {
+			r.lifecycle.Store(int32(sourceConnected))
+		}
+		if state == webrtc.PeerConnectionStateFailed {
+			r.setLastErrorCode("upstream_peer_failed")
+			r.lifecycle.Store(int32(sourceRetryWait))
+			_ = ws.Close()
+		}
 		log.Printf("source %q: upstream peer connection state: %s", r.name, state.String())
 	})
 	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
@@ -224,11 +451,11 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		// Momo の再起動後は既存 Viewer の接続が維持されるため、
 		// Viewer 接続時だけの PLI では復号器が差分フレームを受け続ける。
 		// 新しい上流トラックを受けた時点でも IDR を要求する。
-		r.requestKeyframe()
+		r.requestKeyframe("new_track")
 		go func() {
 			for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
 				time.Sleep(delay)
-				r.requestKeyframe()
+				r.requestKeyframe("new_track")
 			}
 		}()
 		for {
@@ -242,19 +469,30 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 				if r.lastVideoFrameUnixNano.Load() == 0 ||
 					previousTimestamp != packet.Timestamp {
 					r.lastVideoFrameUnixNano.Store(time.Now().UnixNano())
+					r.videoHealth.Store(int32(videoReceiving))
+					r.setLastErrorCode("")
 				}
+			}
+			if packet.Marker {
+				r.frameRate.recordIngress(time.Now())
 			}
 			if !r.rewriteRTPHeader(generation, &packet.Header) {
 				return
 			}
-			if err := r.videoTrack.WriteRTP(packet); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-				log.Printf("fan out upstream RTP: %v", err)
+			if err := r.videoTrack.WriteRTP(packet); err != nil {
+				if !errors.Is(err, io.ErrClosedPipe) {
+					r.setLastErrorCode("relay_write_failed")
+					log.Printf("fan out upstream RTP: %v", err)
+				}
+			} else if packet.Marker {
+				r.frameRate.recordRelayWrite(time.Now())
 			}
 		}
 	})
 
 	upstreamDC, err := pc.CreateDataChannel(upstreamLabel, nil)
 	if err != nil {
+		r.setLastErrorCode("upstream_data_channel_failed")
 		return fmt.Errorf("create upstream data channel: %w", err)
 	}
 	upstreamDC.OnOpen(func() {
@@ -279,17 +517,21 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		Direction: webrtc.RTPTransceiverDirectionRecvonly,
 	})
 	if err != nil {
+		r.setLastErrorCode("upstream_peer_failed")
 		return fmt.Errorf("add upstream recvonly video transceiver: %w", err)
 	}
 
 	offer, err := pc.CreateOffer(nil)
 	if err != nil {
+		r.setLastErrorCode("upstream_peer_failed")
 		return fmt.Errorf("create upstream offer: %w", err)
 	}
 	if err := pc.SetLocalDescription(offer); err != nil {
+		r.setLastErrorCode("upstream_peer_failed")
 		return fmt.Errorf("set upstream local description: %w", err)
 	}
 	if err := sendSignal(signalMessage{Type: "offer", SDP: offer.SDP}); err != nil {
+		r.setLastErrorCode("upstream_signaling_failed")
 		return fmt.Errorf("send upstream offer: %w", err)
 	}
 	watchdogDone := make(chan struct{})
@@ -302,6 +544,9 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
 			r.clearUpstream(pc)
+			if sourceLifecycle(r.lifecycle.Load()) != sourceRecovering {
+				r.setLastErrorCode("upstream_signaling_failed")
+			}
 			return fmt.Errorf("read upstream signaling: %w", err)
 		}
 		var message signalMessage
@@ -334,6 +579,7 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 			}
 		case "close", "bye":
 			r.clearUpstream(pc)
+			r.setLastErrorCode("upstream_signaling_closed")
 			return errors.New("upstream closed signaling session")
 		}
 	}
@@ -410,9 +656,11 @@ func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
 
 			if keyframeRequestedAt.IsZero() {
 				keyframeRequestedAt = now
+				r.videoHealth.Store(int32(videoStalled))
+				r.rtpStalls.Add(1)
 				log.Printf("source %q: no upstream video frames for %s; request keyframe before reconnect",
 					r.name, stalledFor.Round(time.Millisecond))
-				r.requestKeyframe()
+				r.requestKeyframe("watchdog")
 				continue
 			}
 			if now.Sub(keyframeRequestedAt) < keyframeRecoveryGrace {
@@ -421,6 +669,8 @@ func (r *relay) watchUpstreamRTP(ctx context.Context, generation uint64,
 
 			log.Printf("source %q: upstream video frames remained stalled for %s; reconnecting source",
 				r.name, stalledFor.Round(time.Millisecond))
+			r.setLastErrorCode("upstream_rtp_stalled")
+			r.lifecycle.Store(int32(sourceRecovering))
 			r.clearUpstream(pc)
 			_ = pc.Close()
 			_ = ws.Close()
@@ -438,16 +688,170 @@ func (r *relay) clearUpstream(pc *webrtc.PeerConnection) {
 	}
 }
 
+func (r *relay) setLastErrorCode(code string) {
+	r.lastErrorCode.Store(code)
+}
+
+func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
+	lifecycle := sourceLifecycle(r.lifecycle.Load())
+	videoHealth := sourceVideoHealth(r.videoHealth.Load())
+	peerState, _ := r.upstreamPeerState.Load().(string)
+	lastError, _ := r.lastErrorCode.Load().(string)
+	lastFrame := r.lastVideoFrameUnixNano.Load()
+	var lastRtpAgeMs *int64
+	if lastFrame != 0 {
+		age := now.Sub(time.Unix(0, lastFrame)).Milliseconds()
+		if age < 0 {
+			age = 0
+		}
+		lastRtpAgeMs = &age
+	}
+	ingressFPS, relayWriteFPS := r.frameRate.snapshot(now)
+
+	r.upstreamMu.RLock()
+	serialOpen := r.upstreamDC != nil
+	r.upstreamMu.RUnlock()
+
+	attempts := r.connectionAttempts.Load()
+	retries := uint64(0)
+	if attempts > 0 {
+		retries = attempts - 1
+	}
+	var lastErrorCode *string
+	if lastError != "" {
+		lastErrorCode = &lastError
+	}
+
+	return sourceOperationsState{
+		ID:          r.name,
+		RaceCarID:   r.raceCarID,
+		State:       displaySourceState(lifecycle, videoHealth),
+		Lifecycle:   lifecycle.String(),
+		VideoHealth: videoHealth.String(),
+		Upstream: upstreamOperationsState{
+			PeerState:               peerState,
+			SerialOpen:              serialOpen,
+			LastRtpAgeMs:            lastRtpAgeMs,
+			IngressAccessUnitFPS:    ingressFPS,
+			RelayWriteAccessUnitFPS: relayWriteFPS,
+			Generation:              r.upstreamGeneration.Load(),
+			StallTimeoutMs:          r.rtpStallTimeout.Milliseconds(),
+			StartTimeoutMs:          r.upstreamStartTimeout.Milliseconds(),
+		},
+		Downstream: r.downstreamStatusSnapshot(),
+		Recovery: recoveryOperationsState{
+			PLIRequests: pliRequestCounts{
+				NewTrack:      r.pliNewTrack.Load(),
+				ViewerConnect: r.pliViewerConnect.Load(),
+				Watchdog:      r.pliWatchdog.Load(),
+			},
+			RTPStalls:     r.rtpStalls.Load(),
+			RetryAttempts: retries,
+			LastErrorCode: lastErrorCode,
+		},
+	}
+}
+
+func (r *relay) downstreamStatusSnapshot() downstreamOperationsState {
+	r.viewersMu.RLock()
+	defer r.viewersMu.RUnlock()
+	state := downstreamOperationsState{PilotLeaseReserved: r.pilotID != 0}
+	for _, client := range r.viewers {
+		if viewerConnectionState(client.state.Load()) == viewerConnected {
+			if client.role == "pilot" {
+				state.ConnectedPilots++
+			} else {
+				state.ConnectedObservers++
+			}
+		} else {
+			state.NegotiatingPeers++
+		}
+		if client.telemetry.Load() != nil {
+			state.TelemetryOpen++
+		}
+		if client.race.Load() != nil {
+			state.RaceOpen++
+		}
+	}
+	return state
+}
+
+func displaySourceState(lifecycle sourceLifecycle, videoHealth sourceVideoHealth) string {
+	switch lifecycle {
+	case sourceRecovering:
+		return "RECOVERING"
+	case sourceRetryWait:
+		return "DISCONNECTED"
+	case sourceWaiting:
+		return "WAITING"
+	case sourceConnected:
+		switch videoHealth {
+		case videoStalled:
+			return "STALE"
+		case videoReceiving:
+			return "STREAMING"
+		default:
+			return "CONNECTING"
+		}
+	default:
+		return "CONNECTING"
+	}
+}
+
+func (server *relayServer) operationsStatusSnapshot(now time.Time) operationsStatus {
+	sources := make([]sourceOperationsState, 0, len(server.sourceOrder))
+	for _, sourceID := range server.sourceOrder {
+		source, ok := server.sources[sourceID]
+		if !ok {
+			continue
+		}
+		sources = append(sources, source.statusSnapshot(now))
+	}
+	return operationsStatus{Version: 1, ServerTime: now.UTC(), Sources: sources}
+}
+
+func (server *relayServer) serveOperationsStatus(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(server.operationsStatusSnapshot(time.Now()))
+}
+
+func operationsPageHandler(operationsHTML []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(operationsHTML)
+	}
+}
+
 // 新しい Viewer は relay に蓄積されていない差分フレームから受信を始める。
 // 上流 Momo に IDR を要求しないと、次の自然発生キーフレームまで映像を
 // 復号できず、黒画面のままになる。
-func (r *relay) requestKeyframe() {
+func (r *relay) requestKeyframe(reason string) {
 	r.upstreamMu.RLock()
 	pc := r.upstreamPC
 	ssrc := r.upstreamSSRC.Load()
 	r.upstreamMu.RUnlock()
 	if pc == nil || ssrc == 0 {
 		return
+	}
+	switch reason {
+	case "new_track":
+		r.pliNewTrack.Add(1)
+	case "viewer_connect":
+		r.pliViewerConnect.Add(1)
+	case "watchdog":
+		r.pliWatchdog.Add(1)
 	}
 	if err := pc.WriteRTCP([]rtcp.Packet{
 		&rtcp.PictureLossIndication{SenderSSRC: 1, MediaSSRC: ssrc},
@@ -601,6 +1005,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		role = "observer"
 	}
 	client := &viewer{id: r.nextID.Add(1), role: role}
+	client.state.Store(int32(viewerNegotiating))
 	if role == "pilot" && !r.reservePilot(client.id) {
 		http.Error(w, "a pilot viewer is already connected", http.StatusConflict)
 		return
@@ -640,14 +1045,15 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Printf("viewer %d (%s) peer connection state: %s", client.id, client.role, state.String())
 		if state == webrtc.PeerConnectionStateConnected {
-			r.requestKeyframe()
+			client.state.Store(int32(viewerConnected))
+			r.requestKeyframe("viewer_connect")
 			// 接続直後の IDR が欠けると、H.264 の復号器は次の IDR まで
 			// 映像を出せない。LAN 内でも ICE/DTLS の確立直後はこの状態に
 			// なり得るため、短時間だけ PLI を再送する。
 			go func() {
 				for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
 					time.Sleep(delay)
-					r.requestKeyframe()
+					r.requestKeyframe("viewer_connect")
 				}
 			}()
 		}
@@ -842,11 +1248,13 @@ func main() {
 	var upstreamStartTimeout time.Duration
 	var sources sourceFlag
 	var raceCars sourceFlag
+	var operationsAllowCIDRs sourceFlag
 	var raceURL string
 	var raceViewerToken string
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
+	flag.Var(&operationsAllowCIDRs, "operations-allow-cidr", "CIDR allowed to read /operations.html and /api/v1/status; can be repeated (default: loopback only)")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
 	flag.StringVar(&raceURL, "race-url", "", "Race Control WebSocket URL for race_state v2 distribution")
 	flag.StringVar(&raceViewerToken, "race-viewer-token", "", "Race Control Viewer Bearer token")
@@ -863,6 +1271,10 @@ func main() {
 	if len(sources) == 0 {
 		log.Fatal("-upstream or at least one -source is required")
 	}
+	operationsPolicy, err := parseOperationsAccessPolicy(operationsAllowCIDRs)
+	if err != nil {
+		log.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raceCarBySource := make(map[string]string, len(raceCars))
@@ -876,7 +1288,10 @@ func main() {
 		}
 		raceCarBySource[name] = carID
 	}
-	serverRelay := &relayServer{sources: make(map[string]*relay, len(sources))}
+	serverRelay := &relayServer{
+		sources:     make(map[string]*relay, len(sources)),
+		sourceOrder: make([]string, 0, len(sources)),
+	}
 	for _, sourceValue := range sources {
 		name, sourceURL, err := parseSource(sourceValue)
 		if err != nil {
@@ -895,6 +1310,7 @@ func main() {
 			log.Fatal(err)
 		}
 		serverRelay.sources[name] = relay
+		serverRelay.sourceOrder = append(serverRelay.sourceOrder, name)
 		relay.start(ctx)
 	}
 	serverRelay.startRaceControl(ctx, raceURL, raceViewerToken)
@@ -903,7 +1319,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	operationsHTML, err := fs.ReadFile(webRoot, "operations.html")
+	if err != nil {
+		log.Fatal(err)
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
+	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
 	fileServer := http.FileServer(http.FS(webRoot))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
