@@ -25,8 +25,6 @@ const optionInputs = {
   ffbParkingFriction: document.getElementById("ffbParkingFriction"),
   ffbBaseDamper: document.getElementById("ffbBaseDamper"),
   ffbSpeedDamper: document.getElementById("ffbSpeedDamper"),
-  ffbRunningCentering: document.getElementById("ffbRunningCentering"),
-  ffbCenteringReverse: document.getElementById("ffbCenteringReverse"),
   ffbBridgeUrl: document.getElementById("ffbBridgeUrl")
 };
 
@@ -35,6 +33,10 @@ const legacyStorageKey = "fpvGamepadMapping";
 const pageParams = new URLSearchParams(location.search);
 const targetDevice = pageParams.get("device")?.trim() || "";
 const relayPilotTarget = pageParams.get("viewer") === "relay-pilot";
+// Relay に同期される gamepad.html は web/ 直下に配置されるため、Pilot も同じ階層を使う。
+const relayPilotPath = pageParams.get("relayPilotPath") === "flat"
+  ? "./pilot.html"
+  : "./variants/relay/pilot.html";
 const profileScope = targetDevice ? `device:${targetDevice}` : "";
 const scopedLegacyStorageKey = targetDevice
   ? `${legacyStorageKey}:${encodeURIComponent(targetDevice)}`
@@ -89,8 +91,6 @@ const translations = {
     ffbParkingFriction: "Low-speed friction",
     ffbBaseDamper: "Base damper",
     ffbSpeedDamper: "Speed damper",
-    ffbRunningCentering: "Running centering",
-    ffbCenteringReverse: "Reverse centering direction",
     ffbBridgeUrl: "Bridge URL",
     captureIdle: "Capture idle",
     captureSteeringLeft: "Capture steering left",
@@ -164,8 +164,6 @@ const translations = {
     ffbParkingFriction: "低速フリクション",
     ffbBaseDamper: "基礎ダンパー",
     ffbSpeedDamper: "速度ダンパー",
-    ffbRunningCentering: "走行時センタリング",
-    ffbCenteringReverse: "センタリング方向を反転",
     ffbBridgeUrl: "Bridge URL",
     captureIdle: "中立を記録",
     captureSteeringLeft: "左ステアを記録",
@@ -239,8 +237,6 @@ function createDefaultMapping() {
     ffbParkingFriction: 0.08,
     ffbBaseDamper: 0.05,
     ffbSpeedDamper: 0.15,
-    ffbRunningCentering: 0.20,
-    ffbCenteringReverse: true,
     ffbBridgeUrl: "ws://127.0.0.1:24725",
     reverseMin: 1300,
     driveButton: null,
@@ -400,8 +396,6 @@ function syncOptionsFromMapping() {
   optionInputs.ffbParkingFriction.value = String(mapping.ffbParkingFriction ?? 0.08);
   optionInputs.ffbBaseDamper.value = String(mapping.ffbBaseDamper ?? 0.05);
   optionInputs.ffbSpeedDamper.value = String(mapping.ffbSpeedDamper ?? 0.15);
-  optionInputs.ffbRunningCentering.value = String(mapping.ffbRunningCentering ?? 0.20);
-  optionInputs.ffbCenteringReverse.checked = mapping.ffbCenteringReverse ?? mapping.ffbInvert !== false;
   optionInputs.ffbBridgeUrl.value = mapping.ffbBridgeUrl || "ws://127.0.0.1:24725";
 }
 
@@ -418,19 +412,23 @@ function syncMappingFromOptions() {
   mapping.ffbParkingFriction = clamp01(numberFromInput(optionInputs.ffbParkingFriction, 0.08));
   mapping.ffbBaseDamper = clamp01(numberFromInput(optionInputs.ffbBaseDamper, 0.05));
   mapping.ffbSpeedDamper = clamp01(numberFromInput(optionInputs.ffbSpeedDamper, 0.15));
-  mapping.ffbRunningCentering = clamp01(numberFromInput(optionInputs.ffbRunningCentering, 0.20));
-  mapping.ffbCenteringReverse = Boolean(optionInputs.ffbCenteringReverse.checked);
+  delete mapping.ffbRunningCentering;
+  delete mapping.ffbCenteringReverse;
   mapping.ffbBridgeUrl = stringFromInput(optionInputs.ffbBridgeUrl, "ws://127.0.0.1:24725");
 }
 
 function buildViewerUrl() {
   const url = new URL(
-    relayPilotTarget ? "./pilot.html" : (openViewerEl?.getAttribute("href") || "./viewer.html"),
+    relayPilotTarget ? relayPilotPath : (openViewerEl?.getAttribute("href") || "./viewer.html"),
     location.href
   );
   const params = new URLSearchParams(url.hash.replace(/^#\??/, ""));
+  const relayHost = pageParams.get("host") || "";
   if (targetDevice) {
     url.searchParams.set("device", targetDevice);
+  }
+  if (relayHost) {
+    url.searchParams.set("host", relayHost);
   }
   params.set("gamepad", "1");
   params.set("gamepadIndex", String(mapping.index ?? 0));
@@ -484,8 +482,6 @@ function buildViewerUrl() {
     params.set("ffbParkingFriction", String(mapping.ffbParkingFriction ?? 0.08));
     params.set("ffbBaseDamper", String(mapping.ffbBaseDamper ?? 0.05));
     params.set("ffbSpeedDamper", String(mapping.ffbSpeedDamper ?? 0.15));
-    params.set("ffbRunningCentering", String(mapping.ffbRunningCentering ?? 0.20));
-    params.set("ffbCenteringReverse", mapping.ffbCenteringReverse ? "1" : "0");
     params.set("ffbUrl", mapping.ffbBridgeUrl || "ws://127.0.0.1:24725");
   } else {
     params.delete("ffbBaseFriction");
@@ -493,11 +489,9 @@ function buildViewerUrl() {
     params.delete("ffbParkingFriction");
     params.delete("ffbBaseDamper");
     params.delete("ffbSpeedDamper");
-    params.delete("ffbRunningCentering");
-    params.delete("ffbCenteringReverse");
     params.delete("ffbUrl");
   }
-  if (!targetDevice) {
+  if (!targetDevice && !relayHost) {
     url.search = "";
   }
   url.hash = params.toString();
