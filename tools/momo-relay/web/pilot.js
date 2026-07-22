@@ -61,15 +61,31 @@
   const GAMEPAD_DRIVE_BUTTON_ENABLED = getBooleanParam('gamepadDriveButtonEnabled', true);
   const GAMEPAD_PADDLE_LEFT_BUTTON = getNumberParamWithProfile('gamepadPaddleLeftButton', 'paddleLeftButton', 0, true);
   const GAMEPAD_PADDLE_RIGHT_BUTTON = getNumberParamWithProfile('gamepadPaddleRightButton', 'paddleRightButton', 1, true);
+  const GAMEPAD_FFB_PRESET_BUTTON = getNumberParamWithProfile('gamepadFfbPresetButton', 'ffbPresetButton', -1, true);
   const OSD_UPDATE_INTERVAL_MS = getNumberParam('osdMs', 100);
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
   const DC_PING_INTERVAL_MS = getNumberParam('dcPingMs', 1000);
-  const FFB_TEST_MODE = getBooleanParam('ffbTest', false);
-  const FFB_TEST_URL = getStringParam('ffbUrl', 'ws://127.0.0.1:24725');
-  const FFB_TEST_TORQUE_LIMIT = Math.max(0.01, Math.min(0.40, getNumberParam('ffbTorqueLimit', 0.30)));
-  const FFB_TEST_SEND_INTERVAL_MS = Math.max(20, Math.min(100, getNumberParam('ffbSendMs', 20)));
-  const FFB_TEST_PULSE_TORQUE = Math.max(0.05, Math.min(0.40, getNumberParam('ffbPulseTorque', 0.35)));
-  const FFB_TEST_PULSE_MS = Math.max(100, Math.min(1000, getNumberParam('ffbPulseMs', 350)));
+  // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
+  const FFB_ENABLED = getBooleanParam('ffbEnabled', getBooleanParam('ffbTest', false));
+  const FFB_BRIDGE_URL = getStringParam('ffbUrl', 'ws://127.0.0.1:24725');
+  const FFB_BASE_FRICTION = Math.max(0, Math.min(1.0, getNumberParam('ffbBaseFriction', 0.10)));
+  const FFB_PARKING_FRICTION = Math.max(0, Math.min(1.0, getNumberParam('ffbParkingFriction', 0.30)));
+  const FFB_BASE_DAMPER = Math.max(0, Math.min(1.0, getNumberParam('ffbBaseDamper', 0.05)));
+  const FFB_SPEED_DAMPER = Math.max(0, Math.min(1.0, getNumberParam('ffbSpeedDamper', 0.15)));
+  const FFB_RUNNING_CENTERING = Math.max(0, Math.min(1.0, getNumberParam('ffbRunningCentering', 0.20)));
+  const FFB_CENTERING_REVERSE = getBooleanParam('ffbCenteringReverse', true);
+  const FFB_PRESETS = Object.freeze({
+    weak: Object.freeze({ scale: 0.65, label: 'Weak' }),
+    medium: Object.freeze({ scale: 1.00, label: 'Medium' }),
+    strong: Object.freeze({ scale: 1.35, label: 'Strong' }),
+  });
+  const FFB_INITIAL_PRESET = normalizeFfbPreset(getStringParam('ffbPreset', GAMEPAD_PROFILE?.ffbPreset || 'medium'));
+  const FFB_SEND_INTERVAL_MS = Math.max(20, Math.min(100, getNumberParam('ffbSendMs', 20)));
+  const FFB_RECONNECT_DELAY_MS = 2000;
+  const FFB_SPEED_PROXY_ACCEL_PER_SEC = 0.55;
+  const FFB_SPEED_PROXY_COAST_DECEL_PER_SEC = 0.22;
+  const FFB_SPEED_PROXY_BRAKE_DECEL_PER_SEC = 1.10;
+  const FFB_VIRTUAL_STEERING_RESPONSE_PER_SEC = 8.0;
   const AYAME_SIGNALING_URL = getStringParam(
     ['ayameUrl', 'signalingUrl'],
     'wss://ayame-labo.shiguredo.app/signaling',
@@ -155,26 +171,25 @@
   const btnRefreshMode = document.getElementById('btnRefreshMode');
   const btnRefreshDevice = document.getElementById('btnRefreshDevice');
   const btnInputSetup = document.getElementById('btnInputSetup');
+  const ffbPresetControls = document.getElementById('ffbPresetControls');
+  const ffbPresetButtons = Array.from(document.querySelectorAll('[data-ffb-preset]'));
   const btnDrive = document.getElementById('btnDrive');
   const btnSend = document.getElementById('btnSend');
   const btnNeutral = document.getElementById('btnNeutral');
   const btnDisconnect = document.getElementById('btnDisconnect');
-  const ffbTestPanel = document.getElementById('ffbTestPanel');
-  const ffbDevice = document.getElementById('ffbDevice');
-  const ffbInvert = document.getElementById('ffbInvert');
-  const ffbState = document.getElementById('ffbState');
-  const btnFfbConnect = document.getElementById('btnFfbConnect');
-  const btnFfbAcquire = document.getElementById('btnFfbAcquire');
-  const btnFfbEnable = document.getElementById('btnFfbEnable');
-  const btnFfbPulseNegative = document.getElementById('btnFfbPulseNegative');
-  const btnFfbPulsePositive = document.getElementById('btnFfbPulsePositive');
-  const btnFfbStop = document.getElementById('btnFfbStop');
   const gearState = document.getElementById('gearState');
   const gearButtons = Array.from(document.querySelectorAll('.gear-button'));
   let ffbClient = null;
   let ffbOutputEnabled = false;
+  let ffbForceActive = false;
+  let ffbAcquireRequestedDeviceId = '';
   let ffbSendTimer = 0;
-  let ffbPulseTimer = 0;
+  let ffbReconnectTimer = 0;
+  let ffbShuttingDown = false;
+  let ffbSpeedProxy = 0;
+  let ffbVirtualSteering = 0;
+  let ffbSpeedProxyAt = performance.now();
+  let activeFfbPreset = FFB_INITIAL_PRESET;
   const driveHud = document.getElementById('driveHud');
   const driveHudMode = document.getElementById('driveHudMode');
   const driveHudSteeringMarker = document.getElementById('driveHudSteeringMarker');
@@ -1346,109 +1361,159 @@
     sendFfbSteering();
   }
 
-  function getFfbSteering() {
-    const offset = Number(steeringInput?.value || 1500) - 1500;
-    return Math.max(-1, Math.min(1, offset / Math.max(1, RC_STEERING_THROW)));
+  function updateFfbVehicleState() {
+    const now = performance.now();
+    const elapsedSec = Math.max(0, Math.min(0.25, (now - ffbSpeedProxyAt) / 1000));
+    ffbSpeedProxyAt = now;
+    const throttleValue = Number(throttleInput?.value || 1500);
+    const forward = Math.max(0, Math.min(1, (throttleValue - 1500) / 500));
+    const braking = Math.max(0, Math.min(1, (1500 - throttleValue) / 500));
+    const rate = forward > ffbSpeedProxy
+      ? FFB_SPEED_PROXY_ACCEL_PER_SEC
+      : braking > 0.01
+        ? FFB_SPEED_PROXY_BRAKE_DECEL_PER_SEC
+        : FFB_SPEED_PROXY_COAST_DECEL_PER_SEC;
+    const step = rate * elapsedSec;
+    ffbSpeedProxy += Math.max(-step, Math.min(step, forward - ffbSpeedProxy));
+    const steeringTarget = Math.max(-1, Math.min(1, (Number(steeringInput?.value || 1500) - 1500) / Math.max(1, RC_STEERING_THROW)));
+    const steeringStep = FFB_VIRTUAL_STEERING_RESPONSE_PER_SEC * elapsedSec;
+    ffbVirtualSteering += Math.max(-steeringStep, Math.min(steeringStep, steeringTarget - ffbVirtualSteering));
+    return { speedProxy: ffbSpeedProxy, virtualSteering: ffbVirtualSteering };
   }
 
-  function updateFfbUi(snapshot = ffbClient?.snapshot?.()) {
-    if (!ffbTestPanel || !ffbState) return;
+  function scheduleFfbReconnect() {
+    if (!FFB_ENABLED || ffbShuttingDown || ffbReconnectTimer) return;
+    ffbReconnectTimer = window.setTimeout(() => {
+      ffbReconnectTimer = 0;
+      const state = ffbClient?.snapshot();
+      if (state && !state.connected && !state.connecting) ffbClient.connect();
+    }, FFB_RECONNECT_DELAY_MS);
+  }
+
+  function updateFfbState(snapshot = ffbClient?.snapshot?.()) {
+    if (!FFB_ENABLED) return;
     const state = snapshot || { connected: false, connecting: false, acquired: false, devices: [], lastError: '' };
     const devices = Array.isArray(state.devices) ? state.devices : [];
-    const previous = ffbDevice?.value || state.selectedDeviceId || '';
-    if (ffbDevice && document.activeElement !== ffbDevice) {
-      ffbDevice.replaceChildren();
-      if (devices.length === 0) {
-        ffbDevice.add(new Option(state.connected ? 'No DirectInput device found' : 'Connect bridge first', ''));
-      } else {
-        for (const device of devices) {
-          const suffix = device.isFfbCapable ? ' FFB' : '';
-          ffbDevice.add(new Option(`${device.name || device.id}${suffix}`, String(device.id || '')));
-        }
+    if (!state.connected) {
+      ffbAcquireRequestedDeviceId = '';
+      ffbForceActive = false;
+      if (!state.connecting) scheduleFfbReconnect();
+      return;
+    }
+    if (!state.acquired) {
+      const device = devices.find((candidate) => candidate?.isFfbCapable && supportsConstantForce(candidate.capabilities));
+      const deviceId = String(device?.id || '');
+      if (deviceId && ffbAcquireRequestedDeviceId !== deviceId) {
+        ffbAcquireRequestedDeviceId = deviceId;
+        ffbClient?.acquire(deviceId);
       }
-      ffbDevice.value = previous;
-      if (!ffbDevice.value && devices[0]?.id) ffbDevice.value = String(devices[0].id);
+      return;
     }
-    const torque = getFfbSteering() * FFB_TEST_TORQUE_LIMIT * (ffbInvert?.checked ? -1 : 1);
-    const link = state.connecting ? 'connecting' : state.connected ? 'connected' : 'offline';
-    const output = ffbOutputEnabled && state.acquired ? ` ON ${torque.toFixed(3)}` : ' OFF';
-    setText(ffbState, `${link}${state.acquired ? ' acquired' : ''}${output}${state.lastError ? ` ${state.lastError}` : ''}`);
-    if (btnFfbConnect) btnFfbConnect.textContent = state.connected ? 'Disconnect FFB' : 'Connect FFB';
-    if (btnFfbAcquire) btnFfbAcquire.disabled = !state.connected || !ffbDevice?.value;
-    if (btnFfbEnable) {
-      btnFfbEnable.disabled = !state.acquired;
-      btnFfbEnable.textContent = ffbOutputEnabled ? 'Disable FFB' : 'Enable FFB';
-    }
-    if (btnFfbPulseNegative) btnFfbPulseNegative.disabled = !state.acquired || ffbOutputEnabled;
-    if (btnFfbPulsePositive) btnFfbPulsePositive.disabled = !state.acquired || ffbOutputEnabled;
-    if (btnFfbStop) btnFfbStop.disabled = !state.connected;
+    ffbAcquireRequestedDeviceId = String(state.selectedDeviceId || ffbAcquireRequestedDeviceId);
+    sendFfbSteering();
   }
 
   function sendFfbSteering() {
-    if (!ffbOutputEnabled || !ffbClient) return;
+    if (!ffbClient) return;
     const snapshot = ffbClient.snapshot();
-    if (!snapshot.acquired) {
-      ffbOutputEnabled = false;
-      updateFfbUi(snapshot);
+    if (!ffbOutputEnabled || !rcDriveEnabled || !snapshot.acquired) {
+      if (ffbForceActive) {
+        ffbClient.stopAll();
+        ffbForceActive = false;
+      }
       return;
     }
-    const torque = getFfbSteering() * FFB_TEST_TORQUE_LIMIT * (ffbInvert?.checked ? -1 : 1);
+    const vehicleState = updateFfbVehicleState();
+    const preset = FFB_PRESETS[activeFfbPreset];
+    const capabilities = getFfbCapabilities(snapshot.deviceCapabilities);
     ffbClient.sendFfb({
-      torque,
+      torque: 0,
       gain: 1,
       enabled: true,
-      effectMode: 'constant',
+      effectMode: 'baseline',
+      speedProxy: vehicleState.speedProxy,
+      virtualSteering: vehicleState.virtualSteering,
+      baseFriction: capabilities.friction ? FFB_BASE_FRICTION * preset.scale : 0,
+      parkingFriction: capabilities.friction ? FFB_PARKING_FRICTION * preset.scale : 0,
+      baseDamper: capabilities.damper ? FFB_BASE_DAMPER * preset.scale : 0,
+      speedDamper: capabilities.damper ? FFB_SPEED_DAMPER * preset.scale : 0,
+      runningCentering: FFB_RUNNING_CENTERING * preset.scale,
+      centeringReverse: FFB_CENTERING_REVERSE,
       damper: 0,
       friction: 0,
       inertia: 0,
     });
-    updateFfbUi(snapshot);
+    ffbForceActive = true;
   }
 
   function stopFfbOutput() {
     ffbOutputEnabled = false;
-    if (ffbPulseTimer) {
-      window.clearTimeout(ffbPulseTimer);
-      ffbPulseTimer = 0;
-    }
+    ffbForceActive = false;
+    ffbSpeedProxy = 0;
+    ffbVirtualSteering = 0;
+    ffbSpeedProxyAt = performance.now();
     ffbClient?.stopAll();
-    updateFfbUi();
   }
 
-  function pulseFfb(direction) {
-    if (!ffbClient?.snapshot().acquired || ffbOutputEnabled) return;
-    stopFfbOutput();
-    const torque = direction * FFB_TEST_PULSE_TORQUE * (ffbInvert?.checked ? -1 : 1);
-    ffbClient.sendFfb({
-      torque,
-      gain: 1,
-      enabled: true,
-      effectMode: 'constant',
-      damper: 0,
-      friction: 0,
-      inertia: 0,
-    });
-    ffbPulseTimer = window.setTimeout(() => {
-      ffbPulseTimer = 0;
-      ffbClient?.stopAll();
-      updateFfbUi();
-    }, FFB_TEST_PULSE_MS);
-    updateFfbUi();
+  function normalizeFfbPreset(value) {
+    const preset = String(value || '').toLowerCase();
+    return Object.prototype.hasOwnProperty.call(FFB_PRESETS, preset) ? preset : 'medium';
   }
 
-  function initializeFfbTest() {
-    if (!FFB_TEST_MODE || !ffbTestPanel) return;
-    ffbTestPanel.hidden = false;
+  function getFfbCapabilities(value) {
+    if (!value || value.effectsEnumerated !== true) {
+      return { constantForce: true, friction: true, damper: true };
+    }
+    return {
+      constantForce: value.constantForce === true,
+      friction: value.friction === true,
+      damper: value.damper === true,
+    };
+  }
+
+  function supportsConstantForce(value) {
+    return getFfbCapabilities(value).constantForce;
+  }
+
+  function updateFfbPresetControls() {
+    if (ffbPresetControls) {
+      ffbPresetControls.hidden = !FFB_ENABLED;
+    }
+    for (const button of ffbPresetButtons) {
+      const selected = button.dataset.ffbPreset === activeFfbPreset;
+      button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      button.title = `FFB ${FFB_PRESETS[button.dataset.ffbPreset]?.label || button.dataset.ffbPreset}`;
+    }
+  }
+
+  function setFfbPreset(preset, source = 'ui') {
+    if (!FFB_ENABLED) return;
+    const next = normalizeFfbPreset(preset);
+    if (next === activeFfbPreset) return;
+    activeFfbPreset = next;
+    updateFfbPresetControls();
+    sendFfbSteering();
+    recordEvent('ffb preset', `${next} via ${source}`);
+  }
+
+  function cycleFfbPreset() {
+    const presets = Object.keys(FFB_PRESETS);
+    const currentIndex = presets.indexOf(activeFfbPreset);
+    setFfbPreset(presets[(currentIndex + 1) % presets.length], 'gamepad');
+  }
+
+  function initializeFfb() {
+    if (!FFB_ENABLED) return;
     if (!window.FpvFfbBridge?.FfbBridgeClient) {
-      setText(ffbState, 'FFB Bridge client script was not loaded');
+      console.warn('FFB Bridge client script was not loaded');
       return;
     }
     ffbClient = new window.FpvFfbBridge.FfbBridgeClient({
-      url: FFB_TEST_URL,
-      onState: updateFfbUi,
+      url: FFB_BRIDGE_URL,
+      onState: updateFfbState,
     });
-    ffbSendTimer = window.setInterval(sendFfbSteering, FFB_TEST_SEND_INTERVAL_MS);
-    updateFfbUi();
+    ffbSendTimer = window.setInterval(sendFfbSteering, FFB_SEND_INTERVAL_MS);
+    ffbClient.connect();
   }
 
   function syncCommandFromThrottleSlider() {
@@ -1922,10 +1987,12 @@
     pressedControlKeys.clear();
 
     if (enabled) {
+      ffbOutputEnabled = FFB_ENABLED;
       setNeutralCommand();
       captureGamepadPedalIdle(getActiveGamepad());
       startRcTx();
     } else {
+      stopFfbOutput();
       cancelThrottleBrake();
       stopRcTx();
       setNeutralCommand();
@@ -1936,6 +2003,7 @@
     }
     updateRcUi();
     updateControlUiMode();
+    sendFfbSteering();
   }
 
   function toggleDrive() {
@@ -2140,6 +2208,9 @@
     if (getGamepadButtonRisingEdge(gamepad, GAMEPAD_PADDLE_RIGHT_BUTTON)) {
       setThrottleGear(currentGear + 1);
       recordEvent('gamepad paddle', 'right');
+    }
+    if (GAMEPAD_FFB_PRESET_BUTTON >= 0 && getGamepadButtonRisingEdge(gamepad, GAMEPAD_FFB_PRESET_BUTTON)) {
+      cycleFfbPreset();
     }
     if (rcDriveEnabled) {
       applyGamepadCommand(gamepad);
@@ -2538,6 +2609,12 @@
 
   function shutdownForPageHide() {
     stopFfbOutput();
+    ffbShuttingDown = true;
+    ffbClient?.disconnect();
+    if (ffbReconnectTimer) {
+      window.clearTimeout(ffbReconnectTimer);
+      ffbReconnectTimer = 0;
+    }
     shouldReconnect = false;
     reconnectAttempt = 0;
     reconnectReason = '';
@@ -3630,7 +3707,8 @@
 
   endpointInput.value = getInitialHost();
   syncCommandFromSliders();
-  initializeFfbTest();
+  updateFfbPresetControls();
+  initializeFfb();
 
   steeringInput.addEventListener('input', syncCommandFromSliders);
   throttleInput.addEventListener('input', syncCommandFromThrottleSlider);
@@ -3673,33 +3751,6 @@
   if (btnDisconnect) {
     btnDisconnect.addEventListener('click', disconnect);
   }
-  btnFfbConnect?.addEventListener('click', () => {
-    if (!ffbClient) return;
-    if (ffbClient.snapshot().connected) {
-      stopFfbOutput();
-      ffbClient.disconnect();
-      return;
-    }
-    ffbClient.connect(FFB_TEST_URL);
-  });
-  btnFfbAcquire?.addEventListener('click', () => {
-    const deviceId = ffbDevice?.value || '';
-    if (deviceId) ffbClient?.acquire(deviceId);
-  });
-  btnFfbEnable?.addEventListener('click', () => {
-    if (!ffbClient?.snapshot().acquired) return;
-    if (ffbOutputEnabled) {
-      stopFfbOutput();
-    } else {
-      ffbOutputEnabled = true;
-      sendFfbSteering();
-      updateFfbUi();
-    }
-  });
-  btnFfbPulseNegative?.addEventListener('click', () => pulseFfb(-1));
-  btnFfbPulsePositive?.addEventListener('click', () => pulseFfb(1));
-  btnFfbStop?.addEventListener('click', stopFfbOutput);
-  ffbInvert?.addEventListener('change', sendFfbSteering);
   btnReconnect.addEventListener('click', () => {
     if (isConnectionActive()) {
       disconnect();
@@ -3733,6 +3784,9 @@
     });
   });
   btnInputSetup.addEventListener('click', openInputSetup);
+  for (const button of ffbPresetButtons) {
+    button.addEventListener('click', () => setFfbPreset(button.dataset.ffbPreset));
+  }
   window.addEventListener('keydown', onControlKeyDown);
   window.addEventListener('keyup', onControlKeyUp);
   remoteVideo.addEventListener('loadedmetadata', updateUiState);
@@ -3785,7 +3839,13 @@
         driveButton: GAMEPAD_DRIVE_BUTTON,
         paddleLeftButton: GAMEPAD_PADDLE_LEFT_BUTTON,
         paddleRightButton: GAMEPAD_PADDLE_RIGHT_BUTTON,
+        ffbPresetButton: GAMEPAD_FFB_PRESET_BUTTON,
         profileId: GAMEPAD_PROFILE.id || '',
+      },
+      ffb: {
+        enabled: FFB_ENABLED,
+        activePreset: activeFfbPreset,
+        bridge: ffbClient?.snapshot?.() || null,
       },
     }),
     getPeerConnection: () => peerConnection,

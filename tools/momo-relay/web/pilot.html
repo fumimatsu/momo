@@ -255,24 +255,6 @@
       pointer-events: auto;
     }
 
-    .ffb-test-panel {
-      display: grid;
-      grid-template-columns: auto minmax(160px, 1fr) auto auto;
-      gap: 8px;
-      align-items: center;
-      width: min(760px, 100%);
-      margin: 10px auto 0;
-      padding: 8px 10px;
-      background: rgba(0, 0, 0, 0.50);
-      color: #ffffff;
-      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 12px;
-      pointer-events: auto;
-    }
-
-    .ffb-test-panel strong { color: #ffca57; }
-    .ffb-test-panel .ffb-status { grid-column: 1 / -1; color: #c7d2df; overflow-wrap: anywhere; }
-
     .status {
       position: fixed;
       top: calc(16px + env(safe-area-inset-top));
@@ -502,6 +484,61 @@
       justify-content: center;
       gap: 4px;
     }
+
+    .drive-header-center {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+    }
+
+    .ffb-preset-controls {
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid rgba(212, 230, 244, 0.45);
+      border-radius: 2px;
+      background: rgba(0, 0, 0, 0.46);
+      pointer-events: auto;
+    }
+
+    .ffb-preset-controls[hidden] {
+      display: none;
+    }
+
+    .ffb-preset-button {
+      display: inline-flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 1px;
+      width: 22px;
+      min-width: 22px;
+      min-height: 22px;
+      padding: 2px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: rgba(220, 234, 246, 0.68);
+    }
+
+    .ffb-preset-button i {
+      width: 3px;
+      background: currentColor;
+      opacity: 0.42;
+    }
+
+    .ffb-preset-button i:nth-child(1) { height: 6px; }
+    .ffb-preset-button i:nth-child(2) { height: 10px; }
+    .ffb-preset-button i:nth-child(3) { height: 14px; }
+    .ffb-preset-button[data-bars="1"] i:nth-child(n + 2),
+    .ffb-preset-button[data-bars="2"] i:nth-child(3) { display: none; }
+    .ffb-preset-button[aria-pressed="true"] {
+      background: rgba(215, 166, 18, 0.86);
+      color: #ffffff;
+      box-shadow: 0 0 6px rgba(251, 214, 74, 0.76);
+    }
+    .ffb-preset-button[aria-pressed="true"] i { opacity: 1; }
 
     .drive-gear-step {
       display: grid;
@@ -1158,13 +1195,20 @@
       <section id="driveHud" class="drive-hud" hidden aria-label="Driving input display">
         <div class="drive-header">
           <button id="driveHudMode" class="drive-hud-title" type="button" aria-pressed="false">DRIVE OFF</button>
-          <span id="driveHudGear" class="drive-gear-value" aria-label="Throttle gear">
-            <span class="drive-gear-step" data-gear="1">1</span>
-            <span class="drive-gear-step" data-gear="2">2</span>
-            <span class="drive-gear-step" data-gear="3">3</span>
-            <span class="drive-gear-step" data-gear="4">4</span>
-            <span class="drive-gear-step" data-gear="5">5</span>
-          </span>
+          <div class="drive-header-center">
+            <span id="driveHudGear" class="drive-gear-value" aria-label="Throttle gear">
+              <span class="drive-gear-step" data-gear="1">1</span>
+              <span class="drive-gear-step" data-gear="2">2</span>
+              <span class="drive-gear-step" data-gear="3">3</span>
+              <span class="drive-gear-step" data-gear="4">4</span>
+              <span class="drive-gear-step" data-gear="5">5</span>
+            </span>
+            <span id="ffbPresetControls" class="ffb-preset-controls" aria-label="FFB strength" hidden>
+              <button class="ffb-preset-button" type="button" data-ffb-preset="weak" data-bars="1" aria-label="FFB Weak" aria-pressed="false"><i></i><i></i><i></i></button>
+              <button class="ffb-preset-button" type="button" data-ffb-preset="medium" data-bars="2" aria-label="FFB Medium" aria-pressed="false"><i></i><i></i><i></i></button>
+              <button class="ffb-preset-button" type="button" data-ffb-preset="strong" data-bars="3" aria-label="FFB Strong" aria-pressed="false"><i></i><i></i><i></i></button>
+            </span>
+          </div>
           <button id="driveHudConnection" class="drive-state drive-header-right drive-connection" type="button" data-active="false" disabled>DISCONNECTED</button>
         </div>
         <div class="drive-pedals">
@@ -1195,18 +1239,6 @@
         <button id="btnDrive" type="button" aria-pressed="false" disabled>Drive Off</button>
       </div>
       <input id="data_text" type="hidden" value="S:1500,T:1500" autocomplete="off" spellcheck="false">
-    </div>
-    <div id="ffbTestPanel" class="ffb-test-panel" hidden aria-label="Force feedback steering test">
-      <strong>FFB TEST</strong>
-      <select id="ffbDevice" aria-label="Force feedback device"><option value="">Connect bridge first</option></select>
-      <button id="btnFfbConnect" type="button">Connect FFB</button>
-      <button id="btnFfbAcquire" type="button" disabled>Acquire</button>
-      <label><input id="ffbInvert" type="checkbox" checked> Reverse</label>
-      <button id="btnFfbEnable" type="button" disabled>Enable FFB</button>
-      <button id="btnFfbPulseNegative" type="button" disabled>Pulse −</button>
-      <button id="btnFfbPulsePositive" type="button" disabled>Pulse +</button>
-      <button id="btnFfbStop" type="button" disabled>Stop FFB</button>
-      <span id="ffbState" class="ffb-status">FFB test disabled</span>
     </div>
   </div>
 

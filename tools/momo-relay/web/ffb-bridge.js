@@ -21,6 +21,8 @@
       this.acquired = false;
       this.devices = [];
       this.selectedDeviceId = '';
+      this.deviceProfile = null;
+      this.deviceCapabilities = null;
       this.lastError = '';
       this.lastStatus = null;
       this.heartbeatId = 0;
@@ -34,6 +36,8 @@
         acquired: this.acquired,
         devices: this.devices,
         selectedDeviceId: this.selectedDeviceId,
+        deviceProfile: this.deviceProfile,
+        deviceCapabilities: this.deviceCapabilities,
         lastError: this.lastError,
         lastStatus: this.lastStatus,
       };
@@ -66,6 +70,8 @@
         this.connected = false;
         this.connecting = false;
         this.acquired = false;
+        this.deviceProfile = null;
+        this.deviceCapabilities = null;
         this.emitState();
       });
       ws.addEventListener('error', () => {
@@ -80,7 +86,11 @@
         this.devices = Array.isArray(message.devices) ? message.devices : [];
       } else if (message.type === 'acquired') {
         this.acquired = !!message.ok;
-        if (message.ok) this.selectedDeviceId = String(message.deviceId || this.selectedDeviceId);
+        if (message.ok) {
+          this.selectedDeviceId = String(message.deviceId || this.selectedDeviceId);
+          this.deviceProfile = message.profile || null;
+          this.deviceCapabilities = message.capabilities || null;
+        }
       } else if (message.type === 'ffbStatus') {
         this.lastStatus = message;
       } else if (message.type === 'error') {
@@ -117,6 +127,8 @@
       this.connected = false;
       this.connecting = false;
       this.acquired = false;
+      this.deviceProfile = null;
+      this.deviceCapabilities = null;
       this.emitState();
     }
 
