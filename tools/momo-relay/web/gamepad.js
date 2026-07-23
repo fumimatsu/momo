@@ -37,6 +37,7 @@ const relayPilotTarget = pageParams.get("viewer") === "relay-pilot";
 const relayPilotPath = pageParams.get("relayPilotPath") === "flat"
   ? "./pilot.html"
   : "./variants/relay/pilot.html";
+const returnViewerUrl = getReturnViewerUrl();
 const profileScope = targetDevice ? `device:${targetDevice}` : "";
 const scopedLegacyStorageKey = targetDevice
   ? `${legacyStorageKey}:${encodeURIComponent(targetDevice)}`
@@ -419,7 +420,7 @@ function syncMappingFromOptions() {
 
 function buildViewerUrl() {
   const url = new URL(
-    relayPilotTarget ? relayPilotPath : (openViewerEl?.getAttribute("href") || "./viewer.html"),
+    returnViewerUrl || (relayPilotTarget ? relayPilotPath : (openViewerEl?.getAttribute("href") || "./viewer.html")),
     location.href
   );
   const params = new URLSearchParams(url.hash.replace(/^#\??/, ""));
@@ -496,6 +497,22 @@ function buildViewerUrl() {
   }
   url.hash = params.toString();
   return url.toString();
+}
+
+function getReturnViewerUrl() {
+  const candidate = pageParams.get("returnUrl");
+  if (!candidate) {
+    return "";
+  }
+  try {
+    const url = new URL(candidate, location.href);
+    if (url.origin !== location.origin || !/\/(?:variants\/relay\/)?pilot\.html$/i.test(url.pathname)) {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
 }
 
 function updateViewerLink() {
