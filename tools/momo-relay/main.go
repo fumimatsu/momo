@@ -34,6 +34,7 @@ const (
 
 	defaultRTPStallTimeout      = 5 * time.Second
 	defaultUpstreamStartTimeout = 20 * time.Second
+	defaultPilotCommandTimeout  = 250 * time.Millisecond
 	keyframeRecoveryGrace       = 2 * time.Second
 	defaultVideoTimestampStep   = uint32(90000 / 50)
 	operationsPollWindow        = time.Second
@@ -46,20 +47,27 @@ var h264Codec = webrtc.RTPCodecCapability{
 }
 
 type signalMessage struct {
-	Type  string                   `json:"type"`
-	SDP   string                   `json:"sdp,omitempty"`
-	ICE   *webrtc.ICECandidateInit `json:"ice,omitempty"`
-	Error string                   `json:"error,omitempty"`
+	Type        string                   `json:"type"`
+	SDP         string                   `json:"sdp,omitempty"`
+	ICE         *webrtc.ICECandidateInit `json:"ice,omitempty"`
+	Error       string                   `json:"error,omitempty"`
+	Reason      string                   `json:"reason,omitempty"`
+	RoomID      string                   `json:"roomId,omitempty"`
+	ClientID    string                   `json:"clientId,omitempty"`
+	Key         string                   `json:"key,omitempty"`
+	IsExistUser bool                     `json:"isExistUser,omitempty"`
+	ICEServers  []webrtc.ICEServer       `json:"iceServers,omitempty"`
 }
 
 type viewer struct {
-	id        uint64
-	role      string
-	pc        *webrtc.PeerConnection
-	state     atomic.Int32
-	telemetry atomic.Pointer[webrtc.DataChannel]
-	command   atomic.Pointer[webrtc.DataChannel]
-	race      atomic.Pointer[webrtc.DataChannel]
+	id                  uint64
+	role                string
+	pc                  *webrtc.PeerConnection
+	state               atomic.Int32
+	telemetry           atomic.Pointer[webrtc.DataChannel]
+	command             atomic.Pointer[webrtc.DataChannel]
+	race                atomic.Pointer[webrtc.DataChannel]
+	lastCommandUnixNano atomic.Int64
 }
 
 type sourceLifecycle int32
@@ -174,6 +182,7 @@ type relay struct {
 	rtpStallTimeout        time.Duration
 	upstreamStartTimeout   time.Duration
 	upstreamGeneration     atomic.Uint64
+	pilotCommandTimeout    time.Duration
 	lastVideoFrameUnixNano atomic.Int64
 	lastRTPTimestamp       atomic.Uint32
 	lifecycle              atomic.Int32
@@ -338,6 +347,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		viewers:              make(map[uint64]*viewer),
 		rtpStallTimeout:      rtpStallTimeout,
 		upstreamStartTimeout: upstreamStartTimeout,
+		pilotCommandTimeout:  defaultPilotCommandTimeout,
 	}
 	relay.lifecycle.Store(int32(sourceWaiting))
 	relay.videoHealth.Store(int32(videoNotStarted))
@@ -362,6 +372,7 @@ func newH264API() (*webrtc.API, error) {
 }
 
 func (r *relay) start(ctx context.Context) {
+	go r.watchPilotCommands(ctx)
 	go func() {
 		for {
 			r.lifecycle.Store(int32(sourceConnecting))
@@ -381,6 +392,33 @@ func (r *relay) start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+func (r *relay) watchPilotCommands(ctx context.Context) {
+	interval := r.pilotCommandTimeout / 2
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.viewersMu.RLock()
+			pilotID := r.pilotID
+			pilot := r.viewers[pilotID]
+			r.viewersMu.RUnlock()
+			if pilot == nil || pilot.command.Load() == nil {
+				continue
+			}
+			lastCommand := pilot.lastCommandUnixNano.Load()
+			if lastCommand == 0 || now.Sub(time.Unix(0, lastCommand)) >= r.pilotCommandTimeout {
+				r.sendNeutralToUpstream("pilot command timeout")
+			}
+		}
+	}
 }
 
 func (r *relay) connectUpstream(ctx context.Context) error {
@@ -947,9 +985,22 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 		log.Printf("forward command from viewer %d to Momo: %v", client.id, err)
 		return
 	}
+	client.lastCommandUnixNano.Store(time.Now().UnixNano())
 	// コマンドは全員に同じ DataChannel で返す。クライアント側は受信時にのみ
 	// 表示するため、この監査メッセージが Momo に再送されることはない。
 	r.broadcastCommand(message)
+}
+
+func (r *relay) sendNeutralToUpstream(reason string) {
+	r.upstreamMu.RLock()
+	upstream := r.upstreamDC
+	r.upstreamMu.RUnlock()
+	if upstream == nil {
+		return
+	}
+	if err := upstream.SendText("S:1500,T:1500"); err != nil {
+		log.Printf("source %q: send neutral after %s: %v", r.name, reason, err)
+	}
 }
 
 func (r *relay) addViewer(client *viewer) {
@@ -969,12 +1020,234 @@ func (r *relay) reservePilot(id uint64) bool {
 }
 
 func (r *relay) removeViewer(id uint64) {
+	wasPilot := false
 	r.viewersMu.Lock()
 	delete(r.viewers, id)
 	if r.pilotID == id {
 		r.pilotID = 0
+		wasPilot = true
 	}
 	r.viewersMu.Unlock()
+	if wasPilot {
+		r.sendNeutralToUpstream("pilot disconnect")
+	}
+}
+
+// Ayame の room は source ごとに 1 つだけ割り当てる。ここでは映像の下流配信だけを
+// 担当する。外部操縦は deadman / neutral failsafe が未実装のため、別段階で追加する。
+func (r *relay) startAyamePilot(ctx context.Context, signalingURL string, roomID string, clientID string, key string) {
+	go func() {
+		for {
+			err := r.connectAyamePilot(ctx, signalingURL, roomID, clientID, key)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("source %q: Ayame pilot disconnected: %v; retrying in 3 seconds", r.name, err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
+	}()
+}
+
+func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, roomID string, clientID string, key string) error {
+	log.Printf("source %q: connecting Ayame external pilot room %q", r.name, roomID)
+	ws, _, err := websocket.DefaultDialer.DialContext(ctx, signalingURL, nil)
+	if err != nil {
+		return fmt.Errorf("connect Ayame signaling: %w", err)
+	}
+	defer ws.Close()
+
+	var writeMu sync.Mutex
+	sendSignal := func(message signalMessage) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return ws.WriteJSON(message)
+	}
+	if err := sendSignal(signalMessage{Type: "register", RoomID: roomID, ClientID: clientID, Key: key}); err != nil {
+		return fmt.Errorf("register Ayame room: %w", err)
+	}
+
+	var client *viewer
+	var pc *webrtc.PeerConnection
+	var ayameICEServers []webrtc.ICEServer
+	remoteDescriptionSet := false
+	var pendingCandidates []webrtc.ICECandidateInit
+	cleanup := func() {
+		if pc != nil {
+			_ = pc.Close()
+		}
+		if client != nil {
+			r.removeViewer(client.id)
+		}
+	}
+	defer cleanup()
+
+	createPeer := func(iceServers []webrtc.ICEServer) error {
+		if pc != nil {
+			return nil
+		}
+		client = &viewer{id: r.nextID.Add(1), role: "pilot"}
+		client.state.Store(int32(viewerNegotiating))
+		if !r.reservePilot(client.id) {
+			return errors.New("a local or external pilot is already connected")
+		}
+		var createErr error
+		pc, createErr = r.api.NewPeerConnection(webrtc.Configuration{ICEServers: iceServers})
+		if createErr != nil {
+			r.removeViewer(client.id)
+			return fmt.Errorf("create Ayame peer connection: %w", createErr)
+		}
+		pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
+			if candidate == nil {
+				return
+			}
+			candidateJSON := candidate.ToJSON()
+			if err := sendSignal(signalMessage{Type: "candidate", ICE: &candidateJSON}); err != nil {
+				log.Printf("source %q: send Ayame ICE candidate: %v", r.name, err)
+			}
+		})
+		pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+			log.Printf("source %q: Ayame pilot peer connection state: %s", r.name, state.String())
+			if state == webrtc.PeerConnectionStateConnected {
+				client.state.Store(int32(viewerConnected))
+				r.addViewer(client)
+				r.requestKeyframe("viewer_connect")
+			}
+		})
+		pc.OnDataChannel(func(channel *webrtc.DataChannel) {
+			switch channel.Label() {
+			case commandLabel:
+				channel.OnOpen(func() {
+					client.command.Store(channel)
+					log.Printf("source %q: Ayame pilot command channel opened", r.name)
+				})
+				channel.OnMessage(func(message webrtc.DataChannelMessage) {
+					r.handleCommand(client, message)
+				})
+				channel.OnClose(func() {
+					client.command.CompareAndSwap(channel, nil)
+					r.sendNeutralToUpstream("Ayame command channel closed")
+				})
+			case telemetryLabel:
+				channel.OnOpen(func() { client.telemetry.Store(channel) })
+				channel.OnClose(func() { client.telemetry.CompareAndSwap(channel, nil) })
+			case raceLabel:
+				channel.OnOpen(func() {
+					client.race.Store(channel)
+					r.sendCurrentRaceState(client, channel)
+				})
+				channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
+			default:
+				log.Printf("source %q: Ayame pilot opened unsupported DataChannel %q", r.name, channel.Label())
+			}
+		})
+		if _, createErr = pc.AddTrack(r.videoTrack); createErr != nil {
+			_ = pc.Close()
+			r.removeViewer(client.id)
+			pc = nil
+			return fmt.Errorf("add Ayame video track: %w", createErr)
+		}
+		return nil
+	}
+
+	for {
+		_, data, err := ws.ReadMessage()
+		if err != nil {
+			return err
+		}
+		var message signalMessage
+		if err := json.Unmarshal(data, &message); err != nil {
+			return fmt.Errorf("decode Ayame signaling: %w", err)
+		}
+		switch message.Type {
+		case "accept":
+			ayameICEServers = message.ICEServers
+			if message.IsExistUser {
+				if err := createPeer(ayameICEServers); err != nil {
+					return err
+				}
+				offer, err := pc.CreateOffer(nil)
+				if err != nil {
+					return fmt.Errorf("create Ayame offer: %w", err)
+				}
+				if err := pc.SetLocalDescription(offer); err != nil {
+					return fmt.Errorf("set Ayame offer: %w", err)
+				}
+				if err := sendSignal(signalMessage{Type: "offer", SDP: offer.SDP}); err != nil {
+					return fmt.Errorf("send Ayame offer: %w", err)
+				}
+			}
+		case "offer":
+			if err := createPeer(ayameICEServers); err != nil {
+				return err
+			}
+			if remoteDescriptionSet {
+				return errors.New("Ayame renegotiation is not supported")
+			}
+			if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: message.SDP}); err != nil {
+				return fmt.Errorf("set Ayame offer: %w", err)
+			}
+			remoteDescriptionSet = true
+			for _, candidate := range pendingCandidates {
+				if err := pc.AddICECandidate(candidate); err != nil {
+					log.Printf("source %q: apply pending Ayame ICE candidate: %v", r.name, err)
+				}
+			}
+			pendingCandidates = nil
+			answer, err := pc.CreateAnswer(nil)
+			if err != nil {
+				return fmt.Errorf("create Ayame answer: %w", err)
+			}
+			if err := pc.SetLocalDescription(answer); err != nil {
+				return fmt.Errorf("set Ayame answer: %w", err)
+			}
+			if err := sendSignal(signalMessage{Type: "answer", SDP: answer.SDP}); err != nil {
+				return fmt.Errorf("send Ayame answer: %w", err)
+			}
+		case "answer":
+			if pc == nil {
+				return errors.New("received Ayame answer before offer")
+			}
+			if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: message.SDP}); err != nil {
+				return fmt.Errorf("set Ayame answer: %w", err)
+			}
+			remoteDescriptionSet = true
+			for _, candidate := range pendingCandidates {
+				if err := pc.AddICECandidate(candidate); err != nil {
+					log.Printf("source %q: apply pending Ayame ICE candidate: %v", r.name, err)
+				}
+			}
+			pendingCandidates = nil
+		case "candidate":
+			if message.ICE == nil {
+				continue
+			}
+			if pc == nil || !remoteDescriptionSet {
+				pendingCandidates = append(pendingCandidates, *message.ICE)
+				continue
+			}
+			if err := pc.AddICECandidate(*message.ICE); err != nil {
+				log.Printf("source %q: apply Ayame ICE candidate: %v", r.name, err)
+			}
+		case "ping":
+			if err := sendSignal(signalMessage{Type: "pong"}); err != nil {
+				return fmt.Errorf("send Ayame pong: %w", err)
+			}
+		case "bye", "reject":
+			return fmt.Errorf("Ayame %s: %s", message.Type, firstNonEmpty(message.Reason, message.Error))
+		}
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return "unknown"
 }
 
 var wsUpgrader = websocket.Upgrader{
@@ -1251,6 +1524,10 @@ func main() {
 	var operationsAllowCIDRs sourceFlag
 	var raceURL string
 	var raceViewerToken string
+	var ayameSignalingURL string
+	var ayameClientIDPrefix string
+	var ayameSignalingKey string
+	var ayamePilotRooms sourceFlag
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
@@ -1258,6 +1535,10 @@ func main() {
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
 	flag.StringVar(&raceURL, "race-url", "", "Race Control WebSocket URL for race_state v2 distribution")
 	flag.StringVar(&raceViewerToken, "race-viewer-token", "", "Race Control Viewer Bearer token")
+	flag.StringVar(&ayameSignalingURL, "ayame-signaling-url", "", "Ayame signaling WebSocket URL for external pilot distribution")
+	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
+	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")
+	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
@@ -1288,6 +1569,20 @@ func main() {
 		}
 		raceCarBySource[name] = carID
 	}
+	ayameRoomBySource := make(map[string]string, len(ayamePilotRooms))
+	for _, ayameRoomValue := range ayamePilotRooms {
+		name, roomID, err := parseSource(ayameRoomValue)
+		if err != nil {
+			log.Fatalf("invalid -ayame-pilot-room: %v", err)
+		}
+		if _, exists := ayameRoomBySource[name]; exists {
+			log.Fatalf("duplicate Ayame source mapping: %q", name)
+		}
+		ayameRoomBySource[name] = roomID
+	}
+	if len(ayameRoomBySource) > 0 && ayameSignalingURL == "" {
+		log.Fatal("-ayame-signaling-url is required when -ayame-pilot-room is set")
+	}
 	serverRelay := &relayServer{
 		sources:     make(map[string]*relay, len(sources)),
 		sourceOrder: make([]string, 0, len(sources)),
@@ -1312,6 +1607,15 @@ func main() {
 		serverRelay.sources[name] = relay
 		serverRelay.sourceOrder = append(serverRelay.sourceOrder, name)
 		relay.start(ctx)
+		if roomID := ayameRoomBySource[name]; roomID != "" {
+			clientID := strings.TrimSuffix(ayameClientIDPrefix, "-") + "-" + name
+			relay.startAyamePilot(ctx, ayameSignalingURL, roomID, clientID, ayameSignalingKey)
+		}
+	}
+	for name := range ayameRoomBySource {
+		if _, exists := serverRelay.sources[name]; !exists {
+			log.Fatalf("Ayame source %q is not configured by -source", name)
+		}
 	}
 	serverRelay.startRaceControl(ctx, raceURL, raceViewerToken)
 

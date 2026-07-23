@@ -4,6 +4,9 @@ param(
     [string]$Device115 = '192.168.11.5',
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
+    [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
+    [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
+    [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [switch]$RebuildRelay
 )
@@ -78,6 +81,14 @@ if ($relayRunning.Count -eq 0) {
         if (-not [string]::IsNullOrWhiteSpace($RaceControlViewerToken)) {
             $relayArgs += '-race-viewer-token', $RaceControlViewerToken.Trim()
         }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) {
+        if ([string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
+            throw 'AyamePilotRoom113 requires AyameSignalingUrl or MOMO_AYAME_SIGNALING_URL.'
+        }
+        $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
+        $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
+        $relayArgs += '-ayame-pilot-room', "11.3=$($AyamePilotRoom113.Trim())"
     }
     Start-Process -FilePath $relayExe -ArgumentList $relayArgs `
         -RedirectStandardOutput (Join-Path $relayLogDirectory 'relay-unity.stdout.log') `
