@@ -1,5 +1,7 @@
 #include "serial_data_channel.h"
 
+#include <string>
+
 // WebRTC
 #include <rtc_base/logging.h>
 
@@ -35,4 +37,13 @@ void SerialDataChannel::Send(uint8_t* data, size_t length) {
   webrtc::CopyOnWriteBuffer buffer(data, length);
   webrtc::DataBuffer data_buffer(buffer, true);
   data_channel_->Send(data_buffer);
+}
+
+bool SerialDataChannel::SendText(const std::string& msg) {
+  if (data_channel_->state() != webrtc::DataChannelInterface::kOpen) {
+    return false;
+  }
+  webrtc::CopyOnWriteBuffer buffer(msg.data(), msg.size());
+  webrtc::DataBuffer data_buffer(buffer, false);
+  return data_channel_->Send(data_buffer);
 }

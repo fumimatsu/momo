@@ -4,6 +4,8 @@
 // WebRTC
 #include <api/data_channel_interface.h>
 
+#include <string>
+
 #include "serial_data_manager.h"
 
 class SerialDataManager;
@@ -16,6 +18,7 @@ class SerialDataChannel : public webrtc::DataChannelObserver {
   ~SerialDataChannel();
 
   void Send(uint8_t* data, size_t length);
+  bool SendText(const std::string& msg);
 
   void OnStateChange() override;
   void OnMessage(const webrtc::DataBuffer& buffer) override;

@@ -1,6 +1,8 @@
 #ifndef SERIAL_DATA_MANAGER_H_
 #define SERIAL_DATA_MANAGER_H_
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -41,14 +43,20 @@ class SerialDataManager : public RTCDataManager {
   void DoRead();
   void OnRead(const boost::system::error_code& error, size_t bytes_transferred);
   void SendLineFromSerial();
+  void MaybeStartTelemetryTest();
+  void ScheduleTelemetryTest();
+  void SendTelemetryTest();
   void StartWrite(std::vector<uint8_t> v);
   void DoWrite();
   void OnWrite(const boost::system::error_code& error);
 
   boost::asio::serial_port serial_port_;
+  boost::asio::steady_timer telemetry_test_timer_;
   std::function<void(std::function<void()>)> post_;
   webrtc::Mutex channels_lock_;
   std::vector<SerialDataChannel*> serial_data_channels_;
+  bool telemetry_test_enabled_;
+  uint32_t telemetry_test_seq_;
 
   std::unique_ptr<uint8_t[]> read_buffer_;
   size_t read_buffer_size_;

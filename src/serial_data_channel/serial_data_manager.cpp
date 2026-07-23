@@ -3,8 +3,12 @@
 
 #include "serial_data_manager.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <string>
 
 // Boost
 #include <boost/asio/post.hpp>
@@ -19,7 +23,12 @@
 #define SERIAL_RX_BUFFER_SIZE 256
 
 SerialDataManager::SerialDataManager(boost::asio::io_context& ioc)
-    : serial_port_(ioc), read_buffer_size_(SERIAL_RX_BUFFER_SIZE) {
+    : serial_port_(ioc),
+      telemetry_test_timer_(ioc),
+      telemetry_test_enabled_(std::getenv("MOMO_FPV_TELEMETRY_TEST") !=
+                              nullptr),
+      telemetry_test_seq_(0),
+      read_buffer_size_(SERIAL_RX_BUFFER_SIZE) {
   post_ = [&ioc](std::function<void()> f) {
     if (ioc.stopped())
       return;
@@ -28,6 +37,8 @@ SerialDataManager::SerialDataManager(boost::asio::io_context& ioc)
 }
 
 SerialDataManager::~SerialDataManager() {
+  telemetry_test_timer_.cancel();
+
   {
     webrtc::MutexLock lock(&channels_lock_);
     for (SerialDataChannel* serial_data_channel : serial_data_channels_) {
@@ -99,6 +110,7 @@ bool SerialDataManager::Connect(std::string device, unsigned int rate) {
 
   read_buffer_.reset(new uint8_t[read_buffer_size_]);
   post_(std::bind(&SerialDataManager::DoRead, this));
+  MaybeStartTelemetryTest();
   return true;
 }
 
@@ -149,11 +161,55 @@ void SerialDataManager::SendLineFromSerial() {
   if (delimiter_iterator != read_line_buffer_.end()) {
     size_t delimiter_index =
         std::distance(read_line_buffer_.begin(), delimiter_iterator);
+    const std::string line(
+        reinterpret_cast<const char*>(read_line_buffer_.data()),
+        delimiter_index);
     for (SerialDataChannel* serial_data_channel : serial_data_channels_) {
-      serial_data_channel->Send(read_line_buffer_.data(), delimiter_index);
+      if (line.rfind("TEL:", 0) == 0) {
+        serial_data_channel->SendText(line);
+      } else {
+        serial_data_channel->Send(read_line_buffer_.data(), delimiter_index);
+      }
     }
     read_line_buffer_.erase(read_line_buffer_.begin(), delimiter_iterator + 1);
     SendLineFromSerial();
+  }
+}
+
+void SerialDataManager::MaybeStartTelemetryTest() {
+  if (!telemetry_test_enabled_) {
+    return;
+  }
+  post_(std::bind(&SerialDataManager::ScheduleTelemetryTest, this));
+}
+
+void SerialDataManager::ScheduleTelemetryTest() {
+  if (!telemetry_test_enabled_) {
+    return;
+  }
+  telemetry_test_timer_.expires_after(std::chrono::seconds(1));
+  telemetry_test_timer_.async_wait([this](const boost::system::error_code& error) {
+    if (error) {
+      return;
+    }
+    SendTelemetryTest();
+    ScheduleTelemetryTest();
+  });
+}
+
+void SerialDataManager::SendTelemetryTest() {
+  const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const std::string line =
+      "TEL:{\"v\":1,\"k\":\"s\",\"src\":\"test0\",\"boot\":\"00000001\",\"seq\":" +
+      std::to_string(++telemetry_test_seq_) +
+      ",\"t_us\":" + std::to_string(now_us) +
+      ",\"imu\":{\"a\":[0,0,9.8],\"g\":[0,0,0]},\"att\":{\"q\":[1,0,0,0],\"rpy\":[0,0,0]},\"qual\":{\"period_us\":1000000,\"cal\":0,\"flags\":[\"test\"]}}";
+
+  webrtc::MutexLock lock(&channels_lock_);
+  for (SerialDataChannel* serial_data_channel : serial_data_channels_) {
+    serial_data_channel->SendText(line);
   }
 }
 
