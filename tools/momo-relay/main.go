@@ -165,6 +165,7 @@ type relay struct {
 	upstreamURL          string
 	raceCarID            string
 	allowObserverCommand bool
+	recorder             *telemetryRecorder
 
 	videoTrack *webrtc.TrackLocalStaticRTP
 	api        *webrtc.API
@@ -213,11 +214,17 @@ type relay struct {
 type relayServer struct {
 	sources     map[string]*relay
 	sourceOrder []string
+	recorder    *telemetryRecorder
 }
 
 type raceStateEnvelope struct {
-	Type    string `json:"type"`
-	Version int    `json:"version"`
+	Type      string `json:"type"`
+	Version   int    `json:"version"`
+	RaceID    string `json:"raceId"`
+	RaceRunID string `json:"raceRunId"`
+	Phase     string `json:"phase"`
+	Flag      string `json:"flag"`
+	Sequence  uint64 `json:"sequence"`
 }
 
 type sourceFlag []string
@@ -544,7 +551,7 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		log.Printf("source %q: upstream DataChannel %q opened", r.name, upstreamLabel)
 	})
 	upstreamDC.OnMessage(func(message webrtc.DataChannelMessage) {
-		r.broadcastTelemetry(message)
+		r.handleUpstreamTelemetry(message, generation)
 	})
 	upstreamDC.OnClose(func() {
 		r.clearUpstream(pc)
@@ -910,6 +917,16 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 			}
 		}
 	}
+}
+
+func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, generation uint64) {
+	if r.recorder != nil && message.IsString {
+		raw := string(message.Data)
+		if strings.HasPrefix(raw, "TEL:") {
+			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
+		}
+	}
+	r.broadcastTelemetry(message)
 }
 
 // Race Control の状態は操縦テレメトリーと分離した reliable DataChannel で配る。
@@ -1502,6 +1519,16 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			log.Printf("ignore unsupported Race Control message: type=%q version=%d", envelope.Type, envelope.Version)
 			continue
 		}
+		if server.recorder != nil {
+			server.recorder.RecordRaceState(string(data), telemetryRaceContext{
+				RaceID:    envelope.RaceID,
+				RaceRunID: envelope.RaceRunID,
+				Phase:     envelope.Phase,
+				Flag:      envelope.Flag,
+				Sequence:  envelope.Sequence,
+				Present:   true,
+			})
+		}
 		for _, source := range server.sources {
 			message, err := raceMessageForCar(data, source.raceCarID)
 			if err != nil {
@@ -1528,6 +1555,7 @@ func main() {
 	var ayameClientIDPrefix string
 	var ayameSignalingKey string
 	var ayamePilotRooms sourceFlag
+	var telemetryLogDir string
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
@@ -1539,6 +1567,7 @@ func main() {
 	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
+	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
@@ -1583,9 +1612,26 @@ func main() {
 	if len(ayameRoomBySource) > 0 && ayameSignalingURL == "" {
 		log.Fatal("-ayame-signaling-url is required when -ayame-pilot-room is set")
 	}
+	var recorder *telemetryRecorder
+	if strings.TrimSpace(telemetryLogDir) != "" {
+		recorder, err = newTelemetryRecorder(strings.TrimSpace(telemetryLogDir))
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer func() {
+			if err := recorder.Close(); err != nil {
+				log.Printf("close telemetry recorder: %v", err)
+			}
+			stats := recorder.Stats()
+			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d queueDrops=%d writeErrors=%d",
+				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.QueueDrops, stats.WriteErrors)
+		}()
+		log.Printf("telemetry recorder started: path=%s", recorder.Path())
+	}
 	serverRelay := &relayServer{
 		sources:     make(map[string]*relay, len(sources)),
 		sourceOrder: make([]string, 0, len(sources)),
+		recorder:    recorder,
 	}
 	for _, sourceValue := range sources {
 		name, sourceURL, err := parseSource(sourceValue)
@@ -1604,6 +1650,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		relay.recorder = recorder
 		serverRelay.sources[name] = relay
 		serverRelay.sourceOrder = append(serverRelay.sourceOrder, name)
 		relay.start(ctx)

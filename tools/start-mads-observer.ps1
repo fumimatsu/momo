@@ -8,6 +8,7 @@ param(
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
+    [string]$TelemetryLogDirectory = $env:MOMO_RELAY_TELEMETRY_LOG_DIR,
     [switch]$RebuildRelay
 )
 
@@ -31,7 +32,9 @@ $relayRunning = @(Get-CimInstance Win32_Process | Where-Object {
     $_.Name -match '^momo-local-relay-device-input(?:-v\d+)?\.exe$'
 })
 $relaySourceFiles = @(
-    Get-Item -LiteralPath (Join-Path $relayDirectory 'main.go')
+    Get-ChildItem -LiteralPath $relayDirectory -File -Filter '*.go'
+    Get-Item -LiteralPath (Join-Path $relayDirectory 'go.mod')
+    Get-Item -LiteralPath (Join-Path $relayDirectory 'go.sum')
     Get-ChildItem -LiteralPath (Join-Path $relayDirectory 'web') -Recurse -File
 )
 $relayNeedsBuild = -not (Test-Path -LiteralPath $relayExe) -or
@@ -82,6 +85,9 @@ if ($relayRunning.Count -eq 0) {
             $relayArgs += '-race-viewer-token', $RaceControlViewerToken.Trim()
         }
     }
+    if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
+        $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()
+    }
     if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) {
         if ([string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
             throw 'AyamePilotRoom113 requires AyameSignalingUrl or MOMO_AYAME_SIGNALING_URL.'
@@ -95,6 +101,9 @@ if ($relayRunning.Count -eq 0) {
         -RedirectStandardError (Join-Path $relayLogDirectory 'relay-unity.stderr.log') `
         -WindowStyle Hidden | Out-Null
     Write-Host 'Relay started: http://127.0.0.1:8090/'
+    if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
+        Write-Host "Telemetry log directory: $($TelemetryLogDirectory.Trim())"
+    }
 }
 else {
     Write-Host 'Relay is already running.'

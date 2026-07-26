@@ -9,6 +9,34 @@
 
 Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面の設計は、[Relay Operations Dashboard 設計](../../doc/RELAY_OPERATIONS_DASHBOARD_DESIGN.md) を参照する。
 
+## 車体テレメトリ記録
+
+Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全車共通のRelay時計で
+1本のNDJSONへ記録できる。Viewerの接続有無に依存しないため、車体座標、重力除去、軸符号を
+走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
+`race_state`、`raceRunId`、phase、flag、sequenceも記録する。
+
+記録は明示指定時だけ有効にする。既定では無効で、容量を消費しない。
+
+```powershell
+.\tools\start-mads-observer.ps1 -RebuildRelay `
+  -TelemetryLogDirectory 'E:\fpv-telemetry-logs'
+```
+
+環境変数`MOMO_RELAY_TELEMETRY_LOG_DIR`でも同じ保存先を指定できる。Relay単体では
+`-telemetry-log-dir <directory>`を使う。
+
+出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`telemetry`、
+Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
+`telemetry`にはRelay受信UTC時刻、Relay開始からの単調経過時間、`sourceId`、`carId`、
+上流接続generation、`TEL:`全文を含める。DataChannelはunreliableなため、ログはRelayへ届いた
+sampleだけを表す。M5の`boot`と`seq`から欠損を検出する。
+
+記録キューは有限で、満杯時はログsampleをdropして終了レコードの`queueDrops`へ数える。ファイルI/Oが
+映像、RC command、Telemetry中継を待たせることはない。4台を20Hz、1 message最大256 bytesで送る場合、
+wire上の生データ量は約74MB/時間であり、NDJSONのメタデータ込みでは約100MB/時間を見込む。Relayの強制終了時は
+終了レコードが無いことがあるが、1秒ごとにflushするため最後の完全なNDJSON行までは解析できる。
+
 ## Operations Dashboard
 
 Relay を再ビルドして起動すると、運営用の読み取り専用画面を配信する。
