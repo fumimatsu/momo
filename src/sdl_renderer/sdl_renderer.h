@@ -1,6 +1,7 @@
 #ifndef SDL_RENDERER_H_
 #define SDL_RENDERER_H_
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -44,6 +45,7 @@ class SDLRenderer : public VideoTrackReceiver {
   ~SDLRenderer();
 
   void SetDispatchFunction(std::function<void(std::function<void()>)> dispatch);
+  void SetKeyUpHandler(std::function<bool(SDL_Keycode)> handler);
 
   static int RenderThreadExec(void* data);
   int RenderThread();
@@ -57,6 +59,12 @@ class SDLRenderer : public VideoTrackReceiver {
                          const std::string& source_name);
   void SetSourceState(const std::string& source_name, SourceState state);
   void SetSourceOverlayText(std::string source_name, std::string text);
+  void SetSourceRawTelemetryGraph(
+      std::string source_name,
+      std::vector<std::array<float, 3>> samples,
+      bool active,
+      uint64_t impact_candidates,
+      float last_impact_mps2);
   void SetOverlayText(std::string text);
   double GetPrimaryFps();
   bool IsFlipVertical() const;
@@ -147,6 +155,8 @@ class SDLRenderer : public VideoTrackReceiver {
   int FindSourceSlot(const std::string& source_name) const;
   Sink* FindSinkForSource(const std::string& source_name);
   void RenderSourceOverlay();
+  void RenderSourceRawTelemetryGraph(const std::string& source_name,
+                                     const OutlineRect& outline);
 
   webrtc::Mutex sinks_lock_;
   typedef std::vector<
@@ -158,6 +168,9 @@ class SDLRenderer : public VideoTrackReceiver {
   SDL_Window* window_;
   SDL_Renderer* renderer_;
   std::function<void(std::function<void()>)> dispatch_;
+  webrtc::Mutex key_up_handler_lock_;
+  std::function<bool(SDL_Keycode)> key_up_handler_
+      RTC_GUARDED_BY(key_up_handler_lock_);
   std::atomic<bool> flip_vertical_;
   std::atomic<bool> flip_horizontal_;
   mutable webrtc::Mutex source_flips_lock_;
@@ -174,6 +187,15 @@ class SDLRenderer : public VideoTrackReceiver {
   webrtc::Mutex source_overlay_lock_;
   std::unordered_map<std::string, std::string> source_overlay_text_
       RTC_GUARDED_BY(source_overlay_lock_);
+  struct RawTelemetryGraph {
+    std::vector<std::array<float, 3>> samples;
+    bool active = false;
+    uint64_t impact_candidates = 0;
+    float last_impact_mps2 = 0.0f;
+  };
+  webrtc::Mutex source_telemetry_graph_lock_;
+  std::unordered_map<std::string, RawTelemetryGraph> source_telemetry_graph_
+      RTC_GUARDED_BY(source_telemetry_graph_lock_);
   webrtc::Mutex overlay_lock_;
   std::string overlay_text_ RTC_GUARDED_BY(overlay_lock_);
 };

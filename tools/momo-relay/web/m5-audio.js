@@ -4,9 +4,11 @@
   const FRAME_SAMPLES = 160;
   const SAMPLE_RATE = 8000;
   const PACKET_BYTES = 84;
-  const START_BUFFER_FRAMES = 4;
+  // DataChannel とブラウザのイベントループが数十 ms 遅れても再生予定時刻を
+  // 追い越さないよう、Pilot は 200 ms を先読みする。低遅延より連続性を優先する。
+  const START_BUFFER_FRAMES = 10;
   const MAX_GAP_FRAMES = 12;
-  const MAX_SCHEDULE_AHEAD_SECONDS = 0.3;
+  const MAX_SCHEDULE_AHEAD_SECONDS = 0.6;
   const IMA_INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
   const IMA_STEP_TABLE = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50,

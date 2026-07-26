@@ -291,6 +291,14 @@ void SDLRenderer::PollEvent() {
       SetOutlines();
     }
     if (e.type == SDL_EVENT_KEY_UP) {
+      std::function<bool(SDL_Keycode)> key_up_handler;
+      {
+        webrtc::MutexLock lock(&key_up_handler_lock_);
+        key_up_handler = key_up_handler_;
+      }
+      if (key_up_handler && key_up_handler(e.key.key)) {
+        continue;
+      }
       switch (e.key.key) {
         case SDLK_F:
           SetFullScreen(!IsFullScreen());
@@ -320,6 +328,12 @@ void SDLRenderer::SetDispatchFunction(
     std::function<void(std::function<void()>)> dispatch) {
   webrtc::MutexLock lock(&sinks_lock_);
   dispatch_ = std::move(dispatch);
+}
+
+void SDLRenderer::SetKeyUpHandler(
+    std::function<bool(SDL_Keycode)> handler) {
+  webrtc::MutexLock lock(&key_up_handler_lock_);
+  key_up_handler_ = std::move(handler);
 }
 
 int SDLRenderer::RenderThreadExec(void* data) {
@@ -798,6 +812,18 @@ void SDLRenderer::SetSourceOverlayText(std::string source_name,
   source_overlay_text_[std::move(source_name)] = std::move(text);
 }
 
+void SDLRenderer::SetSourceRawTelemetryGraph(
+    std::string source_name, std::vector<std::array<float, 3>> samples,
+    bool active, uint64_t impact_candidates, float last_impact_mps2) {
+  webrtc::MutexLock lock(&source_telemetry_graph_lock_);
+  if (!active || samples.empty()) {
+    source_telemetry_graph_.erase(source_name);
+    return;
+  }
+  source_telemetry_graph_[std::move(source_name)] = {
+      std::move(samples), active, impact_candidates, last_impact_mps2};
+}
+
 void SDLRenderer::SetOverlayText(std::string text) {
   webrtc::MutexLock lock(&overlay_lock_);
   overlay_text_ = std::move(text);
@@ -918,6 +944,71 @@ void SDLRenderer::WriteSharedFrame() {
                               shared_frame_buffer_.size(), timestamp_ns);
 }
 
+void SDLRenderer::RenderSourceRawTelemetryGraph(
+    const std::string& source_name, const OutlineRect& outline) {
+  RawTelemetryGraph graph;
+  {
+    webrtc::MutexLock lock(&source_telemetry_graph_lock_);
+    const auto it = source_telemetry_graph_.find(source_name);
+    if (it == source_telemetry_graph_.end()) {
+      return;
+    }
+    graph = it->second;
+  }
+  if (!graph.active || graph.samples.size() < 2) {
+    return;
+  }
+
+  constexpr float kGraphRangeMps2 = 15.0f;
+  const float graph_width = std::min(300.0f,
+                                     static_cast<float>(outline.width - 12));
+  const float graph_height = std::min(96.0f,
+                                      static_cast<float>(outline.height - 12));
+  const float graph_x = static_cast<float>(outline.x + 6);
+  const float graph_y = static_cast<float>(outline.y + outline.height) -
+                        graph_height - 6.0f;
+  const float center_y = graph_y + graph_height * 0.5f;
+  const float half_height = graph_height * 0.5f - 10.0f;
+  SDL_FRect background = {graph_x, graph_y, graph_width, graph_height};
+  SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 175);
+  SDL_RenderFillRect(renderer_, &background);
+  SDL_SetRenderDrawColor(renderer_, 160, 160, 160, 180);
+  SDL_RenderLine(renderer_, graph_x, center_y, graph_x + graph_width, center_y);
+  SDL_RenderDebugTextFormat(renderer_, graph_x + 4.0f, graph_y + 4.0f,
+                            "RAW ACC X/R Y/G Z/B  +/-%.0f", kGraphRangeMps2);
+  if (graph.impact_candidates > 0) {
+    SDL_SetRenderDrawColor(renderer_, 255, 170, 48, 255);
+    SDL_RenderDebugTextFormat(renderer_, graph_x + 4.0f, graph_y + 17.0f,
+                              "IMPACT %llu  %.1fm/s2",
+                              static_cast<unsigned long long>(graph.impact_candidates),
+                              graph.last_impact_mps2);
+  }
+
+  const std::array<std::array<Uint8, 3>, 3> colors = {
+      std::array<Uint8, 3>{255, 72, 72},
+      std::array<Uint8, 3>{72, 255, 96},
+      std::array<Uint8, 3>{72, 144, 255},
+  };
+  for (size_t axis = 0; axis < 3; ++axis) {
+    SDL_SetRenderDrawColor(renderer_, colors[axis][0], colors[axis][1],
+                           colors[axis][2], 255);
+    for (size_t index = 1; index < graph.samples.size(); ++index) {
+      const float left_ratio = static_cast<float>(index - 1) /
+                               static_cast<float>(graph.samples.size() - 1);
+      const float right_ratio = static_cast<float>(index) /
+                                static_cast<float>(graph.samples.size() - 1);
+      const float previous = std::clamp(graph.samples[index - 1][axis],
+                                        -kGraphRangeMps2, kGraphRangeMps2);
+      const float current = std::clamp(graph.samples[index][axis],
+                                       -kGraphRangeMps2, kGraphRangeMps2);
+      SDL_RenderLine(renderer_, graph_x + graph_width * left_ratio,
+                     center_y - previous / kGraphRangeMps2 * half_height,
+                     graph_x + graph_width * right_ratio,
+                     center_y - current / kGraphRangeMps2 * half_height);
+    }
+  }
+}
+
 void SDLRenderer::RenderSourceOverlay() {
   const auto now = std::chrono::steady_clock::now();
   const bool blink_on =
@@ -1006,6 +1097,7 @@ void SDLRenderer::RenderSourceOverlay() {
                             lines[line_index].c_str());
       }
     }
+    RenderSourceRawTelemetryGraph(slot.name, outline);
   }
 
   std::string overlay;

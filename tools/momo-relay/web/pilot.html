@@ -422,6 +422,64 @@
       pointer-events: none;
     }
 
+    .motion-event-hud {
+      position: fixed;
+      top: min(34vh, 310px);
+      left: 50%;
+      z-index: 4;
+      display: grid;
+      gap: 3px;
+      min-width: 236px;
+      padding: 10px 16px 9px;
+      border: 1px solid currentColor;
+      background: rgba(6, 11, 16, 0.68);
+      color: #ffd84d;
+      font-family: Impact, "Arial Narrow", sans-serif;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.08em;
+      opacity: 0;
+      pointer-events: none;
+      text-align: center;
+      text-shadow: 0 2px 2px #000000, 0 0 8px rgba(0, 0, 0, 0.9);
+      transform: translateX(-50%) scale(var(--osd-scale));
+      transform-origin: top center;
+      transition: opacity 120ms ease-out;
+    }
+
+    .motion-event-hud.is-visible {
+      opacity: 1;
+    }
+
+    .motion-event-hud[data-impact-class="strong"] {
+      color: #ff8b3d;
+      background: rgba(38, 12, 4, 0.72);
+    }
+
+    .motion-event-hud[data-impact-class="severe"] {
+      color: #ff4b45;
+      background: rgba(48, 4, 5, 0.78);
+      animation: motion-impact-pulse 180ms ease-in-out 4 alternate;
+    }
+
+    .motion-event-label {
+      font-size: 28px;
+      font-style: italic;
+      line-height: 0.9;
+    }
+
+    .motion-event-detail {
+      color: #f7fbff;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    @keyframes motion-impact-pulse {
+      from { filter: brightness(1); }
+      to { filter: brightness(1.55); }
+    }
+
     .race-start-signal-hidden {
       display: none;
     }
@@ -1422,6 +1480,10 @@
   <video id="remote_video" autoplay muted playsinline></video>
 
   <section class="race-hud" aria-live="polite" aria-label="Race status">
+    <div id="motionEventHud" class="motion-event-hud" data-impact-class="" aria-live="polite" aria-atomic="true">
+      <strong id="motionEventLabel" class="motion-event-label">IMPACT</strong>
+      <span id="motionEventDetail" class="motion-event-detail">--</span>
+    </div>
     <div class="race-summary race-card">
       <div class="race-summary-head">
         <span id="racePhase" class="race-phase">STANDBY</span>
@@ -1561,6 +1623,7 @@
         <div class="debug-only"><span>VideoAge</span> <strong id="videoAgeState">n/a</strong></div>
         <div class="debug-only"><span>RC</span> <strong id="rcState">manual</strong></div>
         <div class="debug-only"><span>Telemetry</span> <strong id="telemetryState">n/a</strong></div>
+        <div class="debug-only"><span>Motion</span> <strong id="motionState">waiting</strong></div>
         <div class="debug-only"><span>M5 Audio</span> <strong id="m5AudioState">off</strong></div>
         <div class="debug-only"><span>Mode</span> <strong id="modeState">n/a</strong></div>
         <div class="debug-only"><span>Device</span> <strong id="deviceState">n/a</strong></div>
@@ -1630,9 +1693,9 @@
     </div>
   </div>
 
-<script src="./telemetry.js?v=20260726-m5-audio"></script>
+    <script src="./telemetry.js?v=20260726-motion-impact"></script>
 <script src="./m5-audio.js?v=20260726-m5-audio"></script>
 <script src="./ffb-bridge.js"></script>
-<script src="./pilot.js?v=20260726-m5-audio"></script>
+    <script src="./pilot.js?v=20260726-motion-impact"></script>
 </body>
 </html>

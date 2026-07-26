@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1694,8 +1695,8 @@ func main() {
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
 	flag.Var(&operationsAllowCIDRs, "operations-allow-cidr", "CIDR allowed to read /operations.html and /api/v1/status; can be repeated (default: loopback only)")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
-	flag.StringVar(&raceURL, "race-url", "", "Race Control WebSocket URL for race_state v2 distribution")
-	flag.StringVar(&raceViewerToken, "race-viewer-token", "", "Race Control Viewer Bearer token")
+	flag.StringVar(&raceURL, "race-url", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_WS_URL")), "Race Control WebSocket URL for race_state v2 distribution")
+	flag.StringVar(&raceViewerToken, "race-viewer-token", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_VIEWER_TOKEN")), "Race Control Viewer Bearer token")
 	flag.StringVar(&ayameSignalingURL, "ayame-signaling-url", "", "Ayame signaling WebSocket URL for external pilot distribution")
 	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")

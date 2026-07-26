@@ -1,7 +1,10 @@
 #ifndef OBSERVER_AUDIO_RECEIVER_H_
 #define OBSERVER_AUDIO_RECEIVER_H_
 
+#include <array>
+#include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,15 +25,24 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
     bool channel_open = false;
     bool playback_started = false;
     uint64_t received_frames = 0;
+    uint64_t gap_frames = 0;
     uint64_t invalid_frames = 0;
+    uint64_t queue_resets = 0;
     size_t queued_samples = 0;
     std::string initialization_error;
+    bool raw_telemetry_active = false;
+    uint64_t raw_telemetry_frames = 0;
+    uint64_t impact_candidates = 0;
+    float last_impact_mps2 = 0.0f;
+    std::vector<std::array<float, 3>> raw_acceleration_samples;
   };
 
-  explicit ObserverAudioReceiver(std::string source_name);
+  explicit ObserverAudioReceiver(std::string source_name,
+                                 bool enable_audio_playback);
   ~ObserverAudioReceiver() override;
 
   void AttachDataChannel(const std::shared_ptr<RTCConnection>& connection);
+  void SetAudioPlaybackEnabled(bool enabled);
   Diagnostics GetDiagnostics() const;
 
   void OnStateChange() override;
@@ -39,16 +51,22 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
 
  private:
   bool DecodeAndQueue(const std::string& message);
+  bool DecodeRawTelemetry(const std::string& message);
+  bool DecodeImpactCandidate(const std::string& message);
   bool InvalidAudioFrame();
   bool QueueSamples(const std::vector<int16_t>& samples);
   void ResetStream();
   void DetachChannel();
+  bool EnableAudioPlaybackLocked();
+  void DisableAudioPlaybackLocked();
 
   std::string source_name_;
   mutable webrtc::Mutex mutex_;
+  bool audio_playback_enabled_ RTC_GUARDED_BY(mutex_) = false;
   webrtc::scoped_refptr<webrtc::DataChannelInterface> channel_
       RTC_GUARDED_BY(mutex_);
   SDL_AudioStream* stream_ RTC_GUARDED_BY(mutex_) = nullptr;
+  bool audio_subsystem_initialized_ RTC_GUARDED_BY(mutex_) = false;
   bool audio_initialized_ RTC_GUARDED_BY(mutex_) = false;
   bool channel_open_ RTC_GUARDED_BY(mutex_) = false;
   std::string initialization_error_ RTC_GUARDED_BY(mutex_);
@@ -58,7 +76,16 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
   bool has_sequence_ RTC_GUARDED_BY(mutex_) = false;
   std::vector<int16_t> startup_samples_ RTC_GUARDED_BY(mutex_);
   uint64_t received_frames_ RTC_GUARDED_BY(mutex_) = 0;
+  uint64_t gap_frames_ RTC_GUARDED_BY(mutex_) = 0;
   uint64_t invalid_frames_ RTC_GUARDED_BY(mutex_) = 0;
+  uint64_t queue_resets_ RTC_GUARDED_BY(mutex_) = 0;
+  std::deque<std::array<float, 3>> raw_acceleration_samples_
+      RTC_GUARDED_BY(mutex_);
+  std::chrono::steady_clock::time_point raw_telemetry_received_at_
+      RTC_GUARDED_BY(mutex_) = std::chrono::steady_clock::time_point::min();
+  uint64_t raw_telemetry_frames_ RTC_GUARDED_BY(mutex_) = 0;
+  uint64_t impact_candidates_ RTC_GUARDED_BY(mutex_) = 0;
+  float last_impact_mps2_ RTC_GUARDED_BY(mutex_) = 0.0f;
 };
 
 #endif  // OBSERVER_AUDIO_RECEIVER_H_

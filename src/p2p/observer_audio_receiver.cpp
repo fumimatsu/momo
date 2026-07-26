@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <string_view>
 #include <utility>
@@ -19,6 +21,7 @@ constexpr size_t kFrameSamples = 160;
 constexpr size_t kStartupFrames = 4;
 constexpr size_t kMaxGapFrames = 12;
 constexpr int kMaxQueuedBytes = 8000;  // 0.5 秒。停止中の遅延蓄積を防ぐ。
+constexpr size_t kMaxRawTelemetrySamples = 90;  // RAW 15 Hz で約 6 秒。
 
 constexpr std::array<int, 16> kImaIndexTable = {
     -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8,
@@ -46,6 +49,37 @@ int DecodeBase64Char(char value) {
   if (value == '+') return 62;
   if (value == '/') return 63;
   return -1;
+}
+
+bool ParseFloatArray3(const std::string& text, size_t start,
+                      std::array<float, 3>* values) {
+  if (values == nullptr || start >= text.size()) return false;
+  const char* cursor = text.c_str() + start;
+  for (size_t index = 0; index < values->size(); ++index) {
+    char* end = nullptr;
+    const float value = std::strtof(cursor, &end);
+    if (end == cursor || !std::isfinite(value)) return false;
+    (*values)[index] = value;
+    if (index + 1 == values->size()) {
+      return *end == ']';
+    }
+    if (*end != ',') return false;
+    cursor = end + 1;
+  }
+  return false;
+}
+
+bool ParseFloatAfterKey(const std::string& text, std::string_view key,
+                        float* value) {
+  if (value == nullptr) return false;
+  const size_t key_position = text.find(key);
+  if (key_position == std::string::npos) return false;
+  const char* cursor = text.c_str() + key_position + key.size();
+  char* end = nullptr;
+  const float parsed = std::strtof(cursor, &end);
+  if (end == cursor || !std::isfinite(parsed)) return false;
+  *value = parsed;
+  return true;
 }
 
 bool DecodeBase64(std::string_view input, std::vector<uint8_t>* output) {
@@ -111,14 +145,38 @@ bool DecodeImaFrame(const std::vector<uint8_t>& packet,
 
 }  // namespace
 
-ObserverAudioReceiver::ObserverAudioReceiver(std::string source_name)
+ObserverAudioReceiver::ObserverAudioReceiver(std::string source_name,
+                                             bool enable_audio_playback)
     : source_name_(std::move(source_name)) {
+  SetAudioPlaybackEnabled(enable_audio_playback);
+}
+
+ObserverAudioReceiver::~ObserverAudioReceiver() {
+  DetachChannel();
+  SetAudioPlaybackEnabled(false);
+}
+
+void ObserverAudioReceiver::SetAudioPlaybackEnabled(bool enabled) {
+  webrtc::MutexLock lock(&mutex_);
+  if (enabled == audio_playback_enabled_) {
+    return;
+  }
+  if (enabled) {
+    audio_playback_enabled_ = EnableAudioPlaybackLocked();
+  } else {
+    DisableAudioPlaybackLocked();
+  }
+}
+
+bool ObserverAudioReceiver::EnableAudioPlaybackLocked() {
+  initialization_error_.clear();
   if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
     initialization_error_ = SDL_GetError();
     RTC_LOG(LS_ERROR) << "Observer audio initialization failed: "
                       << initialization_error_;
-    return;
+    return false;
   }
+  audio_subsystem_initialized_ = true;
   SDL_AudioSpec spec{};
   spec.format = SDL_AUDIO_S16;
   spec.channels = 1;
@@ -129,8 +187,8 @@ ObserverAudioReceiver::ObserverAudioReceiver(std::string source_name)
     initialization_error_ = SDL_GetError();
     RTC_LOG(LS_ERROR) << "Observer audio output could not open: "
                       << initialization_error_;
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    return;
+    DisableAudioPlaybackLocked();
+    return false;
   }
   if (!SDL_ResumeAudioStreamDevice(stream_)) {
     initialization_error_ = SDL_GetError();
@@ -138,24 +196,31 @@ ObserverAudioReceiver::ObserverAudioReceiver(std::string source_name)
                       << initialization_error_;
     SDL_DestroyAudioStream(stream_);
     stream_ = nullptr;
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    return;
+    DisableAudioPlaybackLocked();
+    return false;
   }
   audio_initialized_ = true;
   RTC_LOG(LS_INFO) << "Observer audio enabled for source " << source_name_;
+  return true;
 }
 
-ObserverAudioReceiver::~ObserverAudioReceiver() {
-  DetachChannel();
-  webrtc::MutexLock lock(&mutex_);
+void ObserverAudioReceiver::DisableAudioPlaybackLocked() {
   if (stream_ != nullptr) {
     SDL_DestroyAudioStream(stream_);
     stream_ = nullptr;
   }
-  if (audio_initialized_) {
+  if (audio_subsystem_initialized_) {
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    audio_initialized_ = false;
+    audio_subsystem_initialized_ = false;
   }
+  audio_initialized_ = false;
+  audio_playback_enabled_ = false;
+  initialization_error_.clear();
+  boot_id_.clear();
+  last_sequence_ = 0;
+  has_sequence_ = false;
+  startup_samples_.clear();
+  playback_started_ = false;
 }
 
 void ObserverAudioReceiver::AttachDataChannel(
@@ -187,13 +252,65 @@ void ObserverAudioReceiver::OnStateChange() {
   }
 }
 
+bool ObserverAudioReceiver::DecodeRawTelemetry(const std::string& message) {
+  if (message.rfind("TEL:{\"v\":1,\"k\":\"s\"", 0) != 0) {
+    return false;
+  }
+  constexpr std::string_view kAccelerationKey = "\"imu\":{\"a\":[";
+  const size_t acceleration_position = message.find(kAccelerationKey);
+  if (acceleration_position == std::string::npos) {
+    return true;
+  }
+  std::array<float, 3> acceleration{};
+  if (!ParseFloatArray3(message,
+                        acceleration_position + kAccelerationKey.size(),
+                        &acceleration)) {
+    return true;
+  }
+
+  webrtc::MutexLock lock(&mutex_);
+  raw_acceleration_samples_.push_back(acceleration);
+  while (raw_acceleration_samples_.size() > kMaxRawTelemetrySamples) {
+    raw_acceleration_samples_.pop_front();
+  }
+  raw_telemetry_received_at_ = std::chrono::steady_clock::now();
+  ++raw_telemetry_frames_;
+  return true;
+}
+
+bool ObserverAudioReceiver::DecodeImpactCandidate(const std::string& message) {
+  if (message.rfind("TEL:{\"v\":2,\"k\":\"e\"", 0) != 0 ||
+      message.find("\"n\":\"impact_candidate\"") == std::string::npos) {
+    return false;
+  }
+  float magnitude = 0.0f;
+  if (!ParseFloatAfterKey(message, "\"m\":", &magnitude)) {
+    return true;
+  }
+  webrtc::MutexLock lock(&mutex_);
+  ++impact_candidates_;
+  last_impact_mps2_ = magnitude;
+  return true;
+}
+
 void ObserverAudioReceiver::OnMessage(const webrtc::DataBuffer& buffer) {
   // Relay may retain the upstream DataChannel payload type.  Momo's UART
   // bridge can therefore deliver the ASCII AUD: frame as either a text or a
   // binary DataChannel message.  The audio frame format itself is textual,
   // so handle both forms identically and let DecodeAndQueue reject unrelated
   // telemetry.
-  DecodeAndQueue(std::string(buffer.data.data<char>(), buffer.data.size()));
+  const std::string message(buffer.data.data<char>(), buffer.data.size());
+  if (DecodeRawTelemetry(message) || DecodeImpactCandidate(message)) {
+    return;
+  }
+  bool audio_playback_enabled = false;
+  {
+    webrtc::MutexLock lock(&mutex_);
+    audio_playback_enabled = audio_playback_enabled_;
+  }
+  if (audio_playback_enabled) {
+    DecodeAndQueue(message);
+  }
 }
 
 void ObserverAudioReceiver::OnBufferedAmountChange(uint64_t previous_amount) {
@@ -246,6 +363,7 @@ bool ObserverAudioReceiver::DecodeAndQueue(const std::string& message) {
   if (has_sequence_ && sequence > last_sequence_ + 1) {
     const size_t missing = static_cast<size_t>(
         std::min<uint64_t>(kMaxGapFrames, sequence - last_sequence_ - 1));
+    gap_frames_ += missing;
     std::vector<int16_t> silence(missing * kFrameSamples, 0);
     QueueSamples(silence);
   }
@@ -276,8 +394,19 @@ ObserverAudioReceiver::Diagnostics ObserverAudioReceiver::GetDiagnostics() const
   diagnostics.channel_open = channel_open_;
   diagnostics.playback_started = playback_started_;
   diagnostics.received_frames = received_frames_;
+  diagnostics.gap_frames = gap_frames_;
   diagnostics.invalid_frames = invalid_frames_;
+  diagnostics.queue_resets = queue_resets_;
   diagnostics.initialization_error = initialization_error_;
+  diagnostics.raw_telemetry_active =
+      raw_telemetry_received_at_ != std::chrono::steady_clock::time_point::min() &&
+      std::chrono::steady_clock::now() - raw_telemetry_received_at_ <
+          std::chrono::milliseconds(750);
+  diagnostics.raw_telemetry_frames = raw_telemetry_frames_;
+  diagnostics.impact_candidates = impact_candidates_;
+  diagnostics.last_impact_mps2 = last_impact_mps2_;
+  diagnostics.raw_acceleration_samples.assign(raw_acceleration_samples_.begin(),
+                                               raw_acceleration_samples_.end());
   diagnostics.queued_samples = startup_samples_.size();
   if (stream_ != nullptr) {
     const int queued_bytes = SDL_GetAudioStreamQueued(stream_);
@@ -304,6 +433,7 @@ bool ObserverAudioReceiver::QueueSamples(const std::vector<int16_t>& samples) {
     return true;
   }
   if (SDL_GetAudioStreamQueued(stream_) > kMaxQueuedBytes) {
+    ++queue_resets_;
     SDL_ClearAudioStream(stream_);
     playback_started_ = false;
     startup_samples_.clear();

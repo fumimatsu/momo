@@ -13,6 +13,30 @@
   const UINT32_HALF = 0x80000000;
   const UNIT_NORM_MIN = 0.98;
   const UNIT_NORM_MAX = 1.02;
+  const STANDARD_GRAVITY_MPS2 = 9.80665;
+  const VEHICLE_FLU_AXES_FLAG = 'flu_axes';
+  const DEFAULT_MOTION_OPTIONS = Object.freeze({
+    cornerLateralStartMps2: 1.5,
+    cornerLateralFullMps2: 6.0,
+    cornerYawStartRadPerSec: 0.25,
+    cornerYawFullRadPerSec: 1.2,
+    cornerAttackSeconds: 0.08,
+    cornerReleaseSeconds: 0.16,
+    impactForwardMps2: 8.5,
+    impactVerticalMps2: 5.5,
+    impactLateralMps2: 10.0,
+    impactLateralYawMaxRadPerSec: 0.35,
+    impactJerkMps3: 80.0,
+    // M5 の impact_candidate は生の候補であり、通常走行中にも小さな値が混ざる。
+    // Viewer で段階化してから OSD / FFB に渡す。
+    impactWeakMagnitudeMps2: 10.0,
+    impactStrongMagnitudeMps2: 12.0,
+    impactStrongJerkMps3: 250.0,
+    impactSevereMagnitudeMps2: 18.0,
+    impactRearmMagnitudeMps2: 5.0,
+    impactRearmHoldMs: 500,
+    impactDisplayMs: 1800,
+  });
 
   function isPlainObject(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -67,7 +91,7 @@
     return '';
   }
 
-  function validateState(payload) {
+  function validateStateV1(payload) {
     if (!isPlainObject(payload.imu) || !isPlainObject(payload.att) || !isPlainObject(payload.qual)) {
       return 'state_fields';
     }
@@ -102,7 +126,7 @@
     return '';
   }
 
-  function validateEvent(payload) {
+  function validateEventV1(payload) {
     if (hasOwn(payload, 'imu') || hasOwn(payload, 'att') || hasOwn(payload, 'qual')) {
       return 'event_state_mix';
     }
@@ -119,6 +143,48 @@
       if (!isVector(payload.evt.data.axis, 3, -1, 1) || !hasUnitNorm(payload.evt.data.axis)) {
         return 'impact_axis';
       }
+    }
+    return '';
+  }
+
+  function validateStateV2(payload) {
+    if (!isPlainObject(payload.m) || !isPlainObject(payload.q)) {
+      return 'compact_state_fields';
+    }
+    if (hasOwn(payload, 'e')) {
+      return 'compact_state_event_mix';
+    }
+    if (!isVector(payload.m.a, 3, -1000, 1000)) {
+      return 'compact_acceleration';
+    }
+    if (!isNumberInRange(payload.m.y, -100, 100)) {
+      return 'compact_yaw_rate';
+    }
+    if (!isIntegerInRange(payload.q.p, 10000, 1000000)) {
+      return 'compact_period';
+    }
+    if (!Array.isArray(payload.q.f)
+        || payload.q.f.length > 8
+        || new Set(payload.q.f).size !== payload.q.f.length
+        || !payload.q.f.every((flag) => typeof flag === 'string'
+          && /^[a-z0-9_]{1,24}$/.test(flag))) {
+      return 'compact_quality_flags';
+    }
+    return '';
+  }
+
+  function validateEventV2(payload) {
+    if (hasOwn(payload, 'm') || hasOwn(payload, 'q')) {
+      return 'compact_event_state_mix';
+    }
+    if (!isPlainObject(payload.e)
+        || typeof payload.e.n !== 'string'
+        || !/^[a-z][a-z0-9_]{0,31}$/.test(payload.e.n)
+        || !isNumberInRange(payload.e.m, 0, 1000)
+        || !isVector(payload.e.a, 3, -1, 1)
+        || !hasUnitNorm(payload.e.a)
+        || !isNumberInRange(payload.e.j, 0, 100000)) {
+      return 'compact_event_fields';
     }
     return '';
   }
@@ -145,7 +211,7 @@
     if (!isPlainObject(payload)) {
       return { status: 'invalid', reason: 'payload' };
     }
-    if (payload.v !== 1) {
+    if (![1, 2].includes(payload.v)) {
       return { status: 'unknown_version', version: payload.v ?? null };
     }
 
@@ -153,7 +219,9 @@
     if (commonError) {
       return { status: 'invalid', reason: commonError };
     }
-    const bodyError = payload.k === 's' ? validateState(payload) : validateEvent(payload);
+    const bodyError = payload.v === 1
+      ? (payload.k === 's' ? validateStateV1(payload) : validateEventV1(payload))
+      : (payload.k === 's' ? validateStateV2(payload) : validateEventV2(payload));
     if (bodyError) {
       return { status: 'invalid', reason: bodyError };
     }
@@ -186,6 +254,238 @@
 
   function getStaleThresholdMs(periodUs) {
     return Math.max(250, (periodUs / 1000) * 3);
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function approach(current, target, elapsedSeconds, attackSeconds, releaseSeconds) {
+    const duration = target > current ? attackSeconds : releaseSeconds;
+    if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0 || duration <= 0) {
+      return target;
+    }
+    const alpha = 1 - Math.exp(-elapsedSeconds / duration);
+    return current + ((target - current) * alpha);
+  }
+
+  function classifyImpact(magnitudeMps2, jerkMps3, options) {
+    if (!Number.isFinite(magnitudeMps2) || magnitudeMps2 < options.impactWeakMagnitudeMps2) {
+      return '';
+    }
+    if (magnitudeMps2 >= options.impactSevereMagnitudeMps2) {
+      return 'severe';
+    }
+    if (magnitudeMps2 >= options.impactStrongMagnitudeMps2
+        && Number.isFinite(jerkMps3)
+        && jerkMps3 >= options.impactStrongJerkMps3) {
+      return 'strong';
+    }
+    return 'weak';
+  }
+
+  function impactClassRank(impactClass) {
+    return ({ weak: 1, strong: 2, severe: 3 })[impactClass] || 0;
+  }
+
+  function impactClassLevel(impactClass) {
+    return ({ weak: 0.34, strong: 0.68, severe: 1 })[impactClass] || 0;
+  }
+
+  function hasVehicleFluAxes(payload) {
+    const flags = payload?.v === 2 ? payload?.q?.f : payload?.qual?.flags;
+    return Array.isArray(flags) && flags.includes(VEHICLE_FLU_AXES_FLAG);
+  }
+
+  function getStatePeriodUs(payload) {
+    return payload.v === 2 ? payload.q.p : payload.qual.period_us;
+  }
+
+  // M5StickS3 の現行取付: 車体 FLU = [sensor Z, sensor X, sensor Y]。
+  // telemetry v1 の imu.a / imu.g は sensor 軸のままなので、Viewer 内で車体軸へ変換する。
+  function deriveVehicleMotion(payload) {
+    if (!payload || payload.k !== 's' || !hasVehicleFluAxes(payload)) {
+      return null;
+    }
+    if (payload.v === 2) {
+      const [forwardMps2, lateralMps2, verticalMps2] = payload.m.a;
+      return { forwardMps2, lateralMps2, verticalMps2, yawRateRadPerSec: payload.m.y };
+    }
+    const [sensorX, sensorY, sensorZ] = payload.imu.a;
+    const [, sensorGyroY] = payload.imu.g;
+    return {
+      forwardMps2: sensorZ,
+      lateralMps2: sensorX,
+      verticalMps2: sensorY - STANDARD_GRAVITY_MPS2,
+      yawRateRadPerSec: sensorGyroY,
+    };
+  }
+
+  class MotionFeatureExtractor {
+    constructor(options = {}) {
+      this.options = { ...DEFAULT_MOTION_OPTIONS, ...options };
+      this.streams = new Map();
+    }
+
+    ingest(payload, arrivalMs) {
+      if (payload?.k === 'e') {
+        return this.ingestEvent(payload, arrivalMs);
+      }
+      const motion = deriveVehicleMotion(payload);
+      if (!motion || !Number.isFinite(arrivalMs)) {
+        return null;
+      }
+
+      const stored = this.streams.get(payload.src) || null;
+      const previous = stored?.boot === payload.boot ? stored : null;
+      const elapsedSeconds = previous
+        ? clamp((payload.t_us - previous.tUs) / 1000000, 0.001, 0.25)
+        : getStatePeriodUs(payload) / 1000000;
+      const lateralMagnitude = Math.abs(motion.lateralMps2);
+      const yawMagnitude = Math.abs(motion.yawRateRadPerSec);
+      const sameTurnDirection = Math.sign(motion.lateralMps2) === Math.sign(motion.yawRateRadPerSec)
+        && lateralMagnitude > 0
+        && yawMagnitude > 0;
+      const cornerRaw = sameTurnDirection
+        ? clamp((lateralMagnitude - this.options.cornerLateralStartMps2)
+            / (this.options.cornerLateralFullMps2 - this.options.cornerLateralStartMps2), 0, 1)
+          * clamp((yawMagnitude - this.options.cornerYawStartRadPerSec)
+            / (this.options.cornerYawFullRadPerSec - this.options.cornerYawStartRadPerSec), 0, 1)
+        : 0;
+      const cornerLoad = approach(
+        previous?.cornerLoad || 0,
+        cornerRaw,
+        elapsedSeconds,
+        this.options.cornerAttackSeconds,
+        this.options.cornerReleaseSeconds,
+      );
+
+      const jerkMps3 = previous
+        ? Math.hypot(
+          motion.forwardMps2 - previous.motion.forwardMps2,
+          motion.lateralMps2 - previous.motion.lateralMps2,
+          motion.verticalMps2 - previous.motion.verticalMps2,
+        ) / elapsedSeconds
+        : 0;
+      // 大きな横 G は通常の高速旋回でも起きる。横方向だけの候補はヨーがほぼ無い時に限定する。
+      const lateralImpact = lateralMagnitude >= this.options.impactLateralMps2
+        && yawMagnitude <= this.options.impactLateralYawMaxRadPerSec;
+      const impactRaw = (Math.abs(motion.forwardMps2) >= this.options.impactForwardMps2
+          || Math.abs(motion.verticalMps2) >= this.options.impactVerticalMps2
+          || lateralImpact)
+        && jerkMps3 >= this.options.impactJerkMps3;
+      const dynamicMagnitudeMps2 = Math.hypot(
+        motion.forwardMps2,
+        motion.lateralMps2,
+        motion.verticalMps2,
+      );
+      let impactArmed = previous?.impactArmed !== false;
+      let impactQuietSinceMs = previous?.impactQuietSinceMs ?? null;
+      if (dynamicMagnitudeMps2 < this.options.impactRearmMagnitudeMps2) {
+        impactQuietSinceMs ??= arrivalMs;
+        if (!impactArmed
+            && arrivalMs - impactQuietSinceMs >= this.options.impactRearmHoldMs) {
+          impactArmed = true;
+        }
+      } else {
+        impactQuietSinceMs = null;
+      }
+
+      const rawImpactClass = impactRaw
+        ? classifyImpact(dynamicMagnitudeMps2, jerkMps3, this.options)
+        : '';
+      const impact = impactArmed && Boolean(rawImpactClass);
+      const impactLevel = impact ? impactClassLevel(rawImpactClass) : 0;
+      const rawImpactEvent = impact ? {
+        impactClass: rawImpactClass,
+        magnitudeMps2: dynamicMagnitudeMps2,
+        jerkMps3,
+        axis: null,
+        source: 'viewer_raw',
+      } : null;
+      const snapshot = {
+        src: payload.src,
+        boot: payload.boot,
+        seq: payload.seq,
+        tUs: payload.t_us,
+        periodUs: getStatePeriodUs(payload),
+        lastArrivalMs: arrivalMs,
+        staleThresholdMs: getStaleThresholdMs(getStatePeriodUs(payload)),
+        motion,
+        jerkMps3,
+        cornerLoad,
+        impact,
+        impactLevel,
+        impactArmed: impact ? false : impactArmed,
+        impactQuietSinceMs: impact ? null : impactQuietSinceMs,
+        lastImpactAtMs: impact ? arrivalMs : (previous?.lastImpactAtMs || -Infinity),
+        lastImpactLevel: impact ? impactLevel : (previous?.lastImpactLevel || 0),
+        lastImpactEvent: impact ? rawImpactEvent : (previous?.lastImpactEvent || null),
+      };
+      this.streams.set(payload.src, snapshot);
+      return this.getSnapshot(payload.src, arrivalMs);
+    }
+
+    ingestEvent(payload, arrivalMs) {
+      if (!Number.isFinite(arrivalMs)) return null;
+      const name = payload.v === 2 ? payload?.e?.n : payload?.evt?.name;
+      if (!['impact', 'impact_candidate'].includes(name)) {
+        return this.getSnapshot(payload.src, arrivalMs);
+      }
+      const magnitude = payload.v === 2 ? payload.e.m : payload.evt.data.mag_mps2;
+      const stored = this.streams.get(payload.src);
+      if (!stored || stored.boot !== payload.boot || !Number.isFinite(magnitude)) {
+        return null;
+      }
+      const jerkMps3 = payload.v === 2 ? payload.e.j : 0;
+      const impactClass = classifyImpact(magnitude, jerkMps3, this.options);
+      if (!impactClass) {
+        return this.getSnapshot(payload.src, arrivalMs);
+      }
+      const previousImpactClass = stored.lastImpactEvent?.impactClass || '';
+      const isEscalation = impactClassRank(impactClass) > impactClassRank(previousImpactClass);
+      if (!stored.impactArmed && !isEscalation) {
+        return this.getSnapshot(payload.src, arrivalMs);
+      }
+      const axis = payload.v === 2 ? payload.e.a : payload.evt.data.axis;
+      const snapshot = {
+        ...stored,
+        seq: payload.seq,
+        tUs: payload.t_us,
+        impact: true,
+        impactLevel: impactClassLevel(impactClass),
+        impactArmed: false,
+        impactQuietSinceMs: null,
+        lastImpactAtMs: arrivalMs,
+        lastImpactLevel: impactClassLevel(impactClass),
+        lastImpactEvent: {
+          impactClass,
+          magnitudeMps2: magnitude,
+          jerkMps3,
+          axis,
+          source: payload.v === 2 ? 'm5_v2' : 'm5_v1',
+        },
+      };
+      this.streams.set(payload.src, snapshot);
+      return this.getSnapshot(payload.src, arrivalMs);
+    }
+
+    getSnapshot(src, nowMs) {
+      const snapshot = this.streams.get(src);
+      if (!snapshot) return null;
+      const impactAgeMs = nowMs - snapshot.lastImpactAtMs;
+      const impactRecent = impactAgeMs >= 0 && impactAgeMs <= this.options.impactDisplayMs;
+      return {
+        ...snapshot,
+        stale: nowMs - snapshot.lastArrivalMs > snapshot.staleThresholdMs,
+        impactRecent,
+        impactLevel: impactRecent ? snapshot.lastImpactLevel : 0,
+      };
+    }
+
+    reset() {
+      this.streams.clear();
+    }
   }
 
   function createCounters() {
@@ -258,7 +558,7 @@
       if (payload.k === 's') {
         stream.state = payload;
         stream.lastStateAt = arrivalMs;
-        stream.periodUs = payload.qual.period_us;
+        stream.periodUs = getStatePeriodUs(payload);
         this.counters.state += 1;
       } else {
         stream.event = payload;
@@ -391,9 +691,12 @@
   return {
     MAX_WIRE_BYTES,
     TELEMETRY_PREFIX,
+    VEHICLE_FLU_AXES_FLAG,
+    MotionFeatureExtractor,
     TelemetryMockGenerator,
     TelemetryTracker,
     classifySequence,
+    deriveVehicleMotion,
     encodeTelemetry,
     getStaleThresholdMs,
     parseTelemetryMessage,

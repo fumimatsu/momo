@@ -9,7 +9,7 @@ param(
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
-    [string]$TelemetryLogDirectory = $env:MOMO_RELAY_TELEMETRY_LOG_DIR,
+    [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = '',
     [switch]$RestartObserver,
     [switch]$RebuildRelay

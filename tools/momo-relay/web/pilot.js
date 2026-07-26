@@ -86,6 +86,29 @@
   const FFB_SPEED_PROXY_ACCEL_PER_SEC = 0.55;
   const FFB_SPEED_PROXY_COAST_DECEL_PER_SEC = 0.22;
   const FFB_SPEED_PROXY_BRAKE_DECEL_PER_SEC = 1.10;
+  // R3 の初期実走確認は抵抗を明確に感じられる強さから始め、後で下げる。
+  const FFB_RESPONSE_SCALE = Math.max(0.5, Math.min(2.0,
+    getNumberParam('ffbResponseScale', 1.45)));
+  // 片側へ引くトルクは使わず、実測した旋回荷重でダンパーだけを少し増やす。
+  const FFB_TELEMETRY_CORNER_DAMPER = Math.max(0, Math.min(0.3,
+    getNumberParam('ffbTelemetryCornerDamper', 0.18)));
+  const FFB_TELEMETRY_CORNER_TORQUE = Math.max(0, Math.min(0.5,
+    getNumberParam('ffbTelemetryCornerTorque', 0.24)));
+  const FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2 = Math.max(1, Math.min(20,
+    getNumberParam('ffbTelemetryCornerLateralFull', 6.0)));
+  const FFB_IMPACT_DAMPER = Math.max(0, Math.min(0.8,
+    getNumberParam('ffbImpactDamper', 0.55)));
+  const FFB_IMPACT_FRICTION = Math.max(0, Math.min(0.5,
+    getNumberParam('ffbImpactFriction', 0.22)));
+  const FFB_IMPACT_TORQUE = Math.max(0, Math.min(1.0,
+    getNumberParam('ffbImpactTorque', 0.62)));
+  const FFB_IMPACT_DIRECTION_MIN_AXIS = Math.max(0.05, Math.min(0.9,
+    getNumberParam('ffbImpactDirectionMinAxis', 0.12)));
+  const FFB_DIRECTION_SIGN = getNumberParam('ffbDirectionSign', 1) < 0 ? -1 : 1;
+  const FFB_TELEMETRY_TORQUE_MAX = Math.max(0.1, Math.min(1.0,
+    getNumberParam('ffbTelemetryTorqueMax', 0.85)));
+  const FFB_IMPACT_STRONG_MS = 320;
+  const FFB_IMPACT_SEVERE_MS = 520;
   const AYAME_SIGNALING_URL = getStringParam(
     ['ayameUrl', 'signalingUrl'],
     'wss://ayame-labo.shiguredo.app/signaling',
@@ -158,6 +181,10 @@
   const videoAgeState = document.getElementById('videoAgeState');
   const rcState = document.getElementById('rcState');
   const telemetryState = document.getElementById('telemetryState');
+  const motionState = document.getElementById('motionState');
+  const motionEventHud = document.getElementById('motionEventHud');
+  const motionEventLabel = document.getElementById('motionEventLabel');
+  const motionEventDetail = document.getElementById('motionEventDetail');
   const m5AudioState = document.getElementById('m5AudioState');
   const modeState = document.getElementById('modeState');
   const deviceState = document.getElementById('deviceState');
@@ -287,6 +314,13 @@
   let rcBrakeTimer = null;
   let lastRcCommand = 'S:1500,T:1500';
   let lastTelemetry = 'n/a';
+  const telemetryTracker = window.FpvTelemetry?.TelemetryTracker
+    ? new window.FpvTelemetry.TelemetryTracker()
+    : null;
+  const motionExtractor = window.FpvTelemetry?.MotionFeatureExtractor
+    ? new window.FpvTelemetry.MotionFeatureExtractor()
+    : null;
+  let latestMotion = null;
   let m5AudioPlayer = null;
   let dcPingSeq = 0;
   let dcRttMs = null;
@@ -1881,21 +1915,83 @@
     const speedProxy = updateFfbSpeedProxy();
     const preset = FFB_PRESETS[activeFfbPreset];
     const capabilities = getFfbCapabilities(snapshot.deviceCapabilities);
+    const motion = getMotionSnapshot();
+    const responseScale = preset.scale * FFB_RESPONSE_SCALE;
+    const cornerDamper = motion && !motion.stale
+      ? FFB_TELEMETRY_CORNER_DAMPER * motion.cornerLoad * responseScale
+      : 0;
+    const impactBoost = getImpactFfbBoost(motion, performance.now());
+    const telemetryTorque = getTelemetryFfbTorque(motion, impactBoost, responseScale);
     ffbClient.sendFfb({
-      torque: 0,
+      torque: telemetryTorque,
       gain: 1,
       enabled: true,
       effectMode: 'baseline',
+      telemetryTorque,
       speedProxy,
-      baseFriction: capabilities.friction ? FFB_BASE_FRICTION * preset.scale : 0,
-      parkingFriction: capabilities.friction ? FFB_PARKING_FRICTION * preset.scale : 0,
-      baseDamper: capabilities.damper ? FFB_BASE_DAMPER * preset.scale : 0,
-      speedDamper: capabilities.damper ? FFB_SPEED_DAMPER * preset.scale : 0,
+      baseFriction: capabilities.friction
+        ? Math.min(1, (FFB_BASE_FRICTION * responseScale) + impactBoost.friction)
+        : 0,
+      parkingFriction: capabilities.friction ? FFB_PARKING_FRICTION * responseScale : 0,
+      baseDamper: capabilities.damper
+        ? Math.min(1, (FFB_BASE_DAMPER * responseScale) + cornerDamper + impactBoost.damper)
+        : 0,
+      speedDamper: capabilities.damper ? FFB_SPEED_DAMPER * responseScale : 0,
       damper: 0,
       friction: 0,
       inertia: 0,
     });
     ffbForceActive = true;
+  }
+
+  function getImpactFfbBoost(motion, nowMs) {
+    if (!motion || motion.stale || !motion.impactRecent) {
+      return { damper: 0, friction: 0, torque: 0 };
+    }
+    const impactClass = motion.lastImpactEvent?.impactClass;
+    const durationMs = impactClass === 'severe'
+      ? FFB_IMPACT_SEVERE_MS
+      : impactClass === 'strong'
+        ? FFB_IMPACT_STRONG_MS
+        : 0;
+    if (!durationMs) {
+      return { damper: 0, friction: 0, torque: 0 };
+    }
+    const ageMs = nowMs - motion.lastImpactAtMs;
+    if (ageMs < 0 || ageMs >= durationMs) {
+      return { damper: 0, friction: 0, torque: 0 };
+    }
+    const severityScale = impactClass === 'severe' ? 1 : 0.62;
+    const fade = 1 - (ageMs / durationMs);
+    const eventLateralAxis = Number(motion.lastImpactEvent?.axis?.[1]);
+    const measuredLateral = Number(motion.motion?.lateralMps2);
+    const lateralDirection = Number.isFinite(eventLateralAxis)
+      && Math.abs(eventLateralAxis) >= FFB_IMPACT_DIRECTION_MIN_AXIS
+      ? eventLateralAxis
+      : measuredLateral;
+    const torqueDirection = Number.isFinite(lateralDirection)
+      && Math.abs(lateralDirection) >= FFB_IMPACT_DIRECTION_MIN_AXIS
+      ? Math.sign(lateralDirection) * FFB_DIRECTION_SIGN
+      : 0;
+    return {
+      damper: FFB_IMPACT_DAMPER * severityScale * fade,
+      friction: FFB_IMPACT_FRICTION * severityScale * fade,
+      torque: torqueDirection * FFB_IMPACT_TORQUE * severityScale * fade,
+    };
+  }
+
+  function getTelemetryFfbTorque(motion, impactBoost, responseScale) {
+    if (!motion || motion.stale) return 0;
+    const lateralMps2 = Number(motion.motion?.lateralMps2);
+    const normalizedLateral = Number.isFinite(lateralMps2)
+      ? Math.max(-1, Math.min(1, lateralMps2 / FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2))
+      : 0;
+    const cornerTorque = normalizedLateral * motion.cornerLoad
+      * FFB_TELEMETRY_CORNER_TORQUE * FFB_DIRECTION_SIGN;
+    return Math.max(-FFB_TELEMETRY_TORQUE_MAX, Math.min(
+      FFB_TELEMETRY_TORQUE_MAX,
+      (cornerTorque + impactBoost.torque) * responseScale,
+    ));
   }
 
   function stopFfbOutput() {
@@ -2102,10 +2198,62 @@
     lastTelemetry = message;
     updateTelemetryUi();
 
+    const arrivalMs = performance.now();
+    const telemetryResult = telemetryTracker?.ingest(message, arrivalMs);
+    if (telemetryResult?.accepted) {
+      latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
+    }
+    updateMotionUi();
+
     const deviceStatus = formatTelemetryDeviceStatus(parseTelemetryFields(message));
     if (deviceStatus) {
       setText(deviceState, deviceStatus);
     }
+  }
+
+  function getMotionSnapshot() {
+    if (!latestMotion || !motionExtractor) return null;
+    return motionExtractor.getSnapshot(latestMotion.src, performance.now());
+  }
+
+  function updateMotionUi() {
+    const motion = getMotionSnapshot();
+    updateMotionEventHud(motion);
+    if (!motionState) return;
+    if (!motion) {
+      setText(motionState, 'waiting for flu_axes');
+      return;
+    }
+    if (motion.stale) {
+      setText(motionState, 'stale');
+      return;
+    }
+    const direction = motion.motion.lateralMps2 >= 0 ? 'L' : 'R';
+    const corner = `C${(motion.cornerLoad * 100).toFixed(0)} ${direction}`;
+    const impact = motion.impactRecent
+      ? ` ${String(motion.lastImpactEvent?.impactClass || 'impact').toUpperCase()} ${motion.impactLevel.toFixed(2)}`
+      : '';
+    setText(motionState,
+      `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}${impact}`);
+  }
+
+  function updateMotionEventHud(motion) {
+    if (!motionEventHud || !motionEventLabel || !motionEventDetail) return;
+    const event = motion?.impactRecent ? motion.lastImpactEvent : null;
+    if (!event?.impactClass) {
+      motionEventHud.classList.remove('is-visible');
+      return;
+    }
+    const labels = {
+      weak: 'CURB / LIGHT HIT',
+      strong: 'IMPACT',
+      severe: 'HEAVY IMPACT',
+    };
+    motionEventHud.dataset.impactClass = event.impactClass;
+    setText(motionEventLabel, labels[event.impactClass] || 'IMPACT');
+    setText(motionEventDetail,
+      `${event.magnitudeMps2.toFixed(1)} m/s²  J ${event.jerkMps3.toFixed(0)} m/s³`);
+    motionEventHud.classList.add('is-visible');
   }
 
   function handleDcPong(message) {
@@ -3924,7 +4072,10 @@
   }
 
   function startOsdMonitor() {
-    window.setInterval(updateTimerUi, OSD_UPDATE_INTERVAL_MS);
+    window.setInterval(() => {
+      updateTimerUi();
+      updateMotionUi();
+    }, OSD_UPDATE_INTERVAL_MS);
   }
 
   function getEndpointHostName() {
@@ -4354,6 +4505,7 @@
         contextState: audioContext?.state || 'none',
       },
       m5Audio: m5AudioPlayer?.snapshot() || null,
+      motion: getMotionSnapshot(),
       gamepad: {
         enabled: GAMEPAD_ENABLED,
         index: GAMEPAD_INDEX,

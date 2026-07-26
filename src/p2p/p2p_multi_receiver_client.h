@@ -61,12 +61,15 @@ class P2PMultiReceiverClient
   void ConnectSource(size_t index);
   void ScheduleReconnect(size_t index);
   void UpdateAudioOverlay();
+  bool HandleAudioKey(int key);
+  void SelectAudioSource(size_t index);
 
   boost::asio::io_context& ioc_;
   RTCManager* manager_;
   SDLRenderer* renderer_;
   P2PMultiReceiverClientConfig config_;
   std::vector<Source> sources_;
+  size_t selected_audio_source_index_ = static_cast<size_t>(-1);
   std::unique_ptr<boost::asio::steady_timer> audio_overlay_timer_;
   std::atomic_bool shutting_down_ = false;
 };
