@@ -168,7 +168,7 @@
       position: fixed;
       top: calc(68px + env(safe-area-inset-top));
       right: calc(16px + env(safe-area-inset-right));
-      min-width: 148px;
+      min-width: 198px;
       padding: 8px 12px 9px;
       text-align: right;
       transform: scale(var(--osd-scale));
@@ -177,7 +177,7 @@
 
     .race-position-value {
       color: #ffffff;
-      font-size: clamp(34px, 4vw, 56px);
+      font-size: clamp(68px, 8vw, 112px);
       font-style: italic;
       line-height: 0.85;
     }
@@ -192,8 +192,8 @@
 
     .race-battle {
       position: fixed;
-      /* 順位表示の直下に置く。映像上の走行ラインを隠さないよう、カード枠は使わない。 */
-      top: calc(142px + env(safe-area-inset-top));
+      /* 順位カードの実測下端を JS が設定する。OSD 拡大時も重ならない。 */
+      top: var(--race-battle-top, calc(142px + env(safe-area-inset-top)));
       right: calc(16px + env(safe-area-inset-right));
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
@@ -393,9 +393,9 @@
       letter-spacing: 0;
     }
 
-    .race-start-signal {
-      position: fixed;
-      top: calc(128px + env(safe-area-inset-top));
+    .race-total .race-start-signal {
+      position: absolute;
+      top: 50%;
       left: 50%;
       display: grid;
       grid-template-columns: repeat(5, 1fr);
@@ -411,8 +411,10 @@
         0 12px 34px rgba(0, 0, 0, 0.54),
         inset 0 1px 0 rgba(255, 255, 255, 0.2),
         inset 0 -10px 18px rgba(0, 0, 0, 0.48);
-      transform: translateX(-50%) scale(var(--osd-scale));
-      transform-origin: top center;
+      transform: translate(-50%, -50%);
+      transform-origin: center center;
+      z-index: 2;
+      pointer-events: none;
     }
 
     .race-start-signal-hidden {
@@ -1282,12 +1284,11 @@
 
       .race-position {
         top: calc(60px + env(safe-area-inset-top));
-        min-width: 110px;
+        min-width: 158px;
         padding: 6px 8px;
       }
 
       .race-battle {
-        top: calc(116px + env(safe-area-inset-top));
         right: calc(8px + env(safe-area-inset-right));
         width: min(140px, calc(100vw - 16px));
         height: clamp(180px, 30vh, 220px);
@@ -1416,14 +1417,6 @@
   <video id="remote_video" autoplay muted playsinline></video>
 
   <section class="race-hud" aria-live="polite" aria-label="Race status">
-    <div id="raceStartSignal" class="race-start-signal race-start-signal-hidden" data-mode="off" data-lit="0" aria-hidden="true">
-      <span class="race-start-light" data-race-signal-light="1"></span>
-      <span class="race-start-light" data-race-signal-light="2"></span>
-      <span class="race-start-light" data-race-signal-light="3"></span>
-      <span class="race-start-light" data-race-signal-light="4"></span>
-      <span class="race-start-light" data-race-signal-light="5"></span>
-    </div>
-
     <div class="race-summary race-card">
       <div class="race-summary-head">
         <span id="racePhase" class="race-phase">STANDBY</span>
@@ -1448,6 +1441,13 @@
     <div class="race-total race-card">
       <span class="race-label">TOTAL TIME</span>
       <strong id="raceTotalTime" class="race-total-time">--:--.---</strong>
+      <div id="raceStartSignal" class="race-start-signal race-start-signal-hidden" data-mode="off" data-lit="0" aria-hidden="true">
+        <span class="race-start-light" data-race-signal-light="1"></span>
+        <span class="race-start-light" data-race-signal-light="2"></span>
+        <span class="race-start-light" data-race-signal-light="3"></span>
+        <span class="race-start-light" data-race-signal-light="4"></span>
+        <span class="race-start-light" data-race-signal-light="5"></span>
+      </div>
     </div>
 
     <div class="race-position race-card">
@@ -1498,6 +1498,7 @@
       <button id="btnMirror" type="button">Mirror</button>
       <button id="btnAudio" type="button">Audio</button>
       <button id="btnAudioFilter" type="button">Filter</button>
+      <button id="btnM5Audio" type="button" aria-pressed="false">M5 Audio</button>
       <span class="mic-control" aria-label="Microphone to car speaker">
         <button id="btnMic" type="button" aria-pressed="false">Mic</button>
         <span id="micMeter" class="mic-meter" data-level="0" aria-hidden="true">
@@ -1553,6 +1554,7 @@
         <div class="debug-only"><span>VideoAge</span> <strong id="videoAgeState">n/a</strong></div>
         <div class="debug-only"><span>RC</span> <strong id="rcState">manual</strong></div>
         <div class="debug-only"><span>Telemetry</span> <strong id="telemetryState">n/a</strong></div>
+        <div class="debug-only"><span>M5 Audio</span> <strong id="m5AudioState">off</strong></div>
         <div class="debug-only"><span>Mode</span> <strong id="modeState">n/a</strong></div>
         <div class="debug-only"><span>Device</span> <strong id="deviceState">n/a</strong></div>
       </div>
@@ -1621,7 +1623,9 @@
     </div>
   </div>
 
+<script src="./telemetry.js?v=20260726-m5-audio"></script>
+<script src="./m5-audio.js?v=20260726-m5-audio"></script>
 <script src="./ffb-bridge.js"></script>
-<script src="./pilot.js"></script>
+<script src="./pilot.js?v=20260726-m5-audio"></script>
 </body>
 </html>

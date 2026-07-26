@@ -116,7 +116,7 @@
   const ROOM_LOCK_POLL_MS = getNumberParam('roomLockPollMs', 5000);
   const ROOM_LOCK_HEARTBEAT_MAX_FAILURES = Math.max(1, getIntegerParam('roomLockHeartbeatFailures', 3));
   const RACE_START_SIGNAL_LIGHT_COUNT = 5;
-  const RACE_START_SIGNAL_GREEN_MS = getNumberParam('raceSignalMs', 4000);
+  const RACE_START_SIGNAL_GREEN_MS = Math.max(0, getNumberParam('raceSignalMs', 1500));
   const RACE_BATTLE_ENABLED = getBooleanParam('raceBattle', true);
   const RACE_BATTLE_DEMO = getBooleanParam('raceBattleDemo', false);
   const RACE_BATTLE_MAX_GAP_MS = 5000;
@@ -158,6 +158,7 @@
   const videoAgeState = document.getElementById('videoAgeState');
   const rcState = document.getElementById('rcState');
   const telemetryState = document.getElementById('telemetryState');
+  const m5AudioState = document.getElementById('m5AudioState');
   const modeState = document.getElementById('modeState');
   const deviceState = document.getElementById('deviceState');
   const racePhase = document.getElementById('racePhase');
@@ -169,6 +170,7 @@
   const raceBestLap = document.getElementById('raceBestLap');
   const raceTotalTime = document.getElementById('raceTotalTime');
   const racePosition = document.getElementById('racePosition');
+  const racePositionCard = racePosition?.closest('.race-position');
   const raceBattle = document.getElementById('raceBattle');
   const raceBattleState = document.getElementById('raceBattleState');
   const raceBattleAhead = document.getElementById('raceBattleAhead');
@@ -188,6 +190,7 @@
   const btnMirror = document.getElementById('btnMirror');
   const btnAudio = document.getElementById('btnAudio');
   const btnAudioFilter = document.getElementById('btnAudioFilter');
+  const btnM5Audio = document.getElementById('btnM5Audio');
   const btnMic = document.getElementById('btnMic');
   const micControl = btnMic?.closest('.mic-control');
   const micVolumeInput = document.getElementById('micVolume');
@@ -284,6 +287,7 @@
   let rcBrakeTimer = null;
   let lastRcCommand = 'S:1500,T:1500';
   let lastTelemetry = 'n/a';
+  let m5AudioPlayer = null;
   let dcPingSeq = 0;
   let dcRttMs = null;
   let lastDcPongAt = 0;
@@ -326,6 +330,7 @@
   let activeRaceRunId = '';
   let raceServerClockOffsetMs = 0;
   let raceStartSignalGreenUntil = 0;
+  let raceBattleLayoutFrame = null;
   let lastRaceLapAnnouncementKey = '';
   const receivedRaceLapHistory = new Map();
   const raceState = {
@@ -384,6 +389,20 @@
         '--drive-hud-bottom',
         `${Math.round(20 + scaledOverflow)}px`,
       );
+      scheduleRaceBattleLayout();
+    });
+  }
+
+  function scheduleRaceBattleLayout() {
+    if (!racePositionCard || !raceBattle || raceBattleLayoutFrame !== null) {
+      return;
+    }
+    raceBattleLayoutFrame = window.requestAnimationFrame(() => {
+      raceBattleLayoutFrame = null;
+      const bottom = racePositionCard.getBoundingClientRect().bottom;
+      if (Number.isFinite(bottom) && bottom > 0) {
+        document.documentElement.style.setProperty('--race-battle-top', `${Math.ceil(bottom + 14)}px`);
+      }
     });
   }
 
@@ -1201,6 +1220,7 @@
       const total = document.createElement('em');
       total.textContent = `/${fieldSize}`;
       racePosition.append(total);
+      scheduleRaceBattleLayout();
     }
     renderRaceBattle();
     if (!raceLapHistory) {
@@ -1596,6 +1616,16 @@
 
   function updateTelemetryUi() {
     setText(telemetryState, getTelemetryStatus());
+  }
+
+  function updateM5AudioUi(snapshot = null, status = null) {
+    const player = m5AudioPlayer;
+    const enabled = snapshot?.enabled ?? player?.snapshot().enabled ?? false;
+    if (btnM5Audio) {
+      btnM5Audio.textContent = enabled ? 'M5 Audio On' : 'M5 Audio';
+      btnM5Audio.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    }
+    setText(m5AudioState, status || player?.getStatus() || 'unavailable');
   }
 
   function updateUiState() {
@@ -2105,6 +2135,9 @@
     }
     if (typeof message === 'string' && message.startsWith('TEL:')) {
       applyTelemetry(message);
+      return;
+    }
+    if (m5AudioPlayer?.handle(message)) {
       return;
     }
     console.log('DataChannel RX:', message);
@@ -3473,6 +3506,7 @@
         telemetryChannel.onmessage = null;
       }
       telemetryChannel = channel;
+      telemetryChannel.binaryType = 'arraybuffer';
       telemetryChannel.onopen = () => {
         recordEvent('telemetry dc open');
         updateUiState();
@@ -4099,7 +4133,9 @@
     const hidden = !MEDIA_CONTROLS_VISIBLE;
     setElementHidden(btnAudio, hidden);
     setElementHidden(btnAudioFilter, hidden);
+    setElementHidden(btnM5Audio, hidden);
     setElementHidden(micControl, hidden);
+    setElementHidden(m5AudioState?.closest('.debug-only'), hidden);
   }
 
   function formatMode(mode) {
@@ -4251,6 +4287,16 @@
   btnMirror.addEventListener('click', toggleVideoMirror);
   btnAudio.addEventListener('click', toggleAudio);
   btnAudioFilter?.addEventListener('click', toggleAudioFilter);
+  btnM5Audio?.addEventListener('click', async () => {
+    if (!m5AudioPlayer) {
+      return;
+    }
+    const enabled = await m5AudioPlayer.setEnabled(!m5AudioPlayer.snapshot().enabled);
+    if (!enabled) {
+      recordEvent('m5 audio unavailable');
+    }
+    updateM5AudioUi();
+  });
   btnMic?.addEventListener('click', toggleMic);
   micVolumeInput?.addEventListener('input', () => setMicVolume());
   btnDebug.addEventListener('click', toggleDebugOsd);
@@ -4307,6 +4353,7 @@
         q: AUDIO_FILTER_Q,
         contextState: audioContext?.state || 'none',
       },
+      m5Audio: m5AudioPlayer?.snapshot() || null,
       gamepad: {
         enabled: GAMEPAD_ENABLED,
         index: GAMEPAD_INDEX,
@@ -4338,6 +4385,8 @@
   setVideoMirror(isMirrorEnabledByDefault());
   setAudioEnabled(false);
   setAudioFilterEnabled(AUDIO_FILTER_DEFAULT);
+  m5AudioPlayer = window.MomoM5Audio?.createPlayer({ onState: updateM5AudioUi }) || null;
+  updateM5AudioUi();
   applyMediaControlsVisibility();
   window.momoRaceHud = {
     setState: setRaceState,

@@ -13,6 +13,8 @@ $sourceFiles = @(
     [ordered]@{ Source = 'variants\relay\pilot.html'; Destination = 'pilot.html' },
     [ordered]@{ Source = 'variants\relay\pilot.js'; Destination = 'pilot.js' },
     [ordered]@{ Source = 'variants\relay\ffb-bridge.js'; Destination = 'ffb-bridge.js' },
+    [ordered]@{ Source = 'telemetry.js'; Destination = 'telemetry.js' },
+    [ordered]@{ Source = 'm5-audio.js'; Destination = 'm5-audio.js' },
     [ordered]@{ Source = 'gamepad.html'; Destination = 'gamepad.html' },
     [ordered]@{ Source = 'gamepad.js'; Destination = 'gamepad.js' },
     [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' }

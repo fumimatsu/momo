@@ -2,6 +2,7 @@ param(
     [string]$Device113 = '192.168.11.3',
     [string]$Device114 = '192.168.11.4',
     [string]$Device115 = '192.168.11.5',
+    [string]$Device116 = '192.168.11.6',
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
@@ -74,9 +75,11 @@ if ($relayRunning.Count -eq 0) {
         '-source', "11.3=ws://$Device113`:8080/ws",
         '-source', "11.4=ws://$Device114`:8080/ws",
         '-source', "11.5=ws://$Device115`:8080/ws",
+        '-source', "11.6=ws://$Device116`:8080/ws",
         '-race-car', '11.3=CP-1',
         '-race-car', '11.4=CP-2',
         '-race-car', '11.5=CP-3',
+        '-race-car', '11.6=CP-4',
         '-operations-allow-cidr', $OperationsAllowCidr
     )
     if (-not [string]::IsNullOrWhiteSpace($RaceControlUrl)) {
@@ -109,11 +112,12 @@ else {
     Write-Host 'Relay is already running.'
 }
 
-$observerRunning = Get-CimInstance Win32_Process | Where-Object {
+$observerRunning = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -eq 'momo.exe' -and
     $_.CommandLine -like '*p2p-recv-multi*' -and
     $_.CommandLine -like '*ws://127.0.0.1:8090/ws?role=observer*'
-}
-if ($null -eq $observerRunning) {
+})
+if ($observerRunning.Count -eq 0) {
     $observerArgs = @(
         '--use-sdl', '--window-width', '1280', '--window-height', '720',
         '--shared-frame-name', 'Local\MomoObserverFrameV1',
@@ -123,7 +127,9 @@ if ($null -eq $observerRunning) {
         '--source', '11.4=ws://127.0.0.1:8090/ws?role=observer&device=11.4',
         '--source-flip', '11.4=HV',
         '--source', '11.5=ws://127.0.0.1:8090/ws?role=observer&device=11.5',
-        '--source-flip', '11.5=HV'
+        '--source-flip', '11.5=HV',
+        '--source', '11.6=ws://127.0.0.1:8090/ws?role=observer&device=11.6',
+        '--source-flip', '11.6=HV'
     )
     Start-Process -FilePath $observerExe -ArgumentList $observerArgs `
         -RedirectStandardOutput (Join-Path $relayLogDirectory 'observer-unity.stdout.log') `
