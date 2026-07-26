@@ -15,6 +15,7 @@
 class RTCManager;
 class SDLRenderer;
 class SourceVideoTrackReceiver;
+class ObserverAudioReceiver;
 
 struct P2PMultiReceiverSource {
   std::string name;
@@ -24,6 +25,7 @@ struct P2PMultiReceiverSource {
 struct P2PMultiReceiverClientConfig {
   std::vector<P2PMultiReceiverSource> sources;
   bool no_google_stun = false;
+  std::string audio_source;
 };
 
 class P2PMultiReceiverClient
@@ -47,6 +49,7 @@ class P2PMultiReceiverClient
   struct Source {
     P2PMultiReceiverSource config;
     std::unique_ptr<SourceVideoTrackReceiver> receiver;
+    std::shared_ptr<ObserverAudioReceiver> audio_receiver;
     std::shared_ptr<P2PReceiverClient> client;
     std::unique_ptr<boost::asio::steady_timer> reconnect_timer;
   };
@@ -57,12 +60,14 @@ class P2PMultiReceiverClient
                          P2PMultiReceiverClientConfig config);
   void ConnectSource(size_t index);
   void ScheduleReconnect(size_t index);
+  void UpdateAudioOverlay();
 
   boost::asio::io_context& ioc_;
   RTCManager* manager_;
   SDLRenderer* renderer_;
   P2PMultiReceiverClientConfig config_;
   std::vector<Source> sources_;
+  std::unique_ptr<boost::asio::steady_timer> audio_overlay_timer_;
   std::atomic_bool shutting_down_ = false;
 };
 

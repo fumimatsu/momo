@@ -141,14 +141,19 @@
       color: #fbd64a;
     }
 
-    .race-total {
+    .race-total-anchor {
       position: fixed;
       top: calc(16px + env(safe-area-inset-top));
       left: 50%;
-      min-width: 268px;
-      padding: 9px 18px 11px;
       transform: translateX(-50%) scale(var(--osd-scale));
       transform-origin: top center;
+      z-index: 2;
+    }
+
+    .race-total {
+      position: relative;
+      min-width: 268px;
+      padding: 9px 18px 11px;
       text-align: center;
     }
 
@@ -393,7 +398,7 @@
       letter-spacing: 0;
     }
 
-    .race-total .race-start-signal {
+    .race-total-anchor .race-start-signal {
       position: absolute;
       top: 50%;
       left: 50%;
@@ -1438,9 +1443,11 @@
       </div>
     </div>
 
-    <div class="race-total race-card">
-      <span class="race-label">TOTAL TIME</span>
-      <strong id="raceTotalTime" class="race-total-time">--:--.---</strong>
+    <div class="race-total-anchor">
+      <div class="race-total race-card">
+        <span class="race-label">TOTAL TIME</span>
+        <strong id="raceTotalTime" class="race-total-time">--:--.---</strong>
+      </div>
       <div id="raceStartSignal" class="race-start-signal race-start-signal-hidden" data-mode="off" data-lit="0" aria-hidden="true">
         <span class="race-start-light" data-race-signal-light="1"></span>
         <span class="race-start-light" data-race-signal-light="2"></span>

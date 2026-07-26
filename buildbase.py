@@ -257,6 +257,7 @@ def enum_all_files(dir, dir2):
 
 def versioned(func):
     def wrapper(version, version_file, *args, **kwargs):
+        version_key = kwargs.pop("version_key", version)
         if "ignore_version" in kwargs:
             if kwargs.get("ignore_version"):
                 rm_rf(version_file)
@@ -264,13 +265,13 @@ def versioned(func):
 
         if os.path.exists(version_file):
             ver = open(version_file, encoding="utf-8").read()
-            if ver.strip() == version.strip():
+            if ver.strip() == version_key.strip():
                 return
 
         r = func(version=version, *args, **kwargs)
 
         with open(version_file, "w", encoding="utf-8") as f:
-            f.write(version)
+            f.write(version_key)
 
         return r
 
@@ -1331,7 +1332,10 @@ def install_sdl3(
         if platform == "windows":
             cmake_args += [
                 f"-DCMAKE_MSVC_RUNTIME_LIBRARY={'MultiThreaded' if not debug else 'MultiThreadedDebug'}",
-                "-DSDL_AUDIO=OFF",
+                # Native Observer が M5 の AUD: フレームを Windows の既定再生
+                # デバイスへ出力する。OFF のままでは SDL が初期化時に
+                # "not built with audio support" を返す。
+                "-DSDL_AUDIO=ON",
                 "-DSDL_JOYSTICK=OFF",
                 "-DSDL_HAPTIC=OFF",
                 # GitHub Actions 上で gameinput.h が存在しないのに

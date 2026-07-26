@@ -330,6 +330,10 @@ void Util::ParseArgs(int argc,
                    "Override flip for one source: NAME=H, V, HV, or none")
       ->take_all()
       ->check(is_valid_p2p_multi_source_flip);
+  p2p_multi_receiver_app
+      ->add_option("--audio-source", args.p2p_multi_receiver_audio_source,
+                   "Receive and play M5 AUD telemetry from one source name")
+      ->default_val("");
   p2p_multi_receiver_app->add_flag(
       "--flip-vertical", args.flip_vertical,
       "Flip every received video vertically");
@@ -506,6 +510,13 @@ void Util::ParseArgs(int argc,
                   << std::endl;
         exit(1);
       }
+    }
+    if (!args.p2p_multi_receiver_audio_source.empty() &&
+        source_names.find(args.p2p_multi_receiver_audio_source) ==
+            source_names.end()) {
+      std::cerr << "p2p-recv-multi audio-source has unknown source: "
+                << args.p2p_multi_receiver_audio_source << std::endl;
+      exit(1);
     }
   }
 

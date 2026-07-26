@@ -56,6 +56,7 @@ class SDLRenderer : public VideoTrackReceiver {
   void AddTrackForSource(webrtc::VideoTrackInterface* track,
                          const std::string& source_name);
   void SetSourceState(const std::string& source_name, SourceState state);
+  void SetSourceOverlayText(std::string source_name, std::string text);
   void SetOverlayText(std::string text);
   double GetPrimaryFps();
   bool IsFlipVertical() const;
@@ -170,6 +171,9 @@ class SDLRenderer : public VideoTrackReceiver {
   std::unique_ptr<SharedFrameWriter> shared_frame_writer_;
   std::vector<uint8_t> shared_frame_buffer_;
   std::vector<SourceSlot> fixed_slots_;
+  webrtc::Mutex source_overlay_lock_;
+  std::unordered_map<std::string, std::string> source_overlay_text_
+      RTC_GUARDED_BY(source_overlay_lock_);
   webrtc::Mutex overlay_lock_;
   std::string overlay_text_ RTC_GUARDED_BY(overlay_lock_);
 };

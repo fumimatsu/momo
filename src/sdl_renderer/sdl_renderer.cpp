@@ -788,6 +788,16 @@ void SDLRenderer::SetSourceState(const std::string& source_name,
   }
 }
 
+void SDLRenderer::SetSourceOverlayText(std::string source_name,
+                                       std::string text) {
+  webrtc::MutexLock lock(&source_overlay_lock_);
+  if (text.empty()) {
+    source_overlay_text_.erase(source_name);
+    return;
+  }
+  source_overlay_text_[std::move(source_name)] = std::move(text);
+}
+
 void SDLRenderer::SetOverlayText(std::string text) {
   webrtc::MutexLock lock(&overlay_lock_);
   overlay_text_ = std::move(text);
@@ -959,6 +969,43 @@ void SDLRenderer::RenderSourceOverlay() {
                               static_cast<float>(outline.y + 6),
                               "%s %s FPS %.1f", slot.name.c_str(), state,
                               fps);
+
+    std::string source_overlay;
+    {
+      webrtc::MutexLock lock(&source_overlay_lock_);
+      const auto it = source_overlay_text_.find(slot.name);
+      if (it != source_overlay_text_.end()) {
+        source_overlay = it->second;
+      }
+    }
+    if (!source_overlay.empty()) {
+      std::vector<std::string> lines;
+      size_t begin = 0;
+      while (begin <= source_overlay.size()) {
+        const size_t end = source_overlay.find('\n', begin);
+        lines.push_back(source_overlay.substr(begin, end - begin));
+        if (end == std::string::npos) {
+          break;
+        }
+        begin = end + 1;
+      }
+      size_t longest = 0;
+      for (const std::string& line : lines) {
+        longest = std::max(longest, line.size());
+      }
+      SDL_FRect source_background = {
+          static_cast<float>(outline.x), static_cast<float>(outline.y + 22),
+          static_cast<float>(longest * 8 + 12),
+          static_cast<float>(lines.size() * 13 + 10)};
+      SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 190);
+      SDL_RenderFillRect(renderer_, &source_background);
+      SDL_SetRenderDrawColor(renderer_, 96, 210, 255, 255);
+      for (int line_index = 0; line_index < lines.size(); ++line_index) {
+        SDL_RenderDebugText(renderer_, static_cast<float>(outline.x + 6),
+                            static_cast<float>(outline.y + 29 + line_index * 13),
+                            lines[line_index].c_str());
+      }
+    }
   }
 
   std::string overlay;

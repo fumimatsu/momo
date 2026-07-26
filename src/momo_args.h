@@ -88,6 +88,7 @@ struct MomoArgs {
   std::string p2p_receiver_endpoint = "ws://127.0.0.1:8080/ws";
   std::vector<std::string> p2p_multi_receiver_sources;
   std::vector<std::string> p2p_multi_receiver_source_flips;
+  std::string p2p_multi_receiver_audio_source;
   std::string p2p_pilot_endpoint = "ws://127.0.0.1:8090/ws?role=pilot";
   std::string p2p_pilot_input_config = "input.json";
   std::string p2p_pilot_label = "";

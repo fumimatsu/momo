@@ -10,6 +10,8 @@ param(
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$TelemetryLogDirectory = $env:MOMO_RELAY_TELEMETRY_LOG_DIR,
+    [string]$ObserverAudioSource = '',
+    [switch]$RestartObserver,
     [switch]$RebuildRelay
 )
 
@@ -117,6 +119,12 @@ $observerRunning = @(Get-CimInstance Win32_Process | Where-Object {
     $_.CommandLine -like '*p2p-recv-multi*' -and
     $_.CommandLine -like '*ws://127.0.0.1:8090/ws?role=observer*'
 })
+if ($RestartObserver -and $observerRunning.Count -gt 0) {
+    foreach ($process in $observerRunning) {
+        Stop-Process -Id $process.ProcessId -Force
+    }
+    $observerRunning = @()
+}
 if ($observerRunning.Count -eq 0) {
     $observerArgs = @(
         '--use-sdl', '--window-width', '1280', '--window-height', '720',
@@ -131,10 +139,16 @@ if ($observerRunning.Count -eq 0) {
         '--source', '11.6=ws://127.0.0.1:8090/ws?role=observer&device=11.6',
         '--source-flip', '11.6=HV'
     )
+    if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
+        $observerArgs += '--audio-source', $ObserverAudioSource.Trim()
+    }
     Start-Process -FilePath $observerExe -ArgumentList $observerArgs `
         -RedirectStandardOutput (Join-Path $relayLogDirectory 'observer-unity.stdout.log') `
         -RedirectStandardError (Join-Path $relayLogDirectory 'observer-unity.stderr.log') | Out-Null
     Write-Host 'Observer started: Local\MomoObserverFrameV1'
+    if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
+        Write-Host "Observer audio source: $($ObserverAudioSource.Trim())"
+    }
 }
 else {
     Write-Host 'Observer is already running.'

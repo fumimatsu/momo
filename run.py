@@ -303,8 +303,15 @@ def install_deps(
             install_vpl(**install_vpl_args)
 
         # SDL3
+        # Windows Native Observer の AUD: 再生では SDL3 の音声バックエンドが
+        # 必須である。SDK のビルド設定を変えた時に既存の音声なし SDL3 を再利用
+        # しないよう、Windows 用の依存識別子へ設定 revision を含める。
+        sdl3_build_version_key = deps["SDL3_VERSION"]
+        if platform.target.os == "windows":
+            sdl3_build_version_key += ".windows-audio-on-v1"
         install_sdl3_args = {
             "version": deps["SDL3_VERSION"],
+            "version_key": sdl3_build_version_key,
             "version_file": os.path.join(install_dir, "sdl3.version"),
             "source_dir": source_dir,
             "build_dir": build_dir,
