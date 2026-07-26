@@ -30,6 +30,7 @@ const (
 	commandLabel   = "momo-command"
 	telemetryLabel = "momo-telemetry"
 	raceLabel      = "momo-race"
+	driveLabel     = "momo-drive"
 	upstreamLabel  = "serial"
 
 	defaultRTPStallTimeout      = 5 * time.Second
@@ -67,6 +68,7 @@ type viewer struct {
 	telemetry           atomic.Pointer[webrtc.DataChannel]
 	command             atomic.Pointer[webrtc.DataChannel]
 	race                atomic.Pointer[webrtc.DataChannel]
+	drive               atomic.Pointer[webrtc.DataChannel]
 	lastCommandUnixNano atomic.Int64
 }
 
@@ -209,6 +211,9 @@ type relay struct {
 
 	raceStateMu sync.RWMutex
 	raceState   string
+
+	driveLoggingEnabled atomic.Bool
+	driveOwnerID        atomic.Uint64
 }
 
 type relayServer struct {
@@ -920,7 +925,7 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 }
 
 func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, generation uint64) {
-	if r.recorder != nil && message.IsString {
+	if r.recorder != nil && r.driveLoggingEnabled.Load() && message.IsString {
 		raw := string(message.Data)
 		if strings.HasPrefix(raw, "TEL:") {
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
@@ -1008,6 +1013,60 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	r.broadcastCommand(message)
 }
 
+func (r *relay) handleDriveState(client *viewer, message webrtc.DataChannelMessage) {
+	if client.role != "pilot" || !r.isCurrentPilot(client.id) {
+		log.Printf("drop drive state from viewer %d (%s)", client.id, client.role)
+		return
+	}
+	if !message.IsString {
+		log.Printf("drop non-text drive state from viewer %d", client.id)
+		return
+	}
+
+	switch strings.TrimSpace(string(message.Data)) {
+	case "DRIVE:1":
+		r.setDriveLogging(client.id, true, "viewer drive on")
+	case "DRIVE:0":
+		r.setDriveLogging(client.id, false, "viewer drive off")
+	default:
+		log.Printf("drop invalid drive state from viewer %d", client.id)
+	}
+}
+
+func (r *relay) isCurrentPilot(id uint64) bool {
+	r.viewersMu.RLock()
+	defer r.viewersMu.RUnlock()
+	return r.pilotID == id
+}
+
+func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
+	if enabled {
+		ownerID := r.driveOwnerID.Load()
+		if ownerID != 0 && ownerID != pilotID {
+			log.Printf("drop drive on from viewer %d: current owner is %d", pilotID, ownerID)
+			return
+		}
+		r.driveOwnerID.Store(pilotID)
+		if r.driveLoggingEnabled.Swap(true) {
+			return
+		}
+	} else {
+		ownerID := r.driveOwnerID.Load()
+		if ownerID != 0 && ownerID != pilotID {
+			return
+		}
+		if ownerID == pilotID {
+			r.driveOwnerID.CompareAndSwap(pilotID, 0)
+		}
+		if !r.driveLoggingEnabled.Swap(false) {
+			return
+		}
+	}
+	if r.recorder != nil {
+		r.recorder.RecordDriveState(r.name, r.raceCarID, pilotID, enabled, reason)
+	}
+}
+
 func (r *relay) sendNeutralToUpstream(reason string) {
 	r.upstreamMu.RLock()
 	upstream := r.upstreamDC
@@ -1046,6 +1105,7 @@ func (r *relay) removeViewer(id uint64) {
 	}
 	r.viewersMu.Unlock()
 	if wasPilot {
+		r.setDriveLogging(id, false, "pilot disconnected")
 		r.sendNeutralToUpstream("pilot disconnect")
 	}
 }
@@ -1145,7 +1205,20 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 				})
 				channel.OnClose(func() {
 					client.command.CompareAndSwap(channel, nil)
+					r.setDriveLogging(client.id, false, "Ayame command channel closed")
 					r.sendNeutralToUpstream("Ayame command channel closed")
+				})
+			case driveLabel:
+				channel.OnOpen(func() {
+					client.drive.Store(channel)
+					log.Printf("source %q: Ayame pilot drive channel opened", r.name)
+				})
+				channel.OnMessage(func(message webrtc.DataChannelMessage) {
+					r.handleDriveState(client, message)
+				})
+				channel.OnClose(func() {
+					client.drive.CompareAndSwap(channel, nil)
+					r.setDriveLogging(client.id, false, "Ayame drive channel closed")
 				})
 			case telemetryLabel:
 				channel.OnOpen(func() { client.telemetry.Store(channel) })
@@ -1367,7 +1440,22 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			channel.OnMessage(func(message webrtc.DataChannelMessage) {
 				r.handleCommand(client, message)
 			})
-			channel.OnClose(func() { client.command.CompareAndSwap(channel, nil) })
+			channel.OnClose(func() {
+				client.command.CompareAndSwap(channel, nil)
+				r.setDriveLogging(client.id, false, "command channel closed")
+			})
+		case driveLabel:
+			channel.OnOpen(func() {
+				client.drive.Store(channel)
+				log.Printf("viewer %d drive channel opened", client.id)
+			})
+			channel.OnMessage(func(message webrtc.DataChannelMessage) {
+				r.handleDriveState(client, message)
+			})
+			channel.OnClose(func() {
+				client.drive.CompareAndSwap(channel, nil)
+				r.setDriveLogging(client.id, false, "drive channel closed")
+			})
 		case raceLabel:
 			channel.OnOpen(func() {
 				client.race.Store(channel)

@@ -233,6 +233,7 @@
   let dataChannel = null;
   let telemetryChannel = null;
   let raceChannel = null;
+  let driveChannel = null;
   let candidates = [];
   let hasReceivedSdp = false;
   let fpsFrameCount = 0;
@@ -2405,6 +2406,7 @@
     btnDrive.textContent = enabled ? 'Drive On' : 'Drive Off';
     btnDrive.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     pressedControlKeys.clear();
+    sendDriveState();
 
     if (enabled) {
       ffbOutputEnabled = FFB_ENABLED;
@@ -2428,6 +2430,19 @@
 
   function toggleDrive() {
     setDriveEnabled(!rcDriveEnabled);
+  }
+
+  function sendDriveState() {
+    if (!usesRelayTransport() || !driveChannel || driveChannel.readyState !== 'open') {
+      return false;
+    }
+    try {
+      driveChannel.send(rcDriveEnabled ? 'DRIVE:1' : 'DRIVE:0');
+      return true;
+    } catch (error) {
+      recordEvent('drive state send failed', error.message || String(error));
+      return false;
+    }
   }
 
   function isTextEditingTarget(target) {
@@ -2919,6 +2934,7 @@
     const currentDataChannel = dataChannel;
     const currentTelemetryChannel = telemetryChannel;
     const currentRaceChannel = raceChannel;
+    const currentDriveChannel = driveChannel;
     const currentPeerConnection = peerConnection;
 
     if (currentWs) {
@@ -2941,6 +2957,11 @@
       currentRaceChannel.onopen = null;
       currentRaceChannel.onclose = null;
       currentRaceChannel.onmessage = null;
+    }
+    if (currentDriveChannel) {
+      currentDriveChannel.onopen = null;
+      currentDriveChannel.onclose = null;
+      currentDriveChannel.onmessage = null;
     }
     if (currentPeerConnection) {
       currentPeerConnection.ontrack = null;
@@ -2975,6 +2996,12 @@
       } catch (_) {
       }
     }
+    if (currentDriveChannel) {
+      try {
+        currentDriveChannel.close();
+      } catch (_) {
+      }
+    }
     if (currentPeerConnection) {
       try {
         currentPeerConnection.close();
@@ -2992,6 +3019,7 @@
     dataChannel = null;
     telemetryChannel = null;
     raceChannel = null;
+    driveChannel = null;
     audioSender = null;
     peerConnection = null;
     ws = null;
@@ -3474,11 +3502,34 @@
       raceChannel.onmessage = (event) => handleRaceStateMessage(event.data);
     };
 
+    const attachDriveChannel = (channel) => {
+      if (driveChannel && driveChannel !== channel) {
+        driveChannel.onopen = null;
+        driveChannel.onclose = null;
+        driveChannel.onmessage = null;
+      }
+      driveChannel = channel;
+      driveChannel.onopen = () => {
+        recordEvent('drive dc open');
+        sendDriveState();
+      };
+      driveChannel.onclose = () => {
+        recordEvent('drive dc close');
+        scheduleReconnect('drive dc closed');
+      };
+      if (driveChannel.readyState === 'open') {
+        recordEvent('drive dc open');
+        sendDriveState();
+      }
+    };
+
     peer.ondatachannel = (event) => {
       if (event.channel.label === 'momo-race') {
         attachRaceChannel(event.channel);
       } else if (event.channel.label === 'momo-telemetry') {
         attachTelemetryChannel(event.channel);
+      } else if (event.channel.label === 'momo-drive') {
+        attachDriveChannel(event.channel);
       } else {
         attachDataChannel(event.channel);
       }
@@ -3494,6 +3545,9 @@
         maxRetransmits: 0,
       }));
       attachRaceChannel(peer.createDataChannel('momo-race', {
+        ordered: true,
+      }));
+      attachDriveChannel(peer.createDataChannel('momo-drive', {
         ordered: true,
       }));
     }

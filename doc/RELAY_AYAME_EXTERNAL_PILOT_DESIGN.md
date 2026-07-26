@@ -65,7 +65,8 @@ Pi で Ayame Pilot と Relay source を並列に持つには、同じカメラ�
 
 | 方向 | DataChannel | 用途 |
 | --- | --- | --- |
-| Pilot -> Relay -> Pi | `momo-command` | RC 操作、Drive 状態 |
+| Pilot -> Relay -> Pi | `momo-command` | RC 操作 |
+| Pilot -> Relay | `momo-drive` | reliableな`DRIVE:1`/`DRIVE:0`。Relay上のsource別telemetry記録だけをgateし、Piへは転送しない。 |
 | Pi -> Relay -> Pilot | `momo-telemetry` | 車体 telemetry、状態 |
 | Race Control -> Relay -> Pilot | `momo-race` | race state v2、順位、周回、flag |
 

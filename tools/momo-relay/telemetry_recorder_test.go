@@ -61,6 +61,7 @@ func TestRelayRecordsOnlyTELTextMessages(t *testing.T) {
 	source := newStatusTestRelay("11.3", "CP-1")
 	source.recorder = recorder
 
+	source.driveLoggingEnabled.Store(true)
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":1,"seq":1}`), IsString: true}, 2)
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("PONG:1"), IsString: true}, 2)
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte{0x01, 0x02}, IsString: false}, 2)
@@ -79,6 +80,51 @@ func TestRelayRecordsOnlyTELTextMessages(t *testing.T) {
 	}
 	if telemetry[0].Raw != `TEL:{"v":1,"seq":1}` || telemetry[0].SourceID != "11.3" || telemetry[0].CarID != "CP-1" {
 		t.Fatalf("TEL record = %#v", telemetry[0])
+	}
+}
+
+func TestRelayDriveStateGatesTelemetryAndRejectsObservers(t *testing.T) {
+	recorder, err := newTelemetryRecorderWithQueue(t.TempDir(), 16)
+	if err != nil {
+		t.Fatalf("newTelemetryRecorderWithQueue() error = %v", err)
+	}
+	source := newStatusTestRelay("11.3", "CP-1")
+	source.viewers = make(map[uint64]*viewer)
+	source.recorder = recorder
+	pilot := &viewer{id: 7, role: "pilot"}
+	source.addViewer(pilot)
+	if !source.reservePilot(pilot.id) {
+		t.Fatal("reservePilot() returned false")
+	}
+
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":1,"seq":1}`), IsString: true}, 3)
+	source.handleDriveState(pilot, webrtc.DataChannelMessage{Data: []byte("DRIVE:1"), IsString: true})
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":1,"seq":2}`), IsString: true}, 3)
+	source.handleDriveState(&viewer{id: 8, role: "observer"}, webrtc.DataChannelMessage{Data: []byte("DRIVE:0"), IsString: true})
+	if !source.driveLoggingEnabled.Load() {
+		t.Fatal("observer must not disable pilot drive state")
+	}
+	source.handleDriveState(pilot, webrtc.DataChannelMessage{Data: []byte("DRIVE:0"), IsString: true})
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":1,"seq":3}`), IsString: true}, 3)
+	if err := recorder.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var telemetry []telemetryLogRecord
+	var driveStates []telemetryLogRecord
+	for _, record := range readTelemetryLogRecords(t, recorder.Path()) {
+		switch record.Type {
+		case "telemetry":
+			telemetry = append(telemetry, record)
+		case "drive_state":
+			driveStates = append(driveStates, record)
+		}
+	}
+	if len(telemetry) != 1 || telemetry[0].Raw != `TEL:{"v":1,"seq":2}` {
+		t.Fatalf("gated telemetry = %#v, want only seq 2", telemetry)
+	}
+	if len(driveStates) != 2 || driveStates[0].DriveEnabled == nil || !*driveStates[0].DriveEnabled || driveStates[1].DriveEnabled == nil || *driveStates[1].DriveEnabled {
+		t.Fatalf("drive states = %#v, want on then off", driveStates)
 	}
 }
 

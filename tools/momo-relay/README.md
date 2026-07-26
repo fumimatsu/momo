@@ -12,8 +12,9 @@ Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面
 ## 車体テレメトリ記録
 
 Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全車共通のRelay時計で
-1本のNDJSONへ記録できる。Viewerの接続有無に依存しないため、車体座標、重力除去、軸符号を
-走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
+1本のNDJSONへ記録できる。Relay Pilotが信頼性ありの`momo-drive` channelで`DRIVE:1`を送った
+sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断で直ちに止める。Viewerの
+接続有無に依存しないため、車体座標、重力除去、軸符号を走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
 `race_state`、`raceRunId`、phase、flag、sequenceも記録する。
 
 記録は明示指定時だけ有効にする。既定では無効で、容量を消費しない。
@@ -26,7 +27,7 @@ Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全�
 環境変数`MOMO_RELAY_TELEMETRY_LOG_DIR`でも同じ保存先を指定できる。Relay単体では
 `-telemetry-log-dir <directory>`を使う。
 
-出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`telemetry`、
+出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`と`telemetry`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
 `telemetry`にはRelay受信UTC時刻、Relay開始からの単調経過時間、`sourceId`、`carId`、
 上流接続generation、`TEL:`全文を含める。DataChannelはunreliableなため、ログはRelayへ届いた
