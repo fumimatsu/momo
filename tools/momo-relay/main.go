@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -197,6 +198,10 @@ type relay struct {
 	pliViewerConnect       atomic.Uint64
 	pliWatchdog            atomic.Uint64
 	rtpStalls              atomic.Uint64
+	telemetryTextTEL       atomic.Uint64
+	telemetryBinaryTEL     atomic.Uint64
+	telemetryBinaryAudio   atomic.Uint64
+	telemetryOther         atomic.Uint64
 	frameRate              frameRateWindow
 
 	rtpRewriteMu          sync.Mutex
@@ -302,6 +307,7 @@ type sourceOperationsState struct {
 	Lifecycle   string                    `json:"lifecycle"`
 	VideoHealth string                    `json:"videoHealth"`
 	Upstream    upstreamOperationsState   `json:"upstream"`
+	Telemetry   telemetryOperationsState  `json:"telemetry"`
 	Downstream  downstreamOperationsState `json:"downstream"`
 	Recovery    recoveryOperationsState   `json:"recovery"`
 }
@@ -315,6 +321,15 @@ type upstreamOperationsState struct {
 	Generation              uint64  `json:"generation"`
 	StallTimeoutMs          int64   `json:"stallTimeoutMs"`
 	StartTimeoutMs          int64   `json:"startTimeoutMs"`
+}
+
+// DataChannel の payload 種別を source ごとに数える。音声追加後に TEL が
+// binary 化されていないかを、実走中でも安全に切り分けるための診断値。
+type telemetryOperationsState struct {
+	TextTEL     uint64 `json:"textTel"`
+	BinaryTEL   uint64 `json:"binaryTel"`
+	BinaryAudio uint64 `json:"binaryAudio"`
+	Other       uint64 `json:"other"`
 }
 
 type downstreamOperationsState struct {
@@ -788,6 +803,12 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 			StallTimeoutMs:          r.rtpStallTimeout.Milliseconds(),
 			StartTimeoutMs:          r.upstreamStartTimeout.Milliseconds(),
 		},
+		Telemetry: telemetryOperationsState{
+			TextTEL:     r.telemetryTextTEL.Load(),
+			BinaryTEL:   r.telemetryBinaryTEL.Load(),
+			BinaryAudio: r.telemetryBinaryAudio.Load(),
+			Other:       r.telemetryOther.Load(),
+		},
 		Downstream: r.downstreamStatusSnapshot(),
 		Recovery: recoveryOperationsState{
 			PLIRequests: pliRequestCounts{
@@ -924,12 +945,36 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	}
 }
 
+func normalizeTelemetryMessage(message webrtc.DataChannelMessage) (webrtc.DataChannelMessage, string, bool, bool) {
+	if message.IsString && strings.HasPrefix(string(message.Data), "TEL:") {
+		return message, string(message.Data), true, false
+	}
+	if !message.IsString && bytes.HasPrefix(message.Data, []byte("TEL:")) {
+		// Momo の serial DataChannel は、同じ TEL 行でも機体ごとに binary
+		// として届くことがある。Viewer と NDJSON 契約は Text TEL を前提と
+		// するため、内容が TEL: である場合だけ Relay 境界で正規化する。
+		message.IsString = true
+		return message, string(message.Data), true, true
+	}
+	return message, "", false, false
+}
+
 func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, generation uint64) {
-	if r.recorder != nil && r.driveLoggingEnabled.Load() && message.IsString {
-		raw := string(message.Data)
-		if strings.HasPrefix(raw, "TEL:") {
+	normalized, raw, isTEL, wasBinaryTEL := normalizeTelemetryMessage(message)
+	if isTEL {
+		if wasBinaryTEL {
+			r.telemetryBinaryTEL.Add(1)
+		} else {
+			r.telemetryTextTEL.Add(1)
+		}
+		if r.recorder != nil && r.driveLoggingEnabled.Load() {
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
 		}
+		message = normalized
+	} else if bytes.HasPrefix(message.Data, []byte("AUD:")) {
+		r.telemetryBinaryAudio.Add(1)
+	} else {
+		r.telemetryOther.Add(1)
 	}
 	r.broadcastTelemetry(message)
 }

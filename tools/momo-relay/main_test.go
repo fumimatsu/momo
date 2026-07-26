@@ -196,6 +196,28 @@ func TestOperationsStatusFollowsConfiguredSourceOrder(t *testing.T) {
 	}
 }
 
+func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
+	source := newStatusTestRelay("11.5", "CP-3")
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}"), IsString: true}, 1)
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}")}, 1)
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("AUD:1,boot,1,0,payload")}, 1)
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte{0x01, 0x02}}, 1)
+
+	telemetry := source.statusSnapshot(time.Now()).Telemetry
+	if telemetry.TextTEL != 1 || telemetry.BinaryTEL != 1 || telemetry.BinaryAudio != 1 || telemetry.Other != 1 {
+		t.Fatalf("telemetry diagnostics = %#v", telemetry)
+	}
+}
+
+func TestBinaryTELIsNormalizedForViewerDelivery(t *testing.T) {
+	normalized, raw, isTEL, wasBinaryTEL := normalizeTelemetryMessage(
+		webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}")},
+	)
+	if !normalized.IsString || raw != "TEL:{\"v\":1}" || !isTEL || !wasBinaryTEL {
+		t.Fatalf("normalized binary TEL = %#v raw=%q isTEL=%t wasBinaryTEL=%t", normalized, raw, isTEL, wasBinaryTEL)
+	}
+}
+
 func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testing.T) {
 	source := newStatusTestRelay("11.3", "CP-1")
 	pilot := &viewer{id: 1, role: "pilot"}
