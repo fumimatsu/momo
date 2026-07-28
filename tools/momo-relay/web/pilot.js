@@ -1604,7 +1604,11 @@
     const active = isConnectionActive();
     const lockedByOther = isRoomLockedByOther();
     if (btnReconnect) {
-      if (active) {
+      if (DRIVE_UI_TEST_MODE) {
+        btnReconnect.textContent = 'TEST MODE';
+        btnReconnect.dataset.state = 'test';
+        btnReconnect.disabled = true;
+      } else if (active) {
         btnReconnect.textContent = reconnectTimer ? 'CANCEL' : 'DISCONNECT';
         btnReconnect.dataset.state = 'connected';
         btnReconnect.disabled = false;
@@ -3580,6 +3584,12 @@
   }
 
   async function connect(options = {}) {
+    if (DRIVE_UI_TEST_MODE) {
+      shouldReconnect = false;
+      recordEvent('connect blocked', 'drive UI test');
+      updateUiState();
+      return;
+    }
     if (roomLockBusy) {
       return;
     }
