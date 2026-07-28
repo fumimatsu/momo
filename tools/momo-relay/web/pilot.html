@@ -939,9 +939,11 @@
       color: #d98b8b;
     }
 
-    .drive-pedals {
+    .drive-instruments {
       display: grid;
-      grid-template-columns: 30px 1fr 38px;
+      grid-template-columns: minmax(30px, 1fr) auto minmax(38px, 1fr);
+      align-items: center;
+      min-height: 128px;
     }
 
     .drive-pedal {
@@ -996,18 +998,17 @@
 
     .drive-pedal.brake {
       --drive-color: rgba(239, 74, 78, 0.92);
-      grid-column: 2;
-      grid-row: 1;
+      grid-column: 1;
       justify-self: start;
     }
 
     .drive-pedal.throttle {
-      grid-column: 2;
-      grid-row: 1;
+      grid-column: 3;
       justify-self: end;
     }
 
     .drive-metrics {
+      grid-column: 2;
       display: grid;
       grid-template-columns: 1fr;
       justify-items: center;
@@ -1624,8 +1625,8 @@
         transform-origin: bottom center;
       }
 
-      .drive-pedals {
-        grid-template-columns: 30px 1fr 38px;
+      .drive-instruments {
+        grid-template-columns: minmax(30px, 1fr) auto minmax(38px, 1fr);
       }
     }
 
@@ -1823,35 +1824,35 @@
           </div>
           <button id="driveHudConnection" class="drive-state drive-header-right drive-connection" type="button" data-active="false" disabled>DISCONNECTED</button>
         </div>
-        <div class="drive-pedals">
+        <div class="drive-instruments">
           <div class="drive-pedal brake">
             <span>BRK</span><span id="driveHudBrake" class="drive-pedal-track"></span><span id="driveHudBrakeValue" class="drive-pedal-value">0%</span>
+          </div>
+          <div id="driveMetrics" class="drive-metrics" data-damage="reserved">
+            <section id="driveGmeter" class="drive-g-meter" data-state="waiting" data-saturated="false" aria-label="G meter waiting for vehicle telemetry">
+              <div class="drive-g-sight" aria-hidden="true">
+                <span class="drive-g-ring outer"></span>
+                <span class="drive-g-ring inner"></span>
+                <span class="drive-g-axis horizontal"></span>
+                <span class="drive-g-axis vertical"></span>
+                <span class="drive-g-center">G</span>
+                <span class="drive-g-label brake">BRK</span>
+                <span class="drive-g-label accel">ACC</span>
+                <span class="drive-g-label left">L</span>
+                <span class="drive-g-label right">R</span>
+                <span id="driveGmeterDot" class="drive-g-dot"></span>
+                <span id="driveGmeterScale" class="drive-g-scale">1.5G</span>
+              </div>
+            </section>
+            <aside id="driveDamagePanel" class="drive-damage-panel" hidden aria-label="Vehicle health">
+              <span>HP</span>
+              <span class="drive-damage-rail"><i id="driveDamageFill" class="drive-damage-fill"></i></span>
+              <output id="driveDamageValue">--</output>
+            </aside>
           </div>
           <div class="drive-pedal throttle">
             <span>THR</span><span id="driveHudThrottle" class="drive-pedal-track"></span><span id="driveHudThrottleValue" class="drive-pedal-value">0%</span>
           </div>
-        </div>
-        <div id="driveMetrics" class="drive-metrics" data-damage="reserved">
-          <section id="driveGmeter" class="drive-g-meter" data-state="waiting" data-saturated="false" aria-label="G meter waiting for vehicle telemetry">
-            <div class="drive-g-sight" aria-hidden="true">
-              <span class="drive-g-ring outer"></span>
-              <span class="drive-g-ring inner"></span>
-              <span class="drive-g-axis horizontal"></span>
-              <span class="drive-g-axis vertical"></span>
-              <span class="drive-g-center">G</span>
-              <span class="drive-g-label brake">BRK</span>
-              <span class="drive-g-label accel">ACC</span>
-              <span class="drive-g-label left">L</span>
-              <span class="drive-g-label right">R</span>
-              <span id="driveGmeterDot" class="drive-g-dot"></span>
-              <span id="driveGmeterScale" class="drive-g-scale">1.5G</span>
-            </div>
-          </section>
-          <aside id="driveDamagePanel" class="drive-damage-panel" hidden aria-label="Vehicle health">
-            <span>HP</span>
-            <span class="drive-damage-rail"><i id="driveDamageFill" class="drive-damage-fill"></i></span>
-            <output id="driveDamageValue">--</output>
-          </aside>
         </div>
         <div class="drive-steering">
           <span>STR</span>
