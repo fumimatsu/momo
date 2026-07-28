@@ -117,6 +117,8 @@
   const AYAME_CLIENT_ID = getAyameClientId();
   const AYAME_SIGNALING_KEY = getStringParam(['signalingKey', 'ayameKey'], '');
   const AUTO_START = getBooleanParam('autoStart', SIGNALING_MODE !== 'ayame');
+  // Local UI checks can exercise Drive state without connecting to a vehicle.
+  const DRIVE_UI_TEST_MODE = !AUTO_START && getBooleanParam('driveUiTest', false);
   const ICE_MODE = normalizeIceMode(getStringParam(['iceMode', 'ice'], 'auto'));
   const STUN_URLS = getStringListParam(['stunUrls', 'stunUrl'], ['stun:stun.l.google.com:19302']);
   const TURN_URLS = getStringListParam(['turnUrls', 'turnUrl'], []);
@@ -1584,7 +1586,7 @@
   }
 
   function updateDriveToggleUi(canSend = dataChannel && dataChannel.readyState === 'open') {
-    const disabled = !canSend && !rcDriveEnabled;
+    const disabled = !canSend && !rcDriveEnabled && !DRIVE_UI_TEST_MODE;
     btnDrive.disabled = disabled;
     if (driveHudMode) {
       driveHudMode.disabled = disabled;
@@ -2637,6 +2639,7 @@
   }
 
   function setDriveEnabled(enabled) {
+    const canSend = isDataChannelOpen();
     rcDriveEnabled = enabled;
     btnDrive.textContent = enabled ? 'Drive On' : 'Drive Off';
     btnDrive.setAttribute('aria-pressed', enabled ? 'true' : 'false');
@@ -2644,10 +2647,14 @@
     sendDriveState();
 
     if (enabled) {
-      ffbOutputEnabled = FFB_ENABLED;
+      ffbOutputEnabled = FFB_ENABLED && canSend;
       setNeutralCommand();
       captureGamepadPedalIdle(getActiveGamepad());
-      startRcTx();
+      if (canSend) {
+        startRcTx();
+      } else {
+        stopRcTx();
+      }
     } else {
       stopFfbOutput();
       cancelThrottleBrake();
@@ -2668,7 +2675,7 @@
   }
 
   function sendDriveState() {
-    if (!usesRelayTransport() || !driveChannel || driveChannel.readyState !== 'open') {
+    if (!isDataChannelOpen() || !usesRelayTransport() || !driveChannel || driveChannel.readyState !== 'open') {
       return false;
     }
     try {
