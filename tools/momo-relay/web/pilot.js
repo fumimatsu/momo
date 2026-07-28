@@ -144,6 +144,10 @@
   const RACE_BATTLE_DEMO = getBooleanParam('raceBattleDemo', false);
   const RACE_BATTLE_MAX_GAP_MS = 5000;
   const RACE_BATTLE_GAP_STEP_MS = 100;
+  const G_METER_ENABLED = getBooleanParam('gMeter', true);
+  const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
+  const G_METER_FULL_SCALE_G = Math.max(0.5, Math.min(3.0, getNumberParam('gMeterScaleG', 1.5)));
+  const G_METER_DOT_RADIUS_PX = 42;
   const RACE_BATTLE_MIN_OFFSET_PX = 30;
   const RACE_BATTLE_MAX_OFFSET_PX = 80;
   const RACE_ANNOUNCE_ENABLED = getBooleanParam('raceAnnounce', false);
@@ -257,6 +261,9 @@
   const driveHudGear = document.getElementById('driveHudGear');
   const driveHudGearSteps = Array.from(document.querySelectorAll('.drive-gear-step'));
   const driveHudConnection = document.getElementById('driveHudConnection');
+  const driveGmeter = document.getElementById('driveGmeter');
+  const driveGmeterDot = document.getElementById('driveGmeterDot');
+  const driveGmeterScale = document.getElementById('driveGmeterScale');
 
   let ws = null;
   let peerConnection = null;
@@ -2218,6 +2225,7 @@
 
   function updateMotionUi() {
     const motion = getMotionSnapshot();
+    updateDriveGmeter(motion);
     updateMotionEventHud(motion);
     if (!motionState) return;
     if (!motion) {
@@ -2235,6 +2243,47 @@
       : '';
     setText(motionState,
       `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}${impact}`);
+  }
+
+  function formatGmeterValue(value) {
+    return `${value >= 0 ? '+' : ''}${value.toFixed(2)}G`;
+  }
+
+  function updateDriveGmeter(motion) {
+    if (!driveGmeter || !driveGmeterDot) return;
+    driveGmeter.hidden = !G_METER_ENABLED;
+    if (driveGmeterScale) {
+      driveGmeterScale.textContent = `${G_METER_FULL_SCALE_G.toFixed(1)}G`;
+    }
+    const forwardMps2 = Number(motion?.motion?.forwardMps2);
+    const lateralMps2 = Number(motion?.motion?.lateralMps2);
+    const hasMotion = motion && !motion.stale
+      && Number.isFinite(forwardMps2) && Number.isFinite(lateralMps2);
+    if (!hasMotion) {
+      driveGmeter.dataset.state = motion?.stale ? 'stale' : 'waiting';
+      driveGmeter.dataset.saturated = 'false';
+      driveGmeter.style.setProperty('--g-x', '0px');
+      driveGmeter.style.setProperty('--g-y', '0px');
+      driveGmeter.setAttribute('aria-label', motion?.stale
+        ? 'G meter telemetry stale'
+        : 'G meter waiting for vehicle telemetry');
+      return;
+    }
+
+    const forwardG = forwardMps2 / G_METER_STANDARD_GRAVITY_MPS2;
+    const leftG = lateralMps2 / G_METER_STANDARD_GRAVITY_MPS2;
+    // CSS の右・下を正とする。車体 FLU の左Gは画面左、前進Gは画面下へ描く。
+    const x = Math.max(-1, Math.min(1, -leftG / G_METER_FULL_SCALE_G));
+    const y = Math.max(-1, Math.min(1, forwardG / G_METER_FULL_SCALE_G));
+    const saturated = Math.abs(forwardG) > G_METER_FULL_SCALE_G || Math.abs(leftG) > G_METER_FULL_SCALE_G;
+    driveGmeter.dataset.state = 'active';
+    driveGmeter.dataset.saturated = String(saturated);
+    driveGmeter.style.setProperty('--g-x', `${(x * G_METER_DOT_RADIUS_PX).toFixed(1)}px`);
+    driveGmeter.style.setProperty('--g-y', `${(y * G_METER_DOT_RADIUS_PX).toFixed(1)}px`);
+    driveGmeter.setAttribute(
+      'aria-label',
+      `G meter longitudinal ${formatGmeterValue(forwardG)}, lateral left ${formatGmeterValue(leftG)}`,
+    );
   }
 
   function updateMotionEventHud(motion) {

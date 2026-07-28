@@ -1007,6 +1007,167 @@
       justify-self: end;
     }
 
+    .drive-metrics {
+      display: grid;
+      grid-template-columns: 1fr;
+      justify-items: center;
+      min-height: 118px;
+    }
+
+    .drive-metrics[data-damage="active"] {
+      grid-template-columns: 118px minmax(0, 1fr);
+      align-items: center;
+      gap: 16px;
+    }
+
+    .drive-metrics[data-damage="active"] .drive-g-meter {
+      justify-self: start;
+    }
+
+    .drive-g-meter {
+      position: relative;
+      display: grid;
+      width: 118px;
+      height: 118px;
+      place-items: center;
+      color: rgba(196, 234, 246, 0.92);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-shadow: 0 1px 2px #000000, 0 0 6px rgba(0, 0, 0, 0.86);
+    }
+
+    .drive-g-meter[hidden],
+    .drive-damage-panel[hidden] {
+      display: none;
+    }
+
+    .drive-g-sight {
+      position: relative;
+      width: 104px;
+      height: 104px;
+      border: 1px solid rgba(199, 235, 247, 0.68);
+      border-radius: 50%;
+      background: rgba(2, 10, 14, 0.22);
+      box-shadow: inset 0 0 14px rgba(31, 154, 185, 0.18), 0 0 10px rgba(0, 0, 0, 0.46);
+    }
+
+    .drive-g-ring,
+    .drive-g-axis {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+    }
+
+    .drive-g-ring {
+      border: 1px solid rgba(179, 221, 234, 0.34);
+      border-radius: 50%;
+    }
+
+    .drive-g-ring.outer { width: 66.667%; height: 66.667%; }
+    .drive-g-ring.inner { width: 33.334%; height: 33.334%; }
+
+    .drive-g-axis.horizontal {
+      width: calc(100% - 12px);
+      height: 1px;
+      background: rgba(218, 239, 246, 0.46);
+    }
+
+    .drive-g-axis.vertical {
+      width: 1px;
+      height: calc(100% - 12px);
+      background: rgba(218, 239, 246, 0.46);
+    }
+
+    .drive-g-center {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      color: rgba(238, 249, 252, 0.64);
+      font-size: 10px;
+      transform: translate(-50%, -50%);
+    }
+
+    .drive-g-label {
+      position: absolute;
+      color: rgba(221, 240, 248, 0.88);
+      font-size: 9px;
+      line-height: 1;
+    }
+
+    .drive-g-label.brake { top: -16px; left: 50%; transform: translateX(-50%); }
+    .drive-g-label.accel { bottom: -16px; left: 50%; transform: translateX(-50%); }
+    .drive-g-label.left { top: 50%; left: -12px; transform: translate(-100%, -50%); }
+    .drive-g-label.right { top: 50%; right: -12px; transform: translate(100%, -50%); }
+
+    .drive-g-dot {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(244, 254, 255, 0.96);
+      border-radius: 50%;
+      background: rgba(68, 222, 244, 0.94);
+      box-shadow: 0 0 10px rgba(65, 231, 255, 0.92), 0 0 3px #ffffff;
+      transform: translate(calc(-50% + var(--g-x, 0px)), calc(-50% + var(--g-y, 0px)));
+      transition: transform 70ms linear, background 100ms linear, box-shadow 100ms linear;
+    }
+
+    .drive-g-meter[data-state="waiting"] .drive-g-dot,
+    .drive-g-meter[data-state="stale"] .drive-g-dot {
+      background: rgba(133, 159, 168, 0.56);
+      box-shadow: none;
+      opacity: 0.56;
+    }
+
+    .drive-g-meter[data-saturated="true"] .drive-g-dot {
+      background: #ffd34d;
+      box-shadow: 0 0 12px rgba(255, 211, 77, 0.95), 0 0 3px #ffffff;
+    }
+
+    .drive-g-scale {
+      position: absolute;
+      right: -8px;
+      bottom: -19px;
+      color: rgba(185, 222, 233, 0.8);
+      font-size: 8px;
+      letter-spacing: 0.04em;
+    }
+
+    .drive-damage-panel {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 7px;
+      width: 100%;
+      min-width: 0;
+      color: #f7fbff;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .drive-damage-rail {
+      height: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(218, 239, 246, 0.68);
+      background: rgba(0, 0, 0, 0.32);
+    }
+
+    .drive-damage-fill {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #52dc8d;
+      box-shadow: 0 0 8px rgba(82, 220, 141, 0.72);
+      transform-origin: left;
+    }
+
     .drive-steering {
       display: grid;
       grid-template-columns: auto 1fr auto;
@@ -1670,6 +1831,28 @@
             <span>THR</span><span id="driveHudThrottle" class="drive-pedal-track"></span><span id="driveHudThrottleValue" class="drive-pedal-value">0%</span>
           </div>
         </div>
+        <div id="driveMetrics" class="drive-metrics" data-damage="reserved">
+          <section id="driveGmeter" class="drive-g-meter" data-state="waiting" data-saturated="false" aria-label="G meter waiting for vehicle telemetry">
+            <div class="drive-g-sight" aria-hidden="true">
+              <span class="drive-g-ring outer"></span>
+              <span class="drive-g-ring inner"></span>
+              <span class="drive-g-axis horizontal"></span>
+              <span class="drive-g-axis vertical"></span>
+              <span class="drive-g-center">G</span>
+              <span class="drive-g-label brake">BRK</span>
+              <span class="drive-g-label accel">ACC</span>
+              <span class="drive-g-label left">L</span>
+              <span class="drive-g-label right">R</span>
+              <span id="driveGmeterDot" class="drive-g-dot"></span>
+              <span id="driveGmeterScale" class="drive-g-scale">1.5G</span>
+            </div>
+          </section>
+          <aside id="driveDamagePanel" class="drive-damage-panel" hidden aria-label="Vehicle health">
+            <span>HP</span>
+            <span class="drive-damage-rail"><i id="driveDamageFill" class="drive-damage-fill"></i></span>
+            <output id="driveDamageValue">--</output>
+          </aside>
+        </div>
         <div class="drive-steering">
           <span>STR</span>
           <span class="drive-steering-track"><span id="driveHudSteeringMarker" class="drive-steering-marker"></span></span>
@@ -1696,6 +1879,6 @@
     <script src="./telemetry.js?v=20260726-motion-impact"></script>
 <script src="./m5-audio.js?v=20260726-m5-audio"></script>
 <script src="./ffb-bridge.js"></script>
-    <script src="./pilot.js?v=20260726-motion-impact"></script>
+    <script src="./pilot.js?v=20260728-g-meter"></script>
 </body>
 </html>
