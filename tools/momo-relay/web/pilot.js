@@ -451,7 +451,7 @@
 
   function normalizeControlUiMode(value) {
     const mode = String(value || '').toLowerCase();
-    return ['auto', 'manual', 'drive'].includes(mode) ? mode : 'auto';
+    return ['auto', 'manual', 'drive', 'test'].includes(mode) ? mode : 'auto';
   }
 
   function getGamepadProfileStorageKey() {
@@ -2389,6 +2389,9 @@
     }
     if (CONTROL_UI_MODE === 'drive') {
       return true;
+    }
+    if (CONTROL_UI_MODE === 'test') {
+      return rcDriveEnabled;
     }
     return isGamepadDriveActive();
   }
