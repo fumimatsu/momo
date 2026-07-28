@@ -1583,6 +1583,14 @@
     }
   }
 
+  function updateDriveToggleUi(canSend = dataChannel && dataChannel.readyState === 'open') {
+    const disabled = !canSend && !rcDriveEnabled;
+    btnDrive.disabled = disabled;
+    if (driveHudMode) {
+      driveHudMode.disabled = disabled;
+    }
+  }
+
   function updateConnectionUi() {
     setText(wsState, ws ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] : 'closed');
     setText(iceState, peerConnection ? peerConnection.iceConnectionState : 'new');
@@ -1618,12 +1626,9 @@
     if (btnNeutral) {
       btnNeutral.disabled = !canSend;
     }
-    btnDrive.disabled = !canSend && !rcDriveEnabled;
+    updateDriveToggleUi(canSend);
     if (btnDisconnect) {
       btnDisconnect.disabled = !active;
-    }
-    if (driveHudMode) {
-      driveHudMode.disabled = !canSend && !rcDriveEnabled;
     }
     if (driveHudConnection) {
       driveHudConnection.disabled = !active;
@@ -1652,7 +1657,7 @@
     if (btnNeutral) {
       btnNeutral.disabled = !canSend;
     }
-    btnDrive.disabled = !canSend && !rcDriveEnabled;
+    updateDriveToggleUi(canSend);
   }
 
   function updateTelemetryUi() {
