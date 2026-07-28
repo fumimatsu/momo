@@ -31,8 +31,9 @@
     // Viewer で段階化してから OSD / FFB に渡す。
     impactWeakMagnitudeMps2: 10.0,
     impactStrongMagnitudeMps2: 12.0,
-    impactStrongJerkMps3: 250.0,
     impactSevereMagnitudeMps2: 18.0,
+    // 大きな加速度ピークだけでは軽い壁接触も重衝撃に見えるため、HEAVY は急峻さも要求する。
+    impactSevereJerkMps3: 250.0,
     impactRearmMagnitudeMps2: 5.0,
     impactRearmHoldMs: 500,
     impactDisplayMs: 1800,
@@ -273,12 +274,12 @@
     if (!Number.isFinite(magnitudeMps2) || magnitudeMps2 < options.impactWeakMagnitudeMps2) {
       return '';
     }
-    if (magnitudeMps2 >= options.impactSevereMagnitudeMps2) {
+    if (magnitudeMps2 >= options.impactSevereMagnitudeMps2
+        && Number.isFinite(jerkMps3)
+        && jerkMps3 >= options.impactSevereJerkMps3) {
       return 'severe';
     }
-    if (magnitudeMps2 >= options.impactStrongMagnitudeMps2
-        && Number.isFinite(jerkMps3)
-        && jerkMps3 >= options.impactStrongJerkMps3) {
+    if (magnitudeMps2 >= options.impactStrongMagnitudeMps2) {
       return 'strong';
     }
     return 'weak';
