@@ -1,7 +1,7 @@
 {
   "sourceRepository": "https://github.com/fumimatsu/momo-fpv-viewer",
-  "sourceCommit": "329c76a505fa89812f74b7cd4fba6ad3da6aa415",
-  "sourceDirty": true,
+  "sourceCommit": "0501c1b59bfd14b98663f0531ee98274ad603685",
+  "sourceDirty": false,
   "variant": "relay-pilot",
   "files": [
     "pilot.html",
