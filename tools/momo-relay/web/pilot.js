@@ -385,6 +385,7 @@
     position: null,
     fieldSize: null,
     totalTimeMs: null,
+    allTimeMode: 'elapsed',
     currentLapMs: null,
     lastLapMs: null,
     bestLapMs: null,
@@ -1010,12 +1011,22 @@
     return `${minutes}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
   }
 
-  function getDisplayedRaceTime(milliseconds) {
+  function normalizeAllTimeMode(value) {
+    return value === 'countdown' ? 'countdown' : 'elapsed';
+  }
+
+  function getDisplayedRaceTime(milliseconds, mode = 'elapsed') {
     if (!raceState.clockRunning || raceState.sampledAt === 0) {
       return milliseconds;
     }
     const base = normalizeRaceNumber(milliseconds);
-    return base === null ? null : base + Math.max(0, performance.now() - raceState.sampledAt);
+    if (base === null) {
+      return null;
+    }
+    const elapsedSinceSample = Math.max(0, performance.now() - raceState.sampledAt);
+    return mode === 'countdown'
+      ? Math.max(0, base - elapsedSinceSample)
+      : base + elapsedSinceSample;
   }
 
   function normalizeRaceLaps(laps) {
@@ -1256,7 +1267,7 @@
     setText(raceCurrentLap, formatRaceTime(getDisplayedRaceTime(raceState.currentLapMs)));
     setText(raceLastLap, formatRaceTime(raceState.lastLapMs));
     setText(raceBestLap, formatRaceTime(raceState.bestLapMs));
-    setText(raceTotalTime, formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs)));
+    setText(raceTotalTime, formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs, raceState.allTimeMode)));
     renderRaceStartSignal();
     if (racePosition) {
       racePosition.replaceChildren(document.createTextNode(position));
@@ -1339,6 +1350,7 @@
       position: normalizeRaceNumber(standing?.position) || null,
       fieldSize: state.standings.length,
       totalTimeMs: normalizeRaceNumber(standing?.allTimeMs),
+      allTimeMode: normalizeAllTimeMode(state.allTimeMode),
       currentLapMs: normalizeRaceNumber(standing?.currentLapMs),
       lastLapMs,
       bestLapMs: normalizeRaceNumber(standing?.bestLapMs),
@@ -1483,6 +1495,7 @@
       raceState.position = null;
       raceState.fieldSize = null;
       raceState.totalTimeMs = null;
+      raceState.allTimeMode = 'elapsed';
       raceState.currentLapMs = null;
       raceState.lastLapMs = null;
       raceState.bestLapMs = null;
@@ -1508,6 +1521,9 @@
     raceState.clockRunning = Object.prototype.hasOwnProperty.call(nextState, 'clockRunning')
       ? nextState.clockRunning === true
       : raceState.phase === 'RUNNING';
+    if (Object.prototype.hasOwnProperty.call(nextState, 'allTimeMode')) {
+      raceState.allTimeMode = normalizeAllTimeMode(nextState.allTimeMode);
+    }
     for (const field of ['lap', 'lapCount', 'position', 'fieldSize', 'totalTimeMs',
       'currentLapMs', 'lastLapMs', 'bestLapMs', 'startAtMs', 'serverTimeMs']) {
       if (Object.prototype.hasOwnProperty.call(nextState, field)) {
