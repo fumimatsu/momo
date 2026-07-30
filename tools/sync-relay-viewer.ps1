@@ -1,6 +1,7 @@
 param(
     [string]$ViewerRepository = (Join-Path (Split-Path -Parent $PSScriptRoot) '..\momo-fpv-viewer'),
-    [switch]$AllowDirtySource
+    [switch]$AllowDirtySource,
+    [switch]$AllowDistributionDrift
 )
 
 Set-StrictMode -Version Latest
@@ -21,6 +22,56 @@ $sourceFiles = @(
     [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' }
 )
 
+function Get-RecordedDistributionDrift {
+    param(
+        [string]$ViewerRoot,
+        [string]$RepositoryRoot,
+        [string]$DistributionRoot,
+        [array]$Files
+    )
+
+    $metadataPath = Join-Path $DistributionRoot 'viewer-source.json'
+    if (-not (Test-Path -LiteralPath $metadataPath)) {
+        return @()
+    }
+
+    try {
+        $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+    }
+    catch {
+        return @('viewer-source.json cannot be parsed')
+    }
+
+    if ($metadata.sourceRepository -ne 'https://github.com/fumimatsu/momo-fpv-viewer') {
+        return @('viewer-source.json has an unexpected source repository')
+    }
+    if ([bool]$metadata.sourceDirty -or [string]::IsNullOrWhiteSpace([string]$metadata.sourceCommit)) {
+        return @('viewer-source.json does not identify a clean source commit')
+    }
+
+    $driftedFiles = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in $Files) {
+        $sourcePath = $file.Source -replace '\\', '/'
+        $recordedBlob = @(& git -C $ViewerRoot rev-parse "$($metadata.sourceCommit):$sourcePath" 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $recordedBlob.Count -ne 1) {
+            $driftedFiles.Add("$($file.Destination) (not present in recorded source commit)")
+            continue
+        }
+
+        $destinationPath = Join-Path $DistributionRoot $file.Destination
+        if (-not (Test-Path -LiteralPath $destinationPath)) {
+            $driftedFiles.Add("$($file.Destination) (missing from distribution)")
+            continue
+        }
+
+        $destinationBlob = @(& git -C $RepositoryRoot hash-object $destinationPath 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $destinationBlob.Count -ne 1 -or $recordedBlob[0].Trim() -ne $destinationBlob[0].Trim()) {
+            $driftedFiles.Add($file.Destination)
+        }
+    }
+    return $driftedFiles.ToArray()
+}
+
 foreach ($file in $sourceFiles) {
     $sourcePath = Join-Path $viewerRoot $file.Source
     if (-not (Test-Path -LiteralPath $sourcePath)) {
@@ -40,6 +91,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 if ($dirty.Count -gt 0 -and -not $AllowDirtySource) {
     throw 'Viewer repository has uncommitted changes. Commit the Relay Variant before synchronizing, or use -AllowDirtySource only for investigation.'
+}
+
+$distributionDrift = @(Get-RecordedDistributionDrift -ViewerRoot $viewerRoot -RepositoryRoot $repoRoot -DistributionRoot $destinationDirectory -Files $sourceFiles)
+if ($distributionDrift.Count -gt 0) {
+    $description = $distributionDrift -join ', '
+    if (-not $AllowDistributionDrift) {
+        throw "Relay distribution differs from the recorded Viewer source: $description. Port the changes to momo-fpv-viewer and commit them before synchronizing. Use -AllowDistributionDrift only to replace a known, already-migrated distribution copy."
+    }
+    Write-Warning "Replacing known Relay distribution drift: $description"
 }
 
 $commit = (& git -C $viewerRoot rev-parse HEAD).Trim()

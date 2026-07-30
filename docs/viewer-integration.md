@@ -8,7 +8,7 @@
 | `momo` | Momo 本体、Relay、Observer | Relay Pilot の配布先を持つ |
 | `momo-fpv` | Pi 設定、ファームウェア、直結 Viewer の運用配布 | Relay Pilot の正本を持たない |
 
-Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` の `pilot.html`、`pilot.js`、`ffb-bridge.js` である。入力・FFB設定画面は root の `gamepad.html`、`gamepad.js`、`gamepad-profile.js` を正本として使う。`momo/tools/momo-relay/web/` は Relay binary に埋め込む配布コピーであり、直接編集しない。
+Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` の `pilot.html`、`pilot.js`、`garage.html`、`ffb-bridge.js` である。入力・FFB設定画面は root の `gamepad.html`、`gamepad.js`、`gamepad-profile.js` を正本として使う。`momo/tools/momo-relay/web/` は Relay binary に埋め込む配布コピーであり、直接編集しない。
 
 ## 更新手順
 
@@ -19,5 +19,7 @@ Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` の `pilot.html`、`p
 5. `tools/start-mads-observer.ps1 -RebuildRelay` で Relay を再ビルドし、Pilot 画面を強制再読み込みして確認する。
 
 未コミットの Viewer を Relay へ配布しない。同期スクリプトは既定で未コミットの同期元を拒否する。
+
+同期前に配布コピーが `viewer-source.json` の記録済みcommitと異なる場合も、同期スクリプトは中断する。Relay clientの変更は先にViewer正本へ移植してコミットする。移植済みの乖離を初回同期で置換する場合だけ、`-AllowDistributionDrift` を明示する。
 
 FFB は Viewer PC のネイティブ bridge の責務である。Pi、Relay、ブラウザに DirectInput 実装を入れない。ブラウザ側は bridge が必要とする telemetry 契約だけを維持する。
