@@ -21,7 +21,7 @@ constexpr size_t kFrameSamples = 160;
 constexpr size_t kStartupFrames = 4;
 constexpr size_t kMaxGapFrames = 12;
 constexpr int kMaxQueuedBytes = 8000;  // 0.5 秒。停止中の遅延蓄積を防ぐ。
-constexpr size_t kMaxRawTelemetrySamples = 90;  // RAW 15 Hz で約 6 秒。
+constexpr size_t kMaxRawTelemetrySamples = 180;  // BIN 30 Hz で約 6 秒。
 
 constexpr std::array<int, 16> kImaIndexTable = {
     -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8,
@@ -252,18 +252,24 @@ void ObserverAudioReceiver::OnStateChange() {
   }
 }
 
-bool ObserverAudioReceiver::DecodeRawTelemetry(const std::string& message) {
-  if (message.rfind("TEL:{\"v\":1,\"k\":\"s\"", 0) != 0) {
+bool ObserverAudioReceiver::DecodeTelemetryAcceleration(const std::string& message) {
+  std::string_view acceleration_key;
+  if (message.rfind("TEL:{\"v\":1,\"k\":\"s\"", 0) == 0) {
+    acceleration_key = "\"imu\":{\"a\":[";
+  } else if (message.rfind("TEL:{\"v\":2,\"k\":\"s\"", 0) == 0) {
+    // BIN V3 is restored by Momo to this compact V2 representation before it
+    // reaches the Observer DataChannel.
+    acceleration_key = "\"m\":{\"a\":[";
+  } else {
     return false;
   }
-  constexpr std::string_view kAccelerationKey = "\"imu\":{\"a\":[";
-  const size_t acceleration_position = message.find(kAccelerationKey);
+  const size_t acceleration_position = message.find(acceleration_key);
   if (acceleration_position == std::string::npos) {
     return true;
   }
   std::array<float, 3> acceleration{};
   if (!ParseFloatArray3(message,
-                        acceleration_position + kAccelerationKey.size(),
+                        acceleration_position + acceleration_key.size(),
                         &acceleration)) {
     return true;
   }
@@ -293,6 +299,30 @@ bool ObserverAudioReceiver::DecodeImpactCandidate(const std::string& message) {
   return true;
 }
 
+bool ObserverAudioReceiver::DecodeVehicleHealth(const std::string& message) {
+  constexpr char kPrefix[] = "VHS:1,";
+  if (message.rfind(kPrefix, 0) != 0) return false;
+  const char* cursor = message.c_str() + sizeof(kPrefix) - 1;
+  char* end = nullptr;
+  const float hp = std::strtof(cursor, &end);
+  if (end == cursor || !std::isfinite(hp) || *end != ',') return true;
+  cursor = end + 1;
+  const float speed_cap = std::strtof(cursor, &end);
+  if (end == cursor || !std::isfinite(speed_cap) || *end != ',') return true;
+  const std::string mode(end + 1);
+  if (mode != "healthy" && mode != "damaged" && mode != "critical" &&
+      mode != "limp") {
+    return true;
+  }
+
+  webrtc::MutexLock lock(&mutex_);
+  vehicle_hp_ = std::clamp(hp, 0.0f, 100.0f);
+  vehicle_speed_cap_ = std::clamp(speed_cap, 0.0f, 1.0f);
+  vehicle_health_mode_ = mode;
+  vehicle_health_received_at_ = std::chrono::steady_clock::now();
+  return true;
+}
+
 void ObserverAudioReceiver::OnMessage(const webrtc::DataBuffer& buffer) {
   // Relay may retain the upstream DataChannel payload type.  Momo's UART
   // bridge can therefore deliver the ASCII AUD: frame as either a text or a
@@ -300,7 +330,8 @@ void ObserverAudioReceiver::OnMessage(const webrtc::DataBuffer& buffer) {
   // so handle both forms identically and let DecodeAndQueue reject unrelated
   // telemetry.
   const std::string message(buffer.data.data<char>(), buffer.data.size());
-  if (DecodeRawTelemetry(message) || DecodeImpactCandidate(message)) {
+  if (DecodeVehicleHealth(message) || DecodeTelemetryAcceleration(message) ||
+      DecodeImpactCandidate(message)) {
     return;
   }
   bool audio_playback_enabled = false;
@@ -405,6 +436,13 @@ ObserverAudioReceiver::Diagnostics ObserverAudioReceiver::GetDiagnostics() const
   diagnostics.raw_telemetry_frames = raw_telemetry_frames_;
   diagnostics.impact_candidates = impact_candidates_;
   diagnostics.last_impact_mps2 = last_impact_mps2_;
+  diagnostics.vehicle_health_active =
+      vehicle_health_received_at_ != std::chrono::steady_clock::time_point::min() &&
+      std::chrono::steady_clock::now() - vehicle_health_received_at_ <
+          std::chrono::milliseconds(750);
+  diagnostics.vehicle_hp = vehicle_hp_;
+  diagnostics.vehicle_speed_cap = vehicle_speed_cap_;
+  diagnostics.vehicle_health_mode = vehicle_health_mode_;
   diagnostics.raw_acceleration_samples.assign(raw_acceleration_samples_.begin(),
                                                raw_acceleration_samples_.end());
   diagnostics.queued_samples = startup_samples_.size();

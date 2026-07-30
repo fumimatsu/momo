@@ -9,6 +9,7 @@ param(
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
+    [string]$GarageAllowCidr = '192.168.11.0/24',
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = '',
     [switch]$RestartObserver,
@@ -82,7 +83,9 @@ if ($relayRunning.Count -eq 0) {
         '-race-car', '11.4=CP-2',
         '-race-car', '11.5=CP-3',
         '-race-car', '11.6=CP-4',
-        '-operations-allow-cidr', $OperationsAllowCidr
+        '-operations-allow-cidr', $OperationsAllowCidr,
+        '-garage-allow-cidr', '127.0.0.1/32',
+        '-garage-allow-cidr', $GarageAllowCidr
     )
     if (-not [string]::IsNullOrWhiteSpace($RaceControlUrl)) {
         $relayArgs += '-race-url', $RaceControlUrl.Trim()

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <iostream>
+#include <string>
 
 // WebRTC
 #include <api/video/i420_buffer.h>
@@ -10,9 +11,6 @@
 #include <third_party/libyuv/include/libyuv.h>
 
 #include "v4l2_native_buffer.h"
-#include <libcamera/control_ids.h>
-#include <libcamera/controls.h>
-#include <vector>                // std::vector
 
 webrtc::scoped_refptr<LibcameraCapturer> LibcameraCapturer::Create(
     LibcameraCapturerConfig config) {
@@ -162,18 +160,24 @@ int32_t LibcameraCapturer::StartCapture(LibcameraCapturerConfig config) {
     return -1;
   }
 
-  // ここで解像度、fps等が config で指定されていると仮定する。
-  // 例: --framerate=60 の場合、1秒(1,000,000µs) ÷ 60 = 約16667µs
-  if (config.framerate > 0) {
-    // フレーム期間を計算（60fpsの場合は約16667μs）
-    int64_t frame_duration = 1000000 / config.framerate;
-    // 固定サイズの配列を用意
-    int64_t limitsArray[2] = { 250, frame_duration };
-    // libcamera::Span<const int64_t, 2> を生成
-    libcamera::Span<const int64_t, 2> spanLimits(limitsArray, 2);
-    // controls_ は実体が libcamera::ControlList なのでキャストして利用
-    auto cl = reinterpret_cast<libcamera::ControlList*>(controls_.get());
-    cl->set(libcamera::controls::FrameDurationLimits, spanLimits);
+  bool has_frame_duration_limits = false;
+  for (const auto& [name, _] : config.controls) {
+    if (name == "FrameDurationLimits") {
+      has_frame_duration_limits = true;
+      break;
+    }
+  }
+  if (config.framerate > 0 && !has_frame_duration_limits) {
+    const int64_t frame_duration = 1000000 / config.framerate;
+    const std::string frame_duration_limits =
+        std::to_string(frame_duration) + "," + std::to_string(frame_duration);
+    const int result = libcamerac_ControlList_set_by_name(
+        camera_.get(), controls_.get(), "FrameDurationLimits",
+        frame_duration_limits.c_str());
+    if (result != 0) {
+      RTC_LOG(LS_WARNING) << "Failed to set FrameDurationLimits for "
+                          << config.framerate << " fps: " << result;
+    }
   }
 
   auto cfg = libcamerac_CameraConfiguration_at(configuration_.get(), 0);
@@ -256,6 +260,10 @@ int32_t LibcameraCapturer::StartCapture(LibcameraCapturerConfig config) {
 
   // コントロールを設定
   for (const auto& [name, value] : config.controls) {
+    if (name == "FrameDurationLimits" && value.empty()) {
+      RTC_LOG(LS_INFO) << "FrameDurationLimits is unset by configuration";
+      continue;
+    }
     int result = libcamerac_ControlList_set_by_name(
         camera_.get(), controls_.get(), name.c_str(), value.c_str());
     if (result == -1) {

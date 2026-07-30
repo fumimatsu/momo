@@ -27,6 +27,16 @@
       box-sizing: border-box;
     }
 
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+
     html,
     body {
       width: 100%;
@@ -34,6 +44,11 @@
       margin: 0;
       overflow: hidden;
       background: #050608;
+    }
+
+    body.cursor-idle,
+    body.cursor-idle * {
+      cursor: none !important;
     }
 
     #remote_video {
@@ -423,64 +438,83 @@
     }
 
     .motion-event-hud {
-      position: fixed;
-      top: min(34vh, 310px);
-      left: 50%;
-      z-index: 4;
+      position: absolute;
+      top: 50%;
+      left: calc(100% + 15px);
+      z-index: 1;
       display: grid;
-      gap: 3px;
-      min-width: 236px;
-      padding: 10px 16px 9px;
-      border: 1px solid currentColor;
-      background: rgba(6, 11, 16, 0.68);
-      color: #ffd84d;
-      font-family: Impact, "Arial Narrow", sans-serif;
-      font-variant-numeric: tabular-nums;
-      letter-spacing: 0.08em;
-      opacity: 0;
-      pointer-events: none;
-      text-align: center;
-      text-shadow: 0 2px 2px #000000, 0 0 8px rgba(0, 0, 0, 0.9);
-      transform: translateX(-50%) scale(var(--osd-scale));
-      transform-origin: top center;
-      transition: opacity 120ms ease-out;
-    }
-
-    .motion-event-hud.is-visible {
-      opacity: 1;
-    }
-
-    .motion-event-hud[data-impact-class="strong"] {
-      color: #ff8b3d;
-      background: rgba(38, 12, 4, 0.72);
-    }
-
-    .motion-event-hud[data-impact-class="severe"] {
-      color: #ff4b45;
-      background: rgba(48, 4, 5, 0.78);
-      animation: motion-impact-pulse 180ms ease-in-out 4 alternate;
-    }
-
-    .motion-event-label {
-      font-size: 28px;
-      font-style: italic;
-      line-height: 0.9;
-    }
-
-    .motion-event-detail {
-      color: #f7fbff;
+      gap: 4px;
+      width: 54px;
+      color: rgba(203, 223, 232, 0.62);
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 11px;
-      font-weight: 700;
+      font-variant-numeric: tabular-nums;
       letter-spacing: 0.04em;
+      pointer-events: none;
+      text-align: left;
+      text-shadow: 0 1px 2px #000000, 0 0 6px rgba(0, 0, 0, 0.9);
+      transform: translateY(-50%);
     }
 
-    @keyframes motion-impact-pulse {
-      from { filter: brightness(1); }
-      to { filter: brightness(1.55); }
+    .motion-event-indicator {
+      display: grid;
+      min-height: 17px;
+      padding: 2px 3px;
+      border: 1px solid rgba(196, 222, 233, 0.36);
+      border-radius: 2px;
+      background: rgba(0, 0, 0, 0.28);
+      color: inherit;
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 1;
+      opacity: 0.68;
+      place-items: center;
+      transition: color 100ms linear, opacity 100ms linear, filter 100ms linear;
     }
 
-    .race-start-signal-hidden {
+    .motion-event-indicator[data-impact-class="weak"] { color: #ffd84d; }
+    .motion-event-indicator[data-impact-class="strong"] { color: #ff8b3d; }
+    .motion-event-indicator[data-impact-class="severe"] { color: #ff4b45; }
+
+    .motion-event-indicator.is-active {
+      border-color: currentColor;
+      opacity: 1;
+      filter: brightness(1.35);
+      text-shadow: 0 0 7px currentColor, 0 1px 2px #000000;
+    }
+
+    .motion-event-indicator[data-impact-class="weak"].is-active {
+      background: rgba(184, 134, 14, 0.82);
+      color: #ffffff;
+      box-shadow: 0 0 8px rgba(251, 214, 74, 0.82);
+    }
+
+    .motion-event-indicator[data-impact-class="strong"].is-active {
+      background: rgba(190, 72, 20, 0.84);
+      color: #ffffff;
+      box-shadow: 0 0 8px rgba(255, 139, 61, 0.82);
+    }
+
+    .motion-event-indicator[data-impact-class="severe"].is-active {
+      background: rgba(172, 28, 30, 0.86);
+      color: #ffffff;
+      box-shadow: 0 0 8px rgba(255, 75, 69, 0.86);
+    }
+
+    .motion-event-hud.is-flashing .motion-event-indicator.is-active {
+      animation: motion-event-flash var(--motion-event-flash-ms, 320ms) ease-out 1;
+    }
+
+    .motion-event-hud[data-impact-class="severe"] .motion-event-indicator.is-active {
+      filter: brightness(1.7);
+    }
+
+    @keyframes motion-event-flash {
+      0% { opacity: 0.68; filter: brightness(1); }
+      35% { opacity: 1; filter: brightness(2.3); }
+      100% { opacity: 1; filter: brightness(1.35); }
+    }
+
+    .race-total-anchor .race-start-signal.race-start-signal-hidden {
       display: none;
     }
 
@@ -1016,13 +1050,16 @@
     }
 
     .drive-metrics[data-damage="active"] {
-      grid-template-columns: 118px minmax(0, 1fr);
-      align-items: center;
-      gap: 16px;
+      grid-template-columns: 118px;
+      grid-template-rows: auto 118px;
+      align-items: start;
+      gap: 4px;
+      min-height: 144px;
     }
 
     .drive-metrics[data-damage="active"] .drive-g-meter {
-      justify-self: start;
+      grid-row: 2;
+      justify-self: center;
     }
 
     .drive-g-meter {
@@ -1140,6 +1177,7 @@
     }
 
     .drive-damage-panel {
+      --health-color: #52dc8d;
       display: grid;
       grid-template-columns: auto 1fr auto;
       align-items: center;
@@ -1153,20 +1191,28 @@
       letter-spacing: 0.08em;
     }
 
+    .drive-damage-panel[data-health-band="damaged"] { --health-color: #ffad42; }
+    .drive-damage-panel[data-health-band="critical"] { --health-color: #ff5a5f; }
+    .drive-damage-panel[data-health-band="limp"] { --health-color: #e62e3d; }
+
     .drive-damage-rail {
+      position: relative;
+      display: block;
       height: 8px;
       overflow: hidden;
-      border: 1px solid rgba(218, 239, 246, 0.68);
+      border: 1px solid color-mix(in srgb, var(--health-color) 78%, #dff6ff);
       background: rgba(0, 0, 0, 0.32);
     }
 
     .drive-damage-fill {
-      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
       width: 100%;
-      height: 100%;
-      background: #52dc8d;
-      box-shadow: 0 0 8px rgba(82, 220, 141, 0.72);
-      transform-origin: left;
+      background: var(--health-color);
+      box-shadow: 0 0 8px color-mix(in srgb, var(--health-color) 70%, transparent);
+      transition: width 120ms linear, background-color 160ms linear;
     }
 
     .drive-steering {
@@ -1628,6 +1674,11 @@
       .drive-instruments {
         grid-template-columns: minmax(30px, 1fr) auto minmax(38px, 1fr);
       }
+
+      .motion-event-hud {
+        left: calc(100% + 10px);
+        width: 50px;
+      }
     }
 
     @media (max-width: 380px) {
@@ -1642,10 +1693,6 @@
   <video id="remote_video" autoplay muted playsinline></video>
 
   <section class="race-hud" aria-live="polite" aria-label="Race status">
-    <div id="motionEventHud" class="motion-event-hud" data-impact-class="" aria-live="polite" aria-atomic="true">
-      <strong id="motionEventLabel" class="motion-event-label">IMPACT</strong>
-      <span id="motionEventDetail" class="motion-event-detail">--</span>
-    </div>
     <div class="race-summary race-card">
       <div class="race-summary-head">
         <span id="racePhase" class="race-phase">STANDBY</span>
@@ -1843,6 +1890,12 @@
                 <span id="driveGmeterDot" class="drive-g-dot"></span>
                 <span id="driveGmeterScale" class="drive-g-scale">1.5G</span>
               </div>
+              <div id="motionEventHud" class="motion-event-hud" data-impact-class="" aria-label="Impact indicators">
+                <span class="motion-event-indicator" data-impact-class="weak">GRVL</span>
+                <span class="motion-event-indicator" data-impact-class="strong">HIT</span>
+                <span class="motion-event-indicator" data-impact-class="severe">CRSH</span>
+                <span id="motionEventAnnouncement" class="visually-hidden" aria-live="polite" aria-atomic="true"></span>
+              </div>
             </section>
             <aside id="driveDamagePanel" class="drive-damage-panel" hidden aria-label="Vehicle health">
               <span>HP</span>
@@ -1877,9 +1930,9 @@
     </div>
   </div>
 
-    <script src="./telemetry.js?v=20260726-motion-impact"></script>
+    <script src="./telemetry.js?v=20260730-motion-event-rail"></script>
 <script src="./m5-audio.js?v=20260726-m5-audio"></script>
 <script src="./ffb-bridge.js"></script>
-    <script src="./pilot.js?v=20260728-g-meter"></script>
+    <script src="./pilot.js?v=20260730-ffb-impact-levels"></script>
 </body>
 </html>

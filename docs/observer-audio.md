@@ -1,6 +1,6 @@
 # Native Observer の M5 音声
 
-`p2p-recv-multi` は映像と別に `momo-telemetry` DataChannel を作成する。選択した 1 台だけを Windows の既定再生デバイスへ出力し、各 Source の RAW テレメトリは Observer 上の診断表示に使う。Relay のプロトコル変更は不要である。
+`p2p-recv-multi` は映像と別に `momo-telemetry` DataChannel を作成する。選択した 1 台だけを Windows の既定再生デバイスへ出力し、各 Source の加速度 telemetry は Observer 上の診断表示に使う。Relay のプロトコル変更は不要である。
 
 Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須である。無効な SDL3 をリンクすると、画面上で `INIT ERR` と `SDL not built with audio support` が出て再生できない。
 
@@ -17,24 +17,24 @@ Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須で�
 
 Observer は各 Source に既存の `momo-telemetry` DataChannel を 1 本作る。Relay は upstream の `TEL:` と `AUD:` をそのまま各 Observer へ転送する。
 
-- RAW グラフは全 Source の `TEL:` を読む。
+- 加速度グラフは全 Source の state `TEL:` を読む。
 - Windows へ PCM を出力するのは `--audio-source` で選んだ 1 台だけ。
 - 未選択 Source の `AUD:` は受信しても復元・再生しない。
 - 4 台の音声をミックスして再生する機能は持たない。
 
 Relay は現在、Observer ごとに音声フレームを選別していない。このため同時接続台数を増やす前に、音声あり・なしで Relay の送受信量と映像 FPS を測る必要がある。
 
-## RAW テレメトリの 3 軸グラフ
+## telemetry の 3 軸グラフ
 
-M5 へ USB Serial で `TELEMETRY:RAW` を送った間だけ、該当映像枠の左下に加速度グラフを重ねる。通常の v2 Compact テレメトリでは表示しない。診断時だけの表示にして、通常運用時の映像を汚さないためである。
+該当映像枠の左下に、state `TEL:` の加速度グラフを重ねる。`TELEMETRY:RAW` の V1 と、`TELEMETRY:BINARY` が Momo で復元した V2 の両方を表示する。通常運用では V2 の 30 Hz を使い、診断が必要なときだけ V1 RAW に切り替える。
 
-- 表示範囲は直近 6 秒、縦軸は固定で `-15` ～ `+15 m/s²`。
-- 赤が IMU X、緑が IMU Y、青が IMU Z。ここでは生センサー軸をそのまま描画する。
+- 表示範囲は最大 180 サンプル。V2 30 Hz では直近約 6 秒、V1 RAW 15 Hz では直近約 12 秒である。縦軸は固定で `-15` ～ `+15 m/s²`。
+- 赤が X、緑が Y、青が Z。V1 RAW は生センサー軸、V2 は FLU 正規化軸である。
 - M5 が送った `impact_candidate` は回数と最大加速度を同じ枠に表示する。
-- 750 ms 以上 RAW サンプルが来なければグラフを消す。停止した映像に古い値を残さないためである。
+- 750 ms 以上 telemetry sample が来なければグラフを消す。停止した映像に古い値を残さないためである。
 - この描画は Native Observer 専用で、共有メモリと MADSYSTEM には渡さない。
 
-運用時は RAW グラフを見ながら衝撃候補の閾値を決め、確定後は `TELEMETRY:COMPACT` へ戻す。Compact は帯域と解析用の正規化値を優先するモードである。
+運用時は `TELEMETRY:BINARY` のグラフを見ながら衝撃候補の閾値を決める。V1 RAW は生軸の確認専用である。
 
 ## 実装前の負荷検証
 

@@ -1,5 +1,6 @@
 #include "p2p/p2p_multi_receiver_client.h"
 
+#include <cctype>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -115,14 +116,26 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
         source.config.name, diagnostics.raw_acceleration_samples,
         diagnostics.raw_telemetry_active, diagnostics.impact_candidates,
         diagnostics.last_impact_mps2);
+    std::ostringstream health_text;
+    if (diagnostics.vehicle_health_active) {
+      health_text << "HP " << std::fixed << std::setprecision(0)
+                  << diagnostics.vehicle_hp << "%  PWR "
+                  << diagnostics.vehicle_speed_cap * 100.0f << "%  ";
+      for (char character : diagnostics.vehicle_health_mode) {
+        health_text << static_cast<char>(std::toupper(
+            static_cast<unsigned char>(character)));
+      }
+    } else {
+      health_text << "HP WAIT";
+    }
     if (source.config.name != config_.audio_source) {
-      renderer_->SetSourceOverlayText(source.config.name, "");
+      renderer_->SetSourceOverlayText(source.config.name, health_text.str());
       continue;
     }
     const double queued_ms =
         static_cast<double>(diagnostics.queued_samples) * 1000.0 / 8000.0;
     std::ostringstream text;
-    text << "AUD " << source.config.name
+    text << health_text.str() << "\nAUD " << source.config.name
          << (diagnostics.initialized ? " READY" : " INIT ERR")
          << (diagnostics.channel_open ? " DC OPEN" : " DC WAIT") << "\n"
          << "RX " << diagnostics.received_frames

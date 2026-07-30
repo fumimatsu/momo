@@ -56,6 +56,29 @@ Relay 起動時に管理 LAN の CIDR を明示する。
 Windows Firewall も同じ管理用サブネットだけに制限する。Relay、Pi、Observer をインターネットへ
 公開するための機能ではない。
 
+## LAN Pilot 車両選択
+
+別 PC の Pilot は Relay が配信する `garage.html` を開き、映像が到着している未使用車体を
+カードから選択する。選択後は同じブラウザで対象の `pilot.html` へ遷移する。Relay 直結の
+同一 origin で動くため、CORS 設定は不要である。
+
+```text
+http://<relay-host>:8090/garage.html
+```
+
+Garage は `GET /api/v1/pilot-devices` だけを参照する。運営用 `/api/v1/status` の復旧情報や
+DataChannel 診断を Pilot PC へ公開しない。
+
+既定の Relay バイナリでは Garage は loopback のみ許可する。`start-mads-observer.ps1` は
+`192.168.11.0/24` を既定値として渡す。別の LAN を使う場合は明示指定する。
+
+```powershell
+.\tools\start-mads-observer.ps1 -RebuildRelay -GarageAllowCidr '192.168.11.0/24'
+```
+
+`READY` だけ選択可能とする。接続済みまたは接続交渉中の Pilot がいる車両は `IN USE` と表示し、
+選択できない。これは表示と Relay の既存 Pilot lease の両方で二重に防ぐ。
+
 Relay の Pilot URL は query string を使う。Pi 直結 Momo の静的ファイル配信と違い、hash は使わない。
 
 ```text

@@ -117,6 +117,11 @@
       return this.send({ type: 'setFfb', ...command });
     }
 
+    triggerImpactPulse(event) {
+      if (!this.connected || !this.acquired) return false;
+      return this.send({ type: 'impactPulse', ...event });
+    }
+
     stopAll() { return this.send({ type: 'stopAll' }); }
 
     disconnect() {

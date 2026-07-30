@@ -36,6 +36,8 @@
     impactSevereJerkMps3: 250.0,
     impactRearmMagnitudeMps2: 5.0,
     impactRearmHoldMs: 500,
+    // weak はグラベルや縁石の連続入力を表せるよう、完全な静止待ちをせず短い間隔で再通知する。
+    impactWeakRepeatMs: 180,
     impactDisplayMs: 1800,
   });
 
@@ -395,7 +397,13 @@
       const rawImpactClass = impactRaw
         ? classifyImpact(dynamicMagnitudeMps2, jerkMps3, this.options)
         : '';
-      const impact = impactArmed && Boolean(rawImpactClass);
+      const previousImpactClass = previous?.lastImpactEvent?.impactClass || '';
+      const isEscalation = impactClassRank(rawImpactClass) > impactClassRank(previousImpactClass);
+      const weakRepeatReady = rawImpactClass === 'weak'
+        && previousImpactClass === 'weak'
+        && Number.isFinite(previous?.lastImpactAtMs)
+        && arrivalMs - previous.lastImpactAtMs >= this.options.impactWeakRepeatMs;
+      const impact = Boolean(rawImpactClass) && (impactArmed || isEscalation || weakRepeatReady);
       const impactLevel = impact ? impactClassLevel(rawImpactClass) : 0;
       const rawImpactEvent = impact ? {
         impactClass: rawImpactClass,
@@ -445,7 +453,11 @@
       }
       const previousImpactClass = stored.lastImpactEvent?.impactClass || '';
       const isEscalation = impactClassRank(impactClass) > impactClassRank(previousImpactClass);
-      if (!stored.impactArmed && !isEscalation) {
+      const weakRepeatReady = impactClass === 'weak'
+        && previousImpactClass === 'weak'
+        && Number.isFinite(stored.lastImpactAtMs)
+        && arrivalMs - stored.lastImpactAtMs >= this.options.impactWeakRepeatMs;
+      if (!stored.impactArmed && !isEscalation && !weakRepeatReady) {
         return this.getSnapshot(payload.src, arrivalMs);
       }
       const axis = payload.v === 2 ? payload.e.a : payload.evt.data.axis;

@@ -196,6 +196,57 @@ func TestOperationsStatusFollowsConfiguredSourceOrder(t *testing.T) {
 	}
 }
 
+func TestPilotDevicesAPIExposesOnlyPilotSelectionState(t *testing.T) {
+	ready := newStatusTestRelay("11.3", "CP-1")
+	ready.lifecycle.Store(int32(sourceConnected))
+	ready.videoHealth.Store(int32(videoReceiving))
+	inUse := newStatusTestRelay("11.4", "CP-2")
+	inUse.lifecycle.Store(int32(sourceConnected))
+	inUse.videoHealth.Store(int32(videoReceiving))
+	inUse.pilotID = 42
+	server := &relayServer{
+		sources: map[string]*relay{"11.3": ready, "11.4": inUse},
+		sourceOrder: []string{"11.3", "11.4"},
+	}
+	policy, err := parseOperationsAccessPolicy([]string{"192.168.11.0/24"})
+	if err != nil {
+		t.Fatalf("parseOperationsAccessPolicy() error = %v", err)
+	}
+	handler := policy.wrap(server.servePilotDevices)
+
+	request := httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/pilot-devices", nil)
+	request.RemoteAddr = "192.168.11.20:40000"
+	recorder := httptest.NewRecorder()
+	handler(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET pilot devices = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if strings.Contains(recorder.Body.String(), "lastErrorCode") || strings.Contains(recorder.Body.String(), "upstream") {
+		t.Fatalf("pilot device response exposes operations diagnostics: %s", recorder.Body.String())
+	}
+	var response pilotDevicesStatus
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode pilot device response: %v", err)
+	}
+	if len(response.Devices) != 2 {
+		t.Fatalf("devices = %#v, want two devices", response.Devices)
+	}
+	if got := response.Devices[0]; got.Device != "11.3" || got.CarID != "CP-1" || got.Availability != "ready" || got.PilotInUse {
+		t.Fatalf("ready device = %#v", got)
+	}
+	if got := response.Devices[1]; got.Availability != "in_use" || !got.PilotInUse {
+		t.Fatalf("in-use device = %#v", got)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/pilot-devices", nil)
+	request.RemoteAddr = "192.168.12.20:40000"
+	recorder = httptest.NewRecorder()
+	handler(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("non-LAN pilot devices = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
 func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
 	source := newStatusTestRelay("11.5", "CP-3")
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}"), IsString: true}, 1)

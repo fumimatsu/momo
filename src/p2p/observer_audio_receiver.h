@@ -34,6 +34,10 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
     uint64_t raw_telemetry_frames = 0;
     uint64_t impact_candidates = 0;
     float last_impact_mps2 = 0.0f;
+    bool vehicle_health_active = false;
+    float vehicle_hp = 100.0f;
+    float vehicle_speed_cap = 1.0f;
+    std::string vehicle_health_mode;
     std::vector<std::array<float, 3>> raw_acceleration_samples;
   };
 
@@ -51,8 +55,9 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
 
  private:
   bool DecodeAndQueue(const std::string& message);
-  bool DecodeRawTelemetry(const std::string& message);
+  bool DecodeTelemetryAcceleration(const std::string& message);
   bool DecodeImpactCandidate(const std::string& message);
+  bool DecodeVehicleHealth(const std::string& message);
   bool InvalidAudioFrame();
   bool QueueSamples(const std::vector<int16_t>& samples);
   void ResetStream();
@@ -86,6 +91,11 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
   uint64_t raw_telemetry_frames_ RTC_GUARDED_BY(mutex_) = 0;
   uint64_t impact_candidates_ RTC_GUARDED_BY(mutex_) = 0;
   float last_impact_mps2_ RTC_GUARDED_BY(mutex_) = 0.0f;
+  std::chrono::steady_clock::time_point vehicle_health_received_at_
+      RTC_GUARDED_BY(mutex_) = std::chrono::steady_clock::time_point::min();
+  float vehicle_hp_ RTC_GUARDED_BY(mutex_) = 100.0f;
+  float vehicle_speed_cap_ RTC_GUARDED_BY(mutex_) = 1.0f;
+  std::string vehicle_health_mode_ RTC_GUARDED_BY(mutex_);
 };
 
 #endif  // OBSERVER_AUDIO_RECEIVER_H_

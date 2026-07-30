@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -21,6 +22,100 @@
 
 #define SERIAL_TX_BUFFER_SIZE 16
 #define SERIAL_RX_BUFFER_SIZE 256
+
+namespace {
+
+constexpr uint8_t kTelemetryBinaryVersion = 3;
+constexpr uint8_t kTelemetryBinaryState = 1;
+constexpr uint8_t kTelemetryBinaryEvent = 2;
+constexpr size_t kTelemetryBinaryMaxEncodedBytes = 64;
+
+uint16_t Crc16Ccitt(const uint8_t* data, size_t length) {
+  uint16_t crc = 0xffff;
+  for (size_t index = 0; index < length; ++index) {
+    crc ^= static_cast<uint16_t>(data[index]) << 8;
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      crc = (crc & 0x8000) != 0 ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
+                                : static_cast<uint16_t>(crc << 1);
+    }
+  }
+  return crc;
+}
+
+bool CobsDecode(const uint8_t* input, size_t input_length, std::vector<uint8_t>* output) {
+  output->clear();
+  size_t index = 0;
+  while (index < input_length) {
+    const uint8_t code = input[index++];
+    if (code == 0 || index + code - 1 > input_length) return false;
+    for (uint8_t count = 1; count < code; ++count) output->push_back(input[index++]);
+    if (code != 0xff && index < input_length) output->push_back(0);
+  }
+  return true;
+}
+
+uint16_t ReadU16(const std::vector<uint8_t>& data, size_t offset) {
+  return static_cast<uint16_t>(data[offset]) |
+         (static_cast<uint16_t>(data[offset + 1]) << 8);
+}
+
+uint32_t ReadU32(const std::vector<uint8_t>& data, size_t offset) {
+  uint32_t value = 0;
+  for (uint8_t shift = 0; shift < 32; shift += 8) value |= static_cast<uint32_t>(data[offset++]) << shift;
+  return value;
+}
+
+uint64_t ReadU64(const std::vector<uint8_t>& data, size_t offset) {
+  uint64_t value = 0;
+  for (uint8_t shift = 0; shift < 64; shift += 8) value |= static_cast<uint64_t>(data[offset++]) << shift;
+  return value;
+}
+
+int16_t ReadI16(const std::vector<uint8_t>& data, size_t offset) {
+  return static_cast<int16_t>(ReadU16(data, offset));
+}
+
+bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::string* line) {
+  if (encoded_length == 0 || encoded_length > kTelemetryBinaryMaxEncodedBytes) return false;
+  std::vector<uint8_t> payload;
+  if (!CobsDecode(encoded, encoded_length, &payload) || payload.size() < 22) return false;
+  const uint16_t expected_crc = ReadU16(payload, payload.size() - 2);
+  if (Crc16Ccitt(payload.data(), payload.size() - 2) != expected_crc ||
+      payload[0] != kTelemetryBinaryVersion || payload[2] != 1) return false;
+
+  const uint8_t type = payload[1];
+  const uint32_t boot = ReadU32(payload, 4);
+  const uint32_t sequence = ReadU32(payload, 8);
+  const uint64_t timestamp_us = ReadU64(payload, 12);
+  char text[384];
+  int written = 0;
+  if (type == kTelemetryBinaryState && payload.size() == 34) {
+    const float forward = ReadI16(payload, 20) * 0.01f;
+    const float lateral = ReadI16(payload, 22) * 0.01f;
+    const float vertical = ReadI16(payload, 24) * 0.01f;
+    const float yaw = ReadI16(payload, 26) * 0.01f;
+    const uint32_t period_us = ReadU32(payload, 28);
+    written = std::snprintf(text, sizeof(text),
+        "TEL:{\"v\":2,\"k\":\"s\",\"src\":\"imu0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"m\":{\"a\":[%.2f,%.2f,%.2f],\"y\":%.2f},\"q\":{\"p\":%u,\"f\":[\"flu_axes\"]}}",
+        boot, sequence, static_cast<unsigned long long>(timestamp_us), forward, lateral,
+        vertical, yaw, period_us);
+  } else if (type == kTelemetryBinaryEvent && payload.size() == 32) {
+    const float magnitude = ReadU16(payload, 20) * 0.1f;
+    const float forward = ReadI16(payload, 22) * 0.001f;
+    const float lateral = ReadI16(payload, 24) * 0.001f;
+    const float vertical = ReadI16(payload, 26) * 0.001f;
+    const float jerk = ReadU16(payload, 28);
+    written = std::snprintf(text, sizeof(text),
+        "TEL:{\"v\":2,\"k\":\"e\",\"src\":\"imu0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"e\":{\"n\":\"impact_candidate\",\"m\":%.1f,\"a\":[%.3f,%.3f,%.3f],\"j\":%.0f}}",
+        boot, sequence, static_cast<unsigned long long>(timestamp_us), magnitude, forward,
+        lateral, vertical, jerk);
+  }
+  if (written <= 0 || static_cast<size_t>(written) >= sizeof(text)) return false;
+  *line = text;
+  return true;
+}
+
+}  // namespace
 
 SerialDataManager::SerialDataManager(boost::asio::io_context& ioc)
     : serial_port_(ioc),
@@ -156,23 +251,46 @@ void SerialDataManager::OnRead(const boost::system::error_code& error,
 }
 
 void SerialDataManager::SendLineFromSerial() {
-  auto delimiter_iterator =
-      std::find(read_line_buffer_.begin(), read_line_buffer_.end(), '\n');
-  if (delimiter_iterator != read_line_buffer_.end()) {
-    size_t delimiter_index =
-        std::distance(read_line_buffer_.begin(), delimiter_iterator);
-    const std::string line(
-        reinterpret_cast<const char*>(read_line_buffer_.data()),
-        delimiter_index);
-    for (SerialDataChannel* serial_data_channel : serial_data_channels_) {
-      if (line.rfind("TEL:", 0) == 0) {
-        serial_data_channel->SendText(line);
-      } else {
-        serial_data_channel->Send(read_line_buffer_.data(), delimiter_index);
+  while (!read_line_buffer_.empty()) {
+    if (read_line_buffer_.front() == 0) {
+      const auto end = std::find(read_line_buffer_.begin() + 1,
+                                 read_line_buffer_.end(), 0);
+      if (end == read_line_buffer_.end()) {
+        if (read_line_buffer_.size() > kTelemetryBinaryMaxEncodedBytes + 2) {
+          read_line_buffer_.erase(read_line_buffer_.begin());
+        }
+        return;
       }
+      std::string telemetry;
+      const size_t encoded_length = std::distance(read_line_buffer_.begin() + 1, end);
+      if (DecodeBinaryTelemetry(read_line_buffer_.data() + 1, encoded_length, &telemetry)) {
+        for (SerialDataChannel* serial_data_channel : serial_data_channels_) {
+          serial_data_channel->SendText(telemetry);
+        }
+      } else {
+        RTC_LOG(LS_WARNING) << "Dropped invalid binary telemetry frame";
+      }
+      read_line_buffer_.erase(read_line_buffer_.begin(), end + 1);
+      continue;
     }
-    read_line_buffer_.erase(read_line_buffer_.begin(), delimiter_iterator + 1);
-    SendLineFromSerial();
+
+    const auto newline = std::find(read_line_buffer_.begin(), read_line_buffer_.end(), '\n');
+    const auto marker = std::find(read_line_buffer_.begin(), read_line_buffer_.end(), 0);
+    if (newline == read_line_buffer_.end() && marker == read_line_buffer_.end()) return;
+    if (marker != read_line_buffer_.end() &&
+        (newline == read_line_buffer_.end() || marker < newline)) {
+      // binary frame 開始 marker 前の破損データを捨て、次 loop で frame を読む。
+      read_line_buffer_.erase(read_line_buffer_.begin(), marker);
+      continue;
+    }
+
+    const size_t line_length = std::distance(read_line_buffer_.begin(), newline);
+    const std::string line(reinterpret_cast<const char*>(read_line_buffer_.data()), line_length);
+    for (SerialDataChannel* serial_data_channel : serial_data_channels_) {
+      if (line.rfind("TEL:", 0) == 0) serial_data_channel->SendText(line);
+      else serial_data_channel->Send(read_line_buffer_.data(), line_length);
+    }
+    read_line_buffer_.erase(read_line_buffer_.begin(), newline + 1);
   }
 }
 

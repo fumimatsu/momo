@@ -975,7 +975,7 @@ void SDLRenderer::RenderSourceRawTelemetryGraph(
   SDL_SetRenderDrawColor(renderer_, 160, 160, 160, 180);
   SDL_RenderLine(renderer_, graph_x, center_y, graph_x + graph_width, center_y);
   SDL_RenderDebugTextFormat(renderer_, graph_x + 4.0f, graph_y + 4.0f,
-                            "RAW ACC X/R Y/G Z/B  +/-%.0f", kGraphRangeMps2);
+                            "TEL ACC X/R Y/G Z/B  +/-%.0f", kGraphRangeMps2);
   if (graph.impact_candidates > 0) {
     SDL_SetRenderDrawColor(renderer_, 255, 170, 48, 255);
     SDL_RenderDebugTextFormat(renderer_, graph_x + 4.0f, graph_y + 17.0f,

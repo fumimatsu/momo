@@ -204,6 +204,7 @@ type relay struct {
 	telemetryBinaryAudio   atomic.Uint64
 	telemetryOther         atomic.Uint64
 	frameRate              frameRateWindow
+	vehicleHealth          *vehicleHealth
 
 	rtpRewriteMu          sync.Mutex
 	rtpRewriteInitialized bool
@@ -301,16 +302,34 @@ type operationsStatus struct {
 	Sources    []sourceOperationsState `json:"sources"`
 }
 
+// pilotDevicesStatus は Pilot 用の車両選択画面だけに渡す縮約状態です。
+// 運営用 status の復旧回数・エラーコード・DataChannel 診断は含めません。
+type pilotDevicesStatus struct {
+	Version    int                 `json:"version"`
+	ServerTime time.Time           `json:"serverTime"`
+	Devices    []pilotDeviceStatus `json:"devices"`
+}
+
+type pilotDeviceStatus struct {
+	Device       string  `json:"device"`
+	CarID        string  `json:"carId"`
+	Availability string  `json:"availability"`
+	State        string  `json:"state"`
+	VideoFPS     float64 `json:"videoFps"`
+	PilotInUse   bool    `json:"pilotInUse"`
+}
+
 type sourceOperationsState struct {
-	ID          string                    `json:"id"`
-	RaceCarID   string                    `json:"raceCarId,omitempty"`
-	State       string                    `json:"state"`
-	Lifecycle   string                    `json:"lifecycle"`
-	VideoHealth string                    `json:"videoHealth"`
-	Upstream    upstreamOperationsState   `json:"upstream"`
-	Telemetry   telemetryOperationsState  `json:"telemetry"`
-	Downstream  downstreamOperationsState `json:"downstream"`
-	Recovery    recoveryOperationsState   `json:"recovery"`
+	ID            string                       `json:"id"`
+	RaceCarID     string                       `json:"raceCarId,omitempty"`
+	State         string                       `json:"state"`
+	Lifecycle     string                       `json:"lifecycle"`
+	VideoHealth   string                       `json:"videoHealth"`
+	VehicleHealth vehicleHealthOperationsState `json:"vehicleHealth"`
+	Upstream      upstreamOperationsState      `json:"upstream"`
+	Telemetry     telemetryOperationsState     `json:"telemetry"`
+	Downstream    downstreamOperationsState    `json:"downstream"`
+	Recovery      recoveryOperationsState      `json:"recovery"`
 }
 
 type upstreamOperationsState struct {
@@ -331,6 +350,12 @@ type telemetryOperationsState struct {
 	BinaryTEL   uint64 `json:"binaryTel"`
 	BinaryAudio uint64 `json:"binaryAudio"`
 	Other       uint64 `json:"other"`
+}
+
+type vehicleHealthOperationsState struct {
+	HP       float64 `json:"hp"`
+	SpeedCap float64 `json:"speedCap"`
+	Mode     string  `json:"mode"`
 }
 
 type downstreamOperationsState struct {
@@ -376,6 +401,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		rtpStallTimeout:      rtpStallTimeout,
 		upstreamStartTimeout: upstreamStartTimeout,
 		pilotCommandTimeout:  defaultPilotCommandTimeout,
+		vehicleHealth:        newVehicleHealth(time.Now()),
 	}
 	relay.lifecycle.Store(int32(sourceWaiting))
 	relay.videoHealth.Store(int32(videoNotStarted))
@@ -773,6 +799,7 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		lastRtpAgeMs = &age
 	}
 	ingressFPS, relayWriteFPS := r.frameRate.snapshot(now)
+	health := r.vehicleHealth.snapshot(now)
 
 	r.upstreamMu.RLock()
 	serialOpen := r.upstreamDC != nil
@@ -794,6 +821,11 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		State:       displaySourceState(lifecycle, videoHealth),
 		Lifecycle:   lifecycle.String(),
 		VideoHealth: videoHealth.String(),
+		VehicleHealth: vehicleHealthOperationsState{
+			HP:       health.HP,
+			SpeedCap: health.SpeedCap,
+			Mode:     health.Mode,
+		},
 		Upstream: upstreamOperationsState{
 			PeerState:               peerState,
 			SerialOpen:              serialOpen,
@@ -893,6 +925,55 @@ func (server *relayServer) serveOperationsStatus(w http.ResponseWriter, req *htt
 	_ = json.NewEncoder(w).Encode(server.operationsStatusSnapshot(time.Now()))
 }
 
+func (server *relayServer) pilotDevicesSnapshot(now time.Time) pilotDevicesStatus {
+	devices := make([]pilotDeviceStatus, 0, len(server.sourceOrder))
+	for _, sourceID := range server.sourceOrder {
+		source, ok := server.sources[sourceID]
+		if !ok {
+			continue
+		}
+		status := source.statusSnapshot(now)
+		pilotInUse := status.Downstream.PilotLeaseReserved || status.Downstream.ConnectedPilots > 0
+		videoFPS := status.Upstream.RelayWriteAccessUnitFPS
+		if videoFPS == 0 {
+			videoFPS = status.Upstream.IngressAccessUnitFPS
+		}
+		devices = append(devices, pilotDeviceStatus{
+			Device:       status.ID,
+			CarID:        status.RaceCarID,
+			Availability: pilotDeviceAvailability(status.State, pilotInUse),
+			State:        status.State,
+			VideoFPS:     videoFPS,
+			PilotInUse:   pilotInUse,
+		})
+	}
+	return pilotDevicesStatus{Version: 1, ServerTime: now.UTC(), Devices: devices}
+}
+
+func pilotDeviceAvailability(state string, pilotInUse bool) string {
+	if pilotInUse {
+		return "in_use"
+	}
+	if state == "STREAMING" {
+		return "ready"
+	}
+	if state == "WAITING" || state == "CONNECTING" {
+		return "connecting"
+	}
+	return "unavailable"
+}
+
+func (server *relayServer) servePilotDevices(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(server.pilotDevicesSnapshot(time.Now()))
+}
+
 func operationsPageHandler(operationsHTML []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
@@ -972,6 +1053,9 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
 		}
 		message = normalized
+		if health, publish := r.vehicleHealth.ingestTelemetry(raw, time.Now()); publish {
+			r.broadcastVehicleHealth(health)
+		}
 	} else if bytes.HasPrefix(message.Data, []byte("AUD:")) {
 		r.telemetryBinaryAudio.Add(1)
 	} else {
@@ -980,14 +1064,24 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 	r.broadcastTelemetry(message)
 }
 
+func (r *relay) broadcastVehicleHealth(health vehicleHealthSnapshot) {
+	r.broadcastTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(formatVehicleHealthTelemetry(health)),
+		IsString: true,
+	})
+}
+
 // Race Control の状態は操縦テレメトリーと分離した reliable DataChannel で配る。
 // 順位やフラグは最新値を確実に渡す必要があり、低遅延・非信頼の telemetry channel
 // に混在させると再送されず、Viewer が古い状態のまま残るためである。
-func (r *relay) publishRaceState(message string) {
+func (r *relay) publishRaceState(message string, phase string) {
 	r.raceStateMu.Lock()
 	r.raceState = message
 	r.raceStateMu.Unlock()
 	r.broadcastRaceState(message)
+	if health, reset := r.vehicleHealth.observeRacePhase(phase, time.Now()); reset {
+		r.broadcastVehicleHealth(health)
+	}
 }
 
 func (r *relay) currentRaceState() string {
@@ -1049,14 +1143,18 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 		log.Printf("drop command from viewer %d: upstream DataChannel is unavailable", client.id)
 		return
 	}
-	if err := sendDataChannel(upstream, message); err != nil {
+	forwarded := message
+	if message.IsString {
+		forwarded.Data = []byte(r.vehicleHealth.limitCommand(string(message.Data), time.Now()))
+	}
+	if err := sendDataChannel(upstream, forwarded); err != nil {
 		log.Printf("forward command from viewer %d to Momo: %v", client.id, err)
 		return
 	}
 	client.lastCommandUnixNano.Store(time.Now().UnixNano())
 	// コマンドは全員に同じ DataChannel で返す。クライアント側は受信時にのみ
 	// 表示するため、この監査メッセージが Momo に再送されることはない。
-	r.broadcastCommand(message)
+	r.broadcastCommand(forwarded)
 }
 
 func (r *relay) handleDriveState(client *viewer, message webrtc.DataChannelMessage) {
@@ -1669,7 +1767,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
 				continue
 			}
-			source.publishRaceState(message)
+			source.publishRaceState(message, envelope.Phase)
 		}
 	}
 }
@@ -1683,6 +1781,7 @@ func main() {
 	var sources sourceFlag
 	var raceCars sourceFlag
 	var operationsAllowCIDRs sourceFlag
+	var garageAllowCIDRs sourceFlag
 	var raceURL string
 	var raceViewerToken string
 	var ayameSignalingURL string
@@ -1694,6 +1793,7 @@ func main() {
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
 	flag.Var(&operationsAllowCIDRs, "operations-allow-cidr", "CIDR allowed to read /operations.html and /api/v1/status; can be repeated (default: loopback only)")
+	flag.Var(&garageAllowCIDRs, "garage-allow-cidr", "CIDR allowed to read /garage.html and /api/v1/pilot-devices; can be repeated (default: loopback only)")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
 	flag.StringVar(&raceURL, "race-url", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_WS_URL")), "Race Control WebSocket URL for race_state v2 distribution")
 	flag.StringVar(&raceViewerToken, "race-viewer-token", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_VIEWER_TOKEN")), "Race Control Viewer Bearer token")
@@ -1716,6 +1816,10 @@ func main() {
 		log.Fatal("-upstream or at least one -source is required")
 	}
 	operationsPolicy, err := parseOperationsAccessPolicy(operationsAllowCIDRs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	garagePolicy, err := parseOperationsAccessPolicy(garageAllowCIDRs)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1808,9 +1912,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	garageHTML, err := fs.ReadFile(webRoot, "garage.html")
+	if err != nil {
+		log.Fatal(err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
+	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
+	mux.HandleFunc("/garage.html", garagePolicy.wrap(operationsPageHandler(garageHTML)))
 	fileServer := http.FileServer(http.FS(webRoot))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

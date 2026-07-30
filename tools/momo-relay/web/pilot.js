@@ -14,6 +14,8 @@
   const RELAY_TRANSPORT = SIGNALING_MODE === 'relay' || getBooleanParam('relayTransport', false);
   const AUTO_RECONNECT = getBooleanParam('autoReconnect', true);
   const AUTO_RECONNECT_ON_VIDEO_LOST = getBooleanParam('videoReconnect', SIGNALING_MODE === 'ayame');
+  const AUTO_HIDE_CURSOR = getBooleanParam('hideCursor', true);
+  const CURSOR_IDLE_MS = Math.max(500, Math.min(10000, getNumberParam('cursorIdleMs', 2000)));
   const RACE_CAR_ID = getStringParam(['carId', 'raceCarId'], '');
   const DEVICE_STATUS_MODE = getDeviceStatusMode();
   const CONTROL_UI_MODE = normalizeControlUiMode(getStringParam(['controlUi'], 'auto'));
@@ -89,11 +91,11 @@
   // R3 の初期実走確認は抵抗を明確に感じられる強さから始め、後で下げる。
   const FFB_RESPONSE_SCALE = Math.max(0.5, Math.min(2.0,
     getNumberParam('ffbResponseScale', 1.45)));
-  // 片側へ引くトルクは使わず、実測した旋回荷重でダンパーだけを少し増やす。
+  // コーナリング時は、旋回入力を助けず反対側へ抵抗を返す。
   const FFB_TELEMETRY_CORNER_DAMPER = Math.max(0, Math.min(0.3,
     getNumberParam('ffbTelemetryCornerDamper', 0.18)));
   const FFB_TELEMETRY_CORNER_TORQUE = Math.max(0, Math.min(0.5,
-    getNumberParam('ffbTelemetryCornerTorque', 0.24)));
+    getNumberParam('ffbTelemetryCornerTorque', 0.12)));
   const FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2 = Math.max(1, Math.min(20,
     getNumberParam('ffbTelemetryCornerLateralFull', 6.0)));
   const FFB_IMPACT_DAMPER = Math.max(0, Math.min(0.8,
@@ -102,13 +104,37 @@
     getNumberParam('ffbImpactFriction', 0.22)));
   const FFB_IMPACT_TORQUE = Math.max(0, Math.min(1.0,
     getNumberParam('ffbImpactTorque', 0.62)));
+  // 路面振動、接触、クラッシュを同じ衝撃として扱わず、パルスと粘りを別々に段階化する。
+  const FFB_IMPACT_PROFILES = Object.freeze({
+    weak: Object.freeze({
+      pulseScale: 0.28,
+      boostScale: 0.18,
+      boostDurationMs: 110,
+      pulseKind: 'curb',
+    }),
+    strong: Object.freeze({
+      pulseScale: 0.68,
+      boostScale: 0.65,
+      boostDurationMs: 320,
+      pulseKind: 'impact',
+    }),
+    severe: Object.freeze({
+      pulseScale: 1.0,
+      boostScale: 1.0,
+      boostDurationMs: 520,
+      pulseKind: 'impact',
+    }),
+  });
   const FFB_IMPACT_DIRECTION_MIN_AXIS = Math.max(0.05, Math.min(0.9,
     getNumberParam('ffbImpactDirectionMinAxis', 0.12)));
   const FFB_DIRECTION_SIGN = getNumberParam('ffbDirectionSign', 1) < 0 ? -1 : 1;
+  // 車種ごとの FFB 軸向きが異なる場合だけ URL で反転できる。
+  // R3 の実走確認では、右旋回時に右へ引く現行符号が操舵を助けていたため反転する。
+  const FFB_CORNER_DIRECTION_SIGN = getNumberParam('ffbCornerDirectionSign', -1) < 0 ? -1 : 1;
   const FFB_TELEMETRY_TORQUE_MAX = Math.max(0.1, Math.min(1.0,
     getNumberParam('ffbTelemetryTorqueMax', 0.85)));
-  const FFB_IMPACT_STRONG_MS = 320;
-  const FFB_IMPACT_SEVERE_MS = 520;
+  const FFB_DAMAGE_RATTLE_TORQUE = Math.max(0, Math.min(0.25,
+    getNumberParam('ffbDamageRattleTorque', 0.11)));
   const AYAME_SIGNALING_URL = getStringParam(
     ['ayameUrl', 'signalingUrl'],
     'wss://ayame-labo.shiguredo.app/signaling',
@@ -119,6 +145,9 @@
   const AUTO_START = getBooleanParam('autoStart', SIGNALING_MODE !== 'ayame');
   // Local UI checks can exercise Drive state without connecting to a vehicle.
   const DRIVE_UI_TEST_MODE = !AUTO_START && getBooleanParam('driveUiTest', false);
+  const DRIVE_UI_TEST_HEALTH = DRIVE_UI_TEST_MODE
+    ? getNumberParam('healthUiTest', -1)
+    : -1;
   const ICE_MODE = normalizeIceMode(getStringParam(['iceMode', 'ice'], 'auto'));
   const STUN_URLS = getStringListParam(['stunUrls', 'stunUrl'], ['stun:stun.l.google.com:19302']);
   const TURN_URLS = getStringListParam(['turnUrls', 'turnUrl'], []);
@@ -189,8 +218,8 @@
   const telemetryState = document.getElementById('telemetryState');
   const motionState = document.getElementById('motionState');
   const motionEventHud = document.getElementById('motionEventHud');
-  const motionEventLabel = document.getElementById('motionEventLabel');
-  const motionEventDetail = document.getElementById('motionEventDetail');
+  const motionEventIndicators = Array.from(document.querySelectorAll('.motion-event-indicator'));
+  const motionEventAnnouncement = document.getElementById('motionEventAnnouncement');
   const m5AudioState = document.getElementById('m5AudioState');
   const modeState = document.getElementById('modeState');
   const deviceState = document.getElementById('deviceState');
@@ -251,6 +280,10 @@
   let ffbShuttingDown = false;
   let ffbSpeedProxy = 0;
   let ffbSpeedProxyAt = performance.now();
+  let lastImmediateImpactFfbAtMs = -Infinity;
+  let lastMotionEventHudAtMs = -Infinity;
+  let motionEventFlashTimer = 0;
+  let cursorHideTimer = 0;
   let activeFfbPreset = FFB_INITIAL_PRESET;
   const driveHud = document.getElementById('driveHud');
   const driveHudMode = document.getElementById('driveHudMode');
@@ -266,6 +299,10 @@
   const driveGmeter = document.getElementById('driveGmeter');
   const driveGmeterDot = document.getElementById('driveGmeterDot');
   const driveGmeterScale = document.getElementById('driveGmeterScale');
+  const driveMetrics = document.getElementById('driveMetrics');
+  const driveDamagePanel = document.getElementById('driveDamagePanel');
+  const driveDamageFill = document.getElementById('driveDamageFill');
+  const driveDamageValue = document.getElementById('driveDamageValue');
 
   let ws = null;
   let peerConnection = null;
@@ -330,6 +367,7 @@
     ? new window.FpvTelemetry.MotionFeatureExtractor()
     : null;
   let latestMotion = null;
+  let vehicleHealth = null;
   let m5AudioPlayer = null;
   let dcPingSeq = 0;
   let dcRttMs = null;
@@ -1955,20 +1993,24 @@
       ? FFB_TELEMETRY_CORNER_DAMPER * motion.cornerLoad * responseScale
       : 0;
     const impactBoost = getImpactFfbBoost(motion, performance.now());
+    const damageEffect = getDamageFfbEffect(performance.now(), responseScale);
     const telemetryTorque = getTelemetryFfbTorque(motion, impactBoost, responseScale);
     ffbClient.sendFfb({
-      torque: telemetryTorque,
+      torque: Math.max(-FFB_TELEMETRY_TORQUE_MAX, Math.min(
+        FFB_TELEMETRY_TORQUE_MAX,
+        telemetryTorque + damageEffect.torque,
+      )),
       gain: 1,
       enabled: true,
       effectMode: 'baseline',
       telemetryTorque,
       speedProxy,
       baseFriction: capabilities.friction
-        ? Math.min(1, (FFB_BASE_FRICTION * responseScale) + impactBoost.friction)
+        ? Math.min(1, (FFB_BASE_FRICTION * responseScale) + impactBoost.friction + damageEffect.friction)
         : 0,
       parkingFriction: capabilities.friction ? FFB_PARKING_FRICTION * responseScale : 0,
       baseDamper: capabilities.damper
-        ? Math.min(1, (FFB_BASE_DAMPER * responseScale) + cornerDamper + impactBoost.damper)
+        ? Math.min(1, (FFB_BASE_DAMPER * responseScale) + cornerDamper + impactBoost.damper + damageEffect.damper)
         : 0,
       speedDamper: capabilities.damper ? FFB_SPEED_DAMPER * responseScale : 0,
       damper: 0,
@@ -1982,35 +2024,22 @@
     if (!motion || motion.stale || !motion.impactRecent) {
       return { damper: 0, friction: 0, torque: 0 };
     }
-    const impactClass = motion.lastImpactEvent?.impactClass;
-    const durationMs = impactClass === 'severe'
-      ? FFB_IMPACT_SEVERE_MS
-      : impactClass === 'strong'
-        ? FFB_IMPACT_STRONG_MS
-        : 0;
-    if (!durationMs) {
+    const impactClass = String(motion.lastImpactEvent?.impactClass || '').toLowerCase();
+    const profile = FFB_IMPACT_PROFILES[impactClass];
+    if (!profile) {
       return { damper: 0, friction: 0, torque: 0 };
     }
     const ageMs = nowMs - motion.lastImpactAtMs;
-    if (ageMs < 0 || ageMs >= durationMs) {
+    if (ageMs < 0 || ageMs >= profile.boostDurationMs) {
       return { damper: 0, friction: 0, torque: 0 };
     }
-    const severityScale = impactClass === 'severe' ? 1 : 0.62;
-    const fade = 1 - (ageMs / durationMs);
-    const eventLateralAxis = Number(motion.lastImpactEvent?.axis?.[1]);
-    const measuredLateral = Number(motion.motion?.lateralMps2);
-    const lateralDirection = Number.isFinite(eventLateralAxis)
-      && Math.abs(eventLateralAxis) >= FFB_IMPACT_DIRECTION_MIN_AXIS
-      ? eventLateralAxis
-      : measuredLateral;
-    const torqueDirection = Number.isFinite(lateralDirection)
-      && Math.abs(lateralDirection) >= FFB_IMPACT_DIRECTION_MIN_AXIS
-      ? Math.sign(lateralDirection) * FFB_DIRECTION_SIGN
-      : 0;
+    const fade = 1 - (ageMs / profile.boostDurationMs);
+    // 方向トルクは Bridge の impactPulse が時間どおりに再生する。
+    // ここは衝突中の粘りだけを通常 FFB に加える。
     return {
-      damper: FFB_IMPACT_DAMPER * severityScale * fade,
-      friction: FFB_IMPACT_FRICTION * severityScale * fade,
-      torque: torqueDirection * FFB_IMPACT_TORQUE * severityScale * fade,
+      damper: FFB_IMPACT_DAMPER * profile.boostScale * fade,
+      friction: FFB_IMPACT_FRICTION * profile.boostScale * fade,
+      torque: 0,
     };
   }
 
@@ -2021,7 +2050,7 @@
       ? Math.max(-1, Math.min(1, lateralMps2 / FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2))
       : 0;
     const cornerTorque = normalizedLateral * motion.cornerLoad
-      * FFB_TELEMETRY_CORNER_TORQUE * FFB_DIRECTION_SIGN;
+      * FFB_TELEMETRY_CORNER_TORQUE * FFB_CORNER_DIRECTION_SIGN;
     return Math.max(-FFB_TELEMETRY_TORQUE_MAX, Math.min(
       FFB_TELEMETRY_TORQUE_MAX,
       (cornerTorque + impactBoost.torque) * responseScale,
@@ -2237,7 +2266,9 @@
     if (telemetryResult?.accepted) {
       latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
     }
-    updateMotionUi();
+    const motion = getMotionSnapshot();
+    updateMotionUi(motion);
+    sendImpactFfbImmediately(motion);
 
     const deviceStatus = formatTelemetryDeviceStatus(parseTelemetryFields(message));
     if (deviceStatus) {
@@ -2245,13 +2276,65 @@
     }
   }
 
+  function showCursorAndScheduleHide() {
+    if (!AUTO_HIDE_CURSOR) return;
+    document.body.classList.remove('cursor-idle');
+    if (cursorHideTimer) window.clearTimeout(cursorHideTimer);
+    cursorHideTimer = window.setTimeout(() => {
+      document.body.classList.add('cursor-idle');
+      cursorHideTimer = 0;
+    }, CURSOR_IDLE_MS);
+  }
+
+  function initializeCursorAutoHide() {
+    if (!AUTO_HIDE_CURSOR) return;
+    window.addEventListener('pointermove', showCursorAndScheduleHide, { passive: true });
+    window.addEventListener('pointerdown', showCursorAndScheduleHide, { passive: true });
+    showCursorAndScheduleHide();
+  }
+
   function getMotionSnapshot() {
     if (!latestMotion || !motionExtractor) return null;
     return motionExtractor.getSnapshot(latestMotion.src, performance.now());
   }
 
-  function updateMotionUi() {
-    const motion = getMotionSnapshot();
+  function sendImpactFfbImmediately(motion) {
+    const impactAtMs = Number(motion?.lastImpactAtMs);
+    if (!motion?.impactRecent || !Number.isFinite(impactAtMs)
+      || impactAtMs <= lastImmediateImpactFfbAtMs) {
+      return;
+    }
+    lastImmediateImpactFfbAtMs = impactAtMs;
+    sendFfbSteering();
+    if (!ffbClient || !ffbOutputEnabled || !rcDriveEnabled) return;
+    const pulse = getImpactPulseRequest(motion);
+    if (pulse) ffbClient.triggerImpactPulse(pulse);
+  }
+
+  function getImpactPulseRequest(motion) {
+    const impactClass = String(motion?.lastImpactEvent?.impactClass || '').toLowerCase();
+    const profile = FFB_IMPACT_PROFILES[impactClass];
+    if (!profile) return null;
+    const eventLateralAxis = Number(motion.lastImpactEvent?.axis?.[1]);
+    const measuredLateral = Number(motion.motion?.lateralMps2);
+    const lateral = Number.isFinite(eventLateralAxis)
+      && Math.abs(eventLateralAxis) >= FFB_IMPACT_DIRECTION_MIN_AXIS
+      ? eventLateralAxis
+      : measuredLateral;
+    const direction = Number.isFinite(lateral) && Math.abs(lateral) >= FFB_IMPACT_DIRECTION_MIN_AXIS
+      ? Math.sign(lateral) * FFB_DIRECTION_SIGN
+      : 0;
+    return {
+      kind: profile.pulseKind === 'curb'
+        ? 'curb'
+        : direction === 0 ? 'frontalImpact' : 'sideImpact',
+      strength: Math.min(1, FFB_IMPACT_TORQUE * profile.pulseScale
+        * FFB_PRESETS[activeFfbPreset].scale * FFB_RESPONSE_SCALE),
+      direction,
+    };
+  }
+
+  function updateMotionUi(motion = getMotionSnapshot()) {
     updateDriveGmeter(motion);
     updateMotionEventHud(motion);
     if (!motionState) return;
@@ -2299,8 +2382,8 @@
 
     const forwardG = forwardMps2 / G_METER_STANDARD_GRAVITY_MPS2;
     const leftG = lateralMps2 / G_METER_STANDARD_GRAVITY_MPS2;
-    // CSS の右・下を正とする。車体 FLU の左Gは画面左、前進Gは画面下へ描く。
-    const x = Math.max(-1, Math.min(1, -leftG / G_METER_FULL_SCALE_G));
+    // CSS の右・下を正とする。横 G は運転時の見た目に合わせて描画だけ左右反転する。
+    const x = Math.max(-1, Math.min(1, leftG / G_METER_FULL_SCALE_G));
     const y = Math.max(-1, Math.min(1, forwardG / G_METER_FULL_SCALE_G));
     const saturated = Math.abs(forwardG) > G_METER_FULL_SCALE_G || Math.abs(leftG) > G_METER_FULL_SCALE_G;
     driveGmeter.dataset.state = 'active';
@@ -2314,22 +2397,94 @@
   }
 
   function updateMotionEventHud(motion) {
-    if (!motionEventHud || !motionEventLabel || !motionEventDetail) return;
+    if (!motionEventHud) return;
     const event = motion?.impactRecent ? motion.lastImpactEvent : null;
-    if (!event?.impactClass) {
-      motionEventHud.classList.remove('is-visible');
+    const impactClass = String(event?.impactClass || '').toLowerCase();
+    const impactAtMs = Number(motion?.lastImpactAtMs);
+    if (!impactClass || !Number.isFinite(impactAtMs) || impactAtMs <= lastMotionEventHudAtMs) {
       return;
     }
+    lastMotionEventHudAtMs = impactAtMs;
     const labels = {
-      weak: 'CURB / LIGHT HIT',
-      strong: 'IMPACT',
-      severe: 'HEAVY IMPACT',
+      weak: 'Gravel',
+      strong: 'Impact',
+      severe: 'Crash',
     };
-    motionEventHud.dataset.impactClass = event.impactClass;
-    setText(motionEventLabel, labels[event.impactClass] || 'IMPACT');
-    setText(motionEventDetail,
-      `${event.magnitudeMps2.toFixed(1)} m/s²  J ${event.jerkMps3.toFixed(0)} m/s³`);
-    motionEventHud.classList.add('is-visible');
+    const flashDurations = { weak: 220, strong: 360, severe: 560 };
+    const flashMs = flashDurations[impactClass] || flashDurations.strong;
+    const activeIndicator = motionEventIndicators.find((indicator) => indicator.dataset.impactClass === impactClass);
+    motionEventIndicators.forEach((indicator) => {
+      indicator.classList.toggle('is-active', indicator === activeIndicator);
+    });
+    motionEventHud.dataset.impactClass = impactClass;
+    motionEventHud.style.setProperty('--motion-event-flash-ms', `${flashMs}ms`);
+    motionEventHud.classList.remove('is-flashing');
+    void motionEventHud.offsetWidth;
+    motionEventHud.classList.add('is-flashing');
+    if (motionEventAnnouncement) {
+      setText(motionEventAnnouncement, labels[impactClass] || 'Impact');
+    }
+    if (motionEventFlashTimer) window.clearTimeout(motionEventFlashTimer);
+    motionEventFlashTimer = window.setTimeout(() => {
+      if (lastMotionEventHudAtMs !== impactAtMs) return;
+      motionEventHud.classList.remove('is-flashing');
+      motionEventHud.dataset.impactClass = '';
+      motionEventIndicators.forEach((indicator) => indicator.classList.remove('is-active'));
+      motionEventFlashTimer = 0;
+    }, flashMs);
+  }
+
+  function applyVehicleHealth(message) {
+    const fields = String(message).trim().split(',');
+    if (fields.length !== 4 || fields[0] !== 'VHS:1') return;
+    const hp = Number(fields[1]);
+    const speedCap = Number(fields[2]);
+    const mode = String(fields[3] || '').toLowerCase();
+    if (!Number.isFinite(hp) || !Number.isFinite(speedCap)
+      || !['healthy', 'damaged', 'critical', 'limp'].includes(mode)) {
+      return;
+    }
+    vehicleHealth = {
+      hp: Math.max(0, Math.min(100, hp)),
+      speedCap: Math.max(0, Math.min(1, speedCap)),
+      mode,
+    };
+    updateVehicleHealthUi();
+    sendFfbSteering();
+  }
+
+  function updateVehicleHealthUi() {
+    if (!vehicleHealth || !driveDamagePanel || !driveDamageFill || !driveDamageValue) return;
+    driveMetrics?.setAttribute('data-damage', 'active');
+    driveDamagePanel.hidden = false;
+    driveDamagePanel.dataset.healthBand = vehicleHealth.mode;
+    driveDamageFill.style.width = `${vehicleHealth.hp.toFixed(1)}%`;
+    driveDamageValue.value = `${Math.round(vehicleHealth.hp)}%`;
+    driveDamagePanel.setAttribute(
+      'aria-label',
+      `Vehicle health ${Math.round(vehicleHealth.hp)} percent, power ${Math.round(vehicleHealth.speedCap * 100)} percent`,
+    );
+  }
+
+  function vehicleHealthModeForUiTest(hp) {
+    if (hp <= 0) return 'limp';
+    if (hp < 35) return 'critical';
+    if (hp < 70) return 'damaged';
+    return 'healthy';
+  }
+
+  function getDamageFfbEffect(nowMs, responseScale) {
+    const hp = Number(vehicleHealth?.hp);
+    if (!Number.isFinite(hp) || hp >= 35) {
+      return { damper: 0, friction: 0, torque: 0 };
+    }
+    const severity = Math.max(0, Math.min(1, (35 - hp) / 35));
+    // 実車の操舵値は変えない。壊れた状態だけホイールへ小さな周期抵抗を返す。
+    return {
+      damper: 0.16 * severity * responseScale,
+      friction: 0.20 * severity * responseScale,
+      torque: Math.sin(nowMs * 0.045) * FFB_DAMAGE_RATTLE_TORQUE * severity * responseScale,
+    };
   }
 
   function handleDcPong(message) {
@@ -2355,6 +2510,10 @@
     }
     if (typeof message === 'string' && message.startsWith('PONG:')) {
       handleDcPong(message);
+      return;
+    }
+    if (typeof message === 'string' && message.startsWith('VHS:')) {
+      applyVehicleHealth(message);
       return;
     }
     if (typeof message === 'string' && message.startsWith('TEL:')) {
@@ -4683,6 +4842,7 @@
     recordEvent('relay mode', 'video + telemetry + RC command');
   }
   setDebugOsd(isDebugEnabledByDefault());
+  initializeCursorAutoHide();
   updateOsdScale();
   window.addEventListener('resize', updateOsdScale);
   window.visualViewport?.addEventListener('resize', updateOsdScale);
@@ -4705,6 +4865,10 @@
   startGamepadPoller();
   updateGearUi();
   updateControlUiMode();
+  if (DRIVE_UI_TEST_HEALTH >= 0 && DRIVE_UI_TEST_HEALTH <= 100) {
+    const hp = Math.round(DRIVE_UI_TEST_HEALTH * 10) / 10;
+    applyVehicleHealth(`VHS:1,${hp.toFixed(1)},1.000,${vehicleHealthModeForUiTest(hp)}`);
+  }
   if (AUTO_START) {
     connect().catch((error) => {
       recordEvent('connect failed', error.message || String(error));
