@@ -1693,6 +1693,10 @@
   <video id="remote_video" autoplay muted playsinline></video>
 
   <section class="race-hud" aria-live="polite" aria-label="Race status">
+    <div id="motionEventHud" class="motion-event-hud" data-impact-class="" aria-live="polite" aria-atomic="true">
+      <strong id="motionEventLabel" class="motion-event-label">IMPACT</strong>
+      <span id="motionEventDetail" class="motion-event-detail">--</span>
+    </div>
     <div class="race-summary race-card">
       <div class="race-summary-head">
         <span id="racePhase" class="race-phase">STANDBY</span>
@@ -1931,8 +1935,8 @@
   </div>
 
     <script src="./telemetry.js?v=20260731-ffb-front-load"></script>
-<script src="./m5-audio.js?v=20260726-m5-audio"></script>
-<script src="./ffb-bridge.js"></script>
+    <script src="./m5-audio.js?v=20260726-m5-audio"></script>
+    <script src="./ffb-bridge.js"></script>
     <script src="./pilot.js?v=20260731-ffb-front-load"></script>
     <script
       src="./cpu-shadow-capture.js?v=20260731-cpu-shadow-capture"

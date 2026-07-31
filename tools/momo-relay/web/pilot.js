@@ -99,20 +99,6 @@
     getNumberParam('ffbTelemetryCornerTorque', 0.12)));
   const FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2 = Math.max(1, Math.min(20,
     getNumberParam('ffbTelemetryCornerLateralFull', 6.0)));
-  const FFB_TELEMETRY_BRAKE_START_MPS2 = Math.max(0, Math.min(5,
-    getNumberParam('ffbTelemetryBrakeStart', 3.0)));
-  const FFB_TELEMETRY_BRAKE_FULL_MPS2 = Math.max(
-    FFB_TELEMETRY_BRAKE_START_MPS2 + 0.1,
-    Math.min(20, getNumberParam('ffbTelemetryBrakeFull', 7.0)),
-  );
-  const FFB_TELEMETRY_BRAKE_COMMAND_ASSIST = Math.max(0, Math.min(0.5,
-    getNumberParam('ffbTelemetryBrakeCommandAssist', 0.30)));
-  const FFB_TELEMETRY_BRAKE_FRICTION = Math.max(0, Math.min(0.3,
-    getNumberParam('ffbTelemetryBrakeFriction', 0.10)));
-  const FFB_TELEMETRY_BRAKE_DAMPER = Math.max(0, Math.min(0.3,
-    getNumberParam('ffbTelemetryBrakeDamper', 0.14)));
-  const FFB_TELEMETRY_BRAKE_ATTACK_SECONDS = 0.08;
-  const FFB_TELEMETRY_BRAKE_RELEASE_SECONDS = 0.20;
   const FFB_IMPACT_DAMPER = Math.max(0, Math.min(0.8,
     getNumberParam('ffbImpactDamper', 0.55)));
   const FFB_IMPACT_FRICTION = Math.max(0, Math.min(0.5,
@@ -295,8 +281,6 @@
   let ffbShuttingDown = false;
   let ffbSpeedProxy = 0;
   let ffbSpeedProxyAt = performance.now();
-  let ffbFrontLoad = 0;
-  let ffbFrontLoadAt = performance.now();
   let lastImmediateImpactFfbAtMs = -Infinity;
   let lastMotionEventHudAtMs = -Infinity;
   let motionEventFlashTimer = 0;
@@ -2010,39 +1994,6 @@
     return ffbSpeedProxy;
   }
 
-  function getFfbBrakeIntent() {
-    const throttlePwm = Number(throttleInput?.value || 1500);
-    return Math.max(0, Math.min(1, (1500 - throttlePwm) / 500));
-  }
-
-  function updateFfbFrontLoad(motion, speedProxy) {
-    const now = performance.now();
-    const elapsedSec = Math.max(0, Math.min(0.25, (now - ffbFrontLoadAt) / 1000));
-    ffbFrontLoadAt = now;
-    const load = motion && !motion.stale
-      ? window.FpvTelemetry?.deriveFfbLongitudinalLoad?.({
-        forwardMps2: motion.motion?.forwardMps2,
-        brakeIntent: getFfbBrakeIntent(),
-        speedProxy,
-      }, {
-        startMps2: FFB_TELEMETRY_BRAKE_START_MPS2,
-        fullMps2: FFB_TELEMETRY_BRAKE_FULL_MPS2,
-        commandAssistScale: FFB_TELEMETRY_BRAKE_COMMAND_ASSIST,
-      })
-      : null;
-    const target = Math.max(0, Math.min(1, Number(load?.frontLoad) || 0));
-    const duration = target > ffbFrontLoad
-      ? FFB_TELEMETRY_BRAKE_ATTACK_SECONDS
-      : FFB_TELEMETRY_BRAKE_RELEASE_SECONDS;
-    const alpha = duration > 0 ? 1 - Math.exp(-elapsedSec / duration) : 1;
-    ffbFrontLoad += (target - ffbFrontLoad) * alpha;
-    return {
-      value: ffbFrontLoad,
-      measured: Number(load?.measuredLoad) || 0,
-      commandAssist: Number(load?.commandAssist) || 0,
-    };
-  }
-
   function scheduleFfbReconnect() {
     if (!FFB_ENABLED || ffbShuttingDown || ffbReconnectTimer) return;
     ffbReconnectTimer = window.setTimeout(() => {
@@ -2090,12 +2041,9 @@
     const capabilities = getFfbCapabilities(snapshot.deviceCapabilities);
     const motion = getMotionSnapshot();
     const responseScale = preset.scale * FFB_RESPONSE_SCALE;
-    const frontLoad = updateFfbFrontLoad(motion, speedProxy);
     const cornerDamper = motion && !motion.stale
       ? FFB_TELEMETRY_CORNER_DAMPER * motion.cornerLoad * responseScale
       : 0;
-    const frontLoadFriction = FFB_TELEMETRY_BRAKE_FRICTION * frontLoad.value * responseScale;
-    const frontLoadDamper = FFB_TELEMETRY_BRAKE_DAMPER * frontLoad.value * responseScale;
     const impactBoost = getImpactFfbBoost(motion, performance.now());
     const damageEffect = getDamageFfbEffect(performance.now(), responseScale);
     const telemetryTorque = getTelemetryFfbTorque(motion, impactBoost, responseScale);
@@ -2109,17 +2057,12 @@
       effectMode: 'baseline',
       telemetryTorque,
       speedProxy,
-      frontLoad: frontLoad.value,
-      frontLoadMeasured: frontLoad.measured,
-      frontLoadCommandAssist: frontLoad.commandAssist,
       baseFriction: capabilities.friction
-        ? Math.min(1, (FFB_BASE_FRICTION * responseScale) + frontLoadFriction
-          + impactBoost.friction + damageEffect.friction)
+        ? Math.min(1, (FFB_BASE_FRICTION * responseScale) + impactBoost.friction + damageEffect.friction)
         : 0,
       parkingFriction: capabilities.friction ? FFB_PARKING_FRICTION * responseScale : 0,
       baseDamper: capabilities.damper
-        ? Math.min(1, (FFB_BASE_DAMPER * responseScale) + cornerDamper + frontLoadDamper
-          + impactBoost.damper + damageEffect.damper)
+        ? Math.min(1, (FFB_BASE_DAMPER * responseScale) + cornerDamper + impactBoost.damper + damageEffect.damper)
         : 0,
       speedDamper: capabilities.damper ? FFB_SPEED_DAMPER * responseScale : 0,
       damper: 0,
@@ -2171,8 +2114,6 @@
     ffbForceActive = false;
     ffbSpeedProxy = 0;
     ffbSpeedProxyAt = performance.now();
-    ffbFrontLoad = 0;
-    ffbFrontLoadAt = performance.now();
     ffbClient?.stopAll();
   }
 
@@ -5089,8 +5030,6 @@
         enabled: FFB_ENABLED,
         activePreset: activeFfbPreset,
         speedProxy: ffbSpeedProxy,
-        brakeIntent: getFfbBrakeIntent(),
-        frontLoad: ffbFrontLoad,
         bridge: ffbClient?.snapshot?.() || null,
       },
     }),

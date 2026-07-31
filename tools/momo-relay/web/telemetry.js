@@ -31,6 +31,7 @@
     // Viewer で段階化してから OSD / FFB に渡す。
     impactWeakMagnitudeMps2: 10.0,
     impactStrongMagnitudeMps2: 12.0,
+    impactStrongJerkMps3: 250.0,
     impactSevereMagnitudeMps2: 18.0,
     // 大きな加速度ピークだけでは軽い壁接触も重衝撃に見えるため、HEAVY は急峻さも要求する。
     impactSevereJerkMps3: 250.0,
@@ -281,7 +282,9 @@
         && jerkMps3 >= options.impactSevereJerkMps3) {
       return 'severe';
     }
-    if (magnitudeMps2 >= options.impactStrongMagnitudeMps2) {
+    if (magnitudeMps2 >= options.impactStrongMagnitudeMps2
+        && Number.isFinite(jerkMps3)
+        && jerkMps3 >= options.impactStrongJerkMps3) {
       return 'strong';
     }
     return 'weak';
@@ -321,37 +324,6 @@
       lateralMps2: sensorX,
       verticalMps2: sensorY - STANDARD_GRAVITY_MPS2,
       yawRateRadPerSec: sensorGyroY,
-    };
-  }
-
-  function deriveFfbLongitudinalLoad(input, options = {}) {
-    const forwardMps2 = Number(input?.forwardMps2);
-    if (!Number.isFinite(forwardMps2)) {
-      return { frontLoad: 0, measuredLoad: 0, commandAssist: 0 };
-    }
-
-    const startMps2 = Math.max(0, Number(options.startMps2 ?? 3.0));
-    const fullMps2 = Math.max(startMps2 + 0.1, Number(options.fullMps2 ?? 7.0));
-    const commandAssistScale = clamp(Number(options.commandAssistScale ?? 0.30), 0, 1);
-    const commandSpeedGate = clamp(Number(options.commandSpeedGate ?? 0.05), 0, 1);
-    const brakeIntent = clamp(Number(input?.brakeIntent) || 0, 0, 1);
-    const speedProxy = clamp(Number(input?.speedProxy) || 0, 0, 1);
-
-    // forward is positive under acceleration and negative under braking.
-    const measuredLoad = clamp(
-      ((-forwardMps2) - startMps2) / (fullMps2 - startMps2),
-      0,
-      1,
-    );
-    // Pedal intent gives a small immediate onset, but cannot create full load by itself.
-    // The speed gate prevents a reverse command at rest from looking like front load.
-    const commandAssist = speedProxy >= commandSpeedGate
-      ? brakeIntent * commandAssistScale
-      : 0;
-    return {
-      frontLoad: Math.max(measuredLoad, commandAssist),
-      measuredLoad,
-      commandAssist,
     };
   }
 
@@ -740,7 +712,6 @@
     TelemetryMockGenerator,
     TelemetryTracker,
     classifySequence,
-    deriveFfbLongitudinalLoad,
     deriveVehicleMotion,
     encodeTelemetry,
     getStaleThresholdMs,
