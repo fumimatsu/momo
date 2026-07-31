@@ -1,6 +1,7 @@
 (() => {
   'use strict';
 
+  const PILOT_BUILD_ID = '20260731-cpu-shadow-capture';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -327,6 +328,7 @@
   let connectedAt = 0;
   let visibleSince = performance.now();
   let reconnectCount = 0;
+  let transportGeneration = 0;
   let lastEvent = 'start';
   let lastReconnectAt = 0;
   let lastReconnectReason = '';
@@ -353,6 +355,7 @@
   let lastJitterBufferEmittedCount = 0;
   let lastTotalProcessingDelay = 0;
   let lastFramesDecoded = 0;
+  let lastWebRtcStatsSnapshot = null;
   let decodedFrameHistory = [];
   let rcDriveEnabled = false;
   let currentGear = RC_INITIAL_GEAR;
@@ -740,9 +743,14 @@
   }
 
   function setVideoFlip(enabled) {
+    if (window.fpvCpuShadowCapture?.running === true) {
+      console.warn('Video Flip is locked during CPU capture');
+      return false;
+    }
     document.body.classList.toggle('flip-video', enabled);
     btnFlip.textContent = enabled ? 'Flip On' : 'Flip';
     btnFlip.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    return true;
   }
 
   function toggleVideoFlip() {
@@ -750,9 +758,14 @@
   }
 
   function setVideoMirror(enabled) {
+    if (window.fpvCpuShadowCapture?.running === true) {
+      console.warn('Video Mirror is locked during CPU capture');
+      return false;
+    }
     document.body.classList.toggle('mirror-video', enabled);
     btnMirror.textContent = enabled ? 'Mirror On' : 'Mirror';
     btnMirror.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    return true;
   }
 
   function toggleVideoMirror() {
@@ -1854,6 +1867,45 @@
     console.info('[FPV]', entry);
   }
 
+  function dispatchShadowCaptureEvent(type, detail = {}) {
+    if (window.fpvCpuShadowCapture?.running !== true) {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent(`fpv-shadow-${type}`, {
+      detail,
+    }));
+  }
+
+  function snapshotDataChannelForCapture(channel) {
+    if (!channel) {
+      return {
+        label: null,
+        ready_state: 'closed',
+        ordered: null,
+        max_retransmits: null,
+        protocol: null,
+        id: null,
+        transport_generation: null,
+      };
+    }
+    return {
+      label: channel.label || null,
+      ready_state: channel.readyState || null,
+      ordered: channel.ordered === true,
+      max_retransmits: channel.maxRetransmits ?? null,
+      protocol: channel.protocol || null,
+      id: channel.id ?? null,
+      transport_generation: channel.fpvTransportGeneration ?? null,
+    };
+  }
+
+  function stopShadowCaptureForTransport(reason) {
+    const pending = window.fpvCpuShadowCapture?.requestStop?.(reason);
+    pending?.catch?.((error) => {
+      recordEvent('CPU capture stop failed', error?.message || String(error));
+    });
+  }
+
   function formatDuration(seconds) {
     const totalSeconds = Math.max(0, Math.floor(seconds));
     const minutes = Math.floor(totalSeconds / 60);
@@ -2133,12 +2185,57 @@
   }
 
   function sendCommand(command) {
+    const captureRunning = window.fpvCpuShadowCapture?.running === true;
+    const sentAtMs = captureRunning ? performance.now() : null;
     if (!dataChannel || dataChannel.readyState !== 'open') {
+      if (captureRunning) {
+        dispatchShadowCaptureEvent('command', {
+          command,
+          line: `${command}\n`,
+          sent: false,
+          local_send_accepted: false,
+          remote_applied: null,
+          sent_at_ms: sentAtMs,
+          drive_enabled: rcDriveEnabled,
+          reason: 'datachannel_not_open',
+          data_channel: snapshotDataChannelForCapture(dataChannel),
+        });
+      }
       return false;
     }
-    dataChannel.send(`${command}\n`);
-    lastRcCommand = command;
-    return true;
+    try {
+      dataChannel.send(`${command}\n`);
+      lastRcCommand = command;
+      if (captureRunning) {
+        dispatchShadowCaptureEvent('command', {
+          command,
+          line: `${command}\n`,
+          sent: true,
+          local_send_accepted: true,
+          remote_applied: null,
+          sent_at_ms: sentAtMs,
+          drive_enabled: rcDriveEnabled,
+          data_channel: snapshotDataChannelForCapture(dataChannel),
+        });
+      }
+      return true;
+    } catch (error) {
+      if (captureRunning) {
+        dispatchShadowCaptureEvent('command', {
+          command,
+          line: `${command}\n`,
+          sent: false,
+          local_send_accepted: false,
+          remote_applied: null,
+          sent_at_ms: sentAtMs,
+          drive_enabled: rcDriveEnabled,
+          reason: 'send_failed',
+          error: error.message || String(error),
+          data_channel: snapshotDataChannelForCapture(dataChannel),
+        });
+      }
+      return false;
+    }
   }
 
   function getRcStatus() {
@@ -2257,7 +2354,7 @@
     setText(hostState, display);
   }
 
-  function applyTelemetry(message) {
+  function applyTelemetry(message, source = 'datachannel') {
     lastTelemetry = message;
     updateTelemetryUi();
 
@@ -2274,6 +2371,25 @@
     if (deviceStatus) {
       setText(deviceState, deviceStatus);
     }
+    if (window.fpvCpuShadowCapture?.running === true) {
+      dispatchShadowCaptureEvent('telemetry', {
+        arrival_ms: arrivalMs,
+        source,
+        status: telemetryResult?.status || 'legacy_module_missing',
+        accepted: telemetryResult?.accepted === true,
+        sequence_status: telemetryResult?.sequenceStatus || null,
+        reason: telemetryResult?.reason || null,
+        raw_message: typeof message === 'string' ? message : null,
+        payload: telemetryResult?.payload || null,
+        transport_generation: transportGeneration,
+        data_channel: source === 'datachannel'
+          ? snapshotDataChannelForCapture(
+            usesRelayTransport() ? telemetryChannel : dataChannel,
+          )
+          : null,
+      });
+    }
+    return telemetryResult || { status: 'legacy_module_missing', accepted: false };
   }
 
   function showCursorAndScheduleHide() {
@@ -2821,6 +2937,7 @@
   }
 
   function setDriveEnabled(enabled) {
+    const previous = rcDriveEnabled;
     const canSend = isDataChannelOpen();
     rcDriveEnabled = enabled;
     btnDrive.textContent = enabled ? 'Drive On' : 'Drive Off';
@@ -2850,6 +2967,18 @@
     updateRcUi();
     updateControlUiMode();
     sendFfbSteering();
+    if (window.fpvCpuShadowCapture?.running === true) {
+      dispatchShadowCaptureEvent('drive', {
+        event: 'local_state_changed',
+        previous_enabled: previous,
+        enabled: rcDriveEnabled,
+        changed_at_ms: performance.now(),
+        command: lastRcCommand,
+        transport_generation: transportGeneration,
+        command_channel: snapshotDataChannelForCapture(dataChannel),
+        drive_channel: snapshotDataChannelForCapture(driveChannel),
+      });
+    }
   }
 
   function toggleDrive() {
@@ -2857,14 +2986,74 @@
   }
 
   function sendDriveState() {
-    if (!isDataChannelOpen() || !usesRelayTransport() || !driveChannel || driveChannel.readyState !== 'open') {
+    const line = rcDriveEnabled ? 'DRIVE:1' : 'DRIVE:0';
+    const captureRunning = window.fpvCpuShadowCapture?.running === true;
+    const attemptedAtMs = captureRunning ? performance.now() : null;
+    const recordAttempt = ({
+      datachannelSendCalled,
+      localSendAccepted,
+      reason,
+      error = null,
+    }) => {
+      if (!captureRunning) {
+        return;
+      }
+      dispatchShadowCaptureEvent('drive', {
+        event: 'drive_state_send',
+        line,
+        local_enabled: rcDriveEnabled,
+        attempted: true,
+        datachannel_send_called: datachannelSendCalled,
+        local_send_accepted: localSendAccepted,
+        remote_applied: null,
+        reason,
+        error,
+        attempted_at_ms: attemptedAtMs,
+        transport_generation: transportGeneration,
+        command_channel: snapshotDataChannelForCapture(dataChannel),
+        drive_channel: snapshotDataChannelForCapture(driveChannel),
+      });
+    };
+    if (!isDataChannelOpen()) {
+      recordAttempt({
+        datachannelSendCalled: false,
+        localSendAccepted: false,
+        reason: 'command_datachannel_not_open',
+      });
+      return false;
+    }
+    if (!usesRelayTransport()) {
+      recordAttempt({
+        datachannelSendCalled: false,
+        localSendAccepted: false,
+        reason: 'relay_transport_disabled',
+      });
+      return false;
+    }
+    if (!driveChannel || driveChannel.readyState !== 'open') {
+      recordAttempt({
+        datachannelSendCalled: false,
+        localSendAccepted: false,
+        reason: 'drive_datachannel_not_open',
+      });
       return false;
     }
     try {
-      driveChannel.send(rcDriveEnabled ? 'DRIVE:1' : 'DRIVE:0');
+      driveChannel.send(line);
+      recordAttempt({
+        datachannelSendCalled: true,
+        localSendAccepted: true,
+        reason: 'local_send_accepted',
+      });
       return true;
     } catch (error) {
       recordEvent('drive state send failed', error.message || String(error));
+      recordAttempt({
+        datachannelSendCalled: true,
+        localSendAccepted: false,
+        reason: 'send_failed',
+        error: error.message || String(error),
+      });
       return false;
     }
   }
@@ -3354,6 +3543,9 @@
 
   function closeTransport(options = {}) {
     const sendSignalingClose = options.sendSignalingClose === true;
+    stopShadowCaptureForTransport(
+      options.captureReason || 'transport_closed',
+    );
     const currentWs = ws;
     const currentDataChannel = dataChannel;
     const currentTelemetryChannel = telemetryChannel;
@@ -3458,6 +3650,7 @@
     lastJitterBufferEmittedCount = 0;
     lastTotalProcessingDelay = 0;
     lastFramesDecoded = 0;
+    lastWebRtcStatsSnapshot = null;
     lastDecodedFrameAt = 0;
     decodedFrameHistory = [];
     remoteVideo.pause();
@@ -3475,7 +3668,10 @@
     setDriveEnabled(false);
     micEnabled = false;
     stopLocalMic();
-    closeTransport({ sendSignalingClose: true });
+    closeTransport({
+      sendSignalingClose: true,
+      captureReason: 'manual_disconnect',
+    });
     releaseRoomLease();
   }
 
@@ -3495,7 +3691,10 @@
     setDriveEnabled(false);
     micEnabled = false;
     stopLocalMic();
-    closeTransport({ sendSignalingClose: true });
+    closeTransport({
+      sendSignalingClose: true,
+      captureReason: 'page_hidden',
+    });
     releaseRoomLease({ beacon: true });
   }
 
@@ -3539,7 +3738,10 @@
     reconnectAfter = performance.now() + delay;
     console.warn('Scheduling reconnect:', reason, `${delay}ms`);
     recordEvent('reconnect', `${reason} ${delay}ms ${getTransportSummary()}`);
-    closeTransport({ sendSignalingClose: true });
+    closeTransport({
+      sendSignalingClose: true,
+      captureReason: 'transport_reconnect',
+    });
     updateUiState();
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
@@ -3853,6 +4055,8 @@
   function createPeerConnection(options = {}) {
     candidates = [];
     hasReceivedSdp = false;
+    transportGeneration += 1;
+    const generation = transportGeneration;
 
     const rtcConfig = {
       iceServers: resolveIceServers(options.iceServers),
@@ -3862,6 +4066,7 @@
     }
     const peer = new RTCPeerConnection(rtcConfig);
     const attachDataChannel = (channel) => {
+      channel.fpvTransportGeneration = generation;
       if (dataChannel && dataChannel !== channel) {
         dataChannel.onopen = null;
         dataChannel.onclose = null;
@@ -3897,6 +4102,7 @@
     };
 
     const attachTelemetryChannel = (channel) => {
+      channel.fpvTransportGeneration = generation;
       if (telemetryChannel && telemetryChannel !== channel) {
         telemetryChannel.onopen = null;
         telemetryChannel.onclose = null;
@@ -3918,6 +4124,7 @@
     };
 
     const attachRaceChannel = (channel) => {
+      channel.fpvTransportGeneration = generation;
       if (raceChannel && raceChannel !== channel) {
         raceChannel.onopen = null;
         raceChannel.onclose = null;
@@ -3934,6 +4141,7 @@
     };
 
     const attachDriveChannel = (channel) => {
+      channel.fpvTransportGeneration = generation;
       if (driveChannel && driveChannel !== channel) {
         driveChannel.onopen = null;
         driveChannel.onclose = null;
@@ -4184,6 +4392,30 @@
     const framesDecoded = Number.isFinite(inboundVideo.framesDecoded)
       ? inboundVideo.framesDecoded
       : null;
+    lastWebRtcStatsSnapshot = {
+      sampled_at_performance_ms: now,
+      inbound_video: {
+        bytes_received: bytesReceived,
+        packets_received: packetsReceived,
+        packets_lost: packetsLost,
+        frames_decoded: framesDecoded,
+        frames_dropped: framesDropped,
+        jitter_s: Number.isFinite(inboundVideo.jitter)
+          ? inboundVideo.jitter
+          : null,
+        jitter_buffer_delay_s: jitterBufferDelay,
+        jitter_buffer_emitted_count: jitterBufferEmittedCount,
+        total_processing_delay_s: totalProcessingDelay,
+      },
+      selected_candidate_pair: selectedPair
+        ? {
+          current_round_trip_time_s: Number.isFinite(selectedPair.currentRoundTripTime)
+            ? selectedPair.currentRoundTripTime
+            : null,
+        }
+        : null,
+      note: 'raw cumulative stats; not glass-to-glass latency',
+    };
 
     if (lastStatsSampleAt === 0) {
       lastStatsSampleAt = now;
@@ -4736,11 +4968,32 @@
     setVideoFlip,
     setVideoMirror,
     setMicEnabled,
+    getCaptureSnapshot: () => ({
+      build_id: PILOT_BUILD_ID,
+      variant: 'relay-pilot',
+      drive_enabled: rcDriveEnabled,
+      last_command: lastRcCommand,
+      command_line: `${lastRcCommand}\n`,
+      data_channel_state: dataChannel?.readyState || 'closed',
+      transport_generation: transportGeneration,
+      command_channel: snapshotDataChannelForCapture(dataChannel),
+      telemetry_channel: snapshotDataChannelForCapture(telemetryChannel),
+      drive_channel: snapshotDataChannelForCapture(driveChannel),
+      race_channel: snapshotDataChannelForCapture(raceChannel),
+      endpoint: endpointInput.value,
+      source_identity: {
+        signaling_mode: SIGNALING_MODE,
+        relay_device: getRelayDevice() || null,
+        room_id: AYAME_ROOM_ID || null,
+        race_car_id: RACE_CAR_ID || null,
+      },
+    }),
     getDiagnostics: () => ({
       reconnectCount,
       lastReconnectAt,
       lastReconnectReason,
       lastWsClose,
+      webRtcStats: lastWebRtcStatsSnapshot,
       eventCounters: { ...eventCounters },
       eventLog: eventLog.slice(),
       videoFreezeTimeoutMs: VIDEO_FREEZE_TIMEOUT_MS,

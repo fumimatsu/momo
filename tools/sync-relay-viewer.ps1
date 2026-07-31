@@ -17,6 +17,7 @@ $sourceFiles = @(
     [ordered]@{ Source = 'variants\relay\ffb-bridge.js'; Destination = 'ffb-bridge.js' },
     [ordered]@{ Source = 'telemetry.js'; Destination = 'telemetry.js' },
     [ordered]@{ Source = 'm5-audio.js'; Destination = 'm5-audio.js' },
+    [ordered]@{ Source = 'cpu-shadow-capture.js'; Destination = 'cpu-shadow-capture.js' },
     [ordered]@{ Source = 'gamepad.html'; Destination = 'gamepad.html' },
     [ordered]@{ Source = 'gamepad.js'; Destination = 'gamepad.js' },
     [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' }
