@@ -324,6 +324,37 @@
     };
   }
 
+  function deriveFfbLongitudinalLoad(input, options = {}) {
+    const forwardMps2 = Number(input?.forwardMps2);
+    if (!Number.isFinite(forwardMps2)) {
+      return { frontLoad: 0, measuredLoad: 0, commandAssist: 0 };
+    }
+
+    const startMps2 = Math.max(0, Number(options.startMps2 ?? 3.0));
+    const fullMps2 = Math.max(startMps2 + 0.1, Number(options.fullMps2 ?? 7.0));
+    const commandAssistScale = clamp(Number(options.commandAssistScale ?? 0.30), 0, 1);
+    const commandSpeedGate = clamp(Number(options.commandSpeedGate ?? 0.05), 0, 1);
+    const brakeIntent = clamp(Number(input?.brakeIntent) || 0, 0, 1);
+    const speedProxy = clamp(Number(input?.speedProxy) || 0, 0, 1);
+
+    // forward is positive under acceleration and negative under braking.
+    const measuredLoad = clamp(
+      ((-forwardMps2) - startMps2) / (fullMps2 - startMps2),
+      0,
+      1,
+    );
+    // Pedal intent gives a small immediate onset, but cannot create full load by itself.
+    // The speed gate prevents a reverse command at rest from looking like front load.
+    const commandAssist = speedProxy >= commandSpeedGate
+      ? brakeIntent * commandAssistScale
+      : 0;
+    return {
+      frontLoad: Math.max(measuredLoad, commandAssist),
+      measuredLoad,
+      commandAssist,
+    };
+  }
+
   class MotionFeatureExtractor {
     constructor(options = {}) {
       this.options = { ...DEFAULT_MOTION_OPTIONS, ...options };
@@ -709,6 +740,7 @@
     TelemetryMockGenerator,
     TelemetryTracker,
     classifySequence,
+    deriveFfbLongitudinalLoad,
     deriveVehicleMotion,
     encodeTelemetry,
     getStaleThresholdMs,
