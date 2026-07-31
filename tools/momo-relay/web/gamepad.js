@@ -929,6 +929,7 @@ async function captureGamepad(label, button) {
     assignStatusEl.textContent = `${t("captureFailed")}: ${label}`;
     return;
   }
+  saveMapping();
   try {
     await fetch(getCaptureUrl(), {
       method: "POST",

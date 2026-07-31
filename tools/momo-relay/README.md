@@ -34,8 +34,8 @@ Race Controlを受信した場合の`race_state`、正常終了時の`relay_sess
 sampleだけを表す。M5の`boot`と`seq`から欠損を検出する。
 
 記録キューは有限で、満杯時はログsampleをdropして終了レコードの`queueDrops`へ数える。ファイルI/Oが
-映像、RC command、Telemetry中継を待たせることはない。4台を20Hz、1 message最大256 bytesで送る場合、
-wire上の生データ量は約74MB/時間であり、NDJSONのメタデータ込みでは約100MB/時間を見込む。Relayの強制終了時は
+映像、RC command、Telemetry中継を待たせることはない。4台を30Hz、1 message最大256 bytesで送る場合、
+wire上の生データ量は約111MB/時間であり、NDJSONのメタデータ込みでは約150MB/時間を見込む。Relayの強制終了時は
 終了レコードが無いことがあるが、1秒ごとにflushするため最後の完全なNDJSON行までは解析できる。
 
 ## Operations Dashboard

@@ -7,11 +7,13 @@ param(
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
+    [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$GarageAllowCidr = '192.168.11.0/24',
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = '',
+    [string]$ObserverCrashDumpDirectory = '',
     [switch]$RestartObserver,
     [switch]$RebuildRelay
 )
@@ -25,12 +27,27 @@ $relayExe = Join-Path $relayDirectory 'momo-local-relay-device-input-v15.exe'
 $goExe = Join-Path $relayDirectory '.toolchain\go\bin\go.exe'
 $observerExe = Join-Path $repoRoot '_build\windows_x86_64\release\momo\Release\momo.exe'
 $relayLogDirectory = $relayDirectory
+$resolvedObserverCrashDumpDirectory = if ([string]::IsNullOrWhiteSpace($ObserverCrashDumpDirectory)) {
+    Join-Path $relayDirectory 'crash_dumps'
+} else {
+    [System.IO.Path]::GetFullPath($ObserverCrashDumpDirectory.Trim())
+}
 
 foreach ($path in @($observerExe)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Required executable was not found: $path"
     }
 }
+
+# Native Observer のアクセス違反を Windows Error Reporting の LocalDumps で保存する。
+# 同一ユーザーの momo.exe に適用されるが、現行運用では Observer と Native Viewer を
+# 同じ実行ファイルで起動するため、原因調査には両方を残す方が有用である。
+New-Item -ItemType Directory -Path $resolvedObserverCrashDumpDirectory -Force | Out-Null
+$localDumpsKey = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\momo.exe'
+New-Item -Path $localDumpsKey -Force | Out-Null
+New-ItemProperty -Path $localDumpsKey -Name 'DumpFolder' -PropertyType ExpandString -Value $resolvedObserverCrashDumpDirectory -Force | Out-Null
+New-ItemProperty -Path $localDumpsKey -Name 'DumpCount' -PropertyType DWord -Value 10 -Force | Out-Null
+New-ItemProperty -Path $localDumpsKey -Name 'DumpType' -PropertyType DWord -Value 1 -Force | Out-Null
 
 $relayRunning = @(Get-CimInstance Win32_Process | Where-Object {
     $_.Name -match '^momo-local-relay-device-input(?:-v\d+)?\.exe$'
@@ -96,13 +113,22 @@ if ($relayRunning.Count -eq 0) {
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()
     }
+    $ayamePilotRooms = @()
     if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) {
+        $ayamePilotRooms += "11.3=$($AyamePilotRoom113.Trim())"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom116)) {
+        $ayamePilotRooms += "11.6=$($AyamePilotRoom116.Trim())"
+    }
+    if ($ayamePilotRooms.Count -gt 0) {
         if ([string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
-            throw 'AyamePilotRoom113 requires AyameSignalingUrl or MOMO_AYAME_SIGNALING_URL.'
+            throw 'An AyamePilotRoom requires AyameSignalingUrl or MOMO_AYAME_SIGNALING_URL.'
         }
         $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
         $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
-        $relayArgs += '-ayame-pilot-room', "11.3=$($AyamePilotRoom113.Trim())"
+        foreach ($ayamePilotRoom in $ayamePilotRooms) {
+            $relayArgs += '-ayame-pilot-room', $ayamePilotRoom
+        }
     }
     Start-Process -FilePath $relayExe -ArgumentList $relayArgs `
         -RedirectStandardOutput (Join-Path $relayLogDirectory 'relay-unity.stdout.log') `
@@ -145,10 +171,15 @@ if ($observerRunning.Count -eq 0) {
     if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
         $observerArgs += '--audio-source', $ObserverAudioSource.Trim()
     }
+    $observerHash = (Get-FileHash -LiteralPath $observerExe -Algorithm SHA256).Hash
+    Add-Content -LiteralPath (Join-Path $relayLogDirectory 'observer-unity.launch.log') -Value "$(Get-Date -Format o) start sha256=$observerHash crash_dumps=$resolvedObserverCrashDumpDirectory"
     Start-Process -FilePath $observerExe -ArgumentList $observerArgs `
+        -WorkingDirectory $relayDirectory `
         -RedirectStandardOutput (Join-Path $relayLogDirectory 'observer-unity.stdout.log') `
         -RedirectStandardError (Join-Path $relayLogDirectory 'observer-unity.stderr.log') | Out-Null
     Write-Host 'Observer started: Local\MomoObserverFrameV1'
+    Write-Host "Observer logs: $relayLogDirectory\webrtc_logs_*"
+    Write-Host "Observer crash dumps: $resolvedObserverCrashDumpDirectory"
     if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
         Write-Host "Observer audio source: $($ObserverAudioSource.Trim())"
     }

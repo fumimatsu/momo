@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260731-ffb-front-load-measured';
+  const PILOT_BUILD_ID = '20260731-reverse-gear-limits';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -27,7 +27,7 @@
   const RC_BRAKE_VALUE = getNumberParam('rcBrakeValue', 1300);
   const RC_BRAKE_DURATION_MS = getNumberParam('rcBrakeMs', 1000);
   const RC_BRAKE_THRESHOLD = getNumberParam('rcBrakeThreshold', 1700);
-  const RC_THROTTLE_GEAR_MIN_VALUES = [1200, 1200, 1000, 1000, 1000];
+  const RC_THROTTLE_GEAR_MIN_VALUES = [1300, 1300, 1200, 1100, 1000];
   const RC_THROTTLE_GEAR_MAX_VALUES = [1600, 1700, 1800, 1900, 2000];
   const RC_GEAR_COUNT = Math.max(1, Math.min(5, getIntegerParam('rcGearCount', 5)));
   const RC_INITIAL_GEAR = Math.max(1, Math.min(RC_GEAR_COUNT, getIntegerParam('rcGear', 1)));
@@ -199,6 +199,11 @@
   const RACE_ANNOUNCE_VOICE = getStringParam('raceAnnounceVoice', '');
   const RACE_ANNOUNCE_RATE = Math.max(0.5, Math.min(2.5, getNumberParam('raceAnnounceRate', 1.1)));
   const RACE_ANNOUNCE_VOLUME = Math.max(0, Math.min(1, getNumberParamAllowZero('raceAnnounceVolume', 0.9)));
+  const RACE_SIGNAL_SOUND_ENABLED = getBooleanParam('raceSignalSound', RACE_ANNOUNCE_ENABLED);
+  const RACE_SIGNAL_SOUND_VOLUME = Math.max(
+    0,
+    Math.min(1, getNumberParamAllowZero('raceSignalSoundVolume', 0.22)),
+  );
 
   const remoteVideo = document.getElementById('remote_video');
   const endpointInput = document.getElementById('endpoint');
@@ -430,6 +435,9 @@
   let raceStartSignalGreenUntil = 0;
   let raceBattleLayoutFrame = null;
   let lastRaceLapAnnouncementKey = '';
+  let raceSignalAudioContext = null;
+  let raceSignalSoundUnlocked = false;
+  let lastRaceSignalSoundKey = '';
   const receivedRaceLapHistory = new Map();
   const raceState = {
     phase: 'STANDBY',
@@ -1322,6 +1330,107 @@
     });
   }
 
+  function getRaceSignalAudioContext() {
+    if (!RACE_SIGNAL_SOUND_ENABLED || RACE_SIGNAL_SOUND_VOLUME <= 0) {
+      return null;
+    }
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) {
+      recordEvent('race signal sound unavailable', 'no AudioContext');
+      return null;
+    }
+    raceSignalAudioContext = raceSignalAudioContext || new AudioContextCtor();
+    return raceSignalAudioContext;
+  }
+
+  function unlockRaceSignalSound() {
+    if (!RACE_SIGNAL_SOUND_ENABLED || raceSignalSoundUnlocked) {
+      return;
+    }
+    const context = getRaceSignalAudioContext();
+    if (!context) {
+      return;
+    }
+    context.resume?.()
+      .then(() => {
+        raceSignalSoundUnlocked = context.state === 'running';
+      })
+      .catch((error) => {
+        recordEvent('race signal sound unlock failed', error.message || String(error));
+      });
+  }
+
+  function playRaceSignalTone(context, frequency, startAt, durationMs, volume) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const duration = Math.max(0.03, durationMs / 1000);
+    const attack = 0.01;
+    const release = Math.min(0.07, duration * 0.45);
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, startAt);
+    gain.gain.setValueAtTime(0, startAt);
+    gain.gain.linearRampToValueAtTime(volume, startAt + attack);
+    gain.gain.setValueAtTime(volume, Math.max(startAt + attack, startAt + duration - release));
+    gain.gain.linearRampToValueAtTime(0, startAt + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startAt);
+    oscillator.stop(startAt + duration + 0.02);
+  }
+
+  function playRaceCountdownSignalSound() {
+    const context = getRaceSignalAudioContext();
+    if (!context || context.state !== 'running') {
+      unlockRaceSignalSound();
+      return false;
+    }
+    const now = context.currentTime;
+    // ノート PC の小型スピーカーでも聞き取れるよう、低音に弱い倍音を重ねる。
+    playRaceSignalTone(context, 116, now, 170, RACE_SIGNAL_SOUND_VOLUME);
+    playRaceSignalTone(context, 232, now, 115, RACE_SIGNAL_SOUND_VOLUME * 0.35);
+    recordEvent('race signal sound', 'red');
+    return true;
+  }
+
+  function playRaceGreenSignalSound() {
+    const context = getRaceSignalAudioContext();
+    if (!context || context.state !== 'running') {
+      unlockRaceSignalSound();
+      return false;
+    }
+    const now = context.currentTime;
+    playRaceSignalTone(context, 174, now, 130, RACE_SIGNAL_SOUND_VOLUME * 0.82);
+    playRaceSignalTone(context, 262, now + 0.12, 210, RACE_SIGNAL_SOUND_VOLUME);
+    recordEvent('race signal sound', 'green');
+    return true;
+  }
+
+  function syncRaceStartSignalSound(suppress = false) {
+    if (!RACE_SIGNAL_SOUND_ENABLED) {
+      return;
+    }
+    const signal = getRaceStartSignalState();
+    let key = '';
+    let play = null;
+    if (signal.mode === 'red' && signal.litCount > 0) {
+      key = `red:${raceState.startAtMs || 'unknown'}:${signal.litCount}`;
+      play = playRaceCountdownSignalSound;
+    } else if (signal.mode === 'green' && signal.visible) {
+      key = `green:${activeRaceRunId || raceState.startAtMs || 'unknown'}`;
+      play = playRaceGreenSignalSound;
+    }
+    if (!key) {
+      return;
+    }
+    if (key === lastRaceSignalSoundKey) {
+      return;
+    }
+    lastRaceSignalSoundKey = key;
+    if (!suppress) {
+      play();
+    }
+  }
+
   function renderRaceHud() {
     const lap = raceState.lap === null ? '--' : String(raceState.lap);
     const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
@@ -1571,6 +1680,7 @@
       raceState.clockRunning = false;
       raceStartSignalGreenUntil = 0;
       lastRaceLapAnnouncementKey = '';
+      lastRaceSignalSoundKey = '';
       stopRaceAnnouncement();
     }
     if (typeof nextState.phase === 'string' && nextState.phase.trim()) {
@@ -1614,6 +1724,7 @@
     }
     raceState.sampledAt = performance.now();
     renderRaceHud();
+    syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
     announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     return true;
   }
@@ -5107,6 +5218,17 @@
       lap: 1,
       text: 'ラップ 1、18秒320。ベストラップです。',
     }),
+    testSignalSound: (signal = 'red') => {
+      unlockRaceSignalSound();
+      return signal === 'green' ? playRaceGreenSignalSound() : playRaceCountdownSignalSound();
+    },
+    getSignalSoundDiagnostics: () => ({
+      enabled: RACE_SIGNAL_SOUND_ENABLED,
+      volume: RACE_SIGNAL_SOUND_VOLUME,
+      unlocked: raceSignalSoundUnlocked,
+      audioContextState: raceSignalAudioContext?.state || 'none',
+      lastKey: lastRaceSignalSoundKey || null,
+    }),
     getAnnouncementDiagnostics: () => ({
       enabled: RACE_ANNOUNCE_ENABLED,
       supported: supportsRaceAnnouncement(),
@@ -5118,6 +5240,8 @@
     }),
   };
   window.addEventListener('momo-race-state', (event) => setRaceState(event.detail));
+  window.addEventListener('pointerdown', unlockRaceSignalSound);
+  window.addEventListener('keydown', unlockRaceSignalSound);
   window.addEventListener('pointerdown', prepareRaceAnnouncement);
   window.addEventListener('keydown', prepareRaceAnnouncement);
   renderRaceHud();
@@ -5129,6 +5253,7 @@
       || raceState.phaseCode === 'green'
     ) {
       renderRaceHud();
+      syncRaceStartSignalSound();
     }
   }, 100);
   if (usesRelayTransport()) {
