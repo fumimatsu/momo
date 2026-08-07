@@ -1,5 +1,8 @@
 # Local Relay Web UI 運用
 
+別 PC への導入、リポジトリの責任範囲、Race Control / Observer / FFB Bridge を含む配置手順は
+[Momo tools の配置と別 PC 導入](../README.md) を参照する。
+
 `web/` は Relay バイナリへ `go:embed` で埋め込まれる。`pilot.html`、`pilot.js`、`ffb-bridge.js`、`gamepad.html`、`gamepad.js`、`gamepad-profile.js` を変更しただけでは、起動済み Relay の UI は変わらない。Relay を再ビルドして再起動した後に反映される。
 
 `web/` は配布コピーである。正本は `momo-fpv-viewer/variants/relay/` にあり、更新時は
