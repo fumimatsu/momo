@@ -120,16 +120,16 @@
   // 路面振動、接触、クラッシュを同じ衝撃として扱わず、パルスと粘りを別々に段階化する。
   const FFB_IMPACT_PROFILES = Object.freeze({
     weak: Object.freeze({
-      pulseScale: 0.28,
-      boostScale: 0.18,
-      boostDurationMs: 110,
-      pulseKind: 'curb',
+      pulseScale: 0.55,
+      boostScale: 0.28,
+      boostDurationMs: 160,
+      pulseKind: 'gravel',
     }),
     strong: Object.freeze({
-      pulseScale: 0.68,
-      boostScale: 0.65,
-      boostDurationMs: 320,
-      pulseKind: 'impact',
+      pulseScale: 0.85,
+      boostScale: 0.80,
+      boostDurationMs: 360,
+      pulseKind: 'hit',
     }),
     severe: Object.freeze({
       pulseScale: 1.0,
@@ -141,9 +141,9 @@
   const FFB_IMPACT_DIRECTION_MIN_AXIS = Math.max(0.05, Math.min(0.9,
     getNumberParam('ffbImpactDirectionMinAxis', 0.12)));
   const FFB_DIRECTION_SIGN = getNumberParam('ffbDirectionSign', 1) < 0 ? -1 : 1;
-  // 車種ごとの FFB 軸向きが異なる場合だけ URL で反転できる。
-  // R3 の実走確認では、右旋回時に右へ引く現行符号が操舵を助けていたため反転する。
+  // URL 指定は、車種別の既定値より優先する。
   const FFB_CORNER_DIRECTION_SIGN = getNumberParam('ffbCornerDirectionSign', -1) < 0 ? -1 : 1;
+  const FFB_CORNER_DIRECTION_SIGN_EXPLICIT = getUrlParams().has('ffbCornerDirectionSign');
   const FFB_TELEMETRY_TORQUE_MAX = Math.max(0.1, Math.min(1.0,
     getNumberParam('ffbTelemetryTorqueMax', 0.85)));
   const FFB_DAMAGE_RATTLE_TORQUE = Math.max(0, Math.min(0.25,
@@ -2200,7 +2200,12 @@
       * frontLoad.value * responseScale;
     const impactBoost = getImpactFfbBoost(motion, performance.now());
     const damageEffect = getDamageFfbEffect(performance.now(), responseScale);
-    const telemetryTorque = getTelemetryFfbTorque(motion, impactBoost, responseScale);
+    const telemetryTorque = getTelemetryFfbTorque(
+      motion,
+      impactBoost,
+      responseScale,
+      snapshot.deviceProfile,
+    );
     ffbClient.sendFfb({
       torque: Math.max(-FFB_TELEMETRY_TORQUE_MAX, Math.min(
         FFB_TELEMETRY_TORQUE_MAX,
@@ -2253,18 +2258,27 @@
     };
   }
 
-  function getTelemetryFfbTorque(motion, impactBoost, responseScale) {
+  function getTelemetryFfbTorque(motion, impactBoost, responseScale, deviceProfile) {
     if (!motion || motion.stale) return 0;
     const lateralMps2 = Number(motion.motion?.lateralMps2);
     const normalizedLateral = Number.isFinite(lateralMps2)
       ? Math.max(-1, Math.min(1, lateralMps2 / FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2))
       : 0;
     const cornerTorque = normalizedLateral * motion.cornerLoad
-      * FFB_TELEMETRY_CORNER_TORQUE * FFB_CORNER_DIRECTION_SIGN;
+      * FFB_TELEMETRY_CORNER_TORQUE * getFfbCornerDirectionSign(deviceProfile);
     return Math.max(-FFB_TELEMETRY_TORQUE_MAX, Math.min(
       FFB_TELEMETRY_TORQUE_MAX,
       (cornerTorque + impactBoost.torque) * responseScale,
     ));
+  }
+
+  function getFfbCornerDirectionSign(deviceProfile) {
+    if (FFB_CORNER_DIRECTION_SIGN_EXPLICIT) return FFB_CORNER_DIRECTION_SIGN;
+    const profileId = typeof deviceProfile === 'object' && deviceProfile
+      ? String(deviceProfile.id || '').toLowerCase()
+      : String(deviceProfile || '').toLowerCase();
+    // T300 は DirectInput 側の正負補正を使うため、反操舵となる Viewer 側の既定符号は R3 と逆になる。
+    return profileId === 'thrustmaster-t300' ? 1 : FFB_CORNER_DIRECTION_SIGN;
   }
 
   function stopFfbOutput() {
@@ -2601,9 +2615,9 @@
       ? Math.sign(lateral) * FFB_DIRECTION_SIGN
       : 0;
     return {
-      kind: profile.pulseKind === 'curb'
-        ? 'curb'
-        : direction === 0 ? 'frontalImpact' : 'sideImpact',
+      kind: profile.pulseKind === 'impact'
+        ? direction === 0 ? 'frontalImpact' : 'sideImpact'
+        : profile.pulseKind,
       strength: Math.min(1, FFB_IMPACT_TORQUE * profile.pulseScale
         * FFB_PRESETS[activeFfbPreset].scale * FFB_RESPONSE_SCALE),
       direction,
