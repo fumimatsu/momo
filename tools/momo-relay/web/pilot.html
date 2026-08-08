@@ -1415,17 +1415,252 @@
       pointer-events: none;
       transform: scale(var(--osd-scale));
       transform-origin: top right;
+      z-index: 32;
     }
 
     .top-controls {
-      max-width: min(520px, calc(100vw - 32px));
+      max-width: min(96px, calc(100vw - 32px));
       padding: 0;
       border: 0;
       border-radius: 0;
       background: transparent;
-      opacity: 0.36;
+      opacity: 0.82;
       text-shadow: 0 0 2px #000000;
       pointer-events: auto;
+    }
+
+    .menu-trigger {
+      position: relative;
+      width: 46px;
+      min-width: 46px;
+      height: 42px;
+      padding: 0;
+      border-color: rgba(151, 224, 238, 0.5);
+      background: rgba(3, 10, 14, 0.72);
+    }
+
+    .menu-trigger::before,
+    .menu-trigger::after,
+    .menu-trigger span::before {
+      position: absolute;
+      left: 13px;
+      width: 20px;
+      height: 2px;
+      background: #dffaff;
+      box-shadow: 0 0 7px rgba(92, 223, 245, 0.62);
+      content: "";
+    }
+
+    .menu-trigger::before {
+      top: 12px;
+    }
+
+    .menu-trigger span::before {
+      top: 19px;
+    }
+
+    .menu-trigger::after {
+      top: 26px;
+    }
+
+    .menu-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      overflow: auto;
+      background: rgba(0, 3, 6, 0.58);
+      backdrop-filter: blur(7px) saturate(0.72);
+      pointer-events: auto;
+    }
+
+    .menu-overlay[hidden] {
+      display: none;
+    }
+
+    .menu-sheet {
+      width: 100%;
+      min-height: min(54vh, 620px);
+      max-height: min(88vh, 820px);
+      overflow: auto;
+      padding: calc(24px + env(safe-area-inset-top)) max(24px, calc((100vw - 1180px) / 2)) 28px;
+      border-bottom: 1px solid rgba(128, 219, 235, 0.4);
+      background: rgba(4, 10, 14, 0.94);
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.58);
+    }
+
+    .menu-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding-bottom: 17px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+    }
+
+    .menu-kicker,
+    .menu-section-title,
+    .calibration-step-label {
+      color: #7adbed;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .menu-title {
+      margin: 4px 0 0;
+      font: 800 28px/1.05 Impact, "Arial Narrow", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .menu-context {
+      color: rgba(232, 245, 248, 0.65);
+      font-size: 12px;
+    }
+
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0 28px;
+      margin-top: 20px;
+    }
+
+    .menu-section {
+      min-width: 0;
+      padding: 0 0 20px;
+    }
+
+    .menu-section + .menu-section {
+      border-left: 1px solid rgba(255, 255, 255, 0.12);
+      padding-left: 28px;
+    }
+
+    .menu-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+      margin-top: 12px;
+    }
+
+    .menu-actions .wide {
+      grid-column: 1 / -1;
+    }
+
+    .menu-actions button {
+      min-height: 42px;
+      overflow-wrap: anywhere;
+    }
+
+    .menu-actions button[aria-pressed="true"] {
+      border-color: rgba(88, 255, 153, 0.82);
+      background: rgba(0, 126, 61, 0.52);
+      color: #ffffff;
+    }
+
+    .menu-actions .primary-action {
+      border-color: rgba(73, 210, 235, 0.72);
+      background: rgba(13, 111, 132, 0.38);
+    }
+
+    .menu-actions .mic-control {
+      grid-column: 1 / -1;
+      margin: 0;
+      padding-top: 4px;
+    }
+
+    .calibration-wizard {
+      margin-top: 20px;
+      padding-top: 4px;
+    }
+
+    .calibration-wizard[hidden],
+    .menu-grid[hidden] {
+      display: none;
+    }
+
+    .calibration-layout {
+      display: grid;
+      grid-template-columns: minmax(190px, 0.8fr) minmax(300px, 1.7fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .calibration-progress {
+      display: grid;
+      gap: 7px;
+      margin: 12px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .calibration-progress li {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      gap: 8px;
+      color: rgba(232, 245, 248, 0.48);
+      font-size: 12px;
+    }
+
+    .calibration-progress li::before {
+      color: rgba(122, 219, 237, 0.62);
+      content: attr(data-index);
+    }
+
+    .calibration-progress li.active {
+      color: #ffffff;
+      font-weight: 800;
+    }
+
+    .calibration-progress li.done {
+      color: #64e99d;
+    }
+
+    .calibration-stage {
+      min-height: 270px;
+      padding: 20px 0 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .calibration-stage h2 {
+      margin: 8px 0 10px;
+      font: 800 clamp(24px, 3vw, 42px)/1.05 Impact, "Arial Narrow", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .calibration-instruction {
+      max-width: 700px;
+      min-height: 48px;
+      margin: 0;
+      color: rgba(242, 249, 250, 0.78);
+      font: 600 15px/1.6 system-ui, sans-serif;
+    }
+
+    .calibration-live {
+      margin-top: 18px;
+      padding: 11px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      color: #83e6f5;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .calibration-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 18px;
+    }
+
+    .calibration-controls button {
+      min-height: 42px;
+    }
+
+    .calibration-error {
+      min-height: 20px;
+      margin-top: 10px;
+      color: #ff9d9d;
+      font-size: 12px;
     }
 
     .top-controls:hover,
@@ -1433,6 +1668,10 @@
     .panel:hover input,
     .panel:hover button {
       opacity: 1;
+    }
+
+    body.menu-open .top {
+      display: none;
     }
 
     .debug-controls {
@@ -1534,6 +1773,43 @@
     }
 
     @media (max-width: 720px) {
+      .menu-sheet {
+        max-height: 92vh;
+        padding: calc(18px + env(safe-area-inset-top)) 16px 24px;
+      }
+
+      .menu-header {
+        align-items: flex-start;
+      }
+
+      .menu-title {
+        font-size: 24px;
+      }
+
+      .menu-context {
+        display: none;
+      }
+
+      .menu-grid,
+      .calibration-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .menu-section + .menu-section {
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        border-left: 0;
+        padding-top: 18px;
+        padding-left: 0;
+      }
+
+      .calibration-progress {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .calibration-stage {
+        min-height: 240px;
+      }
+
       .race-summary {
         top: calc(80px + env(safe-area-inset-top));
         width: 210px;
@@ -1772,36 +2048,96 @@
     </div>
   </section>
 
+  <div id="menuOverlay" class="menu-overlay" hidden>
+    <div class="menu-sheet" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+      <header class="menu-header">
+        <div>
+          <div class="menu-kicker">MOMO FPV / PILOT</div>
+          <h1 id="menuTitle" class="menu-title">MENU</h1>
+        </div>
+        <div>
+          <span id="menuContext" class="menu-context">CAR -- / INPUT --</span>
+          <button id="btnMenuClose" type="button">Close</button>
+        </div>
+      </header>
+
+      <div id="menuGrid" class="menu-grid">
+        <section class="menu-section" aria-labelledby="menuDriveTitle">
+          <div id="menuDriveTitle" class="menu-section-title">Drive</div>
+          <div class="menu-actions">
+            <button id="btnCarSelect" class="wide primary-action" type="button">Car Select</button>
+            <button id="btnFullscreen" type="button">Fullscreen</button>
+            <button id="btnFlip" type="button">Camera Flip</button>
+            <button id="btnMirror" type="button">Mirror</button>
+          </div>
+        </section>
+
+        <section class="menu-section" aria-labelledby="menuAudioTitle">
+          <div id="menuAudioTitle" class="menu-section-title">Audio</div>
+          <div class="menu-actions">
+            <button id="btnAudio" type="button">Video Audio</button>
+            <button id="btnAudioFilter" type="button">Filter</button>
+            <button id="btnM5Audio" class="wide" type="button" aria-pressed="false">M5 Audio</button>
+            <span class="mic-control" aria-label="Microphone to car speaker">
+              <button id="btnMic" type="button" aria-pressed="false">Mic</button>
+              <span id="micMeter" class="mic-meter" data-level="0" aria-hidden="true">
+                <span></span><span></span><span></span><span></span>
+                <span></span><span></span><span></span><span></span>
+              </span>
+              <input id="micVolume" class="mic-volume" type="range" min="0" max="200" step="1" value="100" aria-label="Microphone volume">
+            </span>
+          </div>
+        </section>
+
+        <section class="menu-section" aria-labelledby="menuInputTitle">
+          <div id="menuInputTitle" class="menu-section-title">Input</div>
+          <div class="menu-actions">
+            <button id="btnStartCalibration" class="wide primary-action" type="button">Guided Calibration</button>
+            <button id="btnInputSetup" class="wide" type="button">Advanced Input</button>
+            <button id="btnDebug" class="wide" type="button">Debug</button>
+            <span class="debug-controls wide">
+              <label>
+                Mode
+                <select id="modeSelect" disabled>
+                  <option value="">refresh</option>
+                </select>
+              </label>
+              <button id="btnApplyMode" type="button" disabled>Apply</button>
+              <button id="btnRefreshMode" type="button">Refresh Mode</button>
+              <button id="btnRefreshDevice" type="button">Refresh Device</button>
+            </span>
+          </div>
+        </section>
+      </div>
+
+      <section id="calibrationWizard" class="calibration-wizard" hidden aria-labelledby="calibrationTitle">
+        <div class="calibration-layout">
+          <div>
+            <div class="menu-section-title">Input Calibration</div>
+            <ol id="calibrationProgress" class="calibration-progress"></ol>
+          </div>
+          <div class="calibration-stage">
+            <div id="calibrationStepLabel" class="calibration-step-label">Step 1</div>
+            <h2 id="calibrationTitle">Connect Wheel</h2>
+            <p id="calibrationInstruction" class="calibration-instruction"></p>
+            <div id="calibrationLive" class="calibration-live">Waiting for gamepad...</div>
+            <div class="calibration-controls">
+              <button id="btnCalibrationCapture" class="primary" type="button">Record Current</button>
+              <button id="btnCalibrationBack" type="button">Back</button>
+              <button id="btnCalibrationRestart" type="button">Restart</button>
+              <button id="btnCalibrationCancel" type="button">Cancel</button>
+            </div>
+            <div id="calibrationError" class="calibration-error" role="status"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
   <div class="top">
     <div class="top-controls">
       <input id="endpoint" class="hidden-endpoint" type="text" autocomplete="off" spellcheck="false">
-      <button id="btnFullscreen" type="button">Fullscreen</button>
-      <button id="btnFlip" type="button">Flip</button>
-      <button id="btnMirror" type="button">Mirror</button>
-      <button id="btnAudio" type="button">Audio</button>
-      <button id="btnAudioFilter" type="button">Filter</button>
-      <button id="btnM5Audio" type="button" aria-pressed="false">M5 Audio</button>
-      <span class="mic-control" aria-label="Microphone to car speaker">
-        <button id="btnMic" type="button" aria-pressed="false">Mic</button>
-        <span id="micMeter" class="mic-meter" data-level="0" aria-hidden="true">
-          <span></span><span></span><span></span><span></span>
-          <span></span><span></span><span></span><span></span>
-        </span>
-        <input id="micVolume" class="mic-volume" type="range" min="0" max="200" step="1" value="100" aria-label="Microphone volume">
-      </span>
-      <button id="btnDebug" type="button">Debug</button>
-      <span class="debug-controls">
-        <label>
-          Mode
-          <select id="modeSelect" disabled>
-            <option value="">refresh</option>
-          </select>
-        </label>
-        <button id="btnApplyMode" type="button" disabled>Apply</button>
-        <button id="btnRefreshMode" type="button">Refresh Mode</button>
-        <button id="btnRefreshDevice" type="button">Refresh Device</button>
-        <button id="btnInputSetup" type="button">Input</button>
-      </span>
+      <button id="btnMenu" class="menu-trigger" type="button" aria-label="Open menu" aria-pressed="false"><span aria-hidden="true"></span></button>
     </div>
   </div>
 
@@ -1934,10 +2270,14 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260731-reverse-gear-limits"></script>
-    <script src="../../m5-audio.js?v=20260731-reverse-gear-limits"></script>
+    <script src="../../telemetry.js?v=20260808-pilot-menu-calibration"></script>
+    <script src="../../m5-audio.js?v=20260808-pilot-menu-calibration"></script>
+    <script
+      src="./gamepad-profile.js?v=20260808-pilot-menu-calibration"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260808-pilot-menu-calibration'"
+    ></script>
     <script src="./ffb-bridge.js"></script>
-    <script src="./pilot.js?v=20260731-reverse-gear-limits"></script>
+    <script src="./pilot.js?v=20260808-pilot-menu-calibration"></script>
     <script
       src="./cpu-shadow-capture.js?v=20260731-cpu-shadow-capture"
       onerror="this.onerror=null;this.src='../../cpu-shadow-capture.js?v=20260731-cpu-shadow-capture'"

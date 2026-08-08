@@ -11,6 +11,23 @@
     }
   }
 
+  function collectCompatibilityInfo() {
+    const gamepads = navigator.getGamepads
+      ? Array.from(navigator.getGamepads()).filter(Boolean).map((gamepad) => ({
+        id: String(gamepad.id || '').slice(0, 256),
+        index: gamepad.index,
+        mapping: String(gamepad.mapping || '').slice(0, 32),
+        axes: gamepad.axes.length,
+        buttons: gamepad.buttons.length,
+      }))
+      : [];
+    return {
+      userAgent: String(navigator.userAgent || '').slice(0, 512),
+      platform: String(navigator.platform || '').slice(0, 128),
+      gamepads,
+    };
+  }
+
   class FfbBridgeClient {
     constructor(options = {}) {
       this.url = options.url || DEFAULT_URL;
@@ -58,7 +75,7 @@
       ws.addEventListener('open', () => {
         this.connected = true;
         this.connecting = false;
-        this.send({ type: 'hello', client: 'momo-fpv-viewer', protocol: 1 });
+        this.send({ type: 'hello', client: 'momo-fpv-viewer', protocol: 1, compatibility: collectCompatibilityInfo() });
         this.listDevices();
         this.startHeartbeat();
         this.emitState();
@@ -109,7 +126,12 @@
 
     acquire(deviceId) {
       this.selectedDeviceId = String(deviceId || '');
-      return this.send({ type: 'acquireDevice', deviceId: this.selectedDeviceId, preferExclusive: true });
+      return this.send({
+        type: 'acquireDevice',
+        deviceId: this.selectedDeviceId,
+        preferExclusive: true,
+        compatibility: collectCompatibilityInfo(),
+      });
     }
 
     sendFfb(command) {
