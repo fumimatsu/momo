@@ -11,6 +11,9 @@ param(
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$GarageAllowCidr = '192.168.11.0/24',
+    [string]$GameplayAllowCidr = '127.0.0.1/32',
+    [ValidateSet('legacy', 'pit-marker', 'disabled')]
+    [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'legacy' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = '',
     [string]$ObserverCrashDumpDirectory = '',
@@ -20,6 +23,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($HealthRecoveryMode -eq 'pit-marker') {
+    if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_GAMEPLAY_TOKEN)) {
+        throw 'MOMO_RELAY_GAMEPLAY_TOKEN is required when HealthRecoveryMode is pit-marker.'
+    }
+    if ([string]::IsNullOrWhiteSpace($RaceControlUrl)) {
+        throw 'RaceControlUrl is required when HealthRecoveryMode is pit-marker.'
+    }
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $relayDirectory = Join-Path $repoRoot 'tools\momo-relay'
@@ -101,6 +113,8 @@ if ($relayRunning.Count -eq 0) {
         '-race-car', '11.5=CP-3',
         '-race-car', '11.6=CP-4',
         '-operations-allow-cidr', $OperationsAllowCidr,
+        '-gameplay-allow-cidr', $GameplayAllowCidr,
+        '-health-recovery-mode', $HealthRecoveryMode,
         '-garage-allow-cidr', '127.0.0.1/32',
         '-garage-allow-cidr', $GarageAllowCidr
     )

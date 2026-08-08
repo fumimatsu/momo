@@ -2,9 +2,9 @@
 
 ## Status
 
-- 状態: 実現可能性確認済み、未実装
+- 状態: Relay 側 API / HP 回復実装済み、MADSYSTEM 側未実装
 - 対象: MADSYSTEM / Momo Multi Observer / Local Relay / Race Control / Relay Pilot Viewer
-- 結論: 初期実装では MADSYSTEM がピット滞在を観測し、Local Relay が HP 回復を計算する
+- 結論: MADSYSTEM がピット滞在を計測して 2 秒ごとに tick を送り、Local Relay が 1 tick につき HP を 20 回復する
 
 ## 目的
 
@@ -63,9 +63,9 @@ HP の正本は Local Relay の `tools/momo-relay/vehicle_health.go` にある�
 | コンポーネント | 初期実装の責務 | 持たせない責務 |
 | --- | --- | --- |
 | Momo Multi Observer | 4映像の受信、合成、共有メモリ出力 | ArUco判定、HP計算、回復時間計算 |
-| MADSYSTEM | 専用マーカー検出、象限から`carId`への変換、presenceの安定化と送信 | HPの加減算、速度上限の決定 |
-| Local Relay | HP正本、衝突減算、pit lease、回復積算、速度制限、Viewer配信 | 画像認識 |
-| Race Control | 既存のrun/phase/timing管理 | 初期PoCのHP計算、pit heartbeat中継 |
+| MADSYSTEM | 専用マーカー検出、象限から`carId`への変換、連続滞在時間とtick送信 | HPの加減算、速度上限の決定 |
+| Local Relay | HP正本、衝突減算、tick検証、20 HP回復、速度制限、Viewer配信 | 画像認識 |
+| Race Control | 既存のrun/phase/timing管理 | 初期PoCのHP計算、pit tick中継 |
 | Pilot Viewer | HPと回復中表示 | 回復判定、HP正本、速度制限 |
 
 この分担なら、ブラウザを改変した Pilot が HP や速度制限を回避できず、ArUco処理も既存の場所に留まる。
@@ -76,15 +76,15 @@ HP の正本は Local Relay の `tools/momo-relay/vehicle_health.go` にある�
 flowchart LR
   C["車載カメラ"] --> O["Momo Multi Observer"]
   O --> M["MADSYSTEM ArUco / Pit Presence"]
-  M -->|"認証付き presence snapshot"| R["Local Relay Vehicle Health"]
+  M -->|"認証付き recovery tick / 2秒"| R["Local Relay Vehicle Health"]
   T["M5 impact telemetry"] --> R
   S["Race Control phase / raceRunId"] --> R
   R -->|"HP / speed cap / repairing"| V["Pilot Viewer"]
   R -->|"制限済み throttle"| P["車載 Momo / Pi"]
 ```
 
-MADSYSTEM は「見えた」という観測だけを送る。回復量は送らず、Relay が自身の単調時計で積算する。
-これにより送信側の停止、時計ずれ、重複送信で HP が余分に増えない。
+MADSYSTEM は連続認識 2 秒ごとに recovery tick を送る。回復量は送らず、Relay が tick ごとに 20 HP を加算する。
+Relay は自身の単調時計で最短 2 秒間隔を検証し、`commandId` の重複を排除する。
 
 ## ArUco 設計
 
@@ -100,6 +100,7 @@ MADSYSTEM は「見えた」という観測だけを送る。回復量は送ら�
 
 初期PoCでは、ピット専用に別辞書の `DICT_5X5_50` を使う案を推奨する。
 通常の4x4検出とは別の `ArucoDetector` を用意し、設定資産で dictionary と marker ID を固定する。
+同じ marker ID のマーカーをピットエリアへ複数配置し、1 枚以上見えていれば同じ滞在として扱う。
 2回目の検出処理になるため、通常のラップ認識から独立した低い頻度で実行し、Unity ProfilerでCPU/GCを確認する。
 
 代替案として `DICT_4X4_100` の ID `50` 以上を使う方法はあるが、既存4x4マーカーの互換性と誤り訂正性能を
@@ -117,46 +118,21 @@ OUTSIDE -> ENTER_CANDIDATE -> ACTIVE -> EXIT_CANDIDATE -> OUTSIDE
 - 複数フレームまたは一定時間の継続検出で enter を確定する
 - 短い未検出はカメラ振動、遮蔽、圧縮ノイズとして許容する
 - 未検出が猶予を超えたら exit を確定する
+- `ACTIVE` になってから 2 秒ごとに tick を送る
+- 同じ ID の複数マーカーが同時に見えても滞在時間を重複加算しない
 - 映像停止、象限無効、ArUco無効、race run変更では即時または短いTTLで fail closedする
 - 検出面積や画面内位置は診断ログへ残すが、PoCではHP回復量へ使わない
 
 既存の `RecogCount` / `Recognition_buffer` はチェックポイント通過用である。
 ピット用の enter/exit閾値は独立設定にする。
 
-## MADSYSTEM -> Relay 契約案
+## MADSYSTEM -> Relay 契約
 
-初期PoCは同一PC内の認証付きHTTPを推奨する。パスとフィールド名は実装開始時に固定する。
-候補は `POST /api/v1/gameplay/pit-presence` である。
+`POST /api/v1/gameplay/pit-recovery-ticks` を使用する。MADSYSTEM は同じピット滞在中に 2 秒ごとに
+連番 tick を送り、Relay は受理 1 回につき 20 HP を回復する。
 
-```json
-{
-  "schemaVersion": 1,
-  "sourceId": "madsystem",
-  "raceRunId": "rr_...",
-  "sequence": 42,
-  "cars": [
-    { "carId": "CP-1", "present": true },
-    { "carId": "CP-2", "present": false },
-    { "carId": "CP-3", "present": false },
-    { "carId": "CP-4", "present": false }
-  ]
-}
-```
-
-契約上の要点:
-
-- 差分ではなく、構成されている全車の完全スナップショットを送る
-- `sequence` はrun内で単調増加し、古い値をRelayが無視する
-- `raceRunId` がRelayのactive runと一致しない値は回復に使わない
-- `carId` は既存の固定枠 `CP-1..CP-4` を使い、device IDを使わない
-- Relayは受信時刻をlease開始時刻として使い、MADSYSTEMの壁時計からHPを計算しない
-- heartbeatがTTL内に来なければ全車 `present=false` として回復を止める
-- 明示的な `present=false` はTTLを待たずに停止する
-- endpointはloopbackまたは管理LANに制限し、Bearer tokenも要求する
-- BrowserとObserverのWebRTC command channelはこの契約に使わない
-
-MADSYSTEM と Relay が同一PCにある現行構成では、Race Controlをheartbeat中継へ追加するより変更範囲が小さい。
-ただし token はコードやシーンへ固定せず、起動設定または秘密情報ストアから注入する。
+完全な request / response、再送、認証、エラー契約は
+[Relay Pit Recovery Tick API](PIT_RECOVERY_API.md) を参照する。
 
 ## Relay の回復規則
 
@@ -165,18 +141,19 @@ Relay に回復モードを設ける。
 | mode | 回復条件 |
 | --- | --- |
 | `legacy` | 現行の安全時間 + 前進指令。移行期間のみ使用 |
-| `pit-marker` | active run、対象phase、かつ有効なpit presence lease |
+| `pit-marker` | active run の `green` 中に有効な recovery tick を受理 |
 | `disabled` | race中は回復しない |
 
 `pit-marker` では次を守る。
 
-- 回復量は `rate * Relay側の経過秒` で計算する
-- 1回の更新で積算できる時間に上限を設け、停止復帰後の大量回復を防ぐ
+- 受理した tick 1 回につき 20 HP を回復する
+- 同じ `commandId` の再送は重複回復させない
+- 前回受理から 2 秒未満の tick を拒否する
+- entry 内の tick は 1 から連続させる
 - HPは `0..100` にclampする
 - 衝突減算と回復を同じlock内で順序付ける
-- `ready`、run変更、lease timeout、Relay再起動でpit presenceを破棄する
-- RelayがMADSYSTEMとの通信を失った場合は回復しない
-- 回復率は設定値とし、実走行のマーカー可視時間を測るまで固定仕様にしない
+- `ready`、run変更、Relay再起動でentryと重複排除履歴を破棄する
+- Race Control WebSocket が切断中は回復しない
 
 走行中に利用する回復ラインなので、初期仕様では停止やブレーキ入力を必須にしない。
 必要なら後からスロットル上限、最低滞在時間、1周あたり回復上限を競技ルールとして追加する。
@@ -190,8 +167,7 @@ Viewerは表示だけを行い、URLパラメーターやローカル状態か�
 Operations Dashboardには将来、次を読み取り専用で出すと診断しやすい。
 
 - recovery mode
-- pit presence active / lease age
-- last accepted sequence
+- last accepted pit entry / tick / age
 - HP / speed cap / repairing
 - last marker enter / exit reason
 
@@ -225,12 +201,12 @@ Operations Dashboardには将来、次を読み取り専用で出すと診断し
 - `quadrant -> carId` は既存の固定割当と同じ設定元を使う
 - 送信を無効にしたローカルログモードで実機映像を確認する
 
-### Phase 2: Relay pit leaseと回復
+### Phase 2: Relay recovery tickと回復（実装済み）
 
-- 認証付きinternal endpointと全車snapshot契約を実装する
+- 認証付きinternal endpointと車両単位のtick契約を実装する
 - `legacy|pit-marker|disabled` を追加する
 - `pit-marker` では現行の前進中自動回復を無効にする
-- stale sequence、run不一致、timeout、unknown carをfail closedで処理する
+- command重複、tick順序、2秒間隔、run不一致、Race Control切断、unknown carをfail closedで処理する
 - 回復イベントを診断ログへ残す
 
 ### Phase 3: 結合とUI
@@ -252,13 +228,13 @@ Operations Dashboardには将来、次を読み取り専用で出すと診断し
 
 ### Relay
 
-- 有効なlease中だけHPが増える
+- 有効なtick 1回につき最大20 HPだけ増える
 - `legacy`回復が`pit-marker`で動かない
-- timeout、stale sequence、raceRunId不一致で回復しない
+- command重複、tick順序違反、2秒未満、raceRunId不一致で回復しない
 - 衝突と回復が同時でもHPが範囲外にならない
-- `ready`でHPを100へ戻し、pit leaseを破棄する
-- 未認証、unknown car、不完全snapshotを拒否する
-- Pilotが送る偽のpresenceを受理しない
+- `ready`でHPを100へ戻し、pit entryと重複排除履歴を破棄する
+- 未認証、unknown car、不正commandを拒否する
+- Pilotが送る偽のtickを受理しない
 
 ### 実機
 
@@ -271,9 +247,9 @@ Operations Dashboardには将来、次を読み取り専用で出すと診断し
 ## 実装前に決める項目
 
 1. ピット専用dictionaryとmarker ID
-2. enter/exitの時間、heartbeat周期、Relay lease TTL
-3. 1秒あたりの回復量と1回のピット通過で期待する回復量
-4. 回復を許可するrace phaseとモード
+2. enter/exitの時間と短時間未検出の猶予
+3. 2秒ごとに20 HPという初期値を実走後も維持するか
+4. 初期仕様の `green` 限定を他phaseへ広げるか
 5. Drive Offまたは停止中にも回復を許可するか
 6. `VHS:1`のまま開始するか、`repairing`を含む新versionを同時導入するか
 7. PoC後にRace Controlへ履歴を残す必要があるか

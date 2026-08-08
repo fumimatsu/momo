@@ -227,6 +227,8 @@ type relayServer struct {
 	sources     map[string]*relay
 	sourceOrder []string
 	recorder    *telemetryRecorder
+	raceMu      sync.RWMutex
+	raceContext relayRaceContext
 }
 
 type raceStateEnvelope struct {
@@ -353,9 +355,10 @@ type telemetryOperationsState struct {
 }
 
 type vehicleHealthOperationsState struct {
-	HP       float64 `json:"hp"`
-	SpeedCap float64 `json:"speedCap"`
-	Mode     string  `json:"mode"`
+	HP           float64 `json:"hp"`
+	SpeedCap     float64 `json:"speedCap"`
+	Mode         string  `json:"mode"`
+	RecoveryMode string  `json:"recoveryMode"`
 }
 
 type downstreamOperationsState struct {
@@ -381,7 +384,8 @@ type recoveryOperationsState struct {
 }
 
 func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCommand bool,
-	rtpStallTimeout time.Duration, upstreamStartTimeout time.Duration) (*relay, error) {
+	rtpStallTimeout time.Duration, upstreamStartTimeout time.Duration,
+	healthRecoveryMode vehicleHealthRecoveryMode) (*relay, error) {
 	api, err := newH264API()
 	if err != nil {
 		return nil, err
@@ -407,6 +411,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 	relay.videoHealth.Store(int32(videoNotStarted))
 	relay.upstreamPeerState.Store("new")
 	relay.lastErrorCode.Store("")
+	relay.vehicleHealth.setRecoveryMode(healthRecoveryMode)
 	return relay, nil
 }
 
@@ -822,9 +827,10 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		Lifecycle:   lifecycle.String(),
 		VideoHealth: videoHealth.String(),
 		VehicleHealth: vehicleHealthOperationsState{
-			HP:       health.HP,
-			SpeedCap: health.SpeedCap,
-			Mode:     health.Mode,
+			HP:           health.HP,
+			SpeedCap:     health.SpeedCap,
+			Mode:         health.Mode,
+			RecoveryMode: string(r.vehicleHealth.recoveryModeSnapshot()),
 		},
 		Upstream: upstreamOperationsState{
 			PeerState:               peerState,
@@ -1736,6 +1742,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 		return fmt.Errorf("connect Race Control WebSocket: %w", err)
 	}
 	defer ws.Close()
+	defer server.markRaceControlDisconnected()
 
 	for {
 		_, data, err := ws.ReadMessage()
@@ -1751,6 +1758,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			log.Printf("ignore unsupported Race Control message: type=%q version=%d", envelope.Type, envelope.Version)
 			continue
 		}
+		server.observeRaceContext(envelope, time.Now())
 		if server.recorder != nil {
 			server.recorder.RecordRaceState(string(data), telemetryRaceContext{
 				RaceID:    envelope.RaceID,
@@ -1782,6 +1790,7 @@ func main() {
 	var raceCars sourceFlag
 	var operationsAllowCIDRs sourceFlag
 	var garageAllowCIDRs sourceFlag
+	var gameplayAllowCIDRs sourceFlag
 	var raceURL string
 	var raceViewerToken string
 	var ayameSignalingURL string
@@ -1789,11 +1798,13 @@ func main() {
 	var ayameSignalingKey string
 	var ayamePilotRooms sourceFlag
 	var telemetryLogDir string
+	var healthRecoveryModeValue string
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
 	flag.Var(&operationsAllowCIDRs, "operations-allow-cidr", "CIDR allowed to read /operations.html and /api/v1/status; can be repeated (default: loopback only)")
 	flag.Var(&garageAllowCIDRs, "garage-allow-cidr", "CIDR allowed to read /garage.html and /api/v1/pilot-devices; can be repeated (default: loopback only)")
+	flag.Var(&gameplayAllowCIDRs, "gameplay-allow-cidr", "CIDR allowed to call gameplay APIs; can be repeated (default: loopback only)")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
 	flag.StringVar(&raceURL, "race-url", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_WS_URL")), "Race Control WebSocket URL for race_state v2 distribution")
 	flag.StringVar(&raceViewerToken, "race-viewer-token", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_VIEWER_TOKEN")), "Race Control Viewer Bearer token")
@@ -1802,12 +1813,29 @@ func main() {
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
+	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, or disabled")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
 	flag.Parse()
 	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 {
 		log.Fatal("-rtp-stall-timeout and -upstream-start-timeout must be positive")
+	}
+	if strings.TrimSpace(healthRecoveryModeValue) == "" {
+		healthRecoveryModeValue = string(vehicleHealthRecoveryLegacy)
+	}
+	healthRecoveryMode, err := parseVehicleHealthRecoveryMode(healthRecoveryModeValue)
+	if err != nil {
+		log.Fatal(err)
+	}
+	gameplayToken := strings.TrimSpace(os.Getenv("MOMO_RELAY_GAMEPLAY_TOKEN"))
+	if healthRecoveryMode == vehicleHealthRecoveryPitMarker {
+		if gameplayToken == "" {
+			log.Fatal("MOMO_RELAY_GAMEPLAY_TOKEN is required when -health-recovery-mode=pit-marker")
+		}
+		if strings.TrimSpace(raceURL) == "" {
+			log.Fatal("-race-url is required when -health-recovery-mode=pit-marker")
+		}
 	}
 	if upstream != "" {
 		sources = append(sources, "default="+upstream)
@@ -1823,9 +1851,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	gameplayPolicy, err := parseOperationsAccessPolicy(gameplayAllowCIDRs)
+	if err != nil {
+		log.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	raceCarBySource := make(map[string]string, len(raceCars))
+	raceCarSources := make(map[string]string, len(raceCars))
 	for _, raceCarValue := range raceCars {
 		name, carID, err := parseSource(raceCarValue)
 		if err != nil {
@@ -1834,7 +1867,11 @@ func main() {
 		if _, exists := raceCarBySource[name]; exists {
 			log.Fatalf("duplicate Race Control source mapping: %q", name)
 		}
+		if existingSource, exists := raceCarSources[carID]; exists {
+			log.Fatalf("duplicate Race Control car mapping %q for sources %q and %q", carID, existingSource, name)
+		}
 		raceCarBySource[name] = carID
+		raceCarSources[carID] = name
 	}
 	ayameRoomBySource := make(map[string]string, len(ayamePilotRooms))
 	for _, ayameRoomValue := range ayamePilotRooms {
@@ -1884,7 +1921,7 @@ func main() {
 			log.Fatalf("Race Control is enabled but source %q has no -race-car mapping", name)
 		}
 		relay, err := newRelay(name, sourceURL, raceCarID, allowObserverCommand,
-			rtpStallTimeout, upstreamStartTimeout)
+			rtpStallTimeout, upstreamStartTimeout, healthRecoveryMode)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1920,6 +1957,8 @@ func main() {
 	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
 	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
+	mux.HandleFunc("/api/v1/gameplay/pit-recovery-ticks",
+		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitRecoveryTick)))
 	mux.HandleFunc("/garage.html", garagePolicy.wrap(operationsPageHandler(garageHTML)))
 	fileServer := http.FileServer(http.FS(webRoot))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
