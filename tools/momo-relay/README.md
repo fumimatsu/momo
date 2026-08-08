@@ -164,4 +164,11 @@ http://<momo-device>:8080/html/fpv-viewer.html#raceUrl=ws%3A%2F%2F<race-control-
 
 表示専用 HUD はハンドル角、アクセル、ブレーキ、現在ギア、Drive 状態を描画する。スライダーと個別ギアボタンは隠すが、Drive 切替・切断・全画面は残す。ハンコンのパドルでギアを変更する。
 
+## 車体HPとピット回復
+
+車体HP、衝突ダメージ、前進スロットル上限はRelayの `vehicle_health.go` が正本である。
+ArUcoピットマーカーを見ている間だけ回復する構想と、MADSYSTEM / Observer / Relay / Race Controlの
+責務分担は [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
+現時点では未実装で、既存コードは安全時間経過後の前進中に自動回復する。
+
 Pi 直結 UI は別配布物である。実ファイル名は `fpv-viewer.html` / `fpv-viewer.js`、URL は `#audioControls=0` のように hash を使う。Relay の `pilot.html` と混同してはならない。
