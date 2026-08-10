@@ -237,8 +237,9 @@ function positiveInteger(value) {
   return Number.isInteger(number) && number > 0 ? number : null;
 }
 
-function recentLapSamples(state, carId, maximum = 3) {
-  return normalizeLapHistory(state)
+function recentLapSamples(state, carId, maximum = 3, normalizedHistory = null) {
+  const history = Array.isArray(normalizedHistory) ? normalizedHistory : normalizeLapHistory(state);
+  return history
     .filter((entry) => entry.carId === carId)
     .slice(0, maximum)
     .map((entry) => entry.lapTimeMs);
@@ -262,10 +263,11 @@ function sectorLapSamples(standings, boundaries, carId = null) {
   return samples;
 }
 
-export function estimateLapDurationMs(state, standing, boundaries, fallbackLapMs) {
+export function estimateLapDurationMs(state, standing, boundaries, fallbackLapMs, normalizedHistory = null) {
   const fallback = positiveInteger(fallbackLapMs);
   const carId = typeof standing?.carId === 'string' ? standing.carId : '';
-  const personalLaps = recentLapSamples(state, carId);
+  const history = Array.isArray(normalizedHistory) ? normalizedHistory : normalizeLapHistory(state);
+  const personalLaps = recentLapSamples(state, carId, 3, history);
   if (personalLaps.length > 0) {
     return { durationMs: Math.round(median(personalLaps)), source: 'recent-laps' };
   }
@@ -276,7 +278,7 @@ export function estimateLapDurationMs(state, standing, boundaries, fallbackLapMs
     return { durationMs: Math.round(median(personalSectors)), source: 'personal-sectors' };
   }
   const latestClassLapByCar = new Map();
-  for (const entry of normalizeLapHistory(state)) {
+  for (const entry of history) {
     if (!latestClassLapByCar.has(entry.carId)) latestClassLapByCar.set(entry.carId, entry.lapTimeMs);
   }
   if (latestClassLapByCar.size > 0) {

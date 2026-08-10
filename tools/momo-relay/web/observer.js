@@ -24,6 +24,10 @@ const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 const DISCONNECTED_RECONNECT_MS = 3000;
 const RACE_STATE_POLL_MS = 500;
+const CLOCK_RENDER_INTERVAL_MS = 50;
+const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
+const TELEMETRY_RENDER_INTERVAL_MS = 100;
+const TRANSPORT_RENDER_INTERVAL_MS = 250;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
@@ -36,15 +40,26 @@ const clients = [];
 const impactTimers = new Map();
 const markerMotionByCar = new Map();
 const markerRenderByCar = new Map();
+const markerNodesByCar = new Map();
+const currentLapNodeByCar = new Map();
+const telemetryNodesByCar = new Map();
+const renderedTelemetryByCar = new Map();
 const pitMotionByCar = new Map();
 const raceTransportByCar = new Map();
 let observerConfig = null;
 let raceState = null;
+let standingByCar = new Map();
+let lapPaceByCar = new Map();
+let normalizedLapHistory = [];
+let trackGeometry = null;
 let raceReceivedAt = 0;
 let animationFrame = 0;
 let racePollTimer = 0;
 let racePollInFlight = false;
 let raceStatusRenderedAt = 0;
+let clockRenderedAt = 0;
+let markerRenderedAt = 0;
+let telemetryRenderedAt = 0;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -387,6 +402,7 @@ class ObserverPeer {
 function renderLeaderboard() {
   const root = document.getElementById('leaderboardRows');
   const rows = standingsByConfiguredCar(observerConfig.cars, raceState);
+  currentLapNodeByCar.clear();
   root.replaceChildren(...rows.map(({ car, standing }) => {
     const health = healthByCar.get(car.carId);
     const connection = connectionByCar.get(car.carId);
@@ -400,6 +416,7 @@ function renderLeaderboard() {
     const current = element('span', 'leader-time-current', 'CURRENT ');
     const currentValue = element('strong', '', formatDuration(standing?.currentLapMs));
     currentValue.dataset.currentLap = car.carId;
+    currentLapNodeByCar.set(car.carId, currentValue);
     current.append(currentValue);
     const last = element('span', 'leader-time-last', 'LAST ');
     last.append(element('strong', '', formatDuration(standing?.lapTimeMs)));
@@ -472,7 +489,7 @@ function renderSectorRows() {
 
 function renderTimingRows() {
   const root = document.getElementById('timingRows');
-  const history = normalizeLapHistory(raceState);
+  const history = normalizedLapHistory;
   const carById = new Map(observerConfig.cars.map((car) => [car.carId, car]));
   const standingById = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
   const overallLapBest = Math.min(...(raceState?.standings || [])
@@ -586,6 +603,7 @@ function renderPitState() {
 
 function createTrackMarkers() {
   const root = document.getElementById('trackMarkers');
+  markerNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
     const marker = svgElement('g', {
       id: `marker-${car.carId}`,
@@ -593,17 +611,29 @@ function createTrackMarkers() {
       'aria-label': `${car.carId} estimated course position`,
       hidden: '',
     });
-    marker.append(
-      svgElement('circle', { class: 'marker-confidence', r: 14 }),
-      svgElement('circle', { class: 'marker-core', r: 10 }),
-    );
+    const confidence = svgElement('circle', { class: 'marker-confidence', r: 14 });
+    marker.append(confidence, svgElement('circle', { class: 'marker-core', r: 10 }));
     const number = svgElement('text', { class: 'marker-number', y: 3.5 });
     number.textContent = car.displayNumber;
     const title = svgElement('title');
     title.textContent = `${car.carId} waiting for sector timing`;
     marker.append(number, title);
+    markerNodesByCar.set(car.carId, { marker, confidence, title });
     return marker;
   }));
+}
+
+function readTrackGeometry() {
+  const coursePath = document.getElementById('coursePath');
+  const pitPath = document.getElementById('pitPath');
+  if (!coursePath || !pitPath || typeof coursePath.getTotalLength !== 'function'
+      || typeof pitPath.getTotalLength !== 'function') return null;
+  return {
+    coursePath,
+    pitPath,
+    courseLength: coursePath.getTotalLength(),
+    pitLength: pitPath.getTotalLength(),
+  };
 }
 
 function markerRaceElapsedMs(carId, standing, now) {
@@ -623,6 +653,26 @@ function markerRaceElapsedMs(carId, standing, now) {
   if (running) motion.elapsedMs += Math.max(0, now - motion.updatedAt);
   motion.updatedAt = now;
   return standing.lastMarkerRaceMs + motion.elapsedMs;
+}
+
+function setTextIfChanged(node, value) {
+  if (node && node.textContent !== value) node.textContent = value;
+}
+
+function rebuildRaceViewCache() {
+  const standings = Array.isArray(raceState?.standings) ? raceState.standings : [];
+  standingByCar = new Map(standings.map((standing) => [standing.carId, standing]));
+  normalizedLapHistory = normalizeLapHistory(raceState);
+  lapPaceByCar = new Map(standings.map((standing) => [
+    standing.carId,
+    estimateLapDurationMs(
+      raceState,
+      standing,
+      COURSE_SECTOR_BOUNDARIES,
+      observerConfig.motion.defaultLapMs,
+      normalizedLapHistory,
+    ),
+  ]));
 }
 
 function markerKey(standing) {
@@ -649,12 +699,7 @@ function markerTargetOnTrack(car, standing, now, path, length) {
   const localAdvance = raceReceivedAt ? Math.max(0, now - raceReceivedAt) : 0;
   const raceElapsed = markerRaceElapsedMs(car.carId, standing, now);
   const currentLapElapsed = currentLapClockValue(standing, raceState, localAdvance);
-  const pace = estimateLapDurationMs(
-    raceState,
-    standing,
-    COURSE_SECTOR_BOUNDARIES,
-    observerConfig.motion.defaultLapMs,
-  );
+  const pace = lapPaceByCar.get(car.carId);
   const estimate = pace && standing?.sectorCount === 3
     ? estimateLapPacedProgress(
       standing,
@@ -752,12 +797,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
       pitMotionByCar.delete(car.carId);
       return null;
     }
-    const pace = estimateLapDurationMs(
-      raceState,
-      standing,
-      COURSE_SECTOR_BOUNDARIES,
-      observerConfig.motion.defaultLapMs,
-    );
+    const pace = lapPaceByCar.get(car.carId);
     const elapsed = advanceMotionClock(motion, now, running);
     const projection = pace ? projectCourseProgress(
       observerConfig.motion.pitRejoinProgress,
@@ -781,7 +821,8 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
   return null;
 }
 
-function renderMarkerTarget(marker, car, index, target, now) {
+function renderMarkerTarget(nodes, car, index, target, now) {
+  const { marker, confidence, title } = nodes;
   let rendered = markerRenderByCar.get(car.carId);
   if (!rendered) {
     rendered = { key: target.key, x: target.x, y: target.y, correctionStartedAt: 0 };
@@ -805,22 +846,18 @@ function renderMarkerTarget(marker, car, index, target, now) {
   const [offsetX, offsetY] = MARKER_RENDER_OFFSETS[index] || [0, 0];
   marker.removeAttribute('hidden');
   marker.setAttribute('transform', `translate(${(rendered.x + offsetX).toFixed(2)} ${(rendered.y + offsetY).toFixed(2)})`);
-  marker.dataset.motionState = target.state;
-  marker.querySelector('.marker-confidence').setAttribute('r', String(target.confidenceRadius));
-  marker.querySelector('title').textContent = target.title;
+  if (marker.dataset.motionState !== target.state) marker.dataset.motionState = target.state;
+  const radius = String(target.confidenceRadius);
+  if (confidence.getAttribute('r') !== radius) confidence.setAttribute('r', radius);
+  setTextIfChanged(title, target.title);
 }
 
 function updateTrackMarkers(now) {
-  if (!observerConfig || !raceState) return;
-  const coursePath = document.getElementById('coursePath');
-  const pitPath = document.getElementById('pitPath');
-  if (!coursePath || !pitPath || typeof coursePath.getTotalLength !== 'function'
-      || typeof pitPath.getTotalLength !== 'function') return;
-  const courseLength = coursePath.getTotalLength();
-  const pitLength = pitPath.getTotalLength();
-  const standingByCar = new Map((raceState.standings || []).map((standing) => [standing.carId, standing]));
+  if (!observerConfig || !raceState || !trackGeometry) return;
+  const { coursePath, courseLength, pitPath, pitLength } = trackGeometry;
   observerConfig.cars.forEach((car, index) => {
-    const marker = document.getElementById(`marker-${car.carId}`);
+    const nodes = markerNodesByCar.get(car.carId);
+    const marker = nodes?.marker;
     const standing = standingByCar.get(car.carId);
     if (!marker || !standing) {
       marker?.setAttribute('hidden', '');
@@ -833,37 +870,58 @@ function updateTrackMarkers(now) {
       return;
     }
     marker.dataset.sector = Number.isInteger(standing.currentSector) ? String(standing.currentSector) : '';
-    renderMarkerTarget(marker, car, index, target, now);
+    renderMarkerTarget(nodes, car, index, target, now);
   });
 }
 
-function displayedRaceTime() {
-  return raceClockValue(raceState, raceReceivedAt ? performance.now() - raceReceivedAt : 0);
+function displayedRaceTime(now) {
+  return raceClockValue(raceState, raceReceivedAt ? now - raceReceivedAt : 0);
 }
 
-function updateClock() {
-  document.getElementById('raceClock').textContent = formatDuration(displayedRaceTime());
-  const age = raceReceivedAt ? (performance.now() - raceReceivedAt) / 1000 : null;
+function renderClocks(now) {
+  setTextIfChanged(document.getElementById('raceClock'), formatDuration(displayedRaceTime(now)));
+  const age = raceReceivedAt ? (now - raceReceivedAt) / 1000 : null;
   const updatedAgo = document.getElementById('updatedAgo');
-  updatedAgo.textContent = age === null ? '--' : `${age.toFixed(1)}s`;
-  updatedAgo.dataset.freshness = age === null ? 'waiting' : age < 3 ? 'live' : age < 10 ? 'delayed' : 'stale';
+  setTextIfChanged(updatedAgo, age === null ? '--' : `${age.toFixed(1)}s`);
+  const freshness = age === null ? 'waiting' : age < 3 ? 'live' : age < 10 ? 'delayed' : 'stale';
+  if (updatedAgo.dataset.freshness !== freshness) updatedAgo.dataset.freshness = freshness;
   if (raceState && observerConfig) {
-    const elapsed = raceReceivedAt ? performance.now() - raceReceivedAt : 0;
-    const standingByCar = new Map((raceState.standings || []).map((standing) => [standing.carId, standing]));
+    const elapsed = raceReceivedAt ? now - raceReceivedAt : 0;
     for (const car of observerConfig.cars) {
       const value = formatDuration(currentLapClockValue(standingByCar.get(car.carId), raceState, elapsed));
-      for (const node of document.querySelectorAll(`[data-current-lap="${car.carId}"]`)) {
-        node.textContent = value;
-      }
+      setTextIfChanged(currentLapNodeByCar.get(car.carId), value);
     }
   }
-  updateTrackMarkers(performance.now());
-  const now = performance.now();
-  if (observerConfig && now - raceStatusRenderedAt >= 250) {
+}
+
+function renderTelemetryDisplays() {
+  if (!observerConfig) return;
+  for (const car of observerConfig.cars) {
+    const telemetry = telemetryByCar.get(car.carId);
+    if (!telemetry || renderedTelemetryByCar.get(car.carId) === telemetry) continue;
+    renderCameraTelemetry(car, telemetry);
+    renderedTelemetryByCar.set(car.carId, telemetry);
+  }
+}
+
+function updateAnimationFrame(now) {
+  if (now - clockRenderedAt >= CLOCK_RENDER_INTERVAL_MS) {
+    clockRenderedAt = now;
+    renderClocks(now);
+  }
+  if (now - markerRenderedAt >= MARKER_RENDER_INTERVAL_MS) {
+    markerRenderedAt = now;
+    updateTrackMarkers(now);
+  }
+  if (now - telemetryRenderedAt >= TELEMETRY_RENDER_INTERVAL_MS) {
+    telemetryRenderedAt = now;
+    renderTelemetryDisplays();
+  }
+  if (observerConfig && now - raceStatusRenderedAt >= TRANSPORT_RENDER_INTERVAL_MS) {
     raceStatusRenderedAt = now;
     for (const car of observerConfig.cars) renderCameraTransportState(car, now);
   }
-  animationFrame = requestAnimationFrame(updateClock);
+  animationFrame = requestAnimationFrame(updateAnimationFrame);
 }
 
 function renderAll() {
@@ -878,6 +936,7 @@ function renderAll() {
 
 function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
+  telemetryNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
     const tile = element('article', `camera-tile camera-${car.color}`);
     const head = element('div', 'camera-head');
@@ -901,13 +960,13 @@ function createCameraTiles() {
     videoState.id = `video-state-${car.carId}`;
     const telemetry = element('div', 'camera-telemetry');
     telemetry.id = `camera-telemetry-${car.carId}`;
-    telemetry.append(
-      element('strong', 'telemetry-rate', 'TEL --'),
-      element('span', 'telemetry-lateral', 'LAT -- G'),
-      element('span', 'telemetry-forward', 'FWD -- G'),
-      element('span', 'telemetry-yaw', 'YAW --'),
-      element('span', 'telemetry-loss', 'LOSS --'),
-    );
+    const rate = element('strong', 'telemetry-rate', 'TEL --');
+    const lateral = element('span', 'telemetry-lateral', 'LAT -- G');
+    const forward = element('span', 'telemetry-forward', 'FWD -- G');
+    const yaw = element('span', 'telemetry-yaw', 'YAW --');
+    const loss = element('span', 'telemetry-loss', 'LOSS --');
+    telemetry.append(rate, lateral, forward, yaw, loss);
+    telemetryNodesByCar.set(car.carId, { root: telemetry, rate, lateral, forward, yaw, loss });
     feed.append(video, telemetry, videoState);
     tile.append(head, feed);
     return tile;
@@ -915,16 +974,24 @@ function createCameraTiles() {
 }
 
 function updateCameraState(car, state) {
+  const previous = connectionByCar.get(car.carId);
+  const summaryChanged = !previous
+    || previous.state !== state.state
+    || previous.detail !== state.detail
+    || previous.videoActive !== state.videoActive;
   connectionByCar.set(car.carId, state);
   const status = document.getElementById(`camera-status-${car.carId}`);
   if (status) {
-    status.lastChild.textContent = state.state;
+    setTextIfChanged(status.lastChild, state.state);
     status.dataset.state = String(state.state || 'waiting').toLowerCase();
   }
   const fps = document.getElementById(`camera-fps-${car.carId}`);
-  if (fps) fps.textContent = state.fps > 0 ? `${state.fps.toFixed(1)} FPS` : '-- FPS';
+  setTextIfChanged(fps, state.fps > 0 ? `${state.fps.toFixed(1)} FPS` : '-- FPS');
   renderCameraTransportState(car, performance.now());
-  renderAll();
+  if (summaryChanged) {
+    renderHeader();
+    renderSituations();
+  }
 }
 
 function renderCameraTransportState(car, now) {
@@ -938,9 +1005,11 @@ function renderCameraTransportState(car, now) {
     : raceAge === null
       ? 'RACE DC WAIT'
       : `RACE DC ${(raceAge / 1000).toFixed(1)}s`;
-  videoState.textContent = `${state.state} / ${raceText} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'}`;
-  videoState.dataset.state = String(state.state || 'waiting').toLowerCase();
-  videoState.dataset.raceFreshness = raceAge === null ? 'waiting' : raceAge < 2500 ? 'live' : 'stale';
+  setTextIfChanged(videoState, `${state.state} / ${raceText} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'}`);
+  const stateName = String(state.state || 'waiting').toLowerCase();
+  const freshness = raceAge === null ? 'waiting' : raceAge < 2500 ? 'live' : 'stale';
+  if (videoState.dataset.state !== stateName) videoState.dataset.state = stateName;
+  if (videoState.dataset.raceFreshness !== freshness) videoState.dataset.raceFreshness = freshness;
 }
 
 function handleRaceState(car, state) {
@@ -962,6 +1031,7 @@ function handleRaceState(car, state) {
   }
   raceState = state;
   raceReceivedAt = performance.now();
+  rebuildRaceViewCache();
   for (const [carId, pit] of pendingPitByCar) {
     if (pit.raceRunId !== nextRunId) continue;
     pendingPitByCar.delete(carId);
@@ -1001,8 +1071,11 @@ function startRaceStatePolling(relayHost) {
 }
 
 function handleHealth(car, health) {
+  const previous = healthByCar.get(car.carId);
+  if (previous?.hp === health.hp && previous?.speedCap === health.speedCap && previous?.mode === health.mode) return;
   healthByCar.set(car.carId, health);
-  renderAll();
+  renderLeaderboard();
+  renderSituations();
 }
 
 function updatePitMotion(car, pit, previous) {
@@ -1044,9 +1117,21 @@ function handlePit(car, pit) {
   }
   pendingPitByCar.delete(car.carId);
   const previous = pitByCar.get(car.carId);
+  const unchanged = previous
+    && previous.raceRunId === pit.raceRunId
+    && previous.present === pit.present
+    && previous.entryId === pit.entryId
+    && previous.enteredAtUnixMs === pit.enteredAtUnixMs
+    && previous.exitedAtUnixMs === pit.exitedAtUnixMs
+    && previous.exitReason === pit.exitReason
+    && previous.lastAcceptedTick === pit.lastAcceptedTick
+    && previous.serviceState === pit.serviceState
+    && previous.hp === pit.hp;
+  if (unchanged) return;
   pitByCar.set(car.carId, pit);
   if (raceState?.raceRunId) updatePitMotion(car, pit, previous);
-  renderAll();
+  renderSituations();
+  renderPitState();
 }
 
 function signed(value, digits = 2) {
@@ -1054,20 +1139,24 @@ function signed(value, digits = 2) {
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
-function handleTelemetry(car, telemetry) {
-  telemetryByCar.set(car.carId, telemetry);
-  const root = document.getElementById(`camera-telemetry-${car.carId}`);
-  if (!root) return;
+function renderCameraTelemetry(car, telemetry) {
+  const nodes = telemetryNodesByCar.get(car.carId);
+  if (!nodes) return;
   const feature = telemetry.motion;
   const motion = feature?.motion;
   const periodUs = feature?.periodUs || telemetry.primary?.periodUs;
   const rateHz = Number.isFinite(periodUs) && periodUs > 0 ? 1000000 / periodUs : null;
-  root.querySelector('.telemetry-rate').textContent = rateHz ? `TEL ${rateHz.toFixed(1)} Hz` : 'TEL --';
-  root.querySelector('.telemetry-lateral').textContent = `LAT ${signed(motion?.lateralMps2 / 9.80665)} G`;
-  root.querySelector('.telemetry-forward').textContent = `FWD ${signed(motion?.forwardMps2 / 9.80665)} G`;
-  root.querySelector('.telemetry-yaw').textContent = `YAW ${signed(motion?.yawRateRadPerSec)} rad/s`;
-  root.querySelector('.telemetry-loss').textContent = `LOSS ${telemetry.counters?.missing ?? 0}`;
-  root.dataset.active = motion ? 'true' : 'false';
+  setTextIfChanged(nodes.rate, rateHz ? `TEL ${rateHz.toFixed(1)} Hz` : 'TEL --');
+  setTextIfChanged(nodes.lateral, `LAT ${signed(motion?.lateralMps2 / 9.80665)} G`);
+  setTextIfChanged(nodes.forward, `FWD ${signed(motion?.forwardMps2 / 9.80665)} G`);
+  setTextIfChanged(nodes.yaw, `YAW ${signed(motion?.yawRateRadPerSec)} rad/s`);
+  setTextIfChanged(nodes.loss, `LOSS ${telemetry.counters?.missing ?? 0}`);
+  nodes.root.dataset.active = motion ? 'true' : 'false';
+}
+
+function handleTelemetry(car, telemetry) {
+  telemetryByCar.set(car.carId, telemetry);
+  const feature = telemetry.motion;
   if (feature?.impact) {
     renderSituations();
     if (impactTimers.has(car.carId)) window.clearTimeout(impactTimers.get(car.carId));
@@ -1099,6 +1188,7 @@ async function initialize() {
     observerConfig = await loadConfig();
     document.getElementById('trackName').textContent = observerConfig.trackName;
     createTrackMarkers();
+    trackGeometry = readTrackGeometry();
     createCameraTiles();
     for (const car of observerConfig.cars) connectionByCar.set(car.carId, {
       state: 'WAITING', detail: 'NOT CONNECTED', fps: 0, videoActive: false,
@@ -1122,7 +1212,7 @@ async function initialize() {
       client.connect();
     }
     if (params.get('raceFallback') === 'http') startRaceStatePolling(relayHost);
-    animationFrame = requestAnimationFrame(updateClock);
+    animationFrame = requestAnimationFrame(updateAnimationFrame);
   } catch (error) {
     document.getElementById('liveStatus').textContent = 'CONFIG ERROR';
     document.getElementById('situationRows').replaceChildren(element('article', 'situation-item situation-limited', error.message || String(error)));
