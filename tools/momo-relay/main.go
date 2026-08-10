@@ -1822,7 +1822,7 @@ func main() {
 		log.Fatal("-rtp-stall-timeout and -upstream-start-timeout must be positive")
 	}
 	if strings.TrimSpace(healthRecoveryModeValue) == "" {
-		healthRecoveryModeValue = string(vehicleHealthRecoveryLegacy)
+		healthRecoveryModeValue = string(vehicleHealthRecoveryDefault)
 	}
 	healthRecoveryMode, err := parseVehicleHealthRecoveryMode(healthRecoveryModeValue)
 	if err != nil {

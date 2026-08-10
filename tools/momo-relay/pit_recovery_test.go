@@ -55,6 +55,13 @@ func TestVehicleHealthRecoveryModeCapabilities(t *testing.T) {
 	}
 }
 
+func TestVehicleHealthDefaultsToHybridRecovery(t *testing.T) {
+	health := newVehicleHealth(time.Now())
+	if got := health.recoveryModeSnapshot(); got != vehicleHealthRecoveryDefault {
+		t.Fatalf("default recovery mode = %q, want %q", got, vehicleHealthRecoveryDefault)
+	}
+}
+
 func TestVehicleHealthHybridModeAllowsDrivingAndPitRecovery(t *testing.T) {
 	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)

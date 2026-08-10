@@ -172,7 +172,7 @@ Relayは有効なtick 1回につき20 HPを回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
 [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
 
-回復モードは次の4種類である。既定は既存互換の `legacy` とする。
+回復モードは次の4種類である。既定は走行回復と PIT 回復を併用する `hybrid` とする。
 
 | mode | 動作 |
 | --- | --- |

@@ -70,7 +70,7 @@ func newVehicleHealth(now time.Time) *vehicleHealth {
 	return &vehicleHealth{
 		hp:             vehicleHealthMaximum,
 		lastUpdatedAt:  now,
-		recoveryMode:   vehicleHealthRecoveryLegacy,
+		recoveryMode:   vehicleHealthRecoveryDefault,
 		pitReceipts:    make(map[string]pitRecoveryReceipt),
 		pitSeenEntries: make(map[string]struct{}),
 	}
@@ -88,7 +88,7 @@ func (health *vehicleHealth) setRecoveryMode(mode vehicleHealthRecoveryMode) {
 
 func (health *vehicleHealth) recoveryModeSnapshot() vehicleHealthRecoveryMode {
 	if health == nil {
-		return vehicleHealthRecoveryLegacy
+		return vehicleHealthRecoveryDefault
 	}
 	health.mu.Lock()
 	defer health.mu.Unlock()
@@ -356,11 +356,11 @@ func vehicleHealthSpeedCap(hp float64) float64 {
 	hp = math.Max(0, math.Min(vehicleHealthMaximum, hp))
 	switch {
 	case hp >= 70:
-		return 0.85 + ((hp - 70) / 30 * 0.15)
+		return 0.90 + ((hp - 70) / 30 * 0.10)
 	case hp >= 35:
-		return 0.55 + ((hp - 35) / 35 * 0.30)
+		return 0.60 + ((hp - 35) / 35 * 0.30)
 	default:
-		return 0.35 + (hp / 35 * 0.20)
+		return 0.35 + (hp / 35 * 0.25)
 	}
 }
 

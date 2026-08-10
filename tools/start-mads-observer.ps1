@@ -13,7 +13,7 @@ param(
     [string]$GarageAllowCidr = '192.168.11.0/24',
     [string]$GameplayAllowCidr = '127.0.0.1/32',
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
-    [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'legacy' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
+    [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = '',
     [string]$ObserverCrashDumpDirectory = '',
