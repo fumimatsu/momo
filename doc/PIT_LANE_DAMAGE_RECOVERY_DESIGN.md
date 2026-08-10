@@ -133,6 +133,8 @@ OUTSIDE -> ENTER_CANDIDATE -> ACTIVE -> EXIT_CANDIDATE -> OUTSIDE
 
 完全な request / response、再送、認証、エラー契約は
 [Relay Pit Recovery Tick API](PIT_RECOVERY_API.md) を参照する。
+MADSYSTEM の実装境界と作業順序は
+[MADSYSTEM Pit Recovery 実装指南書](PIT_RECOVERY_MADSYSTEM_IMPLEMENTATION_GUIDE.md) を参照する。
 
 ## Relay の回復規則
 

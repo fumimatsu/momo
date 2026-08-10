@@ -81,6 +81,11 @@ Content-Type: application/json
 8. `429 recovery_too_soon` では `retryAfterMs` 以降に同じ要求を再送する。
 9. 4xx のうち `429` 以外は内容または状態の不一致として自動再送しない。
 10. 車両ごとに送信順を維持し、前の tick が受理される前に次の tick を送らない。
+11. marker exit、run 変更、race 終了では未送信・再送待ち tick を破棄する。
+12. tick は永続 outbox へ保存せず、MADSYSTEM 再起動後に古い tick を復元しない。
+
+MADSYSTEM のクラス分割、既存コードへの接続、テスト方針は
+[MADSYSTEM Pit Recovery 実装指南書](PIT_RECOVERY_MADSYSTEM_IMPLEMENTATION_GUIDE.md) を参照する。
 
 ## Relay の受理条件
 
