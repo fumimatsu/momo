@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -18,11 +19,31 @@ func TestVehicleHealthAppliesDamageAndClampsForwardThrottle(t *testing.T) {
 	if snapshot.HP != 88 || snapshot.Mode != "healthy" {
 		t.Fatalf("strong impact snapshot = %#v, want HP 88 healthy", snapshot)
 	}
-	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1970\n" {
-		t.Fatalf("limited command = %q, want 1970", got)
+	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1980\n" {
+		t.Fatalf("limited command = %q, want 1980", got)
 	}
 	if got := health.limitCommand("S:1500,T:1300\n", base.Add(1200*time.Millisecond)); got != "S:1500,T:1300\n" {
 		t.Fatalf("brake command must not be limited: %q", got)
+	}
+}
+
+func TestVehicleHealthSpeedCapUsesGentleHealthyRange(t *testing.T) {
+	tests := []struct {
+		hp   float64
+		want float64
+	}{
+		{hp: 100, want: 1.00},
+		{hp: 88, want: 0.96},
+		{hp: 72, want: 0.9066666667},
+		{hp: 70, want: 0.90},
+		{hp: 35, want: 0.60},
+		{hp: 0, want: 0.35},
+	}
+
+	for _, test := range tests {
+		if got := vehicleHealthSpeedCap(test.hp); math.Abs(got-test.want) > 0.000001 {
+			t.Errorf("HP %.0f speed cap = %.6f, want %.6f", test.hp, got, test.want)
+		}
 	}
 }
 

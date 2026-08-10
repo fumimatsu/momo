@@ -181,8 +181,31 @@ http://<momo-device>:8080/html/fpv-viewer.html#raceUrl=ws%3A%2F%2F<race-control-
 ## 車体HPとピット回復
 
 車体HP、衝突ダメージ、前進スロットル上限はRelayの `vehicle_health.go` が正本である。
-ArUcoピットマーカーを見ている間だけ回復する構想と、MADSYSTEM / Observer / Relay / Race Controlの
-責務分担は [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
-現時点では未実装で、既存コードは安全時間経過後の前進中に自動回復する。
+MADSYSTEMが同じピット用ArUco markerを連続認識し、2秒ごとにRelayへtickを送る。
+Relayは有効なtick 1回につき20 HPを回復する。API契約は
+[Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
+[ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
+
+回復モードは次の4種類である。既定は走行回復と PIT 回復を併用する `hybrid` とする。
+
+| mode | 動作 |
+| --- | --- |
+| `legacy` | 安全時間経過後、前進指令中に従来の連続回復を行う |
+| `pit-marker` | `green` 中にMADSYSTEMのtickを受理した時だけ20 HP回復する |
+| `hybrid` | `legacy` の走行回復と `pit-marker` の20 HP回復を両方行う |
+| `disabled` | 回復しない |
+
+`pit-marker` と `hybrid` ではRace Control接続とgameplay tokenが必須である。tokenは引数へ入れず環境変数で渡す。
+
+```powershell
+$env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
+.\tools\start-mads-observer.ps1 -RebuildRelay `
+  -HealthRecoveryMode 'hybrid' `
+  -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
+  -RaceControlViewerToken '<VIEWER_TOKEN>'
+```
+
+APIは既定でloopbackだけを許可する。MADSYSTEMを別PCで動かす場合は `-GameplayAllowCidr` を明示できるが、
+Relay自身はHTTPのTLSを終端しない。平文tokenを信頼できないネットワークへ流してはならない。
 
 Pi 直結 UI は別配布物である。実ファイル名は `fpv-viewer.html` / `fpv-viewer.js`、URL は `#audioControls=0` のように hash を使う。Relay の `pilot.html` と混同してはならない。

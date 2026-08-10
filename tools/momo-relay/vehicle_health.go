@@ -26,6 +26,25 @@ type vehicleHealthSnapshot struct {
 	Mode     string
 }
 
+type pitRecoveryApplyResult struct {
+	Status          string
+	RecoveredAmount float64
+	Snapshot        vehicleHealthSnapshot
+}
+
+type pitRecoveryApplyError struct {
+	StatusCode int
+	Code       string
+	Message    string
+	RetryAfter time.Duration
+}
+
+type pitRecoveryReceipt struct {
+	Fingerprint     string
+	RecoveredAmount float64
+	Snapshot        vehicleHealthSnapshot
+}
+
 // vehicleHealth は Relay ごとの車体状態である。操縦上限を Viewer に預けると
 // URL を直接開いた別の Pilot が制限を回避できるため、Relay 境界で適用する。
 type vehicleHealth struct {
@@ -38,13 +57,56 @@ type vehicleHealth struct {
 	lastForwardAt   time.Time
 	lastPublishedAt time.Time
 	lastRacePhase   string
+	recoveryMode    vehicleHealthRecoveryMode
+	activeRaceRunID string
+	pitEntryID      string
+	lastPitTick     int
+	lastPitAt       time.Time
+	pitReceipts     map[string]pitRecoveryReceipt
+	pitSeenEntries  map[string]struct{}
 }
 
 func newVehicleHealth(now time.Time) *vehicleHealth {
 	return &vehicleHealth{
-		hp:            vehicleHealthMaximum,
-		lastUpdatedAt: now,
+		hp:             vehicleHealthMaximum,
+		lastUpdatedAt:  now,
+		recoveryMode:   vehicleHealthRecoveryDefault,
+		pitReceipts:    make(map[string]pitRecoveryReceipt),
+		pitSeenEntries: make(map[string]struct{}),
 	}
+}
+
+func (health *vehicleHealth) setRecoveryMode(mode vehicleHealthRecoveryMode) {
+	if health == nil {
+		return
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.recoveryMode = mode
+	health.resetPitRecoveryLocked()
+}
+
+func (health *vehicleHealth) recoveryModeSnapshot() vehicleHealthRecoveryMode {
+	if health == nil {
+		return vehicleHealthRecoveryDefault
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	return health.recoveryMode
+}
+
+func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
+	if health == nil {
+		return
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	if raceRunID == health.activeRaceRunID {
+		return
+	}
+	health.activeRaceRunID = raceRunID
+	health.lastUpdatedAt = now
+	health.resetPitRecoveryLocked()
 }
 
 func (health *vehicleHealth) snapshot(now time.Time) vehicleHealthSnapshot {
@@ -79,7 +141,120 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 	health.lastDamageAt = time.Time{}
 	health.lastForwardAt = time.Time{}
 	health.lastPublishedAt = now
+	health.resetPitRecoveryLocked()
 	return health.snapshotLocked(), true
+}
+
+func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now time.Time) (pitRecoveryApplyResult, *pitRecoveryApplyError) {
+	if health == nil {
+		return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+			StatusCode: 409,
+			Code:       "health_unavailable",
+			Message:    "vehicle health is unavailable",
+		}
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+
+	if !health.recoveryMode.allowsPitRecovery() {
+		return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+			StatusCode: 409,
+			Code:       "recovery_mode_not_allowed",
+			Message:    fmt.Sprintf("vehicle health recovery mode is %q", health.recoveryMode),
+		}
+	}
+	if health.activeRaceRunID == "" || command.RaceRunID != health.activeRaceRunID {
+		return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+			StatusCode: 409,
+			Code:       "race_run_mismatch",
+			Message:    "raceRunId does not match the vehicle health run",
+		}
+	}
+
+	fingerprint := command.fingerprint()
+	if receipt, ok := health.pitReceipts[command.CommandID]; ok {
+		if receipt.Fingerprint != fingerprint {
+			return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+				StatusCode: 409,
+				Code:       "command_id_conflict",
+				Message:    "commandId was already used for a different recovery tick",
+			}
+		}
+		return pitRecoveryApplyResult{
+			Status:          "duplicate",
+			RecoveredAmount: receipt.RecoveredAmount,
+			Snapshot:        receipt.Snapshot,
+		}, nil
+	}
+
+	if health.pitEntryID == command.EntryID {
+		if command.Tick != health.lastPitTick+1 {
+			return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+				StatusCode: 409,
+				Code:       "tick_out_of_sequence",
+				Message:    fmt.Sprintf("tick must be %d for the current entry", health.lastPitTick+1),
+			}
+		}
+	} else {
+		if command.Tick != 1 {
+			return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+				StatusCode: 409,
+				Code:       "tick_out_of_sequence",
+				Message:    "a new entryId must start at tick 1",
+			}
+		}
+		if _, seen := health.pitSeenEntries[command.EntryID]; seen {
+			return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+				StatusCode: 409,
+				Code:       "entry_id_reused",
+				Message:    "entryId was already used in this race run",
+			}
+		}
+	}
+	if !health.lastPitAt.IsZero() {
+		elapsed := now.Sub(health.lastPitAt)
+		if elapsed < pitRecoveryMinimumInterval {
+			return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
+				StatusCode: 429,
+				Code:       "recovery_too_soon",
+				Message:    "the previous recovery tick was accepted less than 2 seconds ago",
+				RetryAfter: pitRecoveryMinimumInterval - elapsed,
+			}
+		}
+	}
+
+	previousHP := health.hp
+	health.hp = math.Min(vehicleHealthMaximum, health.hp+pitRecoveryAmount)
+	recoveredAmount := health.hp - previousHP
+	health.lastUpdatedAt = now
+	health.lastPublishedAt = now
+	health.pitEntryID = command.EntryID
+	health.pitSeenEntries[command.EntryID] = struct{}{}
+	health.lastPitTick = command.Tick
+	health.lastPitAt = now
+	snapshot := health.snapshotLocked()
+	health.recordPitReceiptLocked(command.CommandID, pitRecoveryReceipt{
+		Fingerprint:     fingerprint,
+		RecoveredAmount: recoveredAmount,
+		Snapshot:        snapshot,
+	})
+	return pitRecoveryApplyResult{
+		Status:          "applied",
+		RecoveredAmount: recoveredAmount,
+		Snapshot:        snapshot,
+	}, nil
+}
+
+func (health *vehicleHealth) recordPitReceiptLocked(commandID string, receipt pitRecoveryReceipt) {
+	health.pitReceipts[commandID] = receipt
+}
+
+func (health *vehicleHealth) resetPitRecoveryLocked() {
+	health.pitEntryID = ""
+	health.lastPitTick = 0
+	health.lastPitAt = time.Time{}
+	health.pitReceipts = make(map[string]pitRecoveryReceipt)
+	health.pitSeenEntries = make(map[string]struct{})
 }
 
 // ingestTelemetry returns a new state only when it should be sent to Viewer
@@ -154,7 +329,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 	}
 	elapsed := now.Sub(health.lastUpdatedAt).Seconds()
 	health.lastUpdatedAt = now
-	if elapsed <= 0 || health.hp >= vehicleHealthMaximum ||
+	if !health.recoveryMode.allowsDrivingRecovery() || elapsed <= 0 || health.hp >= vehicleHealthMaximum ||
 		(!health.lastUnsafeAt.IsZero() && now.Sub(health.lastUnsafeAt) < vehicleHealthRecoveryDelay) ||
 		health.lastForwardAt.IsZero() || now.Sub(health.lastForwardAt) > vehicleHealthForwardCommandGrace {
 		return false
@@ -181,11 +356,11 @@ func vehicleHealthSpeedCap(hp float64) float64 {
 	hp = math.Max(0, math.Min(vehicleHealthMaximum, hp))
 	switch {
 	case hp >= 70:
-		return 0.85 + ((hp - 70) / 30 * 0.15)
+		return 0.90 + ((hp - 70) / 30 * 0.10)
 	case hp >= 35:
-		return 0.55 + ((hp - 35) / 35 * 0.30)
+		return 0.60 + ((hp - 35) / 35 * 0.30)
 	default:
-		return 0.35 + (hp / 35 * 0.20)
+		return 0.35 + (hp / 35 * 0.25)
 	}
 }
 
