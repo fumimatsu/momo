@@ -1,6 +1,8 @@
 param(
     [string]$RaceControlRepository = 'D:\src\momo-race-control',
     [string]$RaceId = 'race-test',
+    [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
+    [string]$HealthRecoveryMode = 'hybrid',
     [switch]$OpenAdmin,
     [switch]$KeepOpenOnError
 )
@@ -114,18 +116,22 @@ try {
     $relayProcesses = @(Get-CimInstance Win32_Process | Where-Object {
         $_.Name -match '^momo-local-relay-device-input(?:-v\d+)?\.exe$'
     })
-    $relayHasRaceControl = $relayProcesses.Count -gt 0 -and
-        @($relayProcesses | Where-Object { $_.CommandLine -like "*${raceControlWsUrl}*" }).Count -gt 0
+    $relayHasExpectedConfig = $relayProcesses.Count -gt 0 -and
+        @($relayProcesses | Where-Object {
+            $_.CommandLine -like "*${raceControlWsUrl}*" -and
+            $_.CommandLine -like "*-health-recovery-mode $HealthRecoveryMode*"
+        }).Count -gt 0
 
     $launchParameters = @{
         RaceControlUrl = $raceControlWsUrl
         RaceControlViewerToken = $viewerToken
+        HealthRecoveryMode = $HealthRecoveryMode
         TelemetryLogDirectory = ''
     }
     if ($rebuildRelay) {
         $launchParameters.RebuildRelay = $true
     }
-    elseif ($relayProcesses.Count -gt 0 -and -not $relayHasRaceControl) {
+    elseif ($relayProcesses.Count -gt 0 -and -not $relayHasExpectedConfig) {
         $launchParameters.RestartRelay = $true
     }
     & $relayScript @launchParameters
