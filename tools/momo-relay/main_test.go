@@ -182,6 +182,53 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 	}
 }
 
+func TestRaceStateAPIProvidesLatestStateWithoutCaching(t *testing.T) {
+	source := newStatusTestRelay("11.3", "CP-1")
+	source.raceState = `RACE:{"type":"race_state","version":2,"raceId":"race-test","sequence":7,"standings":[]}`
+	server := &relayServer{
+		sources:     map[string]*relay{"11.3": source},
+		sourceOrder: []string{"11.3"},
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/race-state", nil)
+	recorder := httptest.NewRecorder()
+	server.serveRaceState(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET race state code = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if !strings.Contains(recorder.Body.String(), `"sequence":7`) {
+		t.Fatalf("race state response = %s", recorder.Body.String())
+	}
+	var state raceStateEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &state); err != nil {
+		t.Fatalf("race state response is not JSON: %v", err)
+	}
+	if state.Sequence != 7 {
+		t.Fatalf("race state sequence = %d, want 7", state.Sequence)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://relay.test/api/v1/race-state", nil)
+	recorder = httptest.NewRecorder()
+	server.serveRaceState(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("POST race state = %d Allow=%q, want 405 GET", recorder.Code, recorder.Header().Get("Allow"))
+	}
+
+	emptyServer := &relayServer{}
+	request = httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/race-state", nil)
+	recorder = httptest.NewRecorder()
+	emptyServer.serveRaceState(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("empty race state = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
 func TestOperationsStatusFollowsConfiguredSourceOrder(t *testing.T) {
 	server := &relayServer{
 		sources: map[string]*relay{
@@ -205,7 +252,7 @@ func TestPilotDevicesAPIExposesOnlyPilotSelectionState(t *testing.T) {
 	inUse.videoHealth.Store(int32(videoReceiving))
 	inUse.pilotID = 42
 	server := &relayServer{
-		sources: map[string]*relay{"11.3": ready, "11.4": inUse},
+		sources:     map[string]*relay{"11.3": ready, "11.4": inUse},
 		sourceOrder: []string{"11.3", "11.4"},
 	}
 	policy, err := parseOperationsAccessPolicy([]string{"192.168.11.0/24"})

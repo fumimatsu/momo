@@ -936,6 +936,28 @@ func (server *relayServer) serveOperationsStatus(w http.ResponseWriter, req *htt
 	_ = json.NewEncoder(w).Encode(server.operationsStatusSnapshot(time.Now()))
 }
 
+func (server *relayServer) serveRaceState(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	for _, sourceID := range server.sourceOrder {
+		source, ok := server.sources[sourceID]
+		if !ok {
+			continue
+		}
+		if state := strings.TrimSpace(source.currentRaceState()); state != "" {
+			state = strings.TrimPrefix(state, "RACE:")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = w.Write([]byte(state))
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (server *relayServer) pilotDevicesSnapshot(now time.Time) pilotDevicesStatus {
 	devices := make([]pilotDeviceStatus, 0, len(server.sourceOrder))
 	for _, sourceID := range server.sourceOrder {
@@ -1970,6 +1992,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
+	mux.HandleFunc("/api/v1/race-state", serverRelay.serveRaceState)
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
 	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
 	mux.HandleFunc("/api/v1/gameplay/pit-recovery-ticks",

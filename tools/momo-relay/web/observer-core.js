@@ -125,6 +125,9 @@ export class RaceStateDeduplicator {
       return true;
     }
     if (!runId || this.seenRunIds.has(runId)) return false;
+    if (serverTimeMs >= 0 && this.serverTimeMs >= 0 && serverTimeMs <= this.serverTimeMs) {
+      return false;
+    }
     this.currentRunId = runId;
     this.sequence = sequence ?? -1;
     this.serverTimeMs = serverTimeMs;

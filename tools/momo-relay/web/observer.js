@@ -20,6 +20,8 @@ import {
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
+const DISCONNECTED_RECONNECT_MS = 3000;
+const RACE_STATE_POLL_MS = 1000;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
@@ -34,6 +36,8 @@ let observerConfig = null;
 let raceState = null;
 let raceReceivedAt = 0;
 let animationFrame = 0;
+let racePollTimer = 0;
+let racePollInFlight = false;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -74,6 +78,10 @@ function createWebSocketUrl(relayHost, device) {
   return url.toString();
 }
 
+function createRaceStateUrl(relayHost) {
+  return new URL(`/api/v1/race-state`, `${location.protocol}//${relayHost}`).toString();
+}
+
 function preferH264(transceiver) {
   if (!transceiver || typeof transceiver.setCodecPreferences !== 'function'
       || typeof RTCRtpSender === 'undefined' || !RTCRtpSender.getCapabilities) return;
@@ -103,6 +111,7 @@ class ObserverPeer {
     this.pendingCandidates = [];
     this.remoteDescriptionSet = false;
     this.reconnectTimer = 0;
+    this.disconnectedTimer = 0;
     this.reconnectAttempt = 0;
     this.closed = false;
     this.generation = 0;
@@ -205,8 +214,21 @@ class ObserverPeer {
     pc.onconnectionstatechange = () => {
       if (generation !== this.generation) return;
       if (pc.connectionState === 'connected') {
+        if (this.disconnectedTimer) window.clearTimeout(this.disconnectedTimer);
+        this.disconnectedTimer = 0;
         this.reconnectAttempt = 0;
         this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', this.videoActive ? 'VIDEO ACTIVE' : 'PEER CONNECTED');
+      } else if (pc.connectionState === 'disconnected') {
+        this.setState('RECONNECTING', 'PEER DISCONNECTED');
+        if (!this.disconnectedTimer) {
+          this.disconnectedTimer = window.setTimeout(() => {
+            this.disconnectedTimer = 0;
+            if (generation === this.generation && this.pc === pc
+                && pc.connectionState === 'disconnected') {
+              this.scheduleReconnect(generation, 'PEER DISCONNECTED');
+            }
+          }, DISCONNECTED_RECONNECT_MS);
+        }
       } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.scheduleReconnect(generation, `PEER ${pc.connectionState.toUpperCase()}`);
       }
@@ -315,6 +337,8 @@ class ObserverPeer {
   }
 
   closeTransport() {
+    if (this.disconnectedTimer) window.clearTimeout(this.disconnectedTimer);
+    this.disconnectedTimer = 0;
     this.videoActive = false;
     this.raceOpen = false;
     this.telemetryOpen = false;
@@ -714,6 +738,27 @@ function handleRaceState(_car, state) {
   renderAll();
 }
 
+async function pollRaceState(url) {
+  if (racePollInFlight) return;
+  racePollInFlight = true;
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (response.status === 204 || !response.ok) return;
+    const state = parseRaceState(await response.json());
+    if (state) handleRaceState(null, state);
+  } catch (_) {
+    // DataChannel remains the primary path; the next poll retries recovery.
+  } finally {
+    racePollInFlight = false;
+  }
+}
+
+function startRaceStatePolling(relayHost) {
+  const url = createRaceStateUrl(relayHost);
+  void pollRaceState(url);
+  racePollTimer = window.setInterval(() => void pollRaceState(url), RACE_STATE_POLL_MS);
+}
+
 function handleHealth(car, health) {
   healthByCar.set(car.carId, health);
   renderAll();
@@ -797,6 +842,7 @@ async function initialize() {
       clients.push(client);
       client.connect();
     }
+    startRaceStatePolling(relayHost);
     animationFrame = requestAnimationFrame(updateClock);
   } catch (error) {
     document.getElementById('liveStatus').textContent = 'CONFIG ERROR';
@@ -806,6 +852,7 @@ async function initialize() {
 
 window.addEventListener('pagehide', () => {
   if (animationFrame) cancelAnimationFrame(animationFrame);
+  if (racePollTimer) window.clearInterval(racePollTimer);
   for (const client of clients) client.close();
   for (const timer of impactTimers.values()) window.clearTimeout(timer);
   impactTimers.clear();
