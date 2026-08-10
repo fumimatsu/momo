@@ -244,6 +244,9 @@ source、`go.mod`、`go.sum`、または `tools/momo-relay/web/` が変わった
 Native Observer の変更を含む場合は Windows 版 Momo も再 build する。起動済み binary を
 上書きして終わりにせず、Relay と Observer を再起動して Operations API で接続状態を確認する。
 
+PIT marker による HP 回復を有効にする場合は、token、CIDR、MADSYSTEM 設定、実ダメージ試験、
+rollback を含む [PIT 回復機能 本番適用 Runbook](../doc/PIT_RECOVERY_PRODUCTION_ROLLOUT.md) に従う。
+
 ## 別 PC 移行チェックリスト
 
 1. `fumimatsu/momo` の `master` を clone する。

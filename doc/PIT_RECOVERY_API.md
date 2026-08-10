@@ -4,7 +4,7 @@
 
 - API version: 1
 - Relay: 実装済み
-- MADSYSTEM client: 未実装
+- MADSYSTEM client: `codex/pit-recovery-publisher` の `281dea044` で実装済み
 - Endpoint: `POST /api/v1/gameplay/pit-recovery-ticks`
 
 MADSYSTEM が同一のピットマーカーを連続認識した時間を管理し、2 秒継続するたびに 1 tick を送る。
@@ -79,13 +79,16 @@ Content-Type: application/json
 6. 次の検出では新しい `entryId` と tick 1 から始める。
 7. timeout または 5xx では、同じ `commandId` と同じ JSON 本文で再送する。
 8. `429 recovery_too_soon` では `retryAfterMs` 以降に同じ要求を再送する。
-9. 4xx のうち `429` 以外は内容または状態の不一致として自動再送しない。
-10. 車両ごとに送信順を維持し、前の tick が受理される前に次の tick を送らない。
-11. marker exit、run 変更、race 終了では未送信・再送待ち tick を破棄する。
-12. tick は永続 outbox へ保存せず、MADSYSTEM 再起動後に古い tick を復元しない。
+9. `409 race_control_unavailable`、`race_run_mismatch`、`phase_not_allowed` は、race と marker entry が有効な間、同一本文で再送する。
+10. その他の 4xx は内容または設定の不一致として自動再送しない。
+11. 車両ごとに送信順を維持し、前の tick が受理される前に次の tick を送らない。
+12. marker exit、run 変更、race 終了では未送信・再送待ち tick を破棄する。
+13. tick は永続 outbox へ保存せず、MADSYSTEM 再起動後に古い tick を復元しない。
 
 MADSYSTEM のクラス分割、既存コードへの接続、テスト方針は
 [MADSYSTEM Pit Recovery 実装指南書](PIT_RECOVERY_MADSYSTEM_IMPLEMENTATION_GUIDE.md) を参照する。
+本番環境への配置、確認、rollback は
+[PIT 回復機能 本番適用 Runbook](PIT_RECOVERY_PRODUCTION_ROLLOUT.md) に従う。
 
 ## Relay の受理条件
 

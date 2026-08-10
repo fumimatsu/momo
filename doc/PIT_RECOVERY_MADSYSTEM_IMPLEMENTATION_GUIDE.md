@@ -2,11 +2,11 @@
 
 ## Status and baseline
 
-- Relay API: `momo` `4089e38` で実装済み
+- Relay API: `momo` `ad093ed` で実装済み
 - Relay verification: Go `1.26.5`、`go test ./...` と Windows amd64 build 成功
-- MADSYSTEM client: 未実装
-- 確認した MADSYSTEM branch: `codex/race-control-publisher`
-- 確認時 baseline: `5bca8eed22df7e890f069772218ef5d1f1a696dd`
+- MADSYSTEM client: `281dea044` で実装・ローカル結合確認済み
+- 実装した MADSYSTEM branch: `codex/pit-recovery-publisher`
+- 実装 baseline: `815e6533577b8d7ef0368dbdbaa2d301d8e6f30a`
 
 baseline hash は参照値であり、既存の local 変更を破棄して checkout する指定ではない。
 作業開始時は必ず MADSYSTEM の `git status --short --branch` と最新 commit を確認し、
@@ -147,19 +147,17 @@ PIT publisher から Race Control command を送らない。
 
 ### Dictionary
 
-初期仕様では通常 checkpoint の `DICT_4X4_50` と分離し、pit 専用の `DICT_5X5_50` と marker ID を使う。
-marker ID は MADSYSTEM 実装時に設定へ固定する。同じ dictionary / ID の marker をピットエリアへ複数置く。
+通常 checkpoint と同じ `DICT_4X4_50` を使い、marker ID は
+`EventManager.BonusCheckPointNo` の現行値 `49` とする。同じ dictionary / ID の marker を
+ピットエリアへ複数置く。
 
 同じ ID が 1 フレームで複数検出されても presence は 1 回だけ成立する。
 
 ### Detector
 
-`ArUcoWebCamMulti` に pit 用 `Dictionary`、`ArucoDetector`、corners、ids を別に持たせる。
-既存 checkpoint detector の dictionary を途中で差し替えない。
-
-pit detector は既存と同じ `fullFrameGrayResized` に対して 1 回実行し、その結果を 4 象限へ戻す。
-象限ごとに detector を 4 回実行しない。必要なら `MapDetectionsToQuadrants` の座標変換部分を、dictionary に依存しない
-helper へ抽出して両 detector から使う。
+PIT 専用 detector は追加しない。既存の 1 回の ArUco 検出結果と `detectedIdsPerQuadrant` から、
+4 象限それぞれの ID `49` の presence を取得する。既存 checkpoint 検出と PIT API 用 presence tracker は
+同じ検出結果を使うが、消失後の PIT IN 確定処理と 2 秒周期の回復 tick は別の状態として管理する。
 
 画像処理から Publisher へ渡す値は、フレームごとの次の観測だけにする。
 
@@ -189,7 +187,7 @@ public readonly struct PitMarkerObservation
 次では対象象限を即時または設定した短い猶予後に inactive とする。
 
 - ArUco 機能 OFF
-- pit detector 未初期化
+- ArUco 検出未初期化
 - Observer frame の停止
 - 象限の映像状態が有効ではない
 - scene disable / component disable
@@ -314,6 +312,7 @@ Race Control の timing outbox を流用しない。pit tick は非永続の車�
 | HTTP `200`, `status=duplicate` | 受理済みとして同じ処理 |
 | timeout / connection error / `5xx` | entry が ACTIVE の間だけ、同じ ID・同じ本文を再送 |
 | `429 recovery_too_soon` | `retryAfterMs` 後、ACTIVE なら同じ要求を再送 |
+| `409 race_control_unavailable` / `race_run_mismatch` / `phase_not_allowed` | race と entry が有効な間、同じ要求を再送 |
 | その他の `4xx` | permanent failure として pending を破棄し、その entry の送信を停止 |
 | marker exit / run change / race end | response 待ちを含めて pending を破棄し、再送しない |
 
@@ -395,8 +394,8 @@ Race Control command / timing queue が詰まっている状態で pit API を�
 - JSON が API version 1 の field 名と完全一致する
 - `carId` は `ResolveRaceControlCarId(quadrant)` の結果になる
 - success と duplicate を同じ accepted として扱う
-- timeout / 5xx / 429 では同じ commandId と本文を使う
-- permanent 4xx では自動再送しない
+- timeout / 5xx / 429 と限定 3 種類の transient 409 では同じ commandId と本文を使う
+- その他の permanent 4xx では自動再送しない
 - exit / run change 後は pending response を適用しない
 - 車両 A の retry が車両 B の送信を止めない
 - active run が空なら送信しない
@@ -407,6 +406,9 @@ Race Control command / timing queue が詰まっている状態で pit API を�
 
 既存の `MomoRaceControlTimingContractEditModeTests.cs` と同じく、DTO serialization と policy を Unity lifecycle から
 切り離してテストする。HTTP 自体は fake transport interface を注入し、EditMode test で status と response body を返せる形にする。
+
+本番配置と end-to-end の確認は
+[PIT 回復機能 本番適用 Runbook](PIT_RECOVERY_PRODUCTION_ROLLOUT.md) に従う。
 
 ## 結合試験
 
@@ -451,7 +453,7 @@ token や Authorization header を screenshot、issue、Unity log へ残さな�
 4. fake transport を使う `MomoPitRecoveryPublisher` policy tests を作る
 5. `TryGetActiveRaceRunId` と local lifecycle reset を接続する
 6. machine-local settings と UnityWebRequest transport を接続する
-7. `ArUcoWebCamMulti` へ pit detector と象限別 observation 出力だけを追加する
+7. `ArUcoWebCamMulti` の既存検出結果へ象限別 PIT observation 出力だけを追加する
 8. replay / shared memory 入力で 4 象限を確認する
 9. Relay と結合し、1 秒 / 2 秒 / 4 秒の回復を確認する
 10. Stop、run change、Race Control disconnect、marker exit の fail-closed を確認する
