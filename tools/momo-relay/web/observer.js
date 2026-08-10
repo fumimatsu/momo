@@ -420,7 +420,12 @@ function renderSectorRows() {
     const currentValue = element('span', 'sector-value sector-live timing-cell', formatSplitTime(sectorElapsed));
     const lastValue = element('span', 'sector-value sector-last timing-cell', formatSplitTime(activeTiming?.lastMs));
     const bestValue = element('span', 'sector-value sector-best timing-cell', formatSplitTime(activeTiming?.bestMs));
-    const bestClass = classifyBestTime(activeTiming?.lastMs, activeTiming?.bestMs, overallSectorBest.get(currentSector));
+    const bestClass = classifyBestTime(
+      activeTiming?.lastMs,
+      activeTiming?.bestMs,
+      overallSectorBest.get(currentSector),
+      'slower-than-best',
+    );
     if (bestClass) lastValue.classList.add(bestClass);
     const storedBestClass = classifyBestTime(activeTiming?.bestMs, activeTiming?.bestMs, overallSectorBest.get(currentSector));
     if (storedBestClass) bestValue.classList.add(storedBestClass);
@@ -486,7 +491,12 @@ function renderTimingRows() {
       if (index >= 3 && index <= 5) {
         const sector = index - 2;
         const personalBest = standing?.sectorTimes?.find((timing) => timing.sector === sector)?.bestMs;
-        const className = classifyBestTime(sectorTimeByNumber.get(sector), personalBest, overallSectorBest.get(sector));
+        const className = classifyBestTime(
+          sectorTimeByNumber.get(sector),
+          personalBest,
+          overallSectorBest.get(sector),
+          'slower-than-best',
+        );
         cell.classList.add('timing-cell');
         if (className) cell.classList.add(className);
       }

@@ -166,7 +166,7 @@ export function formatSplitTime(milliseconds) {
   return minutes > 0 ? `${String(minutes).padStart(2, '0')}:${secondsText}` : secondsText;
 }
 
-export function classifyBestTime(value, personalBest, overallBest) {
+export function classifyBestTime(value, personalBest, overallBest, fallbackClass = '') {
   const time = finiteNumber(value);
   if (time === null || time <= 0) return '';
   const rounded = Math.round(time);
@@ -174,7 +174,7 @@ export function classifyBestTime(value, personalBest, overallBest) {
   if (overall !== null && Math.round(overall) === rounded) return 'overall-best';
   const personal = finiteNumber(personalBest);
   if (personal !== null && Math.round(personal) === rounded) return 'personal-best';
-  return '';
+  return fallbackClass;
 }
 
 export function expectedSectorDurationMs(standing) {

@@ -261,6 +261,7 @@ html[data-mode="live"] .battle-map-link { display: none; }
 .sector-live { color: var(--cyan); }
 .sector-best { color: var(--green); }
 .timing-cell { border-radius: 2px; padding: 4px 5px; }
+.timing-cell.slower-than-best { color: #fff4a3; background: #705b0d; }
 .timing-cell.personal-best { color: #eaffee; background: #275f3c; }
 .timing-cell.overall-best { color: #fff7ff; background: #70438d; }
 
