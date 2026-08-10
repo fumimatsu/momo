@@ -2,7 +2,7 @@
 
 ## 目的
 
-MADSYSTEM が PIT marker ID `49` を認識している間、2 秒ごとに Relay へ回復 tick を送り、
+MADSYSTEM が PIT marker ID `8` を認識している間、2 秒ごとに Relay へ回復 tick を送り、
 Relay が車体 HP を 20 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
 本番 mode は `hybrid` とし、安全走行中の低速な連続回復も維持する。
 
@@ -11,7 +11,7 @@ Viewer は Relay が配信する `VHS:1` を表示する。Viewer から PIT API
 
 ```text
 MADSYSTEM
-  marker ID 49 / 2 秒継続
+  marker ID 8 / 2 秒継続
       |
       | POST /api/v1/gameplay/pit-recovery-ticks
       v
@@ -38,7 +38,8 @@ commit hash だけでなく、後述のテストと実行時ログで機能を�
 - MADSYSTEM が別 PC の場合、`-gameplay-allow-cidr` には MADSYSTEM PC の固定 IP `/32` を指定する。
 - Relay は Race Control へ WebSocket 接続できること。
 - `device ID -> carId` の対応を Relay と MADSYSTEM で一致させる。
-- PIT marker は MADSYSTEM 既存の `DICT_4X4_50`、marker ID `49` を使う。
+- PIT marker は MADSYSTEM 既存の `DICT_4X4_50`、marker ID `8` を使う。
+- marker ID `8` は通常 checkpoint と pilot auto assign 用 marker には使わない。
 - MADSYSTEM の UI は `useFPVRC=true`、`OptionMode=PitIn` を使う。
 
 ## Token の分離
@@ -259,7 +260,7 @@ MADSYSTEM で Practice を開始する。Race Control で次を確認する。
 
 1. 対象車両へ IMPACT または HEAVY IMPACT を発生させる。
 2. Viewer の HP が 100 未満へ減り、速度上限も下がることを確認する。
-3. 対象象限で marker ID `49` を連続して 2 秒以上認識させる。
+3. 対象象限で marker ID `8` を連続して 2 秒以上認識させる。
 4. 2 秒ごとに HP が最大 20 ずつ増えることを確認する。
 5. HP が 100 を超えないことを確認する。
 6. HP 回復に合わせて Viewer の HP bar と速度上限が戻ることを確認する。
@@ -351,7 +352,7 @@ token、秘密鍵、password は記録しない。
 次を確認した。
 
 - Practice / `OptionMode=PitIn`
-- `CP-3` で marker ID `49` を連続認識
+- `CP-3` で marker ID `8` を連続認識
 - tick 1 から 38 まで 2 秒周期で `200 applied`
 - HP 100 のため各 `recoveredAmount` は 0
 - marker を映したまま Stop し、`entry ended reason=RaceStopped`

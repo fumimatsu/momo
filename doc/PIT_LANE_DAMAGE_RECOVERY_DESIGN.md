@@ -92,8 +92,9 @@ Relay は自身の単調時計で最短 2 秒間隔を検証し、`commandId` �
 現在の通常認識は `DICT_4X4_50` である。
 
 - checkpoint は `EventManager.CheckPointNo` の可変ID
-- bonus checkpoint は現行シーンで ID `49`
+- bonus checkpoint は現行シーンで ID `8`
 - pilot auto assign は ID `5..49` の2枚組を使う
+- ID `8` は PIT 専用とし、通常 checkpoint と pilot auto assign 用 marker には使わない
 
 したがって、空いて見える4x4 IDを無断でピット用へ割り当ててはならない。
 

@@ -148,7 +148,7 @@ PIT publisher から Race Control command を送らない。
 ### Dictionary
 
 通常 checkpoint と同じ `DICT_4X4_50` を使い、marker ID は
-`EventManager.BonusCheckPointNo` の現行値 `49` とする。同じ dictionary / ID の marker を
+`EventManager.BonusCheckPointNo` の現行値 `8` とする。同じ dictionary / ID の marker を
 ピットエリアへ複数置く。
 
 同じ ID が 1 フレームで複数検出されても presence は 1 回だけ成立する。
@@ -156,7 +156,7 @@ PIT publisher から Race Control command を送らない。
 ### Detector
 
 PIT 専用 detector は追加しない。既存の 1 回の ArUco 検出結果と `detectedIdsPerQuadrant` から、
-4 象限それぞれの ID `49` の presence を取得する。既存 checkpoint 検出と PIT API 用 presence tracker は
+4 象限それぞれの ID `8` の presence を取得する。既存 checkpoint 検出と PIT API 用 presence tracker は
 同じ検出結果を使うが、消失後の PIT IN 確定処理と 2 秒周期の回復 tick は別の状態として管理する。
 
 画像処理から Publisher へ渡す値は、フレームごとの次の観測だけにする。
