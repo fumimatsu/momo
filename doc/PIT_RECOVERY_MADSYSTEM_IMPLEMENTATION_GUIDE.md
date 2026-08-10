@@ -1,5 +1,49 @@
 # MADSYSTEM Pit Recovery 実装指南書
 
+## Status and baseline
+
+- Relay API: `momo` `4089e38` で実装済み
+- Relay verification: Go `1.26.5`、`go test ./...` と Windows amd64 build 成功
+- MADSYSTEM client: 未実装
+- 確認した MADSYSTEM branch: `codex/race-control-publisher`
+- 確認時 baseline: `5bca8eed22df7e890f069772218ef5d1f1a696dd`
+
+baseline hash は参照値であり、既存の local 変更を破棄して checkout する指定ではない。
+作業開始時は必ず MADSYSTEM の `git status --short --branch` と最新 commit を確認し、
+`TimerScript.cs`、scene、ProjectSettings などの既存変更を PIT 実装へ混ぜない。
+
+## 作業の固定境界
+
+最初の完了条件は「marker group の presence から Relay API へ正しい tick を送れる」までとする。
+Web Observer、sector history、collision attribution、HP 計算は同じ変更へ入れない。
+
+```text
+ArUcoWebCamMulti
+  -> quadrant ごとの PitMarkerObservation
+  -> PitMarkerPresenceTracker
+  -> MomoPitRecoveryPublisher
+  -> POST /api/v1/gameplay/pit-recovery-ticks
+  -> Relay authoritative HP / speedCap
+  -> VHS -> Pilot / Observer
+```
+
+MADSYSTEM が決める値:
+
+- どの quadrant で PIT marker group が見えているか
+- presence が同一 entry として継続しているか
+- `entryId`、連番 `tick`、tick ごとの `commandId`
+- active entry 中に同じ request body を再送するか
+
+MADSYSTEM が決めてはならない値:
+
+- 回復量
+- 回復後 HP
+- speed cap
+- damage mode
+- Race Control phase の代替判定
+
+Relay response の `hp`、`speedCap`、`mode` は診断表示に使えるが、MADSYSTEM 側で再計算しない。
+
 ## 対象とゴール
 
 この文書は `C:\src\MADSYSTEM` に Relay pit recovery client を実装する担当者向けである。
@@ -12,6 +56,18 @@ Relay 側の契約は実装済みであり、MADSYSTEM は次だけを担当す�
 
 MADSYSTEM は HP、回復量、speed cap を計算しない。Relay の API 契約は
 [Relay Pit Recovery Tick API](PIT_RECOVERY_API.md) を正本とする。
+
+## 推奨 commit 分割
+
+既存の timing / sector 作業と衝突させないため、次の順で commit を分ける。
+
+1. contract DTO、pure tracker、fake transport、EditMode tests
+2. machine-local settings と `MomoPitRecoveryPublisher`
+3. `ArUcoWebCamMulti` の PIT detector / observation 接続
+4. lifecycle reset、diagnostics、結合試験記録
+
+1 と 2 は camera frame や scene を必要としない。最初にここを通せば、画像認識の調整と
+HTTP idempotency の不具合を分離できる。scene / Prefab 変更が必要になった場合は 3 以降へ隔離する。
 
 ## 現行コードで利用する境界
 
@@ -54,6 +110,23 @@ public static bool TryGetActiveRaceRunId(out string raceRunId)
 
 setter や outbox 自体は公開しない。run が空、変更、または race 終了になった場合、pit entry と pending request を
 全車分破棄する。
+
+`TryGetActiveRaceRunId` は run の存在だけを公開する。PIT publisher が Race Control phase を推測する API にしない。
+MADSYSTEM の実スタート時に local lifecycle を active にし、Stop、countdown cancel、integration OFF では response 待ちを
+含めて即時 inactive にする。Relay は別途 Race Control WSS の `green` phase を検証するため、両方が成立した時だけ
+回復が適用される。
+
+推奨する lifecycle entry point:
+
+```csharp
+MomoPitRecoveryPublisher.NotifyRaceStarted();
+MomoPitRecoveryPublisher.NotifyRaceStopped(PitMarkerExitReason.RaceStopped);
+MomoPitRecoveryPublisher.NotifyIntegrationDisabled();
+```
+
+呼び出し位置は既存の `MomoRaceControlPublisher.NotifyRaceStarted()`、`FinalizeRace()`、
+`NotifyRaceReady()`、`NotifyIntegrationDisabled()` と同じ MADSYSTEM lifecycle event に合わせる。
+PIT publisher から Race Control command を送らない。
 
 ## 追加するクラス
 
@@ -198,6 +271,20 @@ Race Control の token と Relay gameplay token は別物である。次を mach
 token を scene、Prefab、ScriptableObject、Git 管理ファイル、ログへ保存しない。
 `sourceId` は Relay 契約の `madsystem` 固定であり、Race Control の `MADSYSTEM-01` を流用しない。
 
+現行 `MomoRaceControlLocalSettings` は
+`%USERPROFILE%\AppData\LocalLow\MADX\MADSYSTEM\MomoRaceControl\settings.json` を読み込む。
+同じ JSON へ上記 field を追加してよいが、`relayGameplayToken` を `EventManager` の `[SerializeField]` へ追加してはならない。
+local loader から `MomoPitRecoverySettings` の読み取り専用 snapshot を返し、PIT publisher だけが保持する。
+
+推奨 API:
+
+```csharp
+public static bool TryLoadPitRecovery(out MomoPitRecoverySettings settings);
+```
+
+設定 file がない、token が空、URL が HTTP(S) absolute URL ではない場合は disabled とする。
+default file を生成する場合も token は空文字にし、実値を source control へ入れない。
+
 ### Request の生成
 
 ```csharp
@@ -248,6 +335,9 @@ Publisher は少なくとも次を満たす時だけ新しい tick を作る。
 - 対象象限の marker tracker が ACTIVE
 - 対象象限に有効な `carId` がある
 - Relay URL と gameplay token が設定済み
+
+`raceRunId` 取得前に marker が見えていても、その滞在時間を run 取得後へ引き継がない。
+run 取得後に新しく enter threshold を満たした entry だけを送信対象にする。
 
 Relay も Race Control WebSocket、run、`green` phase を独立して検証する。MADSYSTEM の active 判定だけを
 セキュリティ境界にしない。
@@ -311,11 +401,34 @@ Race Control command / timing queue が詰まっている状態で pit API を�
 - 車両 A の retry が車両 B の送信を止めない
 - active run が空なら送信しない
 - gameplay token をログへ含めない
+- local lifecycle が start 前、Stop 後、countdown cancel 後なら送信しない
+- run ID 取得前の presence を新 run の entry へ引き継がない
+- settings file がない、token が空、URL が不正なら fail closed にする
 
 既存の `MomoRaceControlTimingContractEditModeTests.cs` と同じく、DTO serialization と policy を Unity lifecycle から
 切り離してテストする。HTTP 自体は fake transport interface を注入し、EditMode test で status と response body を返せる形にする。
 
 ## 結合試験
+
+### Preflight
+
+MADSYSTEM を変更する前に Relay 単体を確認する。
+
+```powershell
+Set-Location <src-root>\momo\tools\momo-relay
+go test ./...
+go build -trimpath -o "$env:TEMP\momo-local-relay.exe" .
+```
+
+Relay 起動後は `/api/v1/status` で次を確認する。
+
+- Race Control が接続済み
+- active `raceRunId` が存在する
+- 対象 source の `raceCarId` が一意
+- `vehicleHealth.recoveryMode` が `pit-marker`
+- gameplay API の bind address が意図した interface だけ
+
+token や Authorization header を screenshot、issue、Unity log へ残さない。
 
 1. Relay を `-health-recovery-mode=pit-marker` と gameplay token 付きで起動する
 2. Race Control、Relay、Observer、MADSYSTEM を起動する
@@ -332,13 +445,44 @@ Race Control command / timing queue が詰まっている状態で pit API を�
 
 ## 実装順序
 
-1. `TryGetActiveRaceRunId` と contract DTO を追加する
-2. 純粋な `PitMarkerPresenceTracker` と EditMode tests を作る
-3. `ArUcoWebCamMulti` へ pit detector と象限別 observation 出力だけを追加する
+1. 作業開始時の MADSYSTEM dirty files と baseline commit を記録する
+2. API contract DTO と fake transport interface を追加する
+3. 純粋な `PitMarkerPresenceTracker` と EditMode tests を作る
 4. fake transport を使う `MomoPitRecoveryPublisher` policy tests を作る
-5. UnityWebRequest transport と machine-local settings を接続する
-6. replay / shared memory 入力で 4 象限を確認する
-7. Relay と結合し、1 秒 / 2 秒 / 4 秒の回復を確認する
+5. `TryGetActiveRaceRunId` と local lifecycle reset を接続する
+6. machine-local settings と UnityWebRequest transport を接続する
+7. `ArUcoWebCamMulti` へ pit detector と象限別 observation 出力だけを追加する
+8. replay / shared memory 入力で 4 象限を確認する
+9. Relay と結合し、1 秒 / 2 秒 / 4 秒の回復を確認する
+10. Stop、run change、Race Control disconnect、marker exit の fail-closed を確認する
 
 画像認識、状態機械、HTTP を一度に `ArUcoWebCamMulti` へ書き込まない。最初に tracker と contract をテスト可能な
 純粋 C# として固定し、その後で既存フレーム処理へ接続する。
+
+## Definition of done
+
+MADSYSTEM root で次を実行する。
+
+```powershell
+.\tools\Invoke-UnityValidation.ps1 -Action Compile
+.\tools\Invoke-UnityValidation.ps1 -Action EditMode
+.\tools\Invoke-UnityValidation.ps1 -Action WindowsBuild
+```
+
+全 EditMode に既存 failure がある場合は、作業開始前の baseline と比較し、PIT 関連 fixture が成功していることと
+failure が増えていないことを分けて記録する。既存 failure を PIT 実装の成功扱いにして無視せず、逆に unrelated
+failure を直す変更も PIT commit へ混ぜない。
+
+- 新規 PIT 関連 EditMode tests がすべて成功する
+- Unity Compile と Windows Build が成功する
+- 既存 timing / command / sector tests に regression がない
+- 1 秒では回復せず、2 秒で `+20 HP`、4 秒で合計 `+40 HP` になる
+- `duplicate` response で HP が二重回復しない
+- Stop / exit / run change 後に古い request が送られない
+- 4 quadrant が Relay の正しい `carId` と一致する
+- `VHS` の HP / speed cap が Pilot と Web Observer の authoritative 表示になる
+- token、local settings、生成 binary を commit しない
+- MADSYSTEM の既存 unrelated dirty changes を PIT commit に含めない
+
+MADSYSTEM 側の実装完了だけでは end-to-end 完了ではない。最後に Race Control、Relay、Native Observer、
+MADSYSTEM、最低 1 台の実車を同時起動し、phase、run、marker presence、HP、speed cap の順で確認する。
