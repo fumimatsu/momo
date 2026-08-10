@@ -1,6 +1,6 @@
 # Native Observer の M5 音声
 
-`p2p-recv-multi` は映像と別に `momo-telemetry` DataChannel を作成する。既定では全 Source の音声を復元して Windows の既定再生デバイスへ出力し、各 Source の加速度 telemetry は Observer 上の診断表示に使う。Relay のプロトコル変更は不要である。
+`p2p-recv-multi` は映像と別に `momo-telemetry` DataChannel を作成する。既定では全 Source の音声を復元し、単一の PCM ストリームへ合成して Windows の既定再生デバイスへ出力する。各 Source の加速度 telemetry は Observer 上の診断表示に使う。Relay のプロトコル変更は不要である。
 
 Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須である。無効な SDL3 をリンクすると、画面上で `INIT ERR` と `SDL not built with audio support` が出て再生できない。
 
@@ -12,7 +12,8 @@ Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須で�
 - Source 名を指定すると、その 1 台だけを再生する。
 - `--audio-source` を指定しなければ Windows への音声再生を行わない。起動スクリプトの既定値は `all` である。
 - `AUD:1` の 8 kHz IMA ADPCM を Native Observer が PCM に復元し、Windows の既定再生デバイスへ出力する。
-- 各 Source は独立した SDL 音声ストリームを使い、Windows の既定再生デバイスで合成する。未接続または音声がない Source は無音になる。
+- 各 Source は 120 ms のジッターバッファを持つ。全 Source の PCM は再生コールバックで平均化し、音割れを防いでから 1 本の SDL 音声ストリームへ出力する。
+- 未接続または音声がない Source は無音になる。重複・逆順パケットは再バッファせず破棄する。
 - `0` キーで全 Source、`1` ～ `4` または `[` `]` キーで 1 台のソロ再生へ切り替える。
 
 ## DataChannel と音声の範囲

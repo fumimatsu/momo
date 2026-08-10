@@ -9,15 +9,14 @@
 #include <string>
 #include <vector>
 
-#include <SDL3/SDL.h>
-
 #include <api/data_channel_interface.h>
 #include <rtc_base/synchronization/mutex.h>
 
 class RTCConnection;
+class ObserverAudioMixer;
 
 // Relay が送る M5 の AUD: フレームを受け、既定の Windows 音声出力へ流す。
-// 1 インスタンスは 1 機体に対応し、複数インスタンスの出力は SDL が合成する。
+// 1 インスタンスは 1 機体を復元し、共有 Mixer が全機体の PCM を合成する。
 class ObserverAudioReceiver : public webrtc::DataChannelObserver {
  public:
   struct Diagnostics {
@@ -27,7 +26,9 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
     uint64_t received_frames = 0;
     uint64_t gap_frames = 0;
     uint64_t invalid_frames = 0;
+    uint64_t stale_frames = 0;
     uint64_t queue_resets = 0;
+    uint64_t queue_underflows = 0;
     size_t queued_samples = 0;
     std::string initialization_error;
     bool raw_telemetry_active = false;
@@ -42,6 +43,7 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
   };
 
   explicit ObserverAudioReceiver(std::string source_name,
+                                 std::shared_ptr<ObserverAudioMixer> mixer,
                                  bool enable_audio_playback);
   ~ObserverAudioReceiver() override;
 
@@ -62,28 +64,22 @@ class ObserverAudioReceiver : public webrtc::DataChannelObserver {
   bool QueueSamples(const std::vector<int16_t>& samples);
   void ResetStream();
   void DetachChannel();
-  bool EnableAudioPlaybackLocked();
   void DisableAudioPlaybackLocked();
 
   std::string source_name_;
+  std::shared_ptr<ObserverAudioMixer> mixer_;
   mutable webrtc::Mutex mutex_;
   bool audio_playback_enabled_ RTC_GUARDED_BY(mutex_) = false;
   webrtc::scoped_refptr<webrtc::DataChannelInterface> channel_
       RTC_GUARDED_BY(mutex_);
-  SDL_AudioStream* stream_ RTC_GUARDED_BY(mutex_) = nullptr;
-  bool audio_subsystem_initialized_ RTC_GUARDED_BY(mutex_) = false;
-  bool audio_initialized_ RTC_GUARDED_BY(mutex_) = false;
   bool channel_open_ RTC_GUARDED_BY(mutex_) = false;
-  std::string initialization_error_ RTC_GUARDED_BY(mutex_);
-  bool playback_started_ RTC_GUARDED_BY(mutex_) = false;
   std::string boot_id_ RTC_GUARDED_BY(mutex_);
   uint64_t last_sequence_ RTC_GUARDED_BY(mutex_) = 0;
   bool has_sequence_ RTC_GUARDED_BY(mutex_) = false;
-  std::vector<int16_t> startup_samples_ RTC_GUARDED_BY(mutex_);
   uint64_t received_frames_ RTC_GUARDED_BY(mutex_) = 0;
   uint64_t gap_frames_ RTC_GUARDED_BY(mutex_) = 0;
   uint64_t invalid_frames_ RTC_GUARDED_BY(mutex_) = 0;
-  uint64_t queue_resets_ RTC_GUARDED_BY(mutex_) = 0;
+  uint64_t stale_frames_ RTC_GUARDED_BY(mutex_) = 0;
   std::deque<std::array<float, 3>> raw_acceleration_samples_
       RTC_GUARDED_BY(mutex_);
   std::chrono::steady_clock::time_point raw_telemetry_received_at_

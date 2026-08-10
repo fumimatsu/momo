@@ -15,6 +15,7 @@
 class RTCManager;
 class SDLRenderer;
 class SourceVideoTrackReceiver;
+class ObserverAudioMixer;
 class ObserverAudioReceiver;
 
 struct P2PMultiReceiverSource {
@@ -69,6 +70,7 @@ class P2PMultiReceiverClient
   RTCManager* manager_;
   SDLRenderer* renderer_;
   P2PMultiReceiverClientConfig config_;
+  std::shared_ptr<ObserverAudioMixer> audio_mixer_;
   std::vector<Source> sources_;
   size_t selected_audio_source_index_ = static_cast<size_t>(-1);
   std::unique_ptr<boost::asio::steady_timer> audio_overlay_timer_;

@@ -10,6 +10,7 @@
 
 #include <rtc_base/logging.h>
 
+#include "p2p/observer_audio_mixer.h"
 #include "p2p/observer_audio_receiver.h"
 #include "p2p/source_video_track_receiver.h"
 #include "sdl_renderer/sdl_renderer.h"
@@ -29,6 +30,7 @@ P2PMultiReceiverClient::P2PMultiReceiverClient(
       manager_(manager),
       renderer_(renderer),
       config_(std::move(config)) {
+  audio_mixer_ = std::make_shared<ObserverAudioMixer>();
   audio_overlay_timer_ = std::make_unique<boost::asio::steady_timer>(ioc_);
   for (const P2PMultiReceiverSource& source : config_.sources) {
     Source entry;
@@ -36,8 +38,9 @@ P2PMultiReceiverClient::P2PMultiReceiverClient(
     entry.receiver =
         std::make_unique<SourceVideoTrackReceiver>(renderer_, source.name);
     entry.audio_receiver = std::make_shared<ObserverAudioReceiver>(
-        source.name, config_.audio_source == kAllAudioSources ||
-                         source.name == config_.audio_source);
+        source.name, audio_mixer_,
+        config_.audio_source == kAllAudioSources ||
+            source.name == config_.audio_source);
     entry.reconnect_timer = std::make_unique<boost::asio::steady_timer>(ioc_);
     sources_.push_back(std::move(entry));
   }
@@ -146,12 +149,14 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
     text << health_text.str() << "\nAUD " << source.config.name
          << (diagnostics.initialized ? " READY" : " INIT ERR")
          << (diagnostics.channel_open ? " DC OPEN" : " DC WAIT") << "\n"
-         << "RX " << diagnostics.received_frames << "  GAP "
-         << diagnostics.gap_frames << "\n"
-         << "INVALID " << diagnostics.invalid_frames << "  RESET "
-         << diagnostics.queue_resets << "\n"
+         << "RX " << diagnostics.received_frames
+         << "  GAP " << diagnostics.gap_frames
+         << "  STALE " << diagnostics.stale_frames << "\n"
+         << "INVALID " << diagnostics.invalid_frames
+         << "  RESET " << diagnostics.queue_resets << "\n"
          << "QUEUED " << std::fixed << std::setprecision(0) << queued_ms
          << "ms  " << (diagnostics.playback_started ? "PLAY" : "BUFFER")
+         << "  UNDERRUN " << diagnostics.queue_underflows
          << "\nKEY 0 MIX / 1-4 SOLO / [ ] SOLO";
     if (!diagnostics.initialization_error.empty()) {
       text << "\nERR " << diagnostics.initialization_error;

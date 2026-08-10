@@ -11,6 +11,7 @@
 
 #include <rtc_base/logging.h>
 
+#include "p2p/observer_audio_mixer.h"
 #include "rtc/rtc_connection.h"
 
 namespace {
@@ -18,9 +19,7 @@ namespace {
 constexpr const char* kTelemetryLabel = "momo-telemetry";
 constexpr size_t kPacketBytes = 84;
 constexpr size_t kFrameSamples = 160;
-constexpr size_t kStartupFrames = 4;
 constexpr size_t kMaxGapFrames = 12;
-constexpr int kMaxQueuedBytes = 8000;  // 0.5 秒。停止中の遅延蓄積を防ぐ。
 constexpr size_t kMaxRawTelemetrySamples = 180;  // BIN 30 Hz で約 6 秒。
 
 constexpr std::array<int, 16> kImaIndexTable = {
@@ -145,9 +144,11 @@ bool DecodeImaFrame(const std::vector<uint8_t>& packet,
 
 }  // namespace
 
-ObserverAudioReceiver::ObserverAudioReceiver(std::string source_name,
-                                             bool enable_audio_playback)
-    : source_name_(std::move(source_name)) {
+ObserverAudioReceiver::ObserverAudioReceiver(
+    std::string source_name,
+    std::shared_ptr<ObserverAudioMixer> mixer,
+    bool enable_audio_playback)
+    : source_name_(std::move(source_name)), mixer_(std::move(mixer)) {
   SetAudioPlaybackEnabled(enable_audio_playback);
 }
 
@@ -161,66 +162,25 @@ void ObserverAudioReceiver::SetAudioPlaybackEnabled(bool enabled) {
   if (enabled == audio_playback_enabled_) {
     return;
   }
-  if (enabled) {
-    audio_playback_enabled_ = EnableAudioPlaybackLocked();
-  } else {
+  if (!enabled) {
     DisableAudioPlaybackLocked();
+    return;
   }
-}
-
-bool ObserverAudioReceiver::EnableAudioPlaybackLocked() {
-  initialization_error_.clear();
-  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-    initialization_error_ = SDL_GetError();
-    RTC_LOG(LS_ERROR) << "Observer audio initialization failed: "
-                      << initialization_error_;
-    return false;
+  audio_playback_enabled_ =
+      mixer_ && mixer_->SetSourceEnabled(source_name_, true);
+  if (audio_playback_enabled_) {
+    RTC_LOG(LS_INFO) << "Observer audio enabled for source " << source_name_;
   }
-  audio_subsystem_initialized_ = true;
-  SDL_AudioSpec spec{};
-  spec.format = SDL_AUDIO_S16;
-  spec.channels = 1;
-  spec.freq = 8000;
-  stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
-                                      &spec, nullptr, nullptr);
-  if (stream_ == nullptr) {
-    initialization_error_ = SDL_GetError();
-    RTC_LOG(LS_ERROR) << "Observer audio output could not open: "
-                      << initialization_error_;
-    DisableAudioPlaybackLocked();
-    return false;
-  }
-  if (!SDL_ResumeAudioStreamDevice(stream_)) {
-    initialization_error_ = SDL_GetError();
-    RTC_LOG(LS_ERROR) << "Observer audio output could not start: "
-                      << initialization_error_;
-    SDL_DestroyAudioStream(stream_);
-    stream_ = nullptr;
-    DisableAudioPlaybackLocked();
-    return false;
-  }
-  audio_initialized_ = true;
-  RTC_LOG(LS_INFO) << "Observer audio enabled for source " << source_name_;
-  return true;
 }
 
 void ObserverAudioReceiver::DisableAudioPlaybackLocked() {
-  if (stream_ != nullptr) {
-    SDL_DestroyAudioStream(stream_);
-    stream_ = nullptr;
+  if (mixer_) {
+    mixer_->SetSourceEnabled(source_name_, false);
   }
-  if (audio_subsystem_initialized_) {
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
-    audio_subsystem_initialized_ = false;
-  }
-  audio_initialized_ = false;
   audio_playback_enabled_ = false;
-  initialization_error_.clear();
   boot_id_.clear();
   last_sequence_ = 0;
   has_sequence_ = false;
-  startup_samples_.clear();
-  playback_started_ = false;
 }
 
 void ObserverAudioReceiver::AttachDataChannel(
@@ -385,11 +345,14 @@ bool ObserverAudioReceiver::DecodeAndQueue(const std::string& message) {
   if (!DecodeImaFrame(packet, &samples)) return InvalidAudioFrame();
 
   webrtc::MutexLock lock(&mutex_);
-  if (stream_ == nullptr) return true;
-  if (boot_id_ != boot_id || (has_sequence_ && sequence <= last_sequence_)) {
+  if (!audio_playback_enabled_) return true;
+  if (boot_id_ != boot_id) {
     boot_id_ = boot_id;
     has_sequence_ = false;
     ResetStream();
+  } else if (has_sequence_ && sequence <= last_sequence_) {
+    ++stale_frames_;
+    return true;
   }
   if (has_sequence_ && sequence > last_sequence_ + 1) {
     const size_t missing = static_cast<size_t>(
@@ -420,15 +383,20 @@ bool ObserverAudioReceiver::InvalidAudioFrame() {
 
 ObserverAudioReceiver::Diagnostics ObserverAudioReceiver::GetDiagnostics() const {
   webrtc::MutexLock lock(&mutex_);
+  const ObserverAudioMixer::SourceDiagnostics audio_diagnostics =
+      mixer_ ? mixer_->GetSourceDiagnostics(source_name_)
+             : ObserverAudioMixer::SourceDiagnostics{};
   Diagnostics diagnostics;
-  diagnostics.initialized = audio_initialized_;
+  diagnostics.initialized = audio_diagnostics.initialized;
   diagnostics.channel_open = channel_open_;
-  diagnostics.playback_started = playback_started_;
+  diagnostics.playback_started = audio_diagnostics.playback_started;
   diagnostics.received_frames = received_frames_;
   diagnostics.gap_frames = gap_frames_;
   diagnostics.invalid_frames = invalid_frames_;
-  diagnostics.queue_resets = queue_resets_;
-  diagnostics.initialization_error = initialization_error_;
+  diagnostics.stale_frames = stale_frames_;
+  diagnostics.queue_resets = audio_diagnostics.queue_resets;
+  diagnostics.queue_underflows = audio_diagnostics.underflows;
+  diagnostics.initialization_error = audio_diagnostics.initialization_error;
   diagnostics.raw_telemetry_active =
       raw_telemetry_received_at_ != std::chrono::steady_clock::time_point::min() &&
       std::chrono::steady_clock::now() - raw_telemetry_received_at_ <
@@ -445,51 +413,18 @@ ObserverAudioReceiver::Diagnostics ObserverAudioReceiver::GetDiagnostics() const
   diagnostics.vehicle_health_mode = vehicle_health_mode_;
   diagnostics.raw_acceleration_samples.assign(raw_acceleration_samples_.begin(),
                                                raw_acceleration_samples_.end());
-  diagnostics.queued_samples = startup_samples_.size();
-  if (stream_ != nullptr) {
-    const int queued_bytes = SDL_GetAudioStreamQueued(stream_);
-    if (queued_bytes > 0) {
-      diagnostics.queued_samples +=
-          static_cast<size_t>(queued_bytes) / sizeof(int16_t);
-    }
-  }
+  diagnostics.queued_samples = audio_diagnostics.queued_samples;
   return diagnostics;
 }
 
 bool ObserverAudioReceiver::QueueSamples(const std::vector<int16_t>& samples) {
-  if (stream_ == nullptr || samples.empty()) return false;
-  if (!playback_started_) {
-    startup_samples_.insert(startup_samples_.end(), samples.begin(), samples.end());
-    if (startup_samples_.size() < kStartupFrames * kFrameSamples) return true;
-    if (!SDL_PutAudioStreamData(stream_, startup_samples_.data(),
-                                static_cast<int>(startup_samples_.size() * sizeof(int16_t)))) {
-      RTC_LOG(LS_WARNING) << "Observer audio enqueue failed: " << SDL_GetError();
-      return false;
-    }
-    startup_samples_.clear();
-    playback_started_ = true;
-    return true;
-  }
-  if (SDL_GetAudioStreamQueued(stream_) > kMaxQueuedBytes) {
-    ++queue_resets_;
-    SDL_ClearAudioStream(stream_);
-    playback_started_ = false;
-    startup_samples_.clear();
-    startup_samples_.insert(startup_samples_.end(), samples.begin(), samples.end());
-    return true;
-  }
-  if (!SDL_PutAudioStreamData(stream_, samples.data(),
-                              static_cast<int>(samples.size() * sizeof(int16_t)))) {
-    RTC_LOG(LS_WARNING) << "Observer audio enqueue failed: " << SDL_GetError();
-    return false;
-  }
-  return true;
+  return mixer_ && mixer_->QueueSamples(source_name_, samples);
 }
 
 void ObserverAudioReceiver::ResetStream() {
-  if (stream_ != nullptr) SDL_ClearAudioStream(stream_);
-  startup_samples_.clear();
-  playback_started_ = false;
+  if (mixer_) {
+    mixer_->ResetSource(source_name_);
+  }
 }
 
 void ObserverAudioReceiver::DetachChannel() {

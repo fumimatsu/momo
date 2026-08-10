@@ -124,6 +124,7 @@ target_sources(momo
     src/p2p/p2p_session.cpp
     src/p2p/p2p_receiver_client.cpp
     src/p2p/p2p_multi_receiver_client.cpp
+    src/p2p/observer_audio_mixer.cpp
     src/p2p/observer_audio_receiver.cpp
     src/p2p/pilot_data_channel.cpp
     src/p2p/pilot_input.cpp
