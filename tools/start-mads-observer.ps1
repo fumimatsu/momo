@@ -12,8 +12,10 @@ param(
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$GarageAllowCidr = '192.168.11.0/24',
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
-    [string]$ObserverAudioSource = '',
+    [string]$ObserverAudioSource = 'all',
     [string]$ObserverCrashDumpDirectory = '',
+    [string]$GoExecutable = $env:MOMO_GO_EXE,
+    [switch]$RestartRelay,
     [switch]$RestartObserver,
     [switch]$RebuildRelay
 )
@@ -24,7 +26,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $relayDirectory = Join-Path $repoRoot 'tools\momo-relay'
 $relayExe = Join-Path $relayDirectory 'momo-local-relay-device-input-v15.exe'
-$goExe = Join-Path $relayDirectory '.toolchain\go\bin\go.exe'
+$bundledGoExe = Join-Path $relayDirectory '.toolchain\go\bin\go.exe'
 $observerExe = Join-Path $repoRoot '_build\windows_x86_64\release\momo\Release\momo.exe'
 $relayLogDirectory = $relayDirectory
 $resolvedObserverCrashDumpDirectory = if ([string]::IsNullOrWhiteSpace($ObserverCrashDumpDirectory)) {
@@ -61,12 +63,25 @@ $relaySourceFiles = @(
 $relayNeedsBuild = -not (Test-Path -LiteralPath $relayExe) -or
     (($relaySourceFiles | Measure-Object -Property LastWriteTime -Maximum).Maximum -gt (Get-Item -LiteralPath $relayExe).LastWriteTime)
 
-if ($RebuildRelay) {
-    if (-not (Test-Path -LiteralPath $goExe)) {
-        throw "Go toolchain was not found: $goExe"
-    }
+if (($RebuildRelay -or $RestartRelay) -and $relayRunning.Count -gt 0) {
     foreach ($process in $relayRunning) {
         Stop-Process -Id $process.ProcessId -Force
+    }
+    $relayRunning = @()
+}
+
+if ($RebuildRelay) {
+    $pathGoExe = (Get-Command go.exe -ErrorAction SilentlyContinue).Source
+    $goExe = @(
+        $GoExecutable
+        $bundledGoExe
+        'D:\app\go1.26.5\go\bin\go.exe'
+        $pathGoExe
+    ) | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_)
+    } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($goExe)) {
+        throw 'Go toolchain was not found. Set -GoExecutable or MOMO_GO_EXE.'
     }
     Push-Location $relayDirectory
     try {
@@ -78,7 +93,6 @@ if ($RebuildRelay) {
     finally {
         Pop-Location
     }
-    $relayRunning = @()
     $relayNeedsBuild = $false
 }
 

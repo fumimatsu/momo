@@ -60,6 +60,8 @@ CLAUDE.local.md
 /tools/momo-relay/.toolchain/
 /tools/momo-relay/*.stdout.log
 /tools/momo-relay/*.stderr.log
+/tools/momo-relay/logs/
+/tools/momo-relay/*.exe.before-*
 /tools/momo-relay/observer-unity.launch.log
 /tools/momo-relay/crash_dumps/
 /tools/momo-relay/*.exe~

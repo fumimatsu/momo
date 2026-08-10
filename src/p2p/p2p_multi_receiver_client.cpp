@@ -10,9 +10,15 @@
 
 #include <rtc_base/logging.h>
 
-#include "p2p/source_video_track_receiver.h"
 #include "p2p/observer_audio_receiver.h"
+#include "p2p/source_video_track_receiver.h"
 #include "sdl_renderer/sdl_renderer.h"
+
+namespace {
+
+constexpr char kAllAudioSources[] = "all";
+
+}  // namespace
 
 P2PMultiReceiverClient::P2PMultiReceiverClient(
     boost::asio::io_context& ioc,
@@ -30,7 +36,8 @@ P2PMultiReceiverClient::P2PMultiReceiverClient(
     entry.receiver =
         std::make_unique<SourceVideoTrackReceiver>(renderer_, source.name);
     entry.audio_receiver = std::make_shared<ObserverAudioReceiver>(
-        source.name, source.name == config_.audio_source);
+        source.name, config_.audio_source == kAllAudioSources ||
+                         source.name == config_.audio_source);
     entry.reconnect_timer = std::make_unique<boost::asio::steady_timer>(ioc_);
     sources_.push_back(std::move(entry));
   }
@@ -122,13 +129,14 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
                   << diagnostics.vehicle_hp << "%  PWR "
                   << diagnostics.vehicle_speed_cap * 100.0f << "%  ";
       for (char character : diagnostics.vehicle_health_mode) {
-        health_text << static_cast<char>(std::toupper(
-            static_cast<unsigned char>(character)));
+        health_text << static_cast<char>(
+            std::toupper(static_cast<unsigned char>(character)));
       }
     } else {
       health_text << "HP WAIT";
     }
-    if (source.config.name != config_.audio_source) {
+    if (config_.audio_source != kAllAudioSources &&
+        source.config.name != config_.audio_source) {
       renderer_->SetSourceOverlayText(source.config.name, health_text.str());
       continue;
     }
@@ -138,13 +146,13 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
     text << health_text.str() << "\nAUD " << source.config.name
          << (diagnostics.initialized ? " READY" : " INIT ERR")
          << (diagnostics.channel_open ? " DC OPEN" : " DC WAIT") << "\n"
-         << "RX " << diagnostics.received_frames
-         << "  GAP " << diagnostics.gap_frames << "\n"
-         << "INVALID " << diagnostics.invalid_frames
-         << "  RESET " << diagnostics.queue_resets << "\n"
+         << "RX " << diagnostics.received_frames << "  GAP "
+         << diagnostics.gap_frames << "\n"
+         << "INVALID " << diagnostics.invalid_frames << "  RESET "
+         << diagnostics.queue_resets << "\n"
          << "QUEUED " << std::fixed << std::setprecision(0) << queued_ms
          << "ms  " << (diagnostics.playback_started ? "PLAY" : "BUFFER")
-         << "\nKEY 1-4 / [ ] SELECT";
+         << "\nKEY 0 MIX / 1-4 SOLO / [ ] SOLO";
     if (!diagnostics.initialization_error.empty()) {
       text << "\nERR " << diagnostics.initialization_error;
     }
@@ -170,7 +178,10 @@ bool P2PMultiReceiverClient::HandleAudioKey(int key) {
   }
 
   size_t selected_index = static_cast<size_t>(-1);
-  if (key >= SDLK_1 && key <= SDLK_4) {
+  if (key == SDLK_0) {
+    SelectAllAudioSources();
+    return true;
+  } else if (key >= SDLK_1 && key <= SDLK_4) {
     selected_index = static_cast<size_t>(key - SDLK_1);
     if (selected_index >= sources_.size()) {
       return true;
@@ -196,7 +207,8 @@ void P2PMultiReceiverClient::SelectAudioSource(size_t index) {
   if (index >= sources_.size() || shutting_down_) {
     return;
   }
-  for (size_t source_index = 0; source_index < sources_.size(); ++source_index) {
+  for (size_t source_index = 0; source_index < sources_.size();
+       ++source_index) {
     sources_[source_index].audio_receiver->SetAudioPlaybackEnabled(
         source_index == index);
   }
@@ -204,6 +216,19 @@ void P2PMultiReceiverClient::SelectAudioSource(size_t index) {
   config_.audio_source = sources_[index].config.name;
   RTC_LOG(LS_INFO) << "Observer audio source selected: "
                    << config_.audio_source;
+  UpdateAudioOverlay();
+}
+
+void P2PMultiReceiverClient::SelectAllAudioSources() {
+  if (shutting_down_) {
+    return;
+  }
+  for (Source& source : sources_) {
+    source.audio_receiver->SetAudioPlaybackEnabled(true);
+  }
+  selected_audio_source_index_ = static_cast<size_t>(-1);
+  config_.audio_source = kAllAudioSources;
+  RTC_LOG(LS_INFO) << "Observer audio source selected: all";
   UpdateAudioOverlay();
 }
 
@@ -225,10 +250,10 @@ void P2PMultiReceiverClient::ConnectSource(size_t index) {
   client_config.receiver = source.receiver.get();
   const std::shared_ptr<ObserverAudioReceiver> audio_receiver =
       source.audio_receiver;
-  client_config.configure_connection = [audio_receiver](
-                                          std::shared_ptr<RTCConnection> connection) {
-    audio_receiver->AttachDataChannel(connection);
-  };
+  client_config.configure_connection =
+      [audio_receiver](std::shared_ptr<RTCConnection> connection) {
+        audio_receiver->AttachDataChannel(connection);
+      };
   client_config.on_disconnected = [weak_self, index]() {
     if (const auto self = weak_self.lock()) {
       boost::asio::post(self->ioc_, [weak_self, index]() {
@@ -258,8 +283,8 @@ void P2PMultiReceiverClient::ScheduleReconnect(size_t index) {
                               SDLRenderer::SourceState::kOffline);
   }
 
-  RTC_LOG(LS_WARNING) << "P2P multi receiver: reconnect "
-                      << source.config.name << " in 2 seconds";
+  RTC_LOG(LS_WARNING) << "P2P multi receiver: reconnect " << source.config.name
+                      << " in 2 seconds";
   source.reconnect_timer->expires_after(std::chrono::seconds(2));
   std::weak_ptr<P2PMultiReceiverClient> weak_self = shared_from_this();
   source.reconnect_timer->async_wait(

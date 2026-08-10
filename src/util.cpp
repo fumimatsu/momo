@@ -282,12 +282,10 @@ void Util::ParseArgs(int argc,
   p2p_receiver_app->add_flag(
       "--aruco", args.aruco,
       "Detect DICT_4X4_50 ArUco markers and draw their IDs");
-  p2p_receiver_app->add_flag(
-      "--flip-vertical", args.flip_vertical,
-      "Flip the received video vertically");
-  p2p_receiver_app->add_flag(
-      "--flip-horizontal", args.flip_horizontal,
-      "Flip the received video horizontally");
+  p2p_receiver_app->add_flag("--flip-vertical", args.flip_vertical,
+                             "Flip the received video vertically");
+  p2p_receiver_app->add_flag("--flip-horizontal", args.flip_horizontal,
+                             "Flip the received video horizontally");
 
   auto is_valid_p2p_multi_source = CLI::Validator(
       [](std::string input) -> std::string {
@@ -318,8 +316,8 @@ void Util::ParseArgs(int argc,
           return "Must be NAME=H, NAME=V, NAME=HV, or NAME=none.";
         }
         const std::string mode = input.substr(separator + 1);
-        if (mode != "H" && mode != "V" && mode != "HV" &&
-            mode != "VH" && mode != "none") {
+        if (mode != "H" && mode != "V" && mode != "HV" && mode != "VH" &&
+            mode != "none") {
           return "Flip mode must be H, V, HV, or none.";
         }
         return std::string();
@@ -332,30 +330,25 @@ void Util::ParseArgs(int argc,
       ->check(is_valid_p2p_multi_source_flip);
   p2p_multi_receiver_app
       ->add_option("--audio-source", args.p2p_multi_receiver_audio_source,
-                   "Receive and play M5 AUD telemetry from one source name")
+                   "Play M5 AUD telemetry from one source name or all")
       ->default_val("");
-  p2p_multi_receiver_app->add_flag(
-      "--flip-vertical", args.flip_vertical,
-      "Flip every received video vertically");
-  p2p_multi_receiver_app->add_flag(
-      "--flip-horizontal", args.flip_horizontal,
-      "Flip every received video horizontally");
+  p2p_multi_receiver_app->add_flag("--flip-vertical", args.flip_vertical,
+                                   "Flip every received video vertically");
+  p2p_multi_receiver_app->add_flag("--flip-horizontal", args.flip_horizontal,
+                                   "Flip every received video horizontally");
 
-  p2p_pilot_app->add_option(
-      "--endpoint", args.p2p_pilot_endpoint,
-      "Relay Pilot WebSocket endpoint (for example ws://HOST:8090/ws?role=pilot&device=11.4)");
+  p2p_pilot_app->add_option("--endpoint", args.p2p_pilot_endpoint,
+                            "Relay Pilot WebSocket endpoint (for example "
+                            "ws://HOST:8090/ws?role=pilot&device=11.4)");
   p2p_pilot_app->add_option(
       "--input-config", args.p2p_pilot_input_config,
       "Gamepad mapping JSON compatible with the Web Input page");
-  p2p_pilot_app->add_option(
-      "--label", args.p2p_pilot_label,
-      "Device label shown in the Native Pilot overlay");
-  p2p_pilot_app->add_flag(
-      "--flip-vertical", args.flip_vertical,
-      "Flip the received video vertically");
-  p2p_pilot_app->add_flag(
-      "--flip-horizontal", args.flip_horizontal,
-      "Flip the received video horizontally");
+  p2p_pilot_app->add_option("--label", args.p2p_pilot_label,
+                            "Device label shown in the Native Pilot overlay");
+  p2p_pilot_app->add_flag("--flip-vertical", args.flip_vertical,
+                          "Flip the received video vertically");
+  p2p_pilot_app->add_flag("--flip-horizontal", args.flip_horizontal,
+                          "Flip the received video horizontally");
 
   ayame_app
       ->add_option("--signaling-url", args.ayame_signaling_url, "Signaling URL")
@@ -512,6 +505,7 @@ void Util::ParseArgs(int argc,
       }
     }
     if (!args.p2p_multi_receiver_audio_source.empty() &&
+        args.p2p_multi_receiver_audio_source != "all" &&
         source_names.find(args.p2p_multi_receiver_audio_source) ==
             source_names.end()) {
       std::cerr << "p2p-recv-multi audio-source has unknown source: "
@@ -555,8 +549,7 @@ void Util::ParseArgs(int argc,
 
   if (!p2p_app->parsed() && !p2p_receiver_app->parsed() &&
       !p2p_multi_receiver_app->parsed() && !p2p_pilot_app->parsed() &&
-      !sora_app->parsed() &&
-      !ayame_app->parsed()) {
+      !sora_app->parsed() && !ayame_app->parsed()) {
     std::cout << app.help() << std::endl;
     exit(1);
   }

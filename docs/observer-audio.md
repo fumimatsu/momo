@@ -1,26 +1,27 @@
 # Native Observer の M5 音声
 
-`p2p-recv-multi` は映像と別に `momo-telemetry` DataChannel を作成する。選択した 1 台だけを Windows の既定再生デバイスへ出力し、各 Source の加速度 telemetry は Observer 上の診断表示に使う。Relay のプロトコル変更は不要である。
+`p2p-recv-multi` は映像と別に `momo-telemetry` DataChannel を作成する。既定では全 Source の音声を復元して Windows の既定再生デバイスへ出力し、各 Source の加速度 telemetry は Observer 上の診断表示に使う。Relay のプロトコル変更は不要である。
 
 Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須である。無効な SDL3 をリンクすると、画面上で `INIT ERR` と `SDL not built with audio support` が出て再生できない。
 
 ```powershell
-.\tools\start-mads-observer.ps1 -ObserverAudioSource 11.6 -RestartObserver
+.\tools\start-mads-observer.ps1 -ObserverAudioSource all -RestartObserver
 ```
 
-- `--audio-source` を指定しなければ Windows への音声再生を行わない。
-- 指定できるのは `--source` で登録した名前のいずれか 1 台だけ。
+- `--audio-source all` は `AUD:` が届いている全 Source を同時再生する。
+- Source 名を指定すると、その 1 台だけを再生する。
+- `--audio-source` を指定しなければ Windows への音声再生を行わない。起動スクリプトの既定値は `all` である。
 - `AUD:1` の 8 kHz IMA ADPCM を Native Observer が PCM に復元し、Windows の既定再生デバイスへ出力する。
-- 4 台の常時ミックスは実装しない。音声が重なり、Relay からの追加転送も 4 倍になるためである。
+- 各 Source は独立した SDL 音声ストリームを使い、Windows の既定再生デバイスで合成する。未接続または音声がない Source は無音になる。
+- `0` キーで全 Source、`1` ～ `4` または `[` `]` キーで 1 台のソロ再生へ切り替える。
 
 ## DataChannel と音声の範囲
 
 Observer は各 Source に既存の `momo-telemetry` DataChannel を 1 本作る。Relay は upstream の `TEL:` と `AUD:` をそのまま各 Observer へ転送する。
 
 - 加速度グラフは全 Source の state `TEL:` を読む。
-- Windows へ PCM を出力するのは `--audio-source` で選んだ 1 台だけ。
-- 未選択 Source の `AUD:` は受信しても復元・再生しない。
-- 4 台の音声をミックスして再生する機能は持たない。
+- `--audio-source all` では全 Source の `AUD:` を復元・再生する。
+- Source 名を指定した場合、未選択 Source の `AUD:` は受信しても復元・再生しない。
 
 Relay は現在、Observer ごとに音声フレームを選別していない。このため同時接続台数を増やす前に、音声あり・なしで Relay の送受信量と映像 FPS を測る必要がある。
 
@@ -36,12 +37,13 @@ Relay は現在、Observer ごとに音声フレームを選別していない�
 
 運用時は `TELEMETRY:BINARY` のグラフを見ながら衝撃候補の閾値を決める。V1 RAW は生軸の確認専用である。
 
-## 実装前の負荷検証
+## 負荷検証
 
 実機が Relay に接続している状態で、以下を同一条件の映像 4 台表示と比較する。
 
 1. 音声なし。
 2. 1 台を音声購読。
-3. `1` ～ `4` の切替を 5 秒間隔で繰り返す。
+3. `all` で接続中の全 Source を音声購読。
+4. `0` と `1` ～ `4` の切替を 5 秒間隔で繰り返す。
 
-確認対象は Relay の CPU 使用率、Relay の送受信量、4 枠の映像 FPS、音声切替後の再生開始時間、`TEL:` の欠落数である。合格条件は、音声を 1 台に限定した状態で映像の停止・FPS 低下・telemetry の連続的な欠落を起こさないこととする。11.6 を含む上流が現在 `CONNECTING` のため、この実測は接続復帰後に実施する。
+確認対象は Relay の CPU 使用率、Relay の送受信量、4 枠の映像 FPS、音声切替後の再生開始時間、`TEL:` の欠落数である。合格条件は、全 Source の音声再生中に映像の停止・FPS 低下・telemetry の連続的な欠落を起こさないこととする。未接続 Source は無音のまま接続復帰を待つ。

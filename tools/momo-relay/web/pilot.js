@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260808-pilot-menu-calibration';
+  const PILOT_BUILD_ID = '20260808-r3-corner-torque';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -2311,11 +2311,20 @@
 
   function getFfbCornerDirectionSign(deviceProfile) {
     if (FFB_CORNER_DIRECTION_SIGN_EXPLICIT) return FFB_CORNER_DIRECTION_SIGN;
-    const profileId = typeof deviceProfile === 'object' && deviceProfile
-      ? String(deviceProfile.id || '').toLowerCase()
+    const profile = typeof deviceProfile === 'object' && deviceProfile ? deviceProfile : null;
+    const profileId = profile
+      ? String(profile.id || '').toLowerCase()
       : String(deviceProfile || '').toLowerCase();
-    // T300 は DirectInput 側の正負補正を使うため、反操舵となる Viewer 側の既定符号は R3 と逆になる。
-    return profileId === 'thrustmaster-t300' ? 1 : FFB_CORNER_DIRECTION_SIGN;
+    const torquePolarity = Number(profile?.torquePolarity);
+    // Bridge 側でトルク極性を反転するプロファイルでは、反操舵を保つため
+    // Viewer 側の横G反トルクも反転して、手動テストと同じ座標系にそろえる。
+    if (Number.isFinite(torquePolarity) && torquePolarity < 0) {
+      return -FFB_CORNER_DIRECTION_SIGN;
+    }
+    // 旧 Bridge がプロファイル名だけを返す場合の T300 互換。
+    return profileId === 'thrustmaster-t300'
+      ? -FFB_CORNER_DIRECTION_SIGN
+      : FFB_CORNER_DIRECTION_SIGN;
   }
 
   function stopFfbOutput() {

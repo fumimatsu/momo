@@ -36,8 +36,8 @@ class P2PMultiReceiverClient
       RTCManager* manager,
       SDLRenderer* renderer,
       P2PMultiReceiverClientConfig config) {
-    return std::shared_ptr<P2PMultiReceiverClient>(new P2PMultiReceiverClient(
-        ioc, manager, renderer, std::move(config)));
+    return std::shared_ptr<P2PMultiReceiverClient>(
+        new P2PMultiReceiverClient(ioc, manager, renderer, std::move(config)));
   }
 
   ~P2PMultiReceiverClient();
@@ -63,6 +63,7 @@ class P2PMultiReceiverClient
   void UpdateAudioOverlay();
   bool HandleAudioKey(int key);
   void SelectAudioSource(size_t index);
+  void SelectAllAudioSources();
 
   boost::asio::io_context& ioc_;
   RTCManager* manager_;

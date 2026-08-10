@@ -17,7 +17,7 @@
 class RTCConnection;
 
 // Relay が送る M5 の AUD: フレームを受け、既定の Windows 音声出力へ流す。
-// 1 インスタンスは 1 機体だけに対応し、複数車両を混ぜない。
+// 1 インスタンスは 1 機体に対応し、複数インスタンスの出力は SDL が合成する。
 class ObserverAudioReceiver : public webrtc::DataChannelObserver {
  public:
   struct Diagnostics {

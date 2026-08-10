@@ -1,5 +1,19 @@
 # Local Relay Web UI 運用
 
+## Race Control / Relay / Observer の一括起動
+
+同一PCの3サービスは、次のスクリプトで依存順に起動できる。Race Control の
+`D:\src\momo-race-control\.dev.vars` から `VIEWER_TOKEN` を読み、Relay の購読にだけ渡す。
+トークン値は画面やログへ表示しない。
+
+```powershell
+.\tools\start-mads-stack.ps1
+```
+
+すでに正常起動しているサービスは維持する。Relay の埋込みWeb資産が実行ファイルより新しい場合だけ
+Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ再起動する。管理画面も開く場合は
+`-OpenAdmin` を付ける。
+
 別 PC への導入、リポジトリの責任範囲、Race Control / Observer / FFB Bridge を含む配置手順は
 [Momo tools の配置と別 PC 導入](../README.md) を参照する。
 
