@@ -1,4 +1,4 @@
-# Relay Pit Recovery Tick API
+# Relay PIT Gameplay API
 
 ## Status
 
@@ -6,6 +6,7 @@
 - Relay: 実装済み
 - MADSYSTEM client: `codex/pit-recovery-publisher` の `281dea044` で実装済み
 - Endpoint: `POST /api/v1/gameplay/pit-recovery-ticks`
+- PIT presence endpoint: `POST /api/v1/gameplay/pit-presence-events`
 
 MADSYSTEM が同一のピットマーカーを連続認識した時間を管理し、2 秒継続するたびに 1 tick を送る。
 Relay は tick の正当性を検証し、受理した tick ごとに対象車両の HP を 20 回復する。
@@ -161,3 +162,62 @@ Observer へ即時配信する。HP が既に 100 の場合も tick は受理し
 | `503` | `gameplay_api_disabled` | Relay に gameplay token が未設定 |
 
 `429` は `retryAfterMs` を含む。
+
+## PIT Presence Event
+
+PIT IN / PIT OUT の表示状態は回復 tick から推測しない。MADSYSTEM は marker presence の確定と消失を、回復 tick とは別の event として送る。
+
+```http
+POST /api/v1/gameplay/pit-presence-events HTTP/1.1
+Authorization: Bearer <GAMEPLAY_TOKEN>
+Content-Type: application/json
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "event": "pit_presence",
+  "eventId": "550e8400-e29b-41d4-a716-446655440000",
+  "sourceId": "madsystem",
+  "raceRunId": "rr_123",
+  "carId": "CP-1",
+  "entryId": "pit-entry-7",
+  "transition": "entered",
+  "occurredAtUnixMs": 1786348800123,
+  "reason": "marker_confirmed"
+}
+```
+
+`entered` の reason は `marker_confirmed`、`exited` は `marker_lost`、`observation_stale`、`video_invalid` のいずれかとする。同じ滞在では `entryId` を維持し、transition ごとに新しい `eventId` を発行する。
+
+Relay は Race Control 接続、active run、`green` phase、car mapping、entered/exited の順序を検証する。同じ `eventId` と同じ本文の再送は `200 duplicate`、本文が異なる再利用は `409 event_conflict` とする。受理済み event は Relay process 内で直近 256 件を保持する。
+
+```json
+{
+  "schemaVersion": 1,
+  "status": "applied",
+  "eventId": "550e8400-e29b-41d4-a716-446655440000",
+  "raceRunId": "rr_123",
+  "carId": "CP-1",
+  "entryId": "pit-entry-7",
+  "transition": "entered",
+  "present": true,
+  "serverTimeMs": 1786348800201
+}
+```
+
+MADSYSTEM の `occurredAtUnixMs` は診断用である。Observer の PIT 滞在時刻には Relay が受理した `serverTimeMs` を使う。
+
+presence event をまだ送らない旧 MADSYSTEM の回復 tick も引き続き受理する。この場合 HP 回復と `VHS:1` は動作するが、Relay は tick だけから PIT IN / PIT OUT を生成しない。
+
+## Observer Telemetry
+
+presence transition、active entry の回復 tick、run / phase / Race Control 接続の reset 時に、Relay は対象 source の `momo-telemetry` DataChannel へ `PIT:1` を送る。
+
+```text
+PIT:1,{"raceRunId":"rr_123","carId":"CP-1","present":true,"entryId":"pit-entry-7","enteredAtUnixMs":1786348800201,"lastAcceptedTick":1,"serviceState":"servicing","hp":92}
+```
+
+`serviceState` は `outside`、`servicing`、`complete` のいずれかである。`complete` は active entry かつ HP 100 を表す。`exited` 後は `exitedAtUnixMs` と `exitReason` を含める。
+
+新しい Pilot / Observer の telemetry DataChannel が開いた時、Relay は現在の `VHS:1` と `PIT:1` を各 1 回送る。新 run、`green` 以外の phase、Race Control 切断では active entry を解除し、`present: false` を配信する。

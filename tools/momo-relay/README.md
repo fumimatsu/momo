@@ -197,6 +197,12 @@ Relayは有効なtick 1回につき20 HPを回復する。API契約は
 
 `pit-marker` と `hybrid` ではRace Control接続とgameplay tokenが必須である。tokenは引数へ入れず環境変数で渡す。
 
+MADSYSTEM は HP 回復を `/api/v1/gameplay/pit-recovery-ticks`、PIT IN / OUT を
+`/api/v1/gameplay/pit-presence-events` へ送る。Relay は presence と回復状態を
+`PIT:1` として telemetry DataChannel へ配信する。presence 未対応の旧 client からの
+回復 tick も受理するが、tick だけから PIT IN / OUT は推測しない。詳細は
+[Relay PIT Gameplay API](../../doc/PIT_RECOVERY_API.md) を参照する。
+
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
 .\tools\start-mads-observer.ps1 -RebuildRelay `

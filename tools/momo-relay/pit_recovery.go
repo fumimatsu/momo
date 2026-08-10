@@ -125,18 +125,36 @@ type relayRaceContext struct {
 
 func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now time.Time) {
 	server.raceMu.Lock()
-	previousRunID := server.raceContext.RaceRunID
+	previous := server.raceContext
 	server.raceContext = relayRaceContext{
 		Connected: true,
 		RaceRunID: strings.TrimSpace(envelope.RaceRunID),
 		Phase:     strings.ToLower(strings.TrimSpace(envelope.Phase)),
 	}
 	currentRunID := server.raceContext.RaceRunID
+	currentPhase := server.raceContext.Phase
 	server.raceMu.Unlock()
 
-	if previousRunID != currentRunID {
-		for _, source := range server.sources {
+	for _, source := range server.sources {
+		if previous.RaceRunID != currentRunID {
 			source.vehicleHealth.observeRaceRun(currentRunID, now)
+			if source.pitPresence == nil {
+				continue
+			}
+			health := source.vehicleHealth.snapshot(now)
+			if pit, changed := source.pitPresence.resetForRun(currentRunID, now, health.HP); changed {
+				source.broadcastPitPresence(pit)
+			}
+			continue
+		}
+		if currentPhase != "green" {
+			if source.pitPresence == nil {
+				continue
+			}
+			health := source.vehicleHealth.snapshot(now)
+			if pit, changed := source.pitPresence.resetActive("race_phase_changed", now, health.HP); changed {
+				source.broadcastPitPresence(pit)
+			}
 		}
 	}
 }
@@ -145,6 +163,16 @@ func (server *relayServer) markRaceControlDisconnected() {
 	server.raceMu.Lock()
 	server.raceContext.Connected = false
 	server.raceMu.Unlock()
+	now := time.Now()
+	for _, source := range server.sources {
+		if source.pitPresence == nil {
+			continue
+		}
+		health := source.vehicleHealth.snapshot(now)
+		if pit, changed := source.pitPresence.resetActive("race_control_disconnected", now, health.HP); changed {
+			source.broadcastPitPresence(pit)
+		}
+	}
 }
 
 func (server *relayServer) raceContextSnapshot() relayRaceContext {
@@ -174,14 +202,8 @@ func (server *relayServer) servePitRecoveryTick(w http.ResponseWriter, req *http
 		return
 	}
 	defer req.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(req.Body, pitRecoveryMaxBodyBytes+1))
-	decoder.DisallowUnknownFields()
 	var command pitRecoveryCommand
-	if err := decoder.Decode(&command); err != nil {
-		writePitRecoveryError(w, http.StatusBadRequest, "invalid_json", err.Error(), 0)
-		return
-	}
-	if err := ensureJSONBodyEnded(decoder); err != nil {
+	if err := decodeGameplayJSON(w, req, &command); err != nil {
 		writePitRecoveryError(w, http.StatusBadRequest, "invalid_json", err.Error(), 0)
 		return
 	}
@@ -216,6 +238,11 @@ func (server *relayServer) servePitRecoveryTick(w http.ResponseWriter, req *http
 	}
 	if result.Status == "applied" {
 		source.broadcastVehicleHealth(result.Snapshot)
+		if source.pitPresence != nil {
+			if pit, changed := source.pitPresence.observeRecovery(command, result.Snapshot); changed {
+				source.broadcastPitPresence(pit)
+			}
+		}
 		log.Printf("source %q car %q: applied pit recovery entry=%q tick=%d recovered=%.1f hp=%.1f",
 			source.name, command.CarID, command.EntryID, command.Tick,
 			result.RecoveredAmount, result.Snapshot.HP)
@@ -233,6 +260,16 @@ func (server *relayServer) servePitRecoveryTick(w http.ResponseWriter, req *http
 		SpeedCap:        result.Snapshot.SpeedCap,
 		Mode:            result.Snapshot.Mode,
 	})
+}
+
+func decodeGameplayJSON(w http.ResponseWriter, req *http.Request, destination any) error {
+	req.Body = http.MaxBytesReader(w, req.Body, pitRecoveryMaxBodyBytes)
+	decoder := json.NewDecoder(req.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	return ensureJSONBodyEnded(decoder)
 }
 
 func ensureJSONBodyEnded(decoder *json.Decoder) error {

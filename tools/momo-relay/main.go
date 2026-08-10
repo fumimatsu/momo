@@ -205,6 +205,7 @@ type relay struct {
 	telemetryOther         atomic.Uint64
 	frameRate              frameRateWindow
 	vehicleHealth          *vehicleHealth
+	pitPresence            *pitPresenceState
 
 	rtpRewriteMu          sync.Mutex
 	rtpRewriteInitialized bool
@@ -229,6 +230,9 @@ type relayServer struct {
 	recorder    *telemetryRecorder
 	raceMu      sync.RWMutex
 	raceContext relayRaceContext
+	pitEventsMu sync.Mutex
+	pitEvents   map[string]pitPresenceReceipt
+	pitEventIDs []string
 }
 
 type raceStateEnvelope struct {
@@ -407,6 +411,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		pilotCommandTimeout:  defaultPilotCommandTimeout,
 		vehicleHealth:        newVehicleHealth(time.Now()),
 	}
+	relay.pitPresence = newPitPresenceState(raceCarID, vehicleHealthMaximum)
 	relay.lifecycle.Store(int32(sourceWaiting))
 	relay.videoHealth.Store(int32(videoNotStarted))
 	relay.upstreamPeerState.Store("new")
@@ -1061,6 +1066,11 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 		message = normalized
 		if health, publish := r.vehicleHealth.ingestTelemetry(raw, time.Now()); publish {
 			r.broadcastVehicleHealth(health)
+			if r.pitPresence != nil {
+				if pit, changed := r.pitPresence.observeHealth(health); changed {
+					r.broadcastPitPresence(pit)
+				}
+			}
 		}
 	} else if bytes.HasPrefix(message.Data, []byte("AUD:")) {
 		r.telemetryBinaryAudio.Add(1)
@@ -1371,7 +1381,10 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 					r.setDriveLogging(client.id, false, "Ayame drive channel closed")
 				})
 			case telemetryLabel:
-				channel.OnOpen(func() { client.telemetry.Store(channel) })
+				channel.OnOpen(func() {
+					client.telemetry.Store(channel)
+					r.sendCurrentGameplayState(client, channel)
+				})
 				channel.OnClose(func() { client.telemetry.CompareAndSwap(channel, nil) })
 			case raceLabel:
 				channel.OnOpen(func() {
@@ -1580,6 +1593,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			channel.OnOpen(func() {
 				client.telemetry.Store(channel)
 				log.Printf("viewer %d telemetry channel opened", client.id)
+				r.sendCurrentGameplayState(client, channel)
 			})
 			channel.OnClose(func() { client.telemetry.CompareAndSwap(channel, nil) })
 		case commandLabel:
@@ -1907,6 +1921,7 @@ func main() {
 		sources:     make(map[string]*relay, len(sources)),
 		sourceOrder: make([]string, 0, len(sources)),
 		recorder:    recorder,
+		pitEvents:   make(map[string]pitPresenceReceipt),
 	}
 	for _, sourceValue := range sources {
 		name, sourceURL, err := parseSource(sourceValue)
@@ -1959,6 +1974,8 @@ func main() {
 	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
 	mux.HandleFunc("/api/v1/gameplay/pit-recovery-ticks",
 		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitRecoveryTick)))
+	mux.HandleFunc("/api/v1/gameplay/pit-presence-events",
+		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitPresenceEvent)))
 	mux.HandleFunc("/garage.html", garagePolicy.wrap(operationsPageHandler(garageHTML)))
 	fileServer := http.FileServer(http.FS(webRoot))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
