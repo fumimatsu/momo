@@ -24,17 +24,26 @@ type vehicleHealthRecoveryMode string
 const (
 	vehicleHealthRecoveryLegacy    vehicleHealthRecoveryMode = "legacy"
 	vehicleHealthRecoveryPitMarker vehicleHealthRecoveryMode = "pit-marker"
+	vehicleHealthRecoveryHybrid    vehicleHealthRecoveryMode = "hybrid"
 	vehicleHealthRecoveryDisabled  vehicleHealthRecoveryMode = "disabled"
 )
 
 func parseVehicleHealthRecoveryMode(value string) (vehicleHealthRecoveryMode, error) {
 	mode := vehicleHealthRecoveryMode(strings.ToLower(strings.TrimSpace(value)))
 	switch mode {
-	case vehicleHealthRecoveryLegacy, vehicleHealthRecoveryPitMarker, vehicleHealthRecoveryDisabled:
+	case vehicleHealthRecoveryLegacy, vehicleHealthRecoveryPitMarker, vehicleHealthRecoveryHybrid, vehicleHealthRecoveryDisabled:
 		return mode, nil
 	default:
-		return "", fmt.Errorf("invalid health recovery mode %q; want legacy, pit-marker, or disabled", value)
+		return "", fmt.Errorf("invalid health recovery mode %q; want legacy, pit-marker, hybrid, or disabled", value)
 	}
+}
+
+func (mode vehicleHealthRecoveryMode) allowsDrivingRecovery() bool {
+	return mode == vehicleHealthRecoveryLegacy || mode == vehicleHealthRecoveryHybrid
+}
+
+func (mode vehicleHealthRecoveryMode) allowsPitRecovery() bool {
+	return mode == vehicleHealthRecoveryPitMarker || mode == vehicleHealthRecoveryHybrid
 }
 
 type pitRecoveryCommand struct {

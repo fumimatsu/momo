@@ -14,9 +14,9 @@ MADSYSTEM は回復量を指定しない。HP、回復量、速度上限の正�
 
 ## Relay 設定
 
-ピット回復を有効にするには、Relay を次の条件で起動する。
+ピット回復を有効にするには、Relay を `pit-marker` または `hybrid` で起動する。
 
-- `-health-recovery-mode=pit-marker`
+- `-health-recovery-mode=pit-marker` または `hybrid`
 - `-race-url` を設定する
 - `MOMO_RELAY_GAMEPLAY_TOKEN` を設定する
 - 各 source に一意の `-race-car DEVICE=CAR_ID` を設定する
@@ -26,7 +26,7 @@ MADSYSTEM は回復量を指定しない。HP、回復量、速度上限の正�
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
 .\tools\start-mads-observer.ps1 `
-  -HealthRecoveryMode 'pit-marker' `
+  -HealthRecoveryMode 'hybrid' `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>'
 ```
@@ -94,7 +94,7 @@ MADSYSTEM のクラス分割、既存コードへの接続、テスト方針は
 
 Relay は次の条件をすべて満たす要求だけを受理する。
 
-- recovery mode が `pit-marker`
+- recovery mode が `pit-marker` または `hybrid`
 - Race Control WebSocket が接続中
 - `raceRunId` が active run と一致
 - race phase が `green`
@@ -108,6 +108,7 @@ Observer へ即時配信する。HP が既に 100 の場合も tick は受理し
 
 新しい `raceRunId`、`ready` phase、Relay 再起動では、entry、tick、重複排除履歴を破棄する。
 `pit-marker` mode では従来の安全走行による連続回復を行わない。
+`hybrid` mode では安全走行による連続回復と PIT tick 回復の両方を行う。
 
 ## Success Response
 

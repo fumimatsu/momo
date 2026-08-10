@@ -156,7 +156,7 @@ func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now ti
 	health.mu.Lock()
 	defer health.mu.Unlock()
 
-	if health.recoveryMode != vehicleHealthRecoveryPitMarker {
+	if !health.recoveryMode.allowsPitRecovery() {
 		return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
 			StatusCode: 409,
 			Code:       "recovery_mode_not_allowed",
@@ -329,7 +329,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 	}
 	elapsed := now.Sub(health.lastUpdatedAt).Seconds()
 	health.lastUpdatedAt = now
-	if health.recoveryMode != vehicleHealthRecoveryLegacy || elapsed <= 0 || health.hp >= vehicleHealthMaximum ||
+	if !health.recoveryMode.allowsDrivingRecovery() || elapsed <= 0 || health.hp >= vehicleHealthMaximum ||
 		(!health.lastUnsafeAt.IsZero() && now.Sub(health.lastUnsafeAt) < vehicleHealthRecoveryDelay) ||
 		health.lastForwardAt.IsZero() || now.Sub(health.lastForwardAt) > vehicleHealthForwardCommandGrace {
 		return false

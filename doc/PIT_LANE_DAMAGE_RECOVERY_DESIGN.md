@@ -54,9 +54,8 @@ HP の正本は Local Relay の `tools/momo-relay/vehicle_health.go` にある�
 - `VHS:1` を Pilot と Observer へ配信する
 - race phase が `ready` へ変わった時に HP を100へ戻す
 
-現在は、最後の衝突から4秒経過し、前進指令が継続している間に HP が自動回復する。
-ピット回復モードを追加する際、この条件を残すとコース上でも回復するため仕様が成立しない。
-旧条件は `legacy` として明示的に分離し、ピットモードでは無効にする必要がある。
+最後の衝突から4秒経過し、前進指令が継続している間に HP が自動回復する経路を `legacy` とする。
+PIT 専用の比較運用では `pit-marker` を使い、両方を戦略として有効にする本番運用では `hybrid` を使う。
 
 ## 推奨する責務
 
@@ -144,9 +143,10 @@ Relay に回復モードを設ける。
 | --- | --- |
 | `legacy` | 現行の安全時間 + 前進指令。移行期間のみ使用 |
 | `pit-marker` | active run の `green` 中に有効な recovery tick を受理 |
+| `hybrid` | `legacy` の走行回復と `pit-marker` の tick 回復を両方許可 |
 | `disabled` | race中は回復しない |
 
-`pit-marker` では次を守る。
+`pit-marker` と `hybrid` の PIT 回復では次を守る。
 
 - 受理した tick 1 回につき 20 HP を回復する
 - 同じ `commandId` の再送は重複回復させない
@@ -206,8 +206,9 @@ Operations Dashboardには将来、次を読み取り専用で出すと診断し
 ### Phase 2: Relay recovery tickと回復（実装済み）
 
 - 認証付きinternal endpointと車両単位のtick契約を実装する
-- `legacy|pit-marker|disabled` を追加する
+- `legacy|pit-marker|hybrid|disabled` を追加する
 - `pit-marker` では現行の前進中自動回復を無効にする
+- `hybrid` では前進中自動回復と PIT tick 回復を両方許可する
 - command重複、tick順序、2秒間隔、run不一致、Race Control切断、unknown carをfail closedで処理する
 - 回復イベントを診断ログへ残す
 
@@ -232,6 +233,7 @@ Operations Dashboardには将来、次を読み取り専用で出すと診断し
 
 - 有効なtick 1回につき最大20 HPだけ増える
 - `legacy`回復が`pit-marker`で動かない
+- `hybrid`で走行回復とPIT回復の両方が動く
 - command重複、tick順序違反、2秒未満、raceRunId不一致で回復しない
 - 衝突と回復が同時でもHPが範囲外にならない
 - `ready`でHPを100へ戻し、pit entryと重複排除履歴を破棄する

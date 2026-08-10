@@ -427,14 +427,14 @@ Relay 起動後は `/api/v1/status` で次を確認する。
 - Race Control が接続済み
 - active `raceRunId` が存在する
 - 対象 source の `raceCarId` が一意
-- `vehicleHealth.recoveryMode` が `pit-marker`
+- `vehicleHealth.recoveryMode` が `hybrid`
 - gameplay API の bind address が意図した interface だけ
 
 token や Authorization header を screenshot、issue、Unity log へ残さない。
 
-1. Relay を `-health-recovery-mode=pit-marker` と gameplay token 付きで起動する
+1. Relay を本番用の `-health-recovery-mode=hybrid` と gameplay token 付きで起動する
 2. Race Control、Relay、Observer、MADSYSTEM を起動する
-3. `/api/v1/status` で対象 source の `vehicleHealth.recoveryMode` が `pit-marker` であることを確認する
+3. `/api/v1/status` で対象 source の `vehicleHealth.recoveryMode` が `hybrid` であることを確認する
 4. damage を発生させ、HP が 100 未満になることを確認する
 5. 1 秒だけ marker を見せ、回復しないことを確認する
 6. 2 秒継続して見せ、20 HP 回復することを確認する

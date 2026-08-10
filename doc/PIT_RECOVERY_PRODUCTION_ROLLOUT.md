@@ -4,6 +4,7 @@
 
 MADSYSTEM が PIT marker ID `49` を認識している間、2 秒ごとに Relay へ回復 tick を送り、
 Relay が車体 HP を 20 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
+本番 mode は `hybrid` とし、安全走行中の低速な連続回復も維持する。
 
 HP、回復量、速度上限の正本は Relay に置く。MADSYSTEM は marker presence と tick の順序だけを管理し、
 Viewer は Relay が配信する `VHS:1` を表示する。Viewer から PIT API を呼ばない。
@@ -118,7 +119,7 @@ $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<新しい GAMEPLAY_TOKEN>'
 
 Set-Location C:\src\momo
 .\tools\start-mads-observer.ps1 `
-  -HealthRecoveryMode 'pit-marker' `
+  -HealthRecoveryMode 'hybrid' `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>' `
   -GameplayAllowCidr '<MADSYSTEM-PC-IP>/32'
@@ -127,7 +128,7 @@ Set-Location C:\src\momo
 独自の起動スクリプトを使う場合も、次の引数を欠かさない。
 
 ```text
--health-recovery-mode pit-marker
+-health-recovery-mode hybrid
 -race-url ws://<race-control-host>:8787/ws/races/<raceId>
 -race-viewer-token <VIEWER_TOKEN>
 -gameplay-allow-cidr <MADSYSTEM-PC-IP>/32
@@ -211,7 +212,7 @@ Observer の合成順、Relay の source 順、`-race-car` の 3 つが同じ車
 ## 5. 起動順
 
 1. Race Control を起動する。
-2. Relay を `pit-marker` mode で起動する。
+2. Relay を `hybrid` mode で起動する。
 3. Relay の Operations API で source と `raceCarId` を確認する。
 4. Observer と Pilot Viewer を接続する。
 5. MADSYSTEM を起動する。
@@ -239,7 +240,7 @@ $status.sources | Select-Object id, raceCarId, state,
 合格条件:
 
 - 4 source の `id` と `raceCarId` が当日の枠割りと一致する。
-- `vehicleHealth.recoveryMode` が `pit-marker` である。
+- `vehicleHealth.recoveryMode` が `hybrid` である。
 - 使用車両が `STREAMING` である。
 - Race Control log に WebSocket `101 Switching Protocols` がある。
 - Viewer に HP bar が表示される。

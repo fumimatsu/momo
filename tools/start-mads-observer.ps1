@@ -12,7 +12,7 @@ param(
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$GarageAllowCidr = '192.168.11.0/24',
     [string]$GameplayAllowCidr = '127.0.0.1/32',
-    [ValidateSet('legacy', 'pit-marker', 'disabled')]
+    [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'legacy' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = '',
@@ -24,12 +24,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($HealthRecoveryMode -eq 'pit-marker') {
+if ($HealthRecoveryMode -in @('pit-marker', 'hybrid')) {
     if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_GAMEPLAY_TOKEN)) {
-        throw 'MOMO_RELAY_GAMEPLAY_TOKEN is required when HealthRecoveryMode is pit-marker.'
+        throw "MOMO_RELAY_GAMEPLAY_TOKEN is required when HealthRecoveryMode is $HealthRecoveryMode."
     }
     if ([string]::IsNullOrWhiteSpace($RaceControlUrl)) {
-        throw 'RaceControlUrl is required when HealthRecoveryMode is pit-marker.'
+        throw "RaceControlUrl is required when HealthRecoveryMode is $HealthRecoveryMode."
     }
 }
 

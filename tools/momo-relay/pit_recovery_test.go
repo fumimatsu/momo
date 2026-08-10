@@ -9,6 +9,81 @@ import (
 	"time"
 )
 
+func TestParseVehicleHealthRecoveryMode(t *testing.T) {
+	t.Parallel()
+	for _, value := range []vehicleHealthRecoveryMode{
+		vehicleHealthRecoveryLegacy,
+		vehicleHealthRecoveryPitMarker,
+		vehicleHealthRecoveryHybrid,
+		vehicleHealthRecoveryDisabled,
+	} {
+		value := value
+		t.Run(string(value), func(t *testing.T) {
+			got, err := parseVehicleHealthRecoveryMode(string(value))
+			if err != nil || got != value {
+				t.Fatalf("parseVehicleHealthRecoveryMode(%q) = %q, %v", value, got, err)
+			}
+		})
+	}
+	if _, err := parseVehicleHealthRecoveryMode("unknown"); err == nil {
+		t.Fatal("unknown recovery mode was accepted")
+	}
+}
+
+func TestVehicleHealthRecoveryModeCapabilities(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		mode        vehicleHealthRecoveryMode
+		wantDriving bool
+		wantPit     bool
+	}{
+		{mode: vehicleHealthRecoveryLegacy, wantDriving: true},
+		{mode: vehicleHealthRecoveryPitMarker, wantPit: true},
+		{mode: vehicleHealthRecoveryHybrid, wantDriving: true, wantPit: true},
+		{mode: vehicleHealthRecoveryDisabled},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(string(test.mode), func(t *testing.T) {
+			if got := test.mode.allowsDrivingRecovery(); got != test.wantDriving {
+				t.Fatalf("allowsDrivingRecovery() = %t, want %t", got, test.wantDriving)
+			}
+			if got := test.mode.allowsPitRecovery(); got != test.wantPit {
+				t.Fatalf("allowsPitRecovery() = %t, want %t", got, test.wantPit)
+			}
+		})
+	}
+}
+
+func TestVehicleHealthHybridModeAllowsDrivingAndPitRecovery(t *testing.T) {
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.setRecoveryMode(vehicleHealthRecoveryHybrid)
+	health.observeRaceRun("rr_hybrid", base)
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","e":{"n":"impact_candidate","m":20.0,"j":300}}`, base)
+
+	health.limitCommand("S:1500,T:2000", base.Add(5*time.Second))
+	health.limitCommand("S:1500,T:2000", base.Add(5200*time.Millisecond))
+	drivingHP := health.snapshot(base.Add(5200 * time.Millisecond)).HP
+	if drivingHP <= 72 {
+		t.Fatalf("hybrid mode did not apply driving recovery: HP %.3f", drivingHP)
+	}
+
+	result, applyErr := health.applyPitRecovery(pitRecoveryCommand{
+		CommandID: "rr_hybrid:CP-1:entry-1:tick-1",
+		RaceRunID: "rr_hybrid",
+		CarID:     "CP-1",
+		EntryID:   "entry-1",
+		Tick:      1,
+	}, base.Add(7200*time.Millisecond))
+	if applyErr != nil {
+		t.Fatalf("hybrid pit recovery failed: %#v", applyErr)
+	}
+	if result.RecoveredAmount != 20 || result.Snapshot.HP != drivingHP+20 {
+		t.Fatalf("hybrid pit recovery = %#v, driving HP was %.3f", result, drivingHP)
+	}
+}
+
 func TestVehicleHealthAppliesPitRecoveryTicksIdempotently(t *testing.T) {
 	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)

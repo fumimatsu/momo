@@ -1813,7 +1813,7 @@ func main() {
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
-	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, or disabled")
+	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
@@ -1829,12 +1829,12 @@ func main() {
 		log.Fatal(err)
 	}
 	gameplayToken := strings.TrimSpace(os.Getenv("MOMO_RELAY_GAMEPLAY_TOKEN"))
-	if healthRecoveryMode == vehicleHealthRecoveryPitMarker {
+	if healthRecoveryMode.allowsPitRecovery() {
 		if gameplayToken == "" {
-			log.Fatal("MOMO_RELAY_GAMEPLAY_TOKEN is required when -health-recovery-mode=pit-marker")
+			log.Fatalf("MOMO_RELAY_GAMEPLAY_TOKEN is required when -health-recovery-mode=%s", healthRecoveryMode)
 		}
 		if strings.TrimSpace(raceURL) == "" {
-			log.Fatal("-race-url is required when -health-recovery-mode=pit-marker")
+			log.Fatalf("-race-url is required when -health-recovery-mode=%s", healthRecoveryMode)
 		}
 	}
 	if upstream != "" {

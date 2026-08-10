@@ -172,20 +172,21 @@ Relayは有効なtick 1回につき20 HPを回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
 [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
 
-回復モードは次の3種類である。既定は既存互換の `legacy` とする。
+回復モードは次の4種類である。既定は既存互換の `legacy` とする。
 
 | mode | 動作 |
 | --- | --- |
 | `legacy` | 安全時間経過後、前進指令中に従来の連続回復を行う |
 | `pit-marker` | `green` 中にMADSYSTEMのtickを受理した時だけ20 HP回復する |
+| `hybrid` | `legacy` の走行回復と `pit-marker` の20 HP回復を両方行う |
 | `disabled` | 回復しない |
 
-`pit-marker` ではRace Control接続とgameplay tokenが必須である。tokenは引数へ入れず環境変数で渡す。
+`pit-marker` と `hybrid` ではRace Control接続とgameplay tokenが必須である。tokenは引数へ入れず環境変数で渡す。
 
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
 .\tools\start-mads-observer.ps1 -RebuildRelay `
-  -HealthRecoveryMode 'pit-marker' `
+  -HealthRecoveryMode 'hybrid' `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>'
 ```
