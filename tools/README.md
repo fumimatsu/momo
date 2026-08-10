@@ -225,9 +225,13 @@ Invoke-RestMethod http://127.0.0.1:8090/api/v1/status |
 ```text
 http://<relay-host>:8090/operations.html
 http://<relay-host>:8090/garage.html
+http://<relay-host>:8090/observer.html
 http://<relay-host>:8090/gamepad.html?viewer=relay-pilot&relayPilotPath=flat&device=11.5
 http://<relay-host>:8090/pilot.html?device=11.5&audioControls=0
 ```
+
+Web Observer は Relay と同一 origin から配信する。別の Web サーバーや `relayHost` query は
+開発時だけに使い、本番 URL として固定しない。
 
 ## 更新手順
 
@@ -258,7 +262,8 @@ rollback を含む [PIT 回復機能 本番適用 Runbook](../doc/PIT_RECOVERY_P
 7. `8090/tcp` の Firewall を Private LAN に限定する。
 8. source 順と `carId` を当日の枠割りに合わせる。
 9. Operations API で映像、serial、Observer、race channel を確認する。
-10. Pilot PC の Bridge GUI で新しい Relay origin を許可し、Input / FFB 設定を保存し直す。
+10. `http://<relay-host>:8090/observer.html` で 4 枠、race state、telemetry を確認する。
+11. Pilot PC の Bridge GUI で新しい Relay origin を許可し、Input / FFB 設定を保存し直す。
 
 Relay の機能、画面、telemetry 記録、Ayame 外部 Pilot の詳細は
 [momo-relay/README.md](momo-relay/README.md) を参照する。

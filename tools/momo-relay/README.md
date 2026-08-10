@@ -17,9 +17,12 @@ Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ�
 別 PC への導入、リポジトリの責任範囲、Race Control / Observer / FFB Bridge を含む配置手順は
 [Momo tools の配置と別 PC 導入](../README.md) を参照する。
 
-`web/` は Relay バイナリへ `go:embed` で埋め込まれる。`pilot.html`、`pilot.js`、`ffb-bridge.js`、`gamepad.html`、`gamepad.js`、`gamepad-profile.js` を変更しただけでは、起動済み Relay の UI は変わらない。Relay を再ビルドして再起動した後に反映される。
+`web/` は Relay バイナリへ `go:embed` で埋め込まれる。Pilot、Gamepad、Web Observer の
+ファイルを変更しただけでは、起動済み Relay の UI は変わらない。Relay を再ビルドして
+再起動した後に反映される。
 
-`web/` は配布コピーである。正本は `momo-fpv-viewer/variants/relay/` にあり、更新時は
+`web/` は配布コピーである。正本は `momo-fpv-viewer/variants/relay/` と
+`momo-fpv-viewer/variants/observer/` にあり、更新時は
 `tools/sync-relay-viewer.ps1` を使う。詳細は [Viewer の正本と Relay 配布](../../docs/viewer-integration.md) を参照する。
 
 外部 Pilot を Ayame / TURN 経由で接続する構成は、[Relay 経由 Ayame 外部 Pilot 設計](../../doc/RELAY_AYAME_EXTERNAL_PILOT_DESIGN.md) を参照する。現在は 1 source、1 Pilot の映像・操縦・telemetry・race state を実装している。外部 Pilot の command が 250 ms 途絶えた場合、Relay は対象 Pi へ neutral を送る。
@@ -111,6 +114,22 @@ http://<relay-host>:8090/gamepad.html?viewer=relay-pilot&relayPilotPath=flat&dev
 - `audioControls=0` は Audio、Filter、Mic の音声 UI をすべて隠す。
 - `mediaControls=0` は旧名として互換維持する。新規 URL では `audioControls=0` を使う。
 - 後退ギア下限は `G1=1200`、`G2=1200`、`G3〜G5=1000`。
+
+## Web Observer
+
+本番 Web Observer は Relay と同一 origin から配信する。
+
+```text
+http://<relay-host>:8090/observer.html
+```
+
+ページは query がなければ `location.host` を接続先 Relay として使い、4 台分の read-only
+Observer WebRTC session を開く。ブラウザへ Race Control token は渡さない。Relay が
+Race Control へ 1 本だけ認証接続し、`momo-race`、`momo-telemetry`、映像を各 session へ配る。
+
+`observer-config.json` の `device` と `carId` は Relay 起動時の `-source`、`-race-car` と
+一致させる。設定または Viewer を変更した場合は `sync-relay-viewer.ps1`、Relay の再ビルド、
+再起動、ブラウザの強制再読み込みまで実施する。
 
 ## Ayame 外部 Pilot 試験
 

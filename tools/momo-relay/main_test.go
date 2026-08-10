@@ -330,6 +330,36 @@ func TestOperationsPageHandlerHonorsCIDRAndHTTPMethod(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWebObserverAssetsAreComplete(t *testing.T) {
+	paths := []string{
+		"web/observer.html",
+		"web/observer.css",
+		"web/observer.js",
+		"web/observer-core.js",
+		"web/observer-config.json",
+		"web/telemetry.js",
+	}
+	for _, path := range paths {
+		contents, err := webAssets.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read embedded asset %s: %v", path, err)
+		}
+		if len(contents) == 0 {
+			t.Fatalf("embedded asset %s is empty", path)
+		}
+	}
+
+	html, err := webAssets.ReadFile("web/observer.html")
+	if err != nil {
+		t.Fatalf("read embedded observer HTML: %v", err)
+	}
+	for _, reference := range []string{"observer.css", "/telemetry.js", "observer.js"} {
+		if !strings.Contains(string(html), reference) {
+			t.Fatalf("observer HTML does not reference %q", reference)
+		}
+	}
+}
+
 func newStatusTestRelay(name string, carID string) *relay {
 	source := &relay{name: name, raceCarID: carID, rtpStallTimeout: 5 * time.Second, upstreamStartTimeout: 20 * time.Second}
 	source.lifecycle.Store(int32(sourceWaiting))

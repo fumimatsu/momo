@@ -20,7 +20,12 @@ $sourceFiles = @(
     [ordered]@{ Source = 'cpu-shadow-capture.js'; Destination = 'cpu-shadow-capture.js' },
     [ordered]@{ Source = 'gamepad.html'; Destination = 'gamepad.html' },
     [ordered]@{ Source = 'gamepad.js'; Destination = 'gamepad.js' },
-    [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' }
+    [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' },
+    [ordered]@{ Source = 'variants\observer\observer.html'; Destination = 'observer.html' },
+    [ordered]@{ Source = 'variants\observer\observer.css'; Destination = 'observer.css' },
+    [ordered]@{ Source = 'variants\observer\observer.js'; Destination = 'observer.js' },
+    [ordered]@{ Source = 'variants\observer\observer-core.js'; Destination = 'observer-core.js' },
+    [ordered]@{ Source = 'variants\observer\observer-config.json'; Destination = 'observer-config.json' }
 )
 
 function Get-RecordedDistributionDrift {

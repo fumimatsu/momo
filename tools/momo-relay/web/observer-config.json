@@ -1,0 +1,9 @@
+{
+  "trackName": "SDK RACING / TOKOROZAWA BASE",
+  "cars": [
+    { "device": "11.3", "carId": "CP-1", "displayNumber": "01", "flip": true },
+    { "device": "11.4", "carId": "CP-2", "displayNumber": "02", "flip": true },
+    { "device": "11.5", "carId": "CP-3", "displayNumber": "03", "flip": true },
+    { "device": "11.6", "carId": "CP-4", "displayNumber": "04", "flip": true }
+  ]
+}

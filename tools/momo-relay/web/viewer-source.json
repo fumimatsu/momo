@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/fumimatsu/momo-fpv-viewer",
-  "sourceCommit": "b09f82cc4fc3469f1f2f1e129b7a7953ab26d60a",
+  "sourceCommit": "b7cdfd7a76bfd3e5d2f1800ca629141dac5c281a",
   "sourceDirty": false,
   "variant": "relay-pilot",
   "files": [
@@ -13,6 +13,11 @@
     "cpu-shadow-capture.js",
     "gamepad.html",
     "gamepad.js",
-    "gamepad-profile.js"
+    "gamepad-profile.js",
+    "observer.html",
+    "observer.css",
+    "observer.js",
+    "observer-core.js",
+    "observer-config.json"
   ]
 }
