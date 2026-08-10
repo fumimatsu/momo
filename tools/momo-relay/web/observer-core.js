@@ -192,7 +192,34 @@ export function expectedSectorDurationMs(standing) {
   return null;
 }
 
-export function estimateCourseProgress(standing, raceElapsedMs, boundaries) {
+export function classSectorDurationMs(standings, sector) {
+  const sectorNumber = finiteNumber(sector);
+  if (!Number.isInteger(sectorNumber) || sectorNumber < 1 || !Array.isArray(standings)) return null;
+  const samples = [];
+  for (const standing of standings) {
+    const timing = Array.isArray(standing?.sectorTimes)
+      ? standing.sectorTimes.find((entry) => finiteNumber(entry?.sector) === sectorNumber)
+      : null;
+    if (!timing) continue;
+    const duration = finiteNumber(timing.lastMs) ?? finiteNumber(timing.bestMs);
+    if (Number.isInteger(duration) && duration > 0) samples.push(duration);
+  }
+  if (samples.length === 0) return null;
+  samples.sort((left, right) => left - right);
+  const middle = Math.floor(samples.length / 2);
+  return samples.length % 2 === 0
+    ? Math.round((samples[middle - 1] + samples[middle]) / 2)
+    : samples[middle];
+}
+
+export function visualSectorProgress(rawProgress) {
+  const progress = finiteNumber(rawProgress);
+  if (progress === null || progress <= 0) return 0;
+  if (progress <= 0.82) return progress;
+  return Math.min(0.985, 0.82 + (0.165 * (1 - Math.exp(-(progress - 0.82) * 8))));
+}
+
+export function estimateCourseProgress(standing, raceElapsedMs, boundaries, expectedDurationOverrideMs = null) {
   const currentSector = finiteNumber(standing?.currentSector);
   const sectorCount = finiteNumber(standing?.sectorCount);
   const lastMarkerIndex = finiteNumber(standing?.lastMarkerIndex);
@@ -211,8 +238,11 @@ export function estimateCourseProgress(standing, raceElapsedMs, boundaries) {
       || normalizedBoundaries.some((value, index) => index > 0 && value <= normalizedBoundaries[index - 1])) {
     return null;
   }
-  const expectedMs = expectedSectorDurationMs(standing);
-  const sectorProgress = expectedMs === null ? 0 : clamp((elapsed - lastMarkerRaceMs) / expectedMs, 0, 1);
+  const personalExpectedMs = expectedSectorDurationMs(standing);
+  const override = finiteNumber(expectedDurationOverrideMs);
+  const expectedMs = personalExpectedMs ?? (Number.isInteger(override) && override > 0 ? override : null);
+  const rawSectorProgress = expectedMs === null ? 0 : Math.max(0, (elapsed - lastMarkerRaceMs) / expectedMs);
+  const sectorProgress = clamp(rawSectorProgress, 0, 1);
   const start = normalizedBoundaries[lastMarkerIndex];
   const end = normalizedBoundaries[lastMarkerIndex + 1];
   return {
@@ -220,6 +250,7 @@ export function estimateCourseProgress(standing, raceElapsedMs, boundaries) {
     lastMarkerIndex,
     expectedMs,
     elapsedSinceMarkerMs: Math.max(0, elapsed - lastMarkerRaceMs),
+    rawSectorProgress,
     sectorProgress,
     courseProgress: start + ((end - start) * sectorProgress),
   };

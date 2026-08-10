@@ -1,5 +1,6 @@
 import {
   RaceStateDeduplicator,
+  classSectorDurationMs,
   countActiveVideos,
   currentLapClockValue,
   deriveSituations,
@@ -16,12 +17,14 @@ import {
   parseVehicleHealth,
   raceClockValue,
   standingsByConfiguredCar,
+  visualSectorProgress,
 } from './observer-core.js';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 const DISCONNECTED_RECONNECT_MS = 3000;
-const RACE_STATE_POLL_MS = 1000;
+const RACE_STATE_POLL_MS = 500;
+const MARKER_CORRECTION_MS = 240;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
@@ -32,12 +35,15 @@ const connectionByCar = new Map();
 const clients = [];
 const impactTimers = new Map();
 const markerMotionByCar = new Map();
+const markerRenderByCar = new Map();
+const raceTransportByCar = new Map();
 let observerConfig = null;
 let raceState = null;
 let raceReceivedAt = 0;
 let animationFrame = 0;
 let racePollTimer = 0;
 let racePollInFlight = false;
+let raceStatusRenderedAt = 0;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -195,7 +201,11 @@ class ObserverPeer {
     race.onclose = () => {
       if (generation !== this.generation) return;
       this.raceOpen = false;
-      this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'RACE CLOSED');
+      this.scheduleReconnect(generation, 'RACE CHANNEL CLOSED');
+    };
+    race.onerror = () => {
+      if (generation !== this.generation) return;
+      this.setState('RECONNECTING', 'RACE CHANNEL ERROR');
     };
 
     const stream = new MediaStream();
@@ -624,21 +634,48 @@ function updateTrackMarkers(now) {
     const marker = document.getElementById(`marker-${car.carId}`);
     const standing = standingByCar.get(car.carId);
     const elapsed = standing ? markerRaceElapsedMs(car.carId, standing, now) : null;
+    const classDuration = standing
+      ? classSectorDurationMs(raceState.standings, standing.currentSector)
+      : null;
     const estimate = standing?.sectorCount === 3
-      ? estimateCourseProgress(standing, elapsed, COURSE_SECTOR_BOUNDARIES)
+      ? estimateCourseProgress(standing, elapsed, COURSE_SECTOR_BOUNDARIES, classDuration)
       : null;
     if (!marker || !estimate) {
       marker?.setAttribute('hidden', '');
       return;
     }
-    const point = path.getPointAtLength(estimate.courseProgress * length);
+    const sectorStart = COURSE_SECTOR_BOUNDARIES[estimate.lastMarkerIndex];
+    const sectorEnd = COURSE_SECTOR_BOUNDARIES[estimate.lastMarkerIndex + 1];
+    const visualProgress = visualSectorProgress(estimate.rawSectorProgress);
+    const targetProgress = sectorStart + ((sectorEnd - sectorStart) * visualProgress);
+    const key = `${raceState.raceRunId || ''}:${standing.lastMarkerIndex}:${standing.lastMarkerRaceMs}`;
+    let rendered = markerRenderByCar.get(car.carId);
+    if (!rendered) {
+      rendered = { key, progress: targetProgress, correctionStartedAt: 0, correctionFrom: targetProgress };
+      markerRenderByCar.set(car.carId, rendered);
+    } else if (rendered.key !== key) {
+      rendered.key = key;
+      rendered.correctionStartedAt = now;
+      rendered.correctionFrom = rendered.progress;
+    }
+    if (rendered.correctionStartedAt) {
+      const correction = Math.min(1, (now - rendered.correctionStartedAt) / MARKER_CORRECTION_MS);
+      const eased = 1 - ((1 - correction) ** 3);
+      let destination = targetProgress;
+      if (destination + 0.5 < rendered.correctionFrom) destination += 1;
+      rendered.progress = (rendered.correctionFrom + ((destination - rendered.correctionFrom) * eased)) % 1;
+      if (correction >= 1) rendered.correctionStartedAt = 0;
+    } else {
+      rendered.progress = targetProgress;
+    }
+    const point = path.getPointAtLength(rendered.progress * length);
     const [offsetX, offsetY] = MARKER_RENDER_OFFSETS[index] || [0, 0];
     marker.removeAttribute('hidden');
     marker.setAttribute('transform', `translate(${(point.x + offsetX).toFixed(2)} ${(point.y + offsetY).toFixed(2)})`);
     marker.dataset.sector = String(estimate.currentSector);
-    marker.dataset.progress = estimate.sectorProgress.toFixed(3);
-    marker.querySelector('.marker-confidence').setAttribute('r', (14 + (estimate.sectorProgress * 8)).toFixed(1));
-    marker.querySelector('title').textContent = `${car.carId} S${estimate.currentSector} ${Math.round(estimate.sectorProgress * 100)}% estimated`;
+    marker.dataset.progress = visualProgress.toFixed(3);
+    marker.querySelector('.marker-confidence').setAttribute('r', (14 + (visualProgress * 8)).toFixed(1));
+    marker.querySelector('title').textContent = `${car.carId} S${estimate.currentSector} ${Math.round(visualProgress * 100)}% estimated`;
   });
 }
 
@@ -663,6 +700,11 @@ function updateClock() {
     }
   }
   updateTrackMarkers(performance.now());
+  const now = performance.now();
+  if (observerConfig && now - raceStatusRenderedAt >= 250) {
+    raceStatusRenderedAt = now;
+    for (const car of observerConfig.cars) renderCameraTransportState(car, now);
+  }
   animationFrame = requestAnimationFrame(updateClock);
 }
 
@@ -723,15 +765,34 @@ function updateCameraState(car, state) {
   }
   const fps = document.getElementById(`camera-fps-${car.carId}`);
   if (fps) fps.textContent = state.fps > 0 ? `${state.fps.toFixed(1)} FPS` : '-- FPS';
-  const videoState = document.getElementById(`video-state-${car.carId}`);
-  if (videoState) {
-    videoState.textContent = `${state.state} / RACE ${state.raceOpen ? 'OPEN' : 'CLOSED'} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'}`;
-    videoState.dataset.state = String(state.state || 'waiting').toLowerCase();
-  }
+  renderCameraTransportState(car, performance.now());
   renderAll();
 }
 
-function handleRaceState(_car, state) {
+function renderCameraTransportState(car, now) {
+  const state = connectionByCar.get(car.carId);
+  const raceTransport = raceTransportByCar.get(car.carId);
+  const videoState = document.getElementById(`video-state-${car.carId}`);
+  if (!state || !videoState) return;
+  const raceAge = raceTransport ? Math.max(0, now - raceTransport.receivedAt) : null;
+  const raceText = !state.raceOpen
+    ? 'RACE CLOSED'
+    : raceAge === null
+      ? 'RACE DC WAIT'
+      : `RACE DC ${(raceAge / 1000).toFixed(1)}s`;
+  videoState.textContent = `${state.state} / ${raceText} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'}`;
+  videoState.dataset.state = String(state.state || 'waiting').toLowerCase();
+  videoState.dataset.raceFreshness = raceAge === null ? 'waiting' : raceAge < 2500 ? 'live' : 'stale';
+}
+
+function handleRaceState(car, state) {
+  if (car) {
+    raceTransportByCar.set(car.carId, {
+      receivedAt: performance.now(),
+      sequence: Number.isInteger(state.sequence) ? state.sequence : null,
+    });
+    renderCameraTransportState(car, performance.now());
+  }
   if (!raceDeduplicator.accept(state)) return;
   raceState = state;
   raceReceivedAt = performance.now();
@@ -842,7 +903,7 @@ async function initialize() {
       clients.push(client);
       client.connect();
     }
-    startRaceStatePolling(relayHost);
+    if (params.get('raceFallback') === 'http') startRaceStatePolling(relayHost);
     animationFrame = requestAnimationFrame(updateClock);
   } catch (error) {
     document.getElementById('liveStatus').textContent = 'CONFIG ERROR';

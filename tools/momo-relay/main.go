@@ -38,6 +38,7 @@ const (
 	defaultRTPStallTimeout      = 5 * time.Second
 	defaultUpstreamStartTimeout = 20 * time.Second
 	defaultPilotCommandTimeout  = 250 * time.Millisecond
+	raceSnapshotRefreshInterval = 500 * time.Millisecond
 	keyframeRecoveryGrace       = 2 * time.Second
 	defaultVideoTimestampStep   = uint32(90000 / 50)
 	operationsPollWindow        = time.Second
@@ -72,6 +73,7 @@ type viewer struct {
 	race                atomic.Pointer[webrtc.DataChannel]
 	drive               atomic.Pointer[webrtc.DataChannel]
 	lastCommandUnixNano atomic.Int64
+	raceSendMu          sync.Mutex
 }
 
 type sourceLifecycle int32
@@ -1133,11 +1135,24 @@ func (r *relay) broadcastRaceState(message string) {
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
 		if channel := client.race.Load(); channel != nil {
-			if err := channel.SendText(message); err != nil {
-				log.Printf("send race state to viewer %d: %v", client.id, err)
-			}
+			r.sendRaceState(client, channel, message)
 		}
 	}
+}
+
+func (r *relay) sendRaceState(client *viewer, channel *webrtc.DataChannel, message string) bool {
+	client.raceSendMu.Lock()
+	defer client.raceSendMu.Unlock()
+	if client.race.Load() != channel {
+		return false
+	}
+	if err := channel.SendText(message); err != nil {
+		client.race.CompareAndSwap(channel, nil)
+		log.Printf("send race state to viewer %d: %v", client.id, err)
+		_ = channel.Close()
+		return false
+	}
+	return true
 }
 
 func (r *relay) sendCurrentRaceState(client *viewer, channel *webrtc.DataChannel) {
@@ -1145,9 +1160,20 @@ func (r *relay) sendCurrentRaceState(client *viewer, channel *webrtc.DataChannel
 	if message == "" {
 		return
 	}
-	if err := channel.SendText(message); err != nil {
-		log.Printf("send cached race state to viewer %d: %v", client.id, err)
-	}
+	r.sendRaceState(client, channel, message)
+}
+
+func (r *relay) refreshRaceState(client *viewer, channel *webrtc.DataChannel) {
+	go func() {
+		ticker := time.NewTicker(raceSnapshotRefreshInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if client.race.Load() != channel {
+				return
+			}
+			r.sendCurrentRaceState(client, channel)
+		}
+	}()
 }
 
 func (r *relay) broadcastCommand(message webrtc.DataChannelMessage) {
@@ -1412,6 +1438,7 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 				channel.OnOpen(func() {
 					client.race.Store(channel)
 					r.sendCurrentRaceState(client, channel)
+					r.refreshRaceState(client, channel)
 				})
 				channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
 			default:
@@ -1647,6 +1674,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				client.race.Store(channel)
 				log.Printf("viewer %d race channel opened", client.id)
 				r.sendCurrentRaceState(client, channel)
+				r.refreshRaceState(client, channel)
 			})
 			channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
 		default:
