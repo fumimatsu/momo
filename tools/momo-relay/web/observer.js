@@ -1,12 +1,12 @@
 import {
   RaceStateDeduplicator,
-  classSectorDurationMs,
   countActiveVideos,
   currentLapClockValue,
   deriveSituations,
   displayRaceStatus,
   classifyBestTime,
-  estimateCourseProgress,
+  estimateLapDurationMs,
+  estimateLapPacedProgress,
   formatDuration,
   formatSplitTime,
   formatStandingGap,
@@ -15,27 +15,28 @@ import {
   parsePitPresence,
   parseRaceState,
   parseVehicleHealth,
+  projectCourseProgress,
   raceClockValue,
   standingsByConfiguredCar,
-  visualSectorProgress,
 } from './observer-core.js';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 const DISCONNECTED_RECONNECT_MS = 3000;
 const RACE_STATE_POLL_MS = 500;
-const MARKER_CORRECTION_MS = 240;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
 const healthByCar = new Map();
 const telemetryByCar = new Map();
 const pitByCar = new Map();
+const pendingPitByCar = new Map();
 const connectionByCar = new Map();
 const clients = [];
 const impactTimers = new Map();
 const markerMotionByCar = new Map();
 const markerRenderByCar = new Map();
+const pitMotionByCar = new Map();
 const raceTransportByCar = new Map();
 let observerConfig = null;
 let raceState = null;
@@ -624,58 +625,215 @@ function markerRaceElapsedMs(carId, standing, now) {
   return standing.lastMarkerRaceMs + motion.elapsedMs;
 }
 
+function markerKey(standing) {
+  return Number.isInteger(standing?.lastMarkerIndex) && Number.isInteger(standing?.lastMarkerRaceMs)
+    ? `${standing.lastMarkerIndex}:${standing.lastMarkerRaceMs}`
+    : '';
+}
+
+function motionOptions() {
+  return {
+    minimumMs: observerConfig.motion.checkpointGraceMinMs,
+    maximumMs: observerConfig.motion.checkpointGraceMaxMs,
+    ratio: observerConfig.motion.checkpointGraceRatio,
+  };
+}
+
+function pointOnCourse(path, length, progress) {
+  let normalized = ((progress % 1) + 1) % 1;
+  if (progress > 0 && Math.abs(normalized) < 0.000001) normalized = 1;
+  return path.getPointAtLength(normalized * length);
+}
+
+function markerTargetOnTrack(car, standing, now, path, length) {
+  const localAdvance = raceReceivedAt ? Math.max(0, now - raceReceivedAt) : 0;
+  const raceElapsed = markerRaceElapsedMs(car.carId, standing, now);
+  const currentLapElapsed = currentLapClockValue(standing, raceState, localAdvance);
+  const pace = estimateLapDurationMs(
+    raceState,
+    standing,
+    COURSE_SECTOR_BOUNDARIES,
+    observerConfig.motion.defaultLapMs,
+  );
+  const estimate = pace && standing?.sectorCount === 3
+    ? estimateLapPacedProgress(
+      standing,
+      raceElapsed,
+      currentLapElapsed,
+      COURSE_SECTOR_BOUNDARIES,
+      pace.durationMs,
+      motionOptions(),
+    )
+    : null;
+  if (!estimate) return null;
+  const point = pointOnCourse(path, length, estimate.courseProgress);
+  const correctionState = estimate.state === 'holding-checkpoint' ? 'hold' : 'drive';
+  return {
+    x: point.x,
+    y: point.y,
+    key: `${raceState.raceRunId || ''}:track:${markerKey(standing)}:${correctionState}`,
+    state: estimate.state,
+    confidenceRadius: estimate.state === 'projected' ? 17 : estimate.state === 'awaiting-checkpoint' ? 22 : 25,
+    title: `CAR ${car.displayNumber} ${estimate.state.replaceAll('-', ' ')} / ${pace.source} ${Math.round(pace.durationMs / 100) / 10}s`,
+    correctionMs: observerConfig.motion.markerCorrectionMs,
+  };
+}
+
+function advanceMotionClock(motion, now, running) {
+  if (!Number.isFinite(motion.updatedAt)) motion.updatedAt = now;
+  if (running) motion.elapsedMs += Math.max(0, now - motion.updatedAt);
+  motion.updatedAt = now;
+  return motion.elapsedMs;
+}
+
+function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath, pitLength) {
+  const pit = pitByCar.get(car.carId);
+  let motion = pitMotionByCar.get(car.carId);
+  if (!motion || motion.entryId !== pit?.entryId) return null;
+  const running = raceState?.phase === 'green' && standing?.status === 'racing';
+  const serviceProgress = observerConfig.motion.pitServiceProgress;
+  const servicePoint = pitPath.getPointAtLength(serviceProgress * pitLength);
+
+  if (pit?.present) {
+    if (motion.phase === 'pit-entry') {
+      const elapsed = advanceMotionClock(motion, now, running);
+      const duration = observerConfig.motion.pitEntryMs;
+      const progress = duration > 0 ? Math.min(1, elapsed / duration) : 1;
+      const eased = 1 - ((1 - progress) ** 3);
+      const point = pitPath.getPointAtLength((serviceProgress * eased) * pitLength);
+      if (progress >= 1) motion.phase = 'pit-service';
+      return {
+        x: point.x,
+        y: point.y,
+        key: `${raceState.raceRunId || ''}:pit-entry:${motion.entryId}`,
+        state: 'pit-entry',
+        confidenceRadius: 17,
+        title: `CAR ${car.displayNumber} PIT IN`,
+        correctionMs: observerConfig.motion.markerCorrectionMs,
+      };
+    }
+    return {
+      x: servicePoint.x,
+      y: servicePoint.y,
+      key: `${raceState.raceRunId || ''}:pit-service:${motion.entryId}`,
+      state: pit.serviceState === 'complete' ? 'pit-complete' : 'pit-service',
+      confidenceRadius: 15,
+      title: `CAR ${car.displayNumber} ${pit.serviceState === 'complete' ? 'SERVICE COMPLETE' : 'PIT SERVICE'}`,
+      correctionMs: observerConfig.motion.markerCorrectionMs,
+    };
+  }
+
+  if (motion.phase === 'pit-exit') {
+    const elapsed = advanceMotionClock(motion, now, running);
+    const progress = Math.min(1, elapsed / observerConfig.motion.pitExitMs);
+    const eased = 1 - ((1 - progress) ** 2);
+    const pitProgress = serviceProgress + ((1 - serviceProgress) * eased);
+    const point = pitPath.getPointAtLength(pitProgress * pitLength);
+    if (progress >= 1) {
+      motion.phase = 'track-after-pit';
+      motion.elapsedMs = 0;
+      motion.updatedAt = now;
+      motion.markerKeyAtExit = markerKey(standing);
+    }
+    return {
+      x: point.x,
+      y: point.y,
+      key: `${raceState.raceRunId || ''}:pit-exit:${motion.entryId}`,
+      state: 'pit-exit',
+      confidenceRadius: 18,
+      title: `CAR ${car.displayNumber} PIT OUT`,
+      correctionMs: 0,
+    };
+  }
+
+  if (motion.phase === 'track-after-pit') {
+    const currentMarkerKey = markerKey(standing);
+    if (currentMarkerKey && currentMarkerKey !== motion.markerKeyAtExit) {
+      pitMotionByCar.delete(car.carId);
+      return null;
+    }
+    const pace = estimateLapDurationMs(
+      raceState,
+      standing,
+      COURSE_SECTOR_BOUNDARIES,
+      observerConfig.motion.defaultLapMs,
+    );
+    const elapsed = advanceMotionClock(motion, now, running);
+    const projection = pace ? projectCourseProgress(
+      observerConfig.motion.pitRejoinProgress,
+      COURSE_SECTOR_BOUNDARIES[1],
+      elapsed,
+      pace.durationMs,
+      motionOptions(),
+    ) : null;
+    if (!projection) return null;
+    const point = pointOnCourse(coursePath, courseLength, projection.courseProgress);
+    return {
+      x: point.x,
+      y: point.y,
+      key: `${raceState.raceRunId || ''}:track-after-pit:${motion.entryId}:${projection.state === 'holding-checkpoint' ? 'hold' : 'drive'}`,
+      state: projection.state === 'holding-checkpoint' ? 'holding-checkpoint' : 'pit-rejoin',
+      confidenceRadius: projection.state === 'holding-checkpoint' ? 25 : 20,
+      title: `CAR ${car.displayNumber} PIT REJOIN / ${pace.source}`,
+      correctionMs: observerConfig.motion.markerCorrectionMs,
+    };
+  }
+  return null;
+}
+
+function renderMarkerTarget(marker, car, index, target, now) {
+  let rendered = markerRenderByCar.get(car.carId);
+  if (!rendered) {
+    rendered = { key: target.key, x: target.x, y: target.y, correctionStartedAt: 0 };
+    markerRenderByCar.set(car.carId, rendered);
+  } else if (rendered.key !== target.key) {
+    rendered.key = target.key;
+    rendered.correctionStartedAt = target.correctionMs > 0 ? now : 0;
+    rendered.correctionFromX = rendered.x;
+    rendered.correctionFromY = rendered.y;
+  }
+  if (rendered.correctionStartedAt) {
+    const correction = Math.min(1, (now - rendered.correctionStartedAt) / target.correctionMs);
+    const eased = 1 - ((1 - correction) ** 3);
+    rendered.x = rendered.correctionFromX + ((target.x - rendered.correctionFromX) * eased);
+    rendered.y = rendered.correctionFromY + ((target.y - rendered.correctionFromY) * eased);
+    if (correction >= 1) rendered.correctionStartedAt = 0;
+  } else {
+    rendered.x = target.x;
+    rendered.y = target.y;
+  }
+  const [offsetX, offsetY] = MARKER_RENDER_OFFSETS[index] || [0, 0];
+  marker.removeAttribute('hidden');
+  marker.setAttribute('transform', `translate(${(rendered.x + offsetX).toFixed(2)} ${(rendered.y + offsetY).toFixed(2)})`);
+  marker.dataset.motionState = target.state;
+  marker.querySelector('.marker-confidence').setAttribute('r', String(target.confidenceRadius));
+  marker.querySelector('title').textContent = target.title;
+}
+
 function updateTrackMarkers(now) {
   if (!observerConfig || !raceState) return;
-  const path = document.getElementById('coursePath');
-  if (!path || typeof path.getTotalLength !== 'function') return;
-  const length = path.getTotalLength();
+  const coursePath = document.getElementById('coursePath');
+  const pitPath = document.getElementById('pitPath');
+  if (!coursePath || !pitPath || typeof coursePath.getTotalLength !== 'function'
+      || typeof pitPath.getTotalLength !== 'function') return;
+  const courseLength = coursePath.getTotalLength();
+  const pitLength = pitPath.getTotalLength();
   const standingByCar = new Map((raceState.standings || []).map((standing) => [standing.carId, standing]));
   observerConfig.cars.forEach((car, index) => {
     const marker = document.getElementById(`marker-${car.carId}`);
     const standing = standingByCar.get(car.carId);
-    const elapsed = standing ? markerRaceElapsedMs(car.carId, standing, now) : null;
-    const classDuration = standing
-      ? classSectorDurationMs(raceState.standings, standing.currentSector)
-      : null;
-    const estimate = standing?.sectorCount === 3
-      ? estimateCourseProgress(standing, elapsed, COURSE_SECTOR_BOUNDARIES, classDuration)
-      : null;
-    if (!marker || !estimate) {
+    if (!marker || !standing) {
       marker?.setAttribute('hidden', '');
       return;
     }
-    const sectorStart = COURSE_SECTOR_BOUNDARIES[estimate.lastMarkerIndex];
-    const sectorEnd = COURSE_SECTOR_BOUNDARIES[estimate.lastMarkerIndex + 1];
-    const visualProgress = visualSectorProgress(estimate.rawSectorProgress);
-    const targetProgress = sectorStart + ((sectorEnd - sectorStart) * visualProgress);
-    const key = `${raceState.raceRunId || ''}:${standing.lastMarkerIndex}:${standing.lastMarkerRaceMs}`;
-    let rendered = markerRenderByCar.get(car.carId);
-    if (!rendered) {
-      rendered = { key, progress: targetProgress, correctionStartedAt: 0, correctionFrom: targetProgress };
-      markerRenderByCar.set(car.carId, rendered);
-    } else if (rendered.key !== key) {
-      rendered.key = key;
-      rendered.correctionStartedAt = now;
-      rendered.correctionFrom = rendered.progress;
+    let target = markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath, pitLength);
+    if (!target) target = markerTargetOnTrack(car, standing, now, coursePath, courseLength);
+    if (!target) {
+      marker.setAttribute('hidden', '');
+      return;
     }
-    if (rendered.correctionStartedAt) {
-      const correction = Math.min(1, (now - rendered.correctionStartedAt) / MARKER_CORRECTION_MS);
-      const eased = 1 - ((1 - correction) ** 3);
-      let destination = targetProgress;
-      if (destination + 0.5 < rendered.correctionFrom) destination += 1;
-      rendered.progress = (rendered.correctionFrom + ((destination - rendered.correctionFrom) * eased)) % 1;
-      if (correction >= 1) rendered.correctionStartedAt = 0;
-    } else {
-      rendered.progress = targetProgress;
-    }
-    const point = path.getPointAtLength(rendered.progress * length);
-    const [offsetX, offsetY] = MARKER_RENDER_OFFSETS[index] || [0, 0];
-    marker.removeAttribute('hidden');
-    marker.setAttribute('transform', `translate(${(point.x + offsetX).toFixed(2)} ${(point.y + offsetY).toFixed(2)})`);
-    marker.dataset.sector = String(estimate.currentSector);
-    marker.dataset.progress = visualProgress.toFixed(3);
-    marker.querySelector('.marker-confidence').setAttribute('r', (14 + (visualProgress * 8)).toFixed(1));
-    marker.querySelector('title').textContent = `${car.carId} S${estimate.currentSector} ${Math.round(visualProgress * 100)}% estimated`;
+    marker.dataset.sector = Number.isInteger(standing.currentSector) ? String(standing.currentSector) : '';
+    renderMarkerTarget(marker, car, index, target, now);
   });
 }
 
@@ -794,8 +952,30 @@ function handleRaceState(car, state) {
     renderCameraTransportState(car, performance.now());
   }
   if (!raceDeduplicator.accept(state)) return;
+  const previousRunId = raceState?.raceRunId || '';
+  const nextRunId = state.raceRunId || '';
+  if (previousRunId && nextRunId && previousRunId !== nextRunId) {
+    pitByCar.clear();
+    pitMotionByCar.clear();
+    markerMotionByCar.clear();
+    markerRenderByCar.clear();
+  }
   raceState = state;
   raceReceivedAt = performance.now();
+  for (const [carId, pit] of pendingPitByCar) {
+    if (pit.raceRunId !== nextRunId) continue;
+    pendingPitByCar.delete(carId);
+    pitByCar.set(carId, pit);
+  }
+  for (const [carId, pit] of pitByCar) {
+    if (pit.raceRunId !== nextRunId) {
+      pitByCar.delete(carId);
+      pitMotionByCar.delete(carId);
+      continue;
+    }
+    const configuredCar = observerConfig?.cars.find((entry) => entry.carId === carId);
+    if (configuredCar && !pitMotionByCar.has(carId)) updatePitMotion(configuredCar, pit, null);
+  }
   renderAll();
 }
 
@@ -825,9 +1005,47 @@ function handleHealth(car, health) {
   renderAll();
 }
 
+function updatePitMotion(car, pit, previous) {
+  const currentMotion = pitMotionByCar.get(car.carId);
+  const now = performance.now();
+  if (pit.present) {
+    if (!currentMotion || currentMotion.entryId !== pit.entryId) {
+      const rendered = markerRenderByCar.get(car.carId);
+      pitMotionByCar.set(car.carId, {
+        entryId: pit.entryId,
+        phase: rendered ? 'pit-entry' : 'pit-service',
+        elapsedMs: 0,
+        updatedAt: now,
+      });
+    }
+  } else if (pit.entryId && previous?.present && previous.entryId === pit.entryId) {
+    pitMotionByCar.set(car.carId, {
+      entryId: pit.entryId,
+      phase: 'pit-exit',
+      elapsedMs: 0,
+      updatedAt: now,
+    });
+  } else if (pit.entryId && (!currentMotion || currentMotion.entryId !== pit.entryId)
+      && pit.exitedAtUnixMs > 0 && Date.now() - pit.exitedAtUnixMs < observerConfig.motion.pitExitMs) {
+    pitMotionByCar.set(car.carId, {
+      entryId: pit.entryId,
+      phase: 'pit-exit',
+      elapsedMs: Math.max(0, Date.now() - pit.exitedAtUnixMs),
+      updatedAt: now,
+    });
+  }
+}
+
 function handlePit(car, pit) {
   if (pit.carId !== car.carId) return;
+  if (!raceState?.raceRunId || pit.raceRunId !== raceState.raceRunId) {
+    pendingPitByCar.set(car.carId, pit);
+    return;
+  }
+  pendingPitByCar.delete(car.carId);
+  const previous = pitByCar.get(car.carId);
   pitByCar.set(car.carId, pit);
+  if (raceState?.raceRunId) updatePitMotion(car, pit, previous);
   renderAll();
 }
 

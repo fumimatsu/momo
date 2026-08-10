@@ -212,47 +212,147 @@ export function classSectorDurationMs(standings, sector) {
     : samples[middle];
 }
 
-export function visualSectorProgress(rawProgress) {
-  const progress = finiteNumber(rawProgress);
-  if (progress === null || progress <= 0) return 0;
-  if (progress <= 0.82) return progress;
-  return Math.min(0.985, 0.82 + (0.165 * (1 - Math.exp(-(progress - 0.82) * 8))));
+function median(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const sorted = values.slice().sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
 }
 
-export function estimateCourseProgress(standing, raceElapsedMs, boundaries, expectedDurationOverrideMs = null) {
-  const currentSector = finiteNumber(standing?.currentSector);
-  const sectorCount = finiteNumber(standing?.sectorCount);
-  const lastMarkerIndex = finiteNumber(standing?.lastMarkerIndex);
-  const lastMarkerRaceMs = finiteNumber(standing?.lastMarkerRaceMs);
-  const elapsed = finiteNumber(raceElapsedMs);
-  if (!Number.isInteger(currentSector) || !Number.isInteger(sectorCount)
-      || !Number.isInteger(lastMarkerIndex) || !Number.isInteger(lastMarkerRaceMs)
-      || elapsed === null || elapsed < lastMarkerRaceMs
-      || currentSector < 1 || currentSector > sectorCount
-      || lastMarkerIndex !== currentSector - 1
-      || !Array.isArray(boundaries) || boundaries.length !== sectorCount + 1) {
+function normalizedBoundaries(boundaries, sectorCount) {
+  if (!Array.isArray(boundaries) || boundaries.length !== sectorCount + 1) return null;
+  const normalized = boundaries.map(finiteNumber);
+  if (normalized.some((value) => value === null || value < 0 || value > 1)
+      || normalized[0] !== 0 || normalized.at(-1) !== 1
+      || normalized.some((value, index) => index > 0 && value <= normalized[index - 1])) {
     return null;
   }
-  const normalizedBoundaries = boundaries.map(finiteNumber);
-  if (normalizedBoundaries.some((value) => value === null || value < 0 || value > 1)
-      || normalizedBoundaries.some((value, index) => index > 0 && value <= normalizedBoundaries[index - 1])) {
-    return null;
+  return normalized;
+}
+
+function positiveInteger(value) {
+  const number = finiteNumber(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function recentLapSamples(state, carId, maximum = 3) {
+  return normalizeLapHistory(state)
+    .filter((entry) => entry.carId === carId)
+    .slice(0, maximum)
+    .map((entry) => entry.lapTimeMs);
+}
+
+function sectorLapSamples(standings, boundaries, carId = null) {
+  const samples = [];
+  for (const standing of standings || []) {
+    if (carId && standing?.carId !== carId) continue;
+    const sectorCount = positiveInteger(standing?.sectorCount);
+    const normalized = normalizedBoundaries(boundaries, sectorCount);
+    if (!normalized || !Array.isArray(standing?.sectorTimes)) continue;
+    for (const timing of standing.sectorTimes) {
+      const sector = positiveInteger(timing?.sector);
+      if (!sector || sector > sectorCount) continue;
+      const duration = positiveInteger(timing.estimateMs) ?? positiveInteger(timing.lastMs);
+      const courseShare = normalized[sector] - normalized[sector - 1];
+      if (duration && courseShare > 0) samples.push(duration / courseShare);
+    }
   }
-  const personalExpectedMs = expectedSectorDurationMs(standing);
-  const override = finiteNumber(expectedDurationOverrideMs);
-  const expectedMs = personalExpectedMs ?? (Number.isInteger(override) && override > 0 ? override : null);
-  const rawSectorProgress = expectedMs === null ? 0 : Math.max(0, (elapsed - lastMarkerRaceMs) / expectedMs);
-  const sectorProgress = clamp(rawSectorProgress, 0, 1);
-  const start = normalizedBoundaries[lastMarkerIndex];
-  const end = normalizedBoundaries[lastMarkerIndex + 1];
+  return samples;
+}
+
+export function estimateLapDurationMs(state, standing, boundaries, fallbackLapMs) {
+  const fallback = positiveInteger(fallbackLapMs);
+  const carId = typeof standing?.carId === 'string' ? standing.carId : '';
+  const personalLaps = recentLapSamples(state, carId);
+  if (personalLaps.length > 0) {
+    return { durationMs: Math.round(median(personalLaps)), source: 'recent-laps' };
+  }
+  const lastLap = positiveInteger(standing?.lapTimeMs);
+  if (lastLap) return { durationMs: lastLap, source: 'last-lap' };
+  const personalSectors = sectorLapSamples([standing], boundaries, carId);
+  if (personalSectors.length > 0) {
+    return { durationMs: Math.round(median(personalSectors)), source: 'personal-sectors' };
+  }
+  const latestClassLapByCar = new Map();
+  for (const entry of normalizeLapHistory(state)) {
+    if (!latestClassLapByCar.has(entry.carId)) latestClassLapByCar.set(entry.carId, entry.lapTimeMs);
+  }
+  if (latestClassLapByCar.size > 0) {
+    return { durationMs: Math.round(median([...latestClassLapByCar.values()])), source: 'class-laps' };
+  }
+  const classSectors = sectorLapSamples(state?.standings, boundaries);
+  if (classSectors.length > 0) {
+    return { durationMs: Math.round(median(classSectors)), source: 'class-sectors' };
+  }
+  return fallback ? { durationMs: fallback, source: 'configured-default' } : null;
+}
+
+export function checkpointGraceMs(expectedSegmentMs, options = {}) {
+  const expected = positiveInteger(expectedSegmentMs);
+  if (!expected) return null;
+  const minimum = positiveInteger(options.minimumMs) ?? 1200;
+  const maximum = Math.max(minimum, positiveInteger(options.maximumMs) ?? 3000);
+  const ratioValue = finiteNumber(options.ratio);
+  const ratio = ratioValue !== null && ratioValue > 0 ? ratioValue : 0.25;
+  return Math.round(clamp(expected * ratio, minimum, maximum));
+}
+
+export function projectCourseProgress(anchorProgress, nextCheckpointProgress, elapsedMs, lapDurationMs, options = {}) {
+  const anchor = finiteNumber(anchorProgress);
+  const next = finiteNumber(nextCheckpointProgress);
+  const elapsed = finiteNumber(elapsedMs);
+  const lapDuration = positiveInteger(lapDurationMs);
+  if (anchor === null || next === null || elapsed === null || elapsed < 0 || !lapDuration
+      || anchor < 0 || anchor >= 1 || next <= anchor || next > 1) return null;
+  const expectedSegmentMs = Math.round((next - anchor) * lapDuration);
+  const graceMs = checkpointGraceMs(expectedSegmentMs, options);
+  const projected = anchor + (elapsed / lapDuration);
+  if (elapsed <= expectedSegmentMs) {
+    return { courseProgress: projected, state: 'projected', expectedSegmentMs, graceMs };
+  }
+  if (elapsed <= expectedSegmentMs + graceMs) {
+    return { courseProgress: projected, state: 'awaiting-checkpoint', expectedSegmentMs, graceMs };
+  }
+  return { courseProgress: next, state: 'holding-checkpoint', expectedSegmentMs, graceMs };
+}
+
+export function estimateLapPacedProgress(
+  standing,
+  raceElapsedMs,
+  currentLapElapsedMs,
+  boundaries,
+  lapDurationMs,
+  options = {},
+) {
+  const sectorCount = positiveInteger(standing?.sectorCount);
+  const normalized = normalizedBoundaries(boundaries, sectorCount);
+  const lapElapsed = finiteNumber(currentLapElapsedMs);
+  if (!normalized || lapElapsed === null || lapElapsed < 0 || !positiveInteger(lapDurationMs)) return null;
+
+  const markerIndex = finiteNumber(standing?.lastMarkerIndex);
+  const markerRaceMs = finiteNumber(standing?.lastMarkerRaceMs);
+  const raceElapsed = finiteNumber(raceElapsedMs);
+  const markerValid = Number.isInteger(markerIndex) && markerIndex >= 0 && markerIndex < sectorCount
+    && Number.isInteger(markerRaceMs) && markerRaceMs >= 0
+    && raceElapsed !== null && raceElapsed >= markerRaceMs;
+  const anchorIndex = markerValid ? markerIndex : 0;
+  const elapsedSinceAnchorMs = markerValid ? raceElapsed - markerRaceMs : lapElapsed;
+  const projection = projectCourseProgress(
+    normalized[anchorIndex],
+    normalized[anchorIndex + 1],
+    elapsedSinceAnchorMs,
+    lapDurationMs,
+    options,
+  );
+  if (!projection) return null;
   return {
-    currentSector,
-    lastMarkerIndex,
-    expectedMs,
-    elapsedSinceMarkerMs: Math.max(0, elapsed - lastMarkerRaceMs),
-    rawSectorProgress,
-    sectorProgress,
-    courseProgress: start + ((end - start) * sectorProgress),
+    ...projection,
+    anchorIndex,
+    nextMarkerIndex: (anchorIndex + 1) % sectorCount,
+    elapsedSinceAnchorMs,
+    markerConfirmed: markerValid,
   };
 }
 
@@ -380,9 +480,30 @@ export function normalizeObserverConfig(config) {
       color: colors[index],
     };
   });
+  const motion = config.motion || {};
+  const motionNumber = (name, fallback, minimum, maximum) => {
+    const value = motion[name] === undefined ? fallback : finiteNumber(motion[name]);
+    if (value === null || value < minimum || value > maximum) {
+      throw new Error(`observer motion.${name} must be ${minimum}..${maximum}`);
+    }
+    return value;
+  };
+  const checkpointGraceMinMs = motionNumber('checkpointGraceMinMs', 1200, 100, 10000);
+  const checkpointGraceMaxMs = motionNumber('checkpointGraceMaxMs', 3000, checkpointGraceMinMs, 15000);
   return {
     trackName: String(config.trackName || 'RACE CONTROL').trim(),
     cars,
+    motion: {
+      defaultLapMs: motionNumber('defaultLapMs', 20000, 3000, 300000),
+      checkpointGraceMinMs,
+      checkpointGraceMaxMs,
+      checkpointGraceRatio: motionNumber('checkpointGraceRatio', 0.25, 0.01, 1),
+      markerCorrectionMs: motionNumber('markerCorrectionMs', 360, 0, 3000),
+      pitEntryMs: motionNumber('pitEntryMs', 650, 0, 5000),
+      pitExitMs: motionNumber('pitExitMs', 1800, 100, 10000),
+      pitServiceProgress: motionNumber('pitServiceProgress', 0.556, 0, 1),
+      pitRejoinProgress: motionNumber('pitRejoinProgress', 0.184, 0, 1),
+    },
   };
 }
 

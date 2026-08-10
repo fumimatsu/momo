@@ -1,5 +1,16 @@
 {
   "trackName": "SDK RACING / TOKOROZAWA BASE",
+  "motion": {
+    "defaultLapMs": 20000,
+    "checkpointGraceMinMs": 1200,
+    "checkpointGraceMaxMs": 3000,
+    "checkpointGraceRatio": 0.25,
+    "markerCorrectionMs": 360,
+    "pitEntryMs": 650,
+    "pitExitMs": 1800,
+    "pitServiceProgress": 0.556,
+    "pitRejoinProgress": 0.184
+  },
   "cars": [
     { "device": "11.3", "carId": "CP-1", "displayNumber": "01", "flip": true },
     { "device": "11.4", "carId": "CP-2", "displayNumber": "02", "flip": true },

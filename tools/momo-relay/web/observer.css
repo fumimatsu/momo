@@ -192,6 +192,10 @@ button, input, select, textarea { font: inherit; }
 .car-marker text { font-weight: 900; text-anchor: middle; }
 .marker-core { fill: currentColor; stroke: #f7fdff; stroke-width: 2.5; filter: url(#markerGlow); }
 .marker-confidence { fill: currentColor; opacity: .22; }
+.car-marker[data-motion-state="awaiting-checkpoint"] .marker-confidence,
+.car-marker[data-motion-state="pit-rejoin"] .marker-confidence { opacity: .14; stroke: currentColor; stroke-width: 1; stroke-dasharray: 3 3; }
+.car-marker[data-motion-state="holding-checkpoint"] .marker-confidence { opacity: .1; stroke: var(--yellow); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.car-marker[data-motion-state^="pit-"] .marker-core { stroke: var(--cyan); }
 .marker-number { fill: #071013; font-size: 8px; }
 .marker-state-bg { fill: #071013; stroke: currentColor; stroke-width: 1; }
 .marker-state { fill: currentColor; font-size: 8px; }
