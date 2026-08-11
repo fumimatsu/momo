@@ -191,6 +191,11 @@ export function formatSplitTime(milliseconds) {
   return minutes > 0 ? `${String(minutes).padStart(2, '0')}:${secondsText}` : secondsText;
 }
 
+export function abbreviateDriverName(value, fallback = '') {
+  const name = String(value || fallback).trim();
+  return Array.from(name).slice(0, 3).join('');
+}
+
 export function classifyBestTime(value, personalBest, overallBest) {
   const time = finiteNumber(value);
   if (time === null || time <= 0) return '';
@@ -267,6 +272,16 @@ function recentLapSamples(state, carId, maximum = 3, normalizedHistory = null) {
     .map((entry) => entry.lapTimeMs);
 }
 
+export function blendLapPaceMs(recentDurationMs, bestDurationMs, bestWeight = 0.6) {
+  const recent = positiveInteger(recentDurationMs);
+  const best = positiveInteger(bestDurationMs);
+  if (!recent) return best;
+  if (!best || best >= recent) return recent;
+  const weight = Math.min(1, Math.max(0, finiteNumber(bestWeight) ?? 0.6));
+  return Math.round(Math.min(recent, Math.max(best,
+    (recent * (1 - weight)) + (best * weight))));
+}
+
 function sectorLapSamples(standings, boundaries, carId = null) {
   const samples = [];
   for (const standing of standings || []) {
@@ -291,7 +306,14 @@ export function estimateLapDurationMs(state, standing, boundaries, fallbackLapMs
   const history = Array.isArray(normalizedHistory) ? normalizedHistory : normalizeLapHistory(state);
   const personalLaps = recentLapSamples(state, carId, 3, history);
   if (personalLaps.length > 0) {
-    return { durationMs: Math.round(median(personalLaps)), source: 'recent-laps' };
+    const recentDurationMs = Math.round(median(personalLaps));
+    const bestDurationMs = positiveInteger(standing?.bestLapMs);
+    return {
+      durationMs: blendLapPaceMs(recentDurationMs, bestDurationMs),
+      source: bestDurationMs && bestDurationMs < recentDurationMs
+        ? 'recent-best-blend'
+        : 'recent-laps',
+    };
   }
   const lastLap = positiveInteger(standing?.lapTimeMs);
   if (lastLap) return { durationMs: lastLap, source: 'last-lap' };

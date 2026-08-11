@@ -1,4 +1,5 @@
 import {
+  abbreviateDriverName,
   RaceStateDeduplicator,
   countActiveVideos,
   currentLapClockValue,
@@ -52,6 +53,7 @@ const currentLapNodeByCar = new Map();
 const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
+const cameraTitleNodesByCar = new Map();
 const telemetryNodesByCar = new Map();
 const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
@@ -610,11 +612,13 @@ function renderTimingRows() {
   root.replaceChildren(...history.map((entry) => {
     const car = carById.get(entry.carId);
     const standing = standingById.get(entry.carId);
+    const driverName = String(standing?.driver || car?.driver || entry.carId).trim();
+    const driverShortName = abbreviateDriverName(driverName, entry.carId);
     const sectorTimeByNumber = new Map(entry.sectorTimes.map((timing) => [timing.sector, timing.timeMs]));
     const row = document.createElement('tr');
     const values = [
       formatDuration(entry.completedAtRaceMs),
-      car ? `#${car.displayNumber}` : entry.carId,
+      `${car ? `#${car.displayNumber}` : entry.carId} ${driverShortName}`,
       `L${entry.lap}`,
       formatSplitTime(sectorTimeByNumber.get(1)),
       formatSplitTime(sectorTimeByNumber.get(2)),
@@ -626,6 +630,7 @@ function renderTimingRows() {
       if (index === 1) {
         const badge = element('span', 'table-car', value);
         badge.style.setProperty('--car', `var(--${car?.color || 'green'})`);
+        badge.title = driverName;
         cell.append(badge);
       } else cell.textContent = value;
       if (index >= 3 && index <= 5) {
@@ -1064,6 +1069,7 @@ function updateAnimationFrame(now) {
 function renderAll() {
   if (!observerConfig) return;
   renderHeader();
+  renderCameraTitles();
   renderLeaderboard();
   renderSectorRows();
   renderTimingRows();
@@ -1071,15 +1077,28 @@ function renderAll() {
   renderPitState();
 }
 
+function renderCameraTitles() {
+  for (const car of observerConfig.cars) {
+    const nodes = cameraTitleNodesByCar.get(car.carId);
+    if (!nodes) continue;
+    const driverName = carName(car, standingByCar.get(car.carId));
+    nodes.driver.textContent = driverName;
+    nodes.root.title = driverName;
+  }
+}
+
 function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
+  cameraTitleNodesByCar.clear();
   telemetryNodesByCar.clear();
   controlNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
     const tile = element('article', `camera-tile camera-${car.color}`);
     const head = element('div', 'camera-head');
     const title = element('strong', '', `CAR ${car.displayNumber} `);
-    title.append(element('span', '', car.driver || car.device));
+    const driver = element('span', '', car.driver || car.device);
+    title.append(driver);
+    cameraTitleNodesByCar.set(car.carId, { root: title, driver });
     const status = element('span', '', '');
     status.id = `camera-status-${car.carId}`;
     status.append(element('i'), document.createTextNode('WAITING'));
