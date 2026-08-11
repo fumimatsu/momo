@@ -17,6 +17,7 @@ import {
   parseVehicleHealth,
   projectCourseProgress,
   raceClockValue,
+  reconstructRaceElapsedMs,
   standingsByConfiguredCar,
 } from './observer-core.js';
 
@@ -667,10 +668,12 @@ function readTrackGeometry() {
   };
 }
 
-function markerRaceElapsedMs(carId, standing, now) {
+function markerRaceElapsedMs(carId, standing, now, currentLapElapsed) {
   const running = raceState?.phase === 'green' && standing?.status === 'racing';
   const localAdvance = running && raceReceivedAt ? Math.max(0, now - raceReceivedAt) : 0;
   if (Number.isFinite(standing?.raceElapsedMs)) return standing.raceElapsedMs + localAdvance;
+  const reconstructed = reconstructRaceElapsedMs(standing, normalizedLapHistory, currentLapElapsed);
+  if (reconstructed !== null) return reconstructed;
   if (raceState?.allTimeMode !== 'countdown' && Number.isFinite(standing?.allTimeMs)) {
     return standing.allTimeMs + localAdvance;
   }
@@ -729,8 +732,8 @@ function pointOnCourse(path, length, progress) {
 
 function markerTargetOnTrack(car, standing, now, path, length) {
   const localAdvance = raceReceivedAt ? Math.max(0, now - raceReceivedAt) : 0;
-  const raceElapsed = markerRaceElapsedMs(car.carId, standing, now);
   const currentLapElapsed = currentLapClockValue(standing, raceState, localAdvance);
+  const raceElapsed = markerRaceElapsedMs(car.carId, standing, now, currentLapElapsed);
   const pace = lapPaceByCar.get(car.carId);
   const estimate = pace && standing?.sectorCount === 3
     ? estimateLapPacedProgress(
@@ -907,7 +910,7 @@ function updateTrackMarkers(now) {
 }
 
 function displayedRaceTime(now) {
-  return raceClockValue(raceState, raceReceivedAt ? now - raceReceivedAt : 0);
+  return raceClockValue(raceState, raceReceivedAt ? now - raceReceivedAt : 0, normalizedLapHistory);
 }
 
 function renderClocks(now) {
@@ -1213,8 +1216,18 @@ async function loadConfig() {
   return normalizeObserverConfig(await response.json());
 }
 
+function updateDisplayClass() {
+  const scale = Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1;
+  const physicalWidth = window.innerWidth * scale;
+  const physicalHeight = window.innerHeight * scale;
+  const scaled4k = physicalWidth >= 3000 && physicalHeight >= 1600 && window.innerWidth < 3000;
+  document.documentElement.classList.toggle('scaled-4k', scaled4k);
+}
+
 async function initialize() {
   document.documentElement.dataset.mode = 'live';
+  updateDisplayClass();
+  window.addEventListener('resize', updateDisplayClass);
   try {
     observerConfig = await loadConfig();
     document.getElementById('trackName').textContent = observerConfig.trackName;
@@ -1257,6 +1270,7 @@ window.addEventListener('pagehide', () => {
   for (const client of clients) client.close();
   for (const timer of vehicleEventTimers.values()) window.clearTimeout(timer);
   vehicleEventTimers.clear();
+  window.removeEventListener('resize', updateDisplayClass);
 });
 
 initialize();

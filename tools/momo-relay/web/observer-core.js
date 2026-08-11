@@ -428,7 +428,7 @@ export function displayRaceStatus(state) {
   return phase;
 }
 
-export function raceClockValue(state, elapsedSinceSnapshotMs = 0) {
+export function raceClockValue(state, elapsedSinceSnapshotMs = 0, lapHistory = null) {
   if (!state) return null;
   const elapsed = Math.max(0, finiteNumber(elapsedSinceSnapshotMs) ?? 0);
   if (state.phase === 'countdown') {
@@ -443,11 +443,14 @@ export function raceClockValue(state, elapsedSinceSnapshotMs = 0) {
   const leader = (state.standings || []).find((standing) => standing.position === 1)
     || state.standings?.[0];
   const base = finiteNumber(leader?.allTimeMs);
+  if (state.allTimeMode !== 'countdown') {
+    const currentLap = currentLapClockValue(leader, state, elapsed);
+    const reconstructed = reconstructRaceElapsedMs(leader, lapHistory, currentLap);
+    if (reconstructed !== null) return reconstructed;
+  }
   if (base === null) return null;
   if (state.phase !== 'green' || leader?.status !== 'racing') return base;
-  return state.allTimeMode === 'countdown'
-    ? Math.max(0, base - elapsed)
-    : base + elapsed;
+  return state.allTimeMode === 'countdown' ? Math.max(0, base - elapsed) : base + elapsed;
 }
 
 export function currentLapClockValue(standing, state, elapsedSinceSnapshotMs = 0) {
@@ -455,6 +458,17 @@ export function currentLapClockValue(standing, state, elapsedSinceSnapshotMs = 0
   if (base === null) return null;
   if (state?.phase !== 'green' || standing?.status !== 'racing') return base;
   return base + Math.max(0, finiteNumber(elapsedSinceSnapshotMs) ?? 0);
+}
+
+export function reconstructRaceElapsedMs(standing, lapHistory, currentLapElapsedMs) {
+  const carId = typeof standing?.carId === 'string' ? standing.carId.trim() : '';
+  const currentLap = finiteNumber(currentLapElapsedMs);
+  if (!carId || currentLap === null || currentLap < 0 || !Array.isArray(lapHistory)) return null;
+  const latestCompletedLap = lapHistory.find((entry) => entry?.carId === carId
+    && Number.isInteger(finiteNumber(entry?.completedAtRaceMs))
+    && finiteNumber(entry.completedAtRaceMs) >= 0);
+  if (!latestCompletedLap) return null;
+  return latestCompletedLap.completedAtRaceMs + currentLap;
 }
 
 export function normalizeObserverConfig(config) {

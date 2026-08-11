@@ -415,36 +415,36 @@ td:last-child { color: var(--cyan); }
 }
 
 @media (min-width: 3000px) and (min-height: 1600px) {
-  body { font-size: 22px; }
-  .observer-app { grid-template-rows: 108px minmax(650px, 1fr) clamp(470px, 31vh, 680px) 86px; }
+  body { font-size: 26px; }
+  .observer-app { grid-template-rows: 120px minmax(650px, 1fr) clamp(470px, 31vh, 680px) 92px; }
   .race-header { grid-template-columns: minmax(420px, 1.15fr) minmax(220px, .55fr) minmax(150px, .38fr) minmax(360px, .82fr) minmax(260px, .62fr); }
   .race-header > div { padding: 0 32px; }
   .header-title { gap: 18px; }
   .header-title div { gap: 5px; }
-  .header-title strong { font-size: 32px; }
-  .header-title span:not(.live-dot) { font-size: 17px; }
+  .header-title strong { font-size: 36px; }
+  .header-title span:not(.live-dot) { font-size: 20px; }
   .live-dot { width: 14px; height: 14px; flex-basis: 14px; }
   .header-metric, .header-clock { gap: 7px; }
-  .header-metric span, .header-clock span { font-size: 17px; }
-  .header-metric strong { font-size: 38px; }
-  .header-metric strong em { font-size: 24px; }
-  .header-clock strong, .lap-metric strong { font-size: 54px; }
+  .header-metric span, .header-clock span { font-size: 20px; }
+  .header-metric strong { font-size: 44px; }
+  .header-metric strong em { font-size: 27px; }
+  .header-clock strong, .lap-metric strong { font-size: 64px; }
 
-  .race-grid { grid-template-columns: minmax(480px, 17%) minmax(920px, 1fr) minmax(900px, 31%); }
+  .race-grid { grid-template-columns: minmax(680px, 20%) minmax(820px, 1fr) minmax(1120px, 36%); }
   .panel-heading { min-height: 82px; padding: 13px 26px; }
-  .panel-heading h1, .panel-heading h2, .event-title h2 { font-size: 26px; }
-  .eyebrow { font-size: 15px; }
-  .panel-count, .history-count { font-size: 18px; }
+  .panel-heading h1, .panel-heading h2, .event-title h2 { font-size: 30px; }
+  .eyebrow { font-size: 18px; }
+  .panel-count, .history-count { font-size: 21px; }
   .leaderboard-rows { grid-template-rows: repeat(4, minmax(108px, 1fr)); }
   .leader-row { grid-template-columns: 44px 58px minmax(0, 1fr) auto; gap: 7px 14px; padding: 15px 26px 13px 32px; }
   .leader-row::before { inset-block: 12px; width: 6px; }
-  .leader-pos { font-size: 24px; }
+  .leader-pos { font-size: 28px; }
   .leader-avatar { width: 56px; height: 56px; font-size: 17px; }
-  .leader-driver strong { font-size: 28px; }
+  .leader-driver strong { font-size: 32px; }
   .leader-car { margin-top: 6px; padding: 3px 8px; font-size: 14px; }
-  .leader-gap { font-size: 29px; }
-  .leader-times { gap: 13px; font-size: 15px; }
-  .leader-times strong { font-size: 22px; }
+  .leader-gap { font-size: 34px; }
+  .leader-times { gap: 13px; font-size: 18px; }
+  .leader-times strong { font-size: 28px; }
   .leader-health { grid-template-columns: 54px minmax(70px, 1fr) auto; gap: 11px; font-size: 15px; }
   .leader-health-track { height: 8px; }
   .leader-health strong { max-width: 125px; font-size: 14px; }
@@ -463,7 +463,7 @@ td:last-child { color: var(--cyan); }
   .compact-heading { min-height: 72px; padding: 11px 22px; }
   .updated-label { font-size: 15px; }
   .updated-label strong { font-size: 18px; }
-  .sector-columns, .sector-row { grid-template-columns: 66px minmax(210px, 1fr) repeat(3, 98px); gap: 11px; }
+  .sector-columns, .sector-row { grid-template-columns: 66px minmax(210px, 1fr) repeat(3, 116px); gap: 11px; }
   .sector-columns { padding: 8px 21px 5px; font-size: 15px; }
   .sector-rows { gap: 5px; padding: 5px 16px 11px; }
   .sector-row { min-height: 52px; padding: 7px 11px; border-left-width: 5px; }
@@ -471,16 +471,16 @@ td:last-child { color: var(--cyan); }
   .race-car-status { font-size: 14px; }
   .sector-bars { gap: 5px; }
   .sector-bars i { height: 25px; font-size: 14px; line-height: 23px; }
-  .sector-value { font-size: 21px; }
+  .sector-value { font-size: 30px; }
   .timing-cell { padding: 6px 8px; }
-  table { min-width: 900px; }
-  th, td { height: 50px; padding: 0 12px; }
-  th { font-size: 16px; }
-  td { font-size: 21px; }
-  th:first-child, td:first-child { width: 100px; }
-  th:nth-child(2), td:nth-child(2) { width: 78px; }
-  th:nth-child(3), td:nth-child(3) { width: 52px; }
-  .table-car { min-width: 58px; padding: 3px 6px; font-size: 17px; }
+  table { min-width: 1180px; }
+  th, td { height: 58px; padding: 0 12px; }
+  th { font-size: 20px; }
+  td { font-size: 30px; }
+  th:first-child, td:first-child { width: 170px; }
+  th:nth-child(2), td:nth-child(2) { width: 90px; }
+  th:nth-child(3), td:nth-child(3) { width: 80px; }
+  .table-car { min-width: 64px; padding: 3px 6px; font-size: 22px; }
   .history-empty td { height: 80px; font-size: 18px; }
 
   .situation-strip { grid-template-columns: 184px 1fr; }
@@ -502,6 +502,64 @@ td:last-child { color: var(--cyan); }
   .camera-telemetry strong { font-size: 17px; }
   .video-state { top: 13px; right: 16px; padding: 5px 8px; font-size: 15px; }
 }
+
+html.scaled-4k body { font-size: 20px; }
+html.scaled-4k .observer-app { grid-template-rows: 84px minmax(400px, 1fr) clamp(280px, 31vh, 440px) 64px; }
+html.scaled-4k .race-header { grid-template-columns: minmax(310px, 1.15fr) minmax(180px, .55fr) minmax(120px, .38fr) minmax(270px, .82fr) minmax(190px, .62fr); }
+html.scaled-4k .race-header > div { padding: 0 20px; }
+html.scaled-4k .header-title strong { font-size: 26px; }
+html.scaled-4k .header-title span:not(.live-dot),
+html.scaled-4k .header-metric span,
+html.scaled-4k .header-clock span { font-size: 14px; }
+html.scaled-4k .header-metric strong { font-size: 32px; }
+html.scaled-4k .header-metric strong em { font-size: 20px; }
+html.scaled-4k .header-clock strong,
+html.scaled-4k .lap-metric strong { font-size: 42px; }
+
+html.scaled-4k .race-grid { grid-template-columns: minmax(400px, 24%) minmax(620px, 1fr) minmax(700px, 38%); }
+html.scaled-4k .panel-heading { min-height: 62px; padding: 10px 18px; }
+html.scaled-4k .panel-heading h1,
+html.scaled-4k .panel-heading h2,
+html.scaled-4k .event-title h2 { font-size: 21px; }
+html.scaled-4k .eyebrow { font-size: 12px; }
+html.scaled-4k .panel-count,
+html.scaled-4k .history-count { font-size: 15px; }
+html.scaled-4k .leaderboard-rows { grid-template-rows: repeat(4, minmax(82px, 1fr)); }
+html.scaled-4k .leader-row { grid-template-columns: 34px 46px minmax(0, 1fr) auto; gap: 6px 10px; padding: 11px 18px 10px 22px; }
+html.scaled-4k .leader-pos { font-size: 20px; }
+html.scaled-4k .leader-avatar { width: 44px; height: 44px; font-size: 13px; }
+html.scaled-4k .leader-driver strong { font-size: 24px; }
+html.scaled-4k .leader-gap { font-size: 24px; }
+html.scaled-4k .leader-times { gap: 9px; font-size: 12px; }
+html.scaled-4k .leader-times strong { font-size: 20px; }
+html.scaled-4k .leader-health { grid-template-columns: 44px minmax(60px, 1fr) auto; font-size: 12px; }
+html.scaled-4k .leader-health strong { max-width: 100px; font-size: 11px; }
+
+html.scaled-4k .compact-heading { min-height: 58px; }
+html.scaled-4k .sector-columns,
+html.scaled-4k .sector-row { grid-template-columns: 54px minmax(170px, 1fr) repeat(3, 80px); gap: 8px; }
+html.scaled-4k .sector-car { font-size: 17px; }
+html.scaled-4k .sector-value { font-size: 20px; }
+html.scaled-4k table { min-width: 700px; }
+html.scaled-4k th,
+html.scaled-4k td { height: 44px; padding: 0 9px; }
+html.scaled-4k th { font-size: 13px; }
+html.scaled-4k td { font-size: 20px; }
+html.scaled-4k .table-car { min-width: 50px; font-size: 15px; }
+html.scaled-4k th:first-child,
+html.scaled-4k td:first-child { width: 120px; }
+html.scaled-4k th:nth-child(2),
+html.scaled-4k td:nth-child(2) { width: 64px; }
+html.scaled-4k th:nth-child(3),
+html.scaled-4k td:nth-child(3) { width: 48px; }
+
+html.scaled-4k .camera-tile { grid-template-rows: 48px 1fr; }
+html.scaled-4k .camera-head strong { font-size: 18px; }
+html.scaled-4k .camera-head strong span { font-size: 14px; }
+html.scaled-4k .camera-head > span,
+html.scaled-4k .camera-head em,
+html.scaled-4k .camera-telemetry { font-size: 12px; }
+html.scaled-4k .situation-primary { font-size: 18px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
