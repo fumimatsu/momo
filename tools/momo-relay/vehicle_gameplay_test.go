@@ -46,8 +46,8 @@ func TestVehicleGameplayFuelDrainAndEmptyLimit(t *testing.T) {
 	if math.Abs(snapshot.Fuel) > 0.001 || snapshot.FuelState != "empty" {
 		t.Fatalf("fuel after full drive duration = %#v", snapshot)
 	}
-	if got := health.limitCommand("S:1500,T:2000", base.Add(10*time.Second)); got != "S:1500,T:1550" {
-		t.Fatalf("empty-fuel command = %q, want limp PWM 1550", got)
+	if got := health.limitCommand("S:1500,T:2000", base.Add(10*time.Second)); got != "S:1500,T:1590" {
+		t.Fatalf("empty-fuel command = %q, want limp PWM 1590", got)
 	}
 }
 

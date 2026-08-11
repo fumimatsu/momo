@@ -245,4 +245,4 @@ VGS:1,{"hp":80,"speedCap":0.933,"mode":"healthy","fuel":42.5,"fuelState":"normal
 - `fuelRatePerSecond`: 現在のFuel消費率。初期版はスロットル量に依存しない
 
 FuelとBoostが進行する条件は、phaseが`green`、Race Control状態が5秒以内、Drive ON、PIT外、
-前進指令が350 ms以内であること。Fuel 0ではBoostを解除し、前進PWMを1550へ制限する。
+前進指令が350 ms以内であること。Fuel 0ではBoostを解除し、前進PWMを1速上限より10低い1590へ制限する。

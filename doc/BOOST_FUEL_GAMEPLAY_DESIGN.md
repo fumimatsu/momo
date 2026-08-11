@@ -15,7 +15,7 @@ Race Control は既存の phase、run、standings を配信し、MADSYSTEM は�
 | Boost充填 | 4台時はP1=40秒、P2=34秒、P3=28秒、P4=22秒。順位不明時は30秒 |
 | Fuel | 既定では合計120秒の有効前進で100から0まで定率消費する |
 | Practice | `raceInfo.sessionType=practice` の間はFuelを消費しない |
-| Fuel 0 | Boostを解除し、前進PWMを1550へ制限する。PITへ戻るため完全停止にはしない |
+| Fuel 0 | Boostを解除し、前進PWMを1速上限より10低い1590へ制限する。PITへ戻るため完全停止にはしない |
 | PIT tick | 2秒ごとにHP +20とFuel +20を同じlock内で適用する |
 | PIT完了表示 | HP 100かつFuel 100。途中退出は常に許可し、回復済みの値を保持する |
 | severe damage | HP -20。HP 100から1回で80となり、PIT 1 tickで戻せる |
@@ -60,6 +60,6 @@ Web Observerはleaderboard行へ小型3ゲージを表示し、映像枠へ重�
 2. G3以外、Boost未充填、PIT中、Fuel 0でG4へ入れないことを確認する。
 3. 順位別の充填時間と2.5秒後のG3復帰を確認する。
 4. Fuelが有効前進中だけ減り、PIT、停止、Race Control切断中に減らないことを確認する。
-5. Fuel 0でPWM 1550へ制限され、PITへ戻れることを確認する。
+5. Fuel 0でPWM 1590へ制限され、PITへ戻れることを確認する。
 6. 1 tickでHP/Fuelがそれぞれ最大20回復し、再送で二重回復しないことを確認する。
 7. Pilot再読み込みとObserver複数接続で同じ状態を復元することを確認する。

@@ -214,6 +214,16 @@
   const RACE_BATTLE_DEMO = getBooleanParam('raceBattleDemo', false);
   const RACE_BATTLE_MAX_GAP_MS = 5000;
   const RACE_BATTLE_GAP_STEP_MS = 100;
+  const RACE_REAR_ATTENTION_ENABLED = getBooleanParam('rearAttention', true);
+  const RACE_REAR_ATTENTION_DEMO = getBooleanParam('rearAttentionDemo', false);
+  const RACE_REAR_WARNING_GAP_MS = Math.max(0, getNumberParam('rearWarningGapMs', 2500));
+  const RACE_REAR_CRITICAL_GAP_MS = Math.min(
+    RACE_REAR_WARNING_GAP_MS,
+    Math.max(0, getNumberParam('rearCriticalGapMs', 1000)),
+  );
+  const RACE_REAR_WARNING_CLOSING_MS = Math.max(0, getNumberParam('rearWarningClosingMs', 300));
+  const RACE_REAR_CRITICAL_CLOSING_MS = Math.max(0, getNumberParam('rearCriticalClosingMs', 100));
+  const RACE_REAR_ATTENTION_MS = Math.max(800, getNumberParam('rearAttentionMs', 2800));
   const G_METER_ENABLED = getBooleanParam('gMeter', true);
   const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
   const G_METER_FULL_SCALE_G = Math.max(0.5, Math.min(3.0, getNumberParam('gMeterScaleG', 1.5)));
@@ -275,6 +285,7 @@
   const raceLastLap = document.getElementById('raceLastLap');
   const raceBestLap = document.getElementById('raceBestLap');
   const raceTotalTime = document.getElementById('raceTotalTime');
+  const raceTotalCard = raceTotalTime?.closest('.race-total');
   const racePosition = document.getElementById('racePosition');
   const racePositionCard = racePosition?.closest('.race-position');
   const raceBattle = document.getElementById('raceBattle');
@@ -289,6 +300,10 @@
   const raceBattleBehindPosition = document.getElementById('raceBattleBehindPosition');
   const raceBattleBehindName = document.getElementById('raceBattleBehindName');
   const raceBattleBehindGap = document.getElementById('raceBattleBehindGap');
+  const rearAttention = document.getElementById('rearAttention');
+  const rearAttentionLabel = document.getElementById('rearAttentionLabel');
+  const rearAttentionGap = document.getElementById('rearAttentionGap');
+  const rearAttentionDetail = document.getElementById('rearAttentionDetail');
   const raceLapHistory = document.getElementById('raceLapHistory');
   const btnReconnect = document.getElementById('btnReconnect');
   const btnFullscreen = document.getElementById('btnFullscreen');
@@ -513,6 +528,13 @@
   let raceSignalSoundUnlocked = false;
   let lastRaceSignalSoundKey = '';
   const receivedRaceLapHistory = new Map();
+  const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
+    warningGapMs: RACE_REAR_WARNING_GAP_MS,
+    criticalGapMs: RACE_REAR_CRITICAL_GAP_MS,
+    warningClosingMs: RACE_REAR_WARNING_CLOSING_MS,
+    criticalClosingMs: RACE_REAR_CRITICAL_CLOSING_MS,
+  }) || null;
+  let rearAttentionTimer = null;
   const raceState = {
     phase: 'STANDBY',
     phaseCode: 'idle',
@@ -575,14 +597,22 @@
   }
 
   function scheduleRaceBattleLayout() {
-    if (!racePositionCard || !raceBattle || raceBattleLayoutFrame !== null) {
+    if (raceBattleLayoutFrame !== null) {
       return;
     }
     raceBattleLayoutFrame = window.requestAnimationFrame(() => {
       raceBattleLayoutFrame = null;
-      const bottom = racePositionCard.getBoundingClientRect().bottom;
-      if (Number.isFinite(bottom) && bottom > 0) {
-        document.documentElement.style.setProperty('--race-battle-top', `${Math.ceil(bottom + 14)}px`);
+      if (racePositionCard && raceBattle) {
+        const bottom = racePositionCard.getBoundingClientRect().bottom;
+        if (Number.isFinite(bottom) && bottom > 0) {
+          document.documentElement.style.setProperty('--race-battle-top', `${Math.ceil(bottom + 14)}px`);
+        }
+      }
+      if (raceTotalCard && rearAttention) {
+        const bottom = raceTotalCard.getBoundingClientRect().bottom;
+        if (Number.isFinite(bottom) && bottom > 0) {
+          document.documentElement.style.setProperty('--rear-attention-top', `${Math.ceil(bottom + 14)}px`);
+        }
       }
     });
   }
@@ -1220,6 +1250,8 @@
           lap: normalizeRaceNumber(entry.lap),
           intervalToAheadMs: normalizeRaceNumber(entry.intervalToAheadMs),
           lapDeltaToAhead: normalizeRaceLapDelta(entry.lapDeltaToAhead),
+          lastMarkerIndex: normalizeRaceNumber(entry.lastMarkerIndex),
+          lastMarkerRaceMs: normalizeRaceNumber(entry.lastMarkerRaceMs),
         };
       })
       .filter((entry) => entry !== null)
@@ -1288,7 +1320,13 @@
       return;
     }
     const isAvailable = rival !== null;
+    const gapMs = normalizeRaceNumber(intervalToAheadMs);
     element.classList.toggle('is-missing', !isAvailable);
+    element.dataset.gapState = !isAvailable || gapMs === null
+      ? 'none'
+      : gapMs <= RACE_REAR_CRITICAL_GAP_MS
+        ? 'critical'
+        : gapMs <= RACE_REAR_WARNING_GAP_MS ? 'pressure' : 'normal';
     element.style.setProperty('--battle-offset', `${getRaceBattleOffset(intervalToAheadMs, lapDeltaToAhead)}px`);
     setText(positionElement, isAvailable ? `P${rival.position}` : '--');
     setText(nameElement, getRaceRivalLabel(rival, fallback));
@@ -1329,6 +1367,65 @@
       battle.behind?.lapDeltaToAhead ?? null,
       'NO BEHIND',
     );
+  }
+
+  function hideRearAttention(resetTracker = false) {
+    if (rearAttentionTimer !== null) {
+      window.clearTimeout(rearAttentionTimer);
+      rearAttentionTimer = null;
+    }
+    if (rearAttention) {
+      rearAttention.hidden = true;
+      rearAttention.classList.remove('is-active');
+    }
+    if (resetTracker) {
+      rearAttentionTracker?.reset();
+    }
+  }
+
+  function showRearAttention(alert) {
+    if (!rearAttention || !alert) {
+      return;
+    }
+    const critical = alert.severity === 'critical';
+    const rivalName = alert.driver || alert.carId;
+    const markerLabel = alert.markerIndex === 0 ? 'LAP LINE' : `CP ${alert.markerIndex}`;
+    rearAttention.dataset.severity = critical ? 'critical' : 'warning';
+    setText(rearAttentionLabel, critical ? 'REAR ATTACK' : 'REAR CLOSING');
+    setText(rearAttentionGap, formatRaceInterval(alert.gapMs, null));
+    setText(
+      rearAttentionDetail,
+      `${(alert.closingMs / 1000).toFixed(1)}s CLOSER  /  ${rivalName}  /  ${markerLabel}`,
+    );
+    rearAttention.hidden = false;
+    rearAttention.classList.remove('is-active');
+    void rearAttention.offsetWidth;
+    rearAttention.classList.add('is-active');
+    if (rearAttentionTimer !== null) {
+      window.clearTimeout(rearAttentionTimer);
+    }
+    rearAttentionTimer = window.setTimeout(() => hideRearAttention(false), RACE_REAR_ATTENTION_MS);
+  }
+
+  function evaluateRearAttention() {
+    if (!RACE_REAR_ATTENTION_ENABLED || !rearAttentionTracker) {
+      hideRearAttention(true);
+      return;
+    }
+    const battle = getRaceBattle();
+    const alert = rearAttentionTracker.evaluate({
+      raceRunId: activeRaceRunId,
+      phaseCode: raceState.phaseCode,
+      self: battle.self,
+      behind: battle.behind,
+    });
+    if (raceState.phaseCode !== 'green') {
+      hideRearAttention(false);
+      return;
+    }
+    if (alert) {
+      showRearAttention(alert);
+    }
   }
 
   function normalizeRacePhaseCode(phase) {
@@ -1807,6 +1904,7 @@
       raceState.laps = [];
       raceState.rivals = [];
       raceState.clockRunning = false;
+      hideRearAttention(true);
       raceStartSignalGreenUntil = 0;
       lastRaceLapAnnouncementKey = '';
       lastRaceSignalSoundKey = '';
@@ -1852,13 +1950,14 @@
       }
     }
     raceState.sampledAt = performance.now();
+    evaluateRearAttention();
     renderRaceHud();
     syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
     announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     return true;
   }
 
-  function createRaceBattleDemoState() {
+  function createRaceBattleDemoState(behindGapMs = 1250, markerIndex = 1, markerRaceMs = 24_000) {
     return {
       phase: 'RUNNING',
       phaseCode: 'green',
@@ -1875,15 +1974,21 @@
       rivals: [
         { carId: 'FPV-01', driver: 'AYA', position: 1, lap: 3 },
         { carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, intervalToAheadMs: 840 },
-        { carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3, intervalToAheadMs: 5200 },
+        {
+          carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3,
+          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
         { carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, intervalToAheadMs: 2810 },
       ],
     };
   }
 
   function startRaceBattleDemo() {
-    if (RACE_BATTLE_DEMO) {
+    if (RACE_BATTLE_DEMO || RACE_REAR_ATTENTION_DEMO) {
       setRaceState(createRaceBattleDemoState());
+      if (RACE_REAR_ATTENTION_DEMO) {
+        window.setTimeout(() => setRaceState(createRaceBattleDemoState(850, 2, 36_000)), 350);
+      }
     }
   }
 
