@@ -443,8 +443,10 @@ td:last-child { color: var(--cyan); }
   .leader-driver strong { font-size: 32px; }
   .leader-car { margin-top: 6px; padding: 3px 8px; font-size: 14px; }
   .leader-gap { font-size: 34px; }
-  .leader-times { gap: 13px; font-size: 18px; }
-  .leader-times strong { font-size: 28px; }
+  .leader-times { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; font-size: 18px; }
+  .leader-time-current { grid-column: 1 / -1; }
+  .leader-times strong { font-size: 42px; line-height: .95; }
+  .leader-time-current strong { font-size: 52px; }
   .leader-health { grid-template-columns: 54px minmax(70px, 1fr) auto; gap: 11px; font-size: 15px; }
   .leader-health-track { height: 8px; }
   .leader-health strong { max-width: 125px; font-size: 14px; }
@@ -530,8 +532,10 @@ html.scaled-4k .leader-pos { font-size: 20px; }
 html.scaled-4k .leader-avatar { width: 44px; height: 44px; font-size: 13px; }
 html.scaled-4k .leader-driver strong { font-size: 24px; }
 html.scaled-4k .leader-gap { font-size: 24px; }
-html.scaled-4k .leader-times { gap: 9px; font-size: 12px; }
-html.scaled-4k .leader-times strong { font-size: 20px; }
+html.scaled-4k .leader-times { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; font-size: 12px; }
+html.scaled-4k .leader-time-current { grid-column: 1 / -1; }
+html.scaled-4k .leader-times strong { font-size: 32px; line-height: .95; }
+html.scaled-4k .leader-time-current strong { font-size: 40px; }
 html.scaled-4k .leader-health { grid-template-columns: 44px minmax(60px, 1fr) auto; font-size: 12px; }
 html.scaled-4k .leader-health strong { max-width: 100px; font-size: 11px; }
 
