@@ -13,6 +13,7 @@ import {
   formatStandingGap,
   normalizeLapHistory,
   normalizeObserverConfig,
+  parseControlCommand,
   parsePitPresence,
   parseRaceState,
   parseVehicleHealth,
@@ -29,12 +30,14 @@ const RACE_STATE_POLL_MS = 500;
 const CLOCK_RENDER_INTERVAL_MS = 50;
 const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
+const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
 const healthByCar = new Map();
 const telemetryByCar = new Map();
+const controlByCar = new Map();
 const vehicleEventByCar = new Map();
 const vehicleEventHistoryByCar = new Map();
 const pitByCar = new Map();
@@ -50,6 +53,7 @@ const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
 const telemetryNodesByCar = new Map();
+const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
 const pitMotionByCar = new Map();
 const raceTransportByCar = new Map();
@@ -126,7 +130,7 @@ function preferH264(transceiver) {
 }
 
 class ObserverPeer {
-  constructor(car, relayHost, video, onState, onRace, onHealth, onPit, onTelemetry, onVehicleEvent) {
+  constructor(car, relayHost, video, onState, onRace, onHealth, onPit, onTelemetry, onControl, onVehicleEvent) {
     this.car = car;
     this.relayHost = relayHost;
     this.video = video;
@@ -135,6 +139,7 @@ class ObserverPeer {
     this.onHealth = onHealth;
     this.onPit = onPit;
     this.onTelemetry = onTelemetry;
+    this.onControl = onControl;
     this.onVehicleEvent = onVehicleEvent;
     this.ws = null;
     this.pc = null;
@@ -213,6 +218,16 @@ class ObserverPeer {
       if (generation !== this.generation) return;
       this.telemetryOpen = false;
       this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'TELEMETRY CLOSED');
+    };
+
+    const command = pc.createDataChannel('momo-command', {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+    command.onmessage = (event) => {
+      if (generation !== this.generation || typeof event.data !== 'string') return;
+      const control = parseControlCommand(event.data);
+      if (control) this.onControl(this.car, control);
     };
 
     const race = pc.createDataChannel('momo-race', { ordered: true });
@@ -978,6 +993,28 @@ function renderTelemetryDisplays() {
   }
 }
 
+function setPedalLevel(node, value) {
+  const level = Math.max(0, Math.min(1, Number(value) || 0));
+  const transform = `scaleY(${level.toFixed(3)})`;
+  if (node.style.transform !== transform) node.style.transform = transform;
+}
+
+function renderControlDisplays(now) {
+  if (!observerConfig) return;
+  for (const car of observerConfig.cars) {
+    const nodes = controlNodesByCar.get(car.carId);
+    if (!nodes) continue;
+    const control = controlByCar.get(car.carId);
+    const active = Boolean(control && now - control.receivedAt <= CONTROL_STALE_MS);
+    const throttle = active ? control.throttle : 0;
+    const brake = active ? control.brake : 0;
+    setPedalLevel(nodes.throttle, throttle);
+    setPedalLevel(nodes.brake, brake);
+    nodes.root.dataset.active = active ? 'true' : 'false';
+    nodes.root.setAttribute('aria-label', `Throttle ${Math.round(throttle * 100)} percent, brake ${Math.round(brake * 100)} percent`);
+  }
+}
+
 function updateAnimationFrame(now) {
   if (now - clockRenderedAt >= CLOCK_RENDER_INTERVAL_MS) {
     clockRenderedAt = now;
@@ -990,6 +1027,7 @@ function updateAnimationFrame(now) {
   if (now - telemetryRenderedAt >= TELEMETRY_RENDER_INTERVAL_MS) {
     telemetryRenderedAt = now;
     renderTelemetryDisplays();
+    renderControlDisplays(now);
   }
   if (observerConfig && now - raceStatusRenderedAt >= TRANSPORT_RENDER_INTERVAL_MS) {
     raceStatusRenderedAt = now;
@@ -1011,6 +1049,7 @@ function renderAll() {
 function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
   telemetryNodesByCar.clear();
+  controlNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
     const tile = element('article', `camera-tile camera-${car.color}`);
     const head = element('div', 'camera-head');
@@ -1041,7 +1080,22 @@ function createCameraTiles() {
     const loss = element('span', 'telemetry-loss', 'LOSS --');
     telemetry.append(rate, lateral, forward, yaw, loss);
     telemetryNodesByCar.set(car.carId, { root: telemetry, rate, lateral, forward, yaw, loss });
-    feed.append(video, telemetry, videoState);
+    const controls = element('div', 'camera-controls');
+    controls.dataset.active = 'false';
+    controls.setAttribute('aria-label', 'Throttle 0 percent, brake 0 percent');
+    const throttleMeter = element('span', 'camera-pedal camera-pedal-throttle');
+    const throttleTrack = element('i', 'camera-pedal-track');
+    const throttleFill = element('b', 'camera-pedal-fill');
+    throttleTrack.append(throttleFill);
+    throttleMeter.append(throttleTrack, element('em', '', 'T'));
+    const brakeMeter = element('span', 'camera-pedal camera-pedal-brake');
+    const brakeTrack = element('i', 'camera-pedal-track');
+    const brakeFill = element('b', 'camera-pedal-fill');
+    brakeTrack.append(brakeFill);
+    brakeMeter.append(brakeTrack, element('em', '', 'B'));
+    controls.append(throttleMeter, brakeMeter);
+    controlNodesByCar.set(car.carId, { root: controls, throttle: throttleFill, brake: brakeFill });
+    feed.append(video, telemetry, controls, videoState);
     tile.append(head, feed);
     return tile;
   }));
@@ -1241,6 +1295,10 @@ function handleTelemetry(car, telemetry) {
   telemetryByCar.set(car.carId, telemetry);
 }
 
+function handleControl(car, control) {
+  controlByCar.set(car.carId, { ...control, receivedAt: performance.now() });
+}
+
 function handleVehicleEvent(car, result) {
   vehicleEventHistoryByCar.set(car.carId, result.events || []);
   if (!result.transient || !result.event) return;
@@ -1299,6 +1357,7 @@ async function initialize() {
         handleHealth,
         handlePit,
         handleTelemetry,
+        handleControl,
         handleVehicleEvent,
       );
       clients.push(client);

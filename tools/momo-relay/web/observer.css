@@ -346,6 +346,26 @@ td:last-child { color: var(--cyan); }
 }
 .camera-telemetry[data-active="true"] { border-left-color: var(--car); }
 .camera-telemetry strong { grid-column: 1 / -1; color: var(--cyan); font-size: 11px; }
+.camera-controls {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  bottom: 7px;
+  display: flex;
+  align-items: end;
+  gap: 6px;
+  padding: 5px 6px 4px;
+  background: rgba(3, 5, 6, .78);
+  opacity: .38;
+  transition: opacity .12s linear;
+}
+.camera-controls[data-active="true"] { opacity: 1; }
+.camera-pedal { display: grid; grid-template-rows: 52px 11px; gap: 3px; justify-items: center; }
+.camera-pedal-track { position: relative; display: block; width: 14px; height: 52px; overflow: hidden; border: 1px solid #647278; background: rgba(4, 8, 9, .86); }
+.camera-pedal-fill { position: absolute; inset: 0; display: block; background: var(--pedal); transform: scaleY(0); transform-origin: bottom; transition: transform .08s linear; will-change: transform; }
+.camera-pedal-throttle { --pedal: var(--green); }
+.camera-pedal-brake { --pedal: var(--red); }
+.camera-pedal em { color: rgba(255, 255, 255, .8); font-size: 9px; font-style: normal; font-weight: 900; line-height: 11px; }
 .video-state { position: absolute; z-index: 2; top: 8px; right: 10px; padding: 3px 5px; color: rgba(255, 255, 255, .76); background: rgba(3, 5, 6, .72); font-size: 10px; font-weight: 700; }
 .video-state[data-state="streaming"] { color: var(--cyan); }
 .video-state[data-race-freshness="live"] { border-bottom: 1px solid var(--green); }
@@ -510,6 +530,10 @@ td:last-child { color: var(--cyan); }
   .camera-head > span i { width: 10px; height: 10px; }
   .camera-telemetry { bottom: 12px; left: 13px; min-width: 270px; gap: 4px 16px; padding: 10px 13px; font-size: 15px; }
   .camera-telemetry strong { font-size: 17px; }
+  .camera-controls { right: 13px; bottom: 12px; gap: 9px; padding: 8px 9px 6px; }
+  .camera-pedal { grid-template-rows: 76px 16px; gap: 5px; }
+  .camera-pedal-track { width: 19px; height: 76px; }
+  .camera-pedal em { font-size: 13px; line-height: 16px; }
   .video-state { top: 13px; right: 16px; padding: 5px 8px; font-size: 15px; }
 }
 
@@ -571,6 +595,10 @@ html.scaled-4k .camera-head strong span { font-size: 14px; }
 html.scaled-4k .camera-head > span,
 html.scaled-4k .camera-head em,
 html.scaled-4k .camera-telemetry { font-size: 12px; }
+html.scaled-4k .camera-controls { right: 12px; bottom: 11px; gap: 8px; padding: 7px 8px 5px; }
+html.scaled-4k .camera-pedal { grid-template-rows: 70px 14px; gap: 4px; }
+html.scaled-4k .camera-pedal-track { width: 18px; height: 70px; }
+html.scaled-4k .camera-pedal em { font-size: 12px; line-height: 14px; }
 html.scaled-4k .situation-primary { font-size: 18px; }
 
 @media (prefers-reduced-motion: reduce) {

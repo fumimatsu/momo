@@ -11,6 +11,20 @@ export function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function parseControlCommand(message) {
+  const text = String(message || '').trim();
+  if (!text || text.length > 128) return null;
+  const throttleField = text.split(',').find((field) => /^T:\s*\d+$/.test(field.trim()));
+  if (!throttleField) return null;
+  const pwm = Number(throttleField.trim().slice(2));
+  if (!Number.isInteger(pwm) || pwm < 1000 || pwm > 2000) return null;
+  return {
+    pwm,
+    throttle: clamp((pwm - 1500) / 500, 0, 1),
+    brake: clamp((1500 - pwm) / 500, 0, 1),
+  };
+}
+
 export function parseVehicleHealth(message) {
   const fields = String(message || '').trim().split(',');
   if (fields.length !== 4 || fields[0] !== 'VHS:1') return null;
