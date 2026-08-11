@@ -23,6 +23,12 @@
     cornerYawFullRadPerSec: 1.2,
     cornerAttackSeconds: 0.08,
     cornerReleaseSeconds: 0.16,
+    surfaceBaselineSeconds: 0.35,
+    surfaceForwardWeight: 0.25,
+    surfaceRoughnessStartMps2: 0.12,
+    surfaceRoughnessFullMps2: 1.40,
+    surfaceAttackSeconds: 0.06,
+    surfaceReleaseSeconds: 0.22,
     impactForwardMps2: 8.5,
     impactVerticalMps2: 5.5,
     impactLateralMps2: 10.0,
@@ -459,8 +465,8 @@
       return { frontLoad: 0, measuredLoad: 0 };
     }
 
-    const startMps2 = Math.max(0, Number(options.startMps2 ?? 3.0));
-    const fullMps2 = Math.max(startMps2 + 0.1, Number(options.fullMps2 ?? 7.0));
+    const startMps2 = Math.max(0, Number(options.startMps2 ?? 1.0));
+    const fullMps2 = Math.max(startMps2 + 0.1, Number(options.fullMps2 ?? 3.5));
     const measuredLoad = clamp(
       ((-forwardMps2) - startMps2) / (fullMps2 - startMps2),
       0,
@@ -527,6 +533,38 @@
         motion.lateralMps2,
         motion.verticalMps2,
       );
+      const surfaceForwardBaselineMps2 = approach(
+        previous?.surfaceForwardBaselineMps2 ?? motion.forwardMps2,
+        motion.forwardMps2,
+        elapsedSeconds,
+        this.options.surfaceBaselineSeconds,
+        this.options.surfaceBaselineSeconds,
+      );
+      const surfaceVerticalBaselineMps2 = approach(
+        previous?.surfaceVerticalBaselineMps2 ?? motion.verticalMps2,
+        motion.verticalMps2,
+        elapsedSeconds,
+        this.options.surfaceBaselineSeconds,
+        this.options.surfaceBaselineSeconds,
+      );
+      const surfaceDynamicMps2 = Math.hypot(
+        motion.verticalMps2 - surfaceVerticalBaselineMps2,
+        (motion.forwardMps2 - surfaceForwardBaselineMps2) * this.options.surfaceForwardWeight,
+      );
+      // 路面入力は衝突とは独立させる。衝突フレームでは路面側を減衰させ、二重出力を避ける。
+      const surfaceRaw = impactRaw ? 0 : clamp(
+        (surfaceDynamicMps2 - this.options.surfaceRoughnessStartMps2)
+          / (this.options.surfaceRoughnessFullMps2 - this.options.surfaceRoughnessStartMps2),
+        0,
+        1,
+      );
+      const surfaceRoughness = approach(
+        previous?.surfaceRoughness || 0,
+        surfaceRaw,
+        elapsedSeconds,
+        this.options.surfaceAttackSeconds,
+        this.options.surfaceReleaseSeconds,
+      );
       let impactArmed = previous?.impactArmed !== false;
       let impactQuietSinceMs = previous?.impactQuietSinceMs ?? null;
       if (dynamicMagnitudeMps2 < this.options.impactRearmMagnitudeMps2) {
@@ -568,6 +606,10 @@
         motion,
         jerkMps3,
         cornerLoad,
+        surfaceForwardBaselineMps2,
+        surfaceVerticalBaselineMps2,
+        surfaceDynamicMps2,
+        surfaceRoughness,
         impact,
         impactLevel,
         impactArmed: impact ? false : impactArmed,

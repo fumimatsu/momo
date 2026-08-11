@@ -109,7 +109,7 @@ func TestVehicleHealthClassifiesOnlyImpactEvents(t *testing.T) {
 	}
 }
 
-func TestVehicleHealthCooldownAndDuplicateEventsDoNotApplyDamageTwice(t *testing.T) {
+func TestVehicleHealthEpisodeAndDuplicateEventsDoNotApplyDamageTwice(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	firstRaw := `TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
@@ -123,12 +123,30 @@ func TestVehicleHealthCooldownAndDuplicateEventsDoNotApplyDamageTwice(t *testing
 	}
 	secondRaw := `TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
 	_, _, suppressed := health.ingestTelemetry(secondRaw, "CP-1", base.Add(599*time.Millisecond))
-	if suppressed == nil || suppressed.DamageApplied || suppressed.SuppressionReason != "cooldown" || suppressed.HPAfter != 88 {
-		t.Fatalf("cooldown event = %#v", suppressed)
+	if suppressed == nil || suppressed.DamageApplied || suppressed.SuppressionReason != "impact_episode" || suppressed.HPAfter != 88 {
+		t.Fatalf("episode event = %#v", suppressed)
 	}
 	thirdRaw := `TEL:{"v":2,"k":"e","boot":"boot-a","seq":3,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
-	_, _, applied := health.ingestTelemetry(thirdRaw, "CP-1", base.Add(600*time.Millisecond))
+	_, _, stillSuppressed := health.ingestTelemetry(thirdRaw, "CP-1", base.Add(600*time.Millisecond))
+	if stillSuppressed == nil || stillSuppressed.DamageApplied || stillSuppressed.HPAfter != 88 {
+		t.Fatalf("event at 600ms = %#v", stillSuppressed)
+	}
+	fourthRaw := `TEL:{"v":2,"k":"e","boot":"boot-a","seq":4,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
+	_, _, applied := health.ingestTelemetry(fourthRaw, "CP-1", base.Add(1500*time.Millisecond))
 	if applied == nil || !applied.DamageApplied || applied.HPAfter != 76 {
-		t.Fatalf("event at 600ms = %#v", applied)
+		t.Fatalf("new episode event = %#v", applied)
+	}
+}
+
+func TestVehicleHealthEpisodeEscalationAppliesOnlyDamageDifference(t *testing.T) {
+	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	_, _, strong := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
+	if strong == nil || strong.Damage != 12 || strong.HPAfter != 88 {
+		t.Fatalf("strong event = %#v", strong)
+	}
+	_, _, severe := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base.Add(600*time.Millisecond))
+	if severe == nil || !severe.DamageApplied || severe.Damage != 8 || severe.HPAfter != 80 {
+		t.Fatalf("escalated event = %#v", severe)
 	}
 }

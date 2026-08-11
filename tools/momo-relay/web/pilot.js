@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-gear-audit-v3';
+  const PILOT_BUILD_ID = '20260812-ffb-surface-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -121,10 +121,10 @@
   const FFB_TELEMETRY_CORNER_LATERAL_FULL_MPS2 = Math.max(1, Math.min(20,
     getNumberParam('ffbTelemetryCornerLateralFull', 6.0)));
   const FFB_TELEMETRY_FRONT_LOAD_START_MPS2 = Math.max(0, Math.min(5,
-    getNumberParam('ffbTelemetryFrontLoadStart', 3.0)));
+    getNumberParam('ffbTelemetryFrontLoadStart', 1.0)));
   const FFB_TELEMETRY_FRONT_LOAD_FULL_MPS2 = Math.max(
     FFB_TELEMETRY_FRONT_LOAD_START_MPS2 + 0.1,
-    Math.min(20, getNumberParam('ffbTelemetryFrontLoadFull', 7.0)),
+    Math.min(20, getNumberParam('ffbTelemetryFrontLoadFull', 3.5)),
   );
   const FFB_TELEMETRY_FRONT_LOAD_FRICTION = Math.max(0, Math.min(0.3,
     getNumberParam('ffbTelemetryFrontLoadFriction', 0.10)));
@@ -132,6 +132,8 @@
     getNumberParam('ffbTelemetryFrontLoadDamper', 0.14)));
   const FFB_TELEMETRY_FRONT_LOAD_ATTACK_SECONDS = 0.08;
   const FFB_TELEMETRY_FRONT_LOAD_RELEASE_SECONDS = 0.20;
+  const FFB_TELEMETRY_SURFACE_TORQUE = Math.max(0, Math.min(0.2,
+    getNumberParam('ffbTelemetrySurfaceTorque', 0.06)));
   const FFB_IMPACT_DAMPER = Math.max(0, Math.min(0.8,
     getNumberParam('ffbImpactDamper', 0.55)));
   const FFB_IMPACT_FRICTION = Math.max(0, Math.min(0.5,
@@ -140,12 +142,6 @@
     getNumberParam('ffbImpactTorque', 0.62)));
   // 路面振動、接触、クラッシュを同じ衝撃として扱わず、パルスと粘りを別々に段階化する。
   const FFB_IMPACT_PROFILES = Object.freeze({
-    weak: Object.freeze({
-      pulseScale: 0.55,
-      boostScale: 0.28,
-      boostDurationMs: 160,
-      pulseKind: 'gravel',
-    }),
     strong: Object.freeze({
       pulseScale: 0.85,
       boostScale: 0.80,
@@ -344,6 +340,7 @@
   let ffbSpeedProxyAt = performance.now();
   let ffbFrontLoad = 0;
   let ffbFrontLoadAt = performance.now();
+  let ffbSurfaceRoughness = 0;
   let latestConfirmedImpact = null;
   let lastMotionEventHudId = '';
   let motionEventFlashTimer = 0;
@@ -2320,6 +2317,10 @@
     const motion = getMotionSnapshot();
     const responseScale = preset.scale * FFB_RESPONSE_SCALE;
     const frontLoad = updateFfbFrontLoad(motion);
+    const surfaceSpeedGate = Math.max(0, Math.min(1, (speedProxy - 0.05) / 0.20));
+    ffbSurfaceRoughness = motion && !motion.stale
+      ? Math.max(0, Math.min(1, Number(motion.surfaceRoughness) || 0)) * surfaceSpeedGate
+      : 0;
     const cornerDamper = motion && !motion.stale
       ? FFB_TELEMETRY_CORNER_DAMPER * motion.cornerLoad * responseScale
       : 0;
@@ -2347,6 +2348,8 @@
       speedProxy,
       frontLoad: frontLoad.value,
       frontLoadMeasured: frontLoad.measured,
+      surfaceRoughness: ffbSurfaceRoughness,
+      surfaceTorque: FFB_TELEMETRY_SURFACE_TORQUE * ffbSurfaceRoughness * responseScale,
       baseFriction: capabilities.friction
         ? Math.min(1, (FFB_BASE_FRICTION * responseScale) + frontLoadFriction
           + impactBoost.friction + damageEffect.friction)
@@ -2426,6 +2429,7 @@
     ffbSpeedProxyAt = performance.now();
     ffbFrontLoad = 0;
     ffbFrontLoadAt = performance.now();
+    ffbSurfaceRoughness = 0;
     ffbClient?.stopAll();
   }
 
@@ -2770,8 +2774,9 @@
     }
     const direction = motion.motion.lateralMps2 >= 0 ? 'L' : 'R';
     const corner = `C${(motion.cornerLoad * 100).toFixed(0)} ${direction}`;
+    const surface = `R${(motion.surfaceRoughness * 100).toFixed(0)}`;
     setText(motionState,
-      `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}`);
+      `${corner} ${surface} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}`);
   }
 
   function formatGmeterValue(value) {
@@ -6103,6 +6108,7 @@
         activePreset: activeFfbPreset,
         speedProxy: ffbSpeedProxy,
         frontLoad: ffbFrontLoad,
+        surfaceRoughness: ffbSurfaceRoughness,
         bridge: ffbClient?.snapshot?.() || null,
       },
     }),

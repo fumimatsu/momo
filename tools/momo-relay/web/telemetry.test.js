@@ -1,0 +1,43 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const telemetry = require('./telemetry.js');
+
+function state(seq, forwardMps2, verticalMps2) {
+  return {
+    v: 2,
+    k: 's',
+    src: 'imu0',
+    boot: 'test-boot',
+    seq,
+    t_us: seq * 33333,
+    m: { a: [forwardMps2, 0, verticalMps2], y: 0 },
+    q: { p: 33333, f: ['flu_axes'] },
+  };
+}
+
+test('front load responds to normal braking range', () => {
+  assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -1 }).frontLoad, 0);
+  assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -2.25 }).frontLoad, 0.5);
+  assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -3.5 }).frontLoad, 1);
+});
+
+test('surface roughness stays quiet at rest and reacts independently from impact', () => {
+  const extractor = new telemetry.MotionFeatureExtractor();
+  let snapshot = null;
+  for (let seq = 0; seq < 30; seq += 1) {
+    snapshot = extractor.ingest(state(seq, 0.01, seq % 2 ? 0.01 : -0.01), seq * 33.333);
+  }
+  assert.ok(snapshot.surfaceRoughness < 0.01);
+
+  for (let seq = 30; seq < 50; seq += 1) {
+    snapshot = extractor.ingest(state(seq, 0, seq % 2 ? 0.9 : -0.9), seq * 33.333);
+  }
+  assert.ok(snapshot.surfaceRoughness > 0.3);
+  const beforeImpact = snapshot.surfaceRoughness;
+
+  snapshot = extractor.ingest(state(50, 9, 6), 50 * 33.333);
+  assert.equal(snapshot.impact, true);
+  assert.ok(snapshot.surfaceRoughness < beforeImpact);
+});

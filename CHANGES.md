@@ -11,6 +11,11 @@
 
 ## develop
 
+- [UPDATE] IMU由来のFFBを実走ログに合わせて調整する
+  - ブレーキ前荷重の開始値を1.0m/s²、最大値を3.5m/s²へ下げる
+  - 衝突とは独立した路面roughnessを生成し、停車中はBridgeへ出力しない
+- [FIX] 1回の衝突を1.5秒のエピソードへまとめ、重複ダメージを抑止する
+  - StrongからSevereへ上がった場合は差分ダメージだけを追加する
 - [ADD] Local Relay に順位連動 Boost、G4、仮想 Fuel、PIT 給油を追加する
   - 通常gearをG3上限とし、Boost充填後だけ2.5秒のG4を許可する
   - Fuel 0ではPITへ戻れるPWM 1550へ前進を制限する

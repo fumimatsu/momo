@@ -14,7 +14,7 @@ const (
 	vehicleHealthMaximum             = 100.0
 	vehicleHealthStrongDamage        = 12.0
 	vehicleHealthSevereDamage        = 20.0
-	vehicleHealthDamageCooldown      = 600 * time.Millisecond
+	vehicleHealthDamageEpisodeWindow = 1500 * time.Millisecond
 	vehicleHealthRecoveryDelay       = 4 * time.Second
 	vehicleHealthForwardCommandGrace = 350 * time.Millisecond
 	vehicleHealthPublishInterval     = 100 * time.Millisecond
@@ -76,36 +76,37 @@ type pitRecoveryReceipt struct {
 type vehicleHealth struct {
 	mu sync.Mutex
 
-	hp                float64
-	fuel              float64
-	boost             float64
-	boostActiveUntil  time.Time
-	requestedGear     int
-	position          int
-	fieldSize         int
-	fuelDriveDuration time.Duration
-	fuelRatePerSec    float64
-	requestedThrottle float64
-	effectiveThrottle float64
-	driveEnabled      bool
-	pitPresent        bool
-	raceConnected     bool
-	lastRaceStateAt   time.Time
-	lastUpdatedAt     time.Time
-	lastUnsafeAt      time.Time
-	lastDamageAt      time.Time
-	lastForwardAt     time.Time
-	lastPublishedAt   time.Time
-	lastRacePhase     string
-	lastSessionType   string
-	recoveryMode      vehicleHealthRecoveryMode
-	activeRaceRunID   string
-	pitEntryID        string
-	lastPitTick       int
-	lastPitAt         time.Time
-	pitReceipts       map[string]pitRecoveryReceipt
-	pitSeenEntries    map[string]struct{}
-	impactSeen        map[string]struct{}
+	hp                     float64
+	fuel                   float64
+	boost                  float64
+	boostActiveUntil       time.Time
+	requestedGear          int
+	position               int
+	fieldSize              int
+	fuelDriveDuration      time.Duration
+	fuelRatePerSec         float64
+	requestedThrottle      float64
+	effectiveThrottle      float64
+	driveEnabled           bool
+	pitPresent             bool
+	raceConnected          bool
+	lastRaceStateAt        time.Time
+	lastUpdatedAt          time.Time
+	lastUnsafeAt           time.Time
+	damageEpisodeStartedAt time.Time
+	damageEpisodeDamage    float64
+	lastForwardAt          time.Time
+	lastPublishedAt        time.Time
+	lastRacePhase          string
+	lastSessionType        string
+	recoveryMode           vehicleHealthRecoveryMode
+	activeRaceRunID        string
+	pitEntryID             string
+	lastPitTick            int
+	lastPitAt              time.Time
+	pitReceipts            map[string]pitRecoveryReceipt
+	pitSeenEntries         map[string]struct{}
+	impactSeen             map[string]struct{}
 }
 
 func newVehicleHealth(now time.Time) *vehicleHealth {
@@ -168,7 +169,7 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 	health.pitPresent = false
 	health.lastForwardAt = time.Time{}
 	health.lastUnsafeAt = time.Time{}
-	health.lastDamageAt = time.Time{}
+	health.resetDamageEpisodeLocked()
 	health.lastPublishedAt = now
 	health.fuelRatePerSec = 0
 	health.lastUpdatedAt = now
@@ -220,7 +221,7 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 	health.pitPresent = false
 	health.lastUpdatedAt = now
 	health.lastUnsafeAt = time.Time{}
-	health.lastDamageAt = time.Time{}
+	health.resetDamageEpisodeLocked()
 	health.lastForwardAt = time.Time{}
 	health.lastPublishedAt = now
 	health.resetPitRecoveryLocked()
@@ -396,6 +397,11 @@ func (health *vehicleHealth) resetImpactDedupeLocked() {
 	health.impactSeen = make(map[string]struct{})
 }
 
+func (health *vehicleHealth) resetDamageEpisodeLocked() {
+	health.damageEpisodeStartedAt = time.Time{}
+	health.damageEpisodeDamage = 0
+}
+
 func (health *vehicleHealth) rememberImpactLocked(eventID string) bool {
 	if eventID == "" {
 		return false
@@ -427,15 +433,24 @@ func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.
 			damage := relayImpactDamage(impactClass)
 			damageApplied := false
 			suppressionReason := ""
-			if damage > 0 && (health.lastDamageAt.IsZero() || now.Sub(health.lastDamageAt) >= vehicleHealthDamageCooldown) {
-				health.hp = math.Max(0, health.hp-damage)
-				health.lastDamageAt = now
-				health.lastUpdatedAt = now
-				changed = true
-				damageApplied = true
-			} else if damage > 0 {
-				damage = 0
-				suppressionReason = "cooldown"
+			if damage > 0 {
+				if health.damageEpisodeStartedAt.IsZero() || now.Before(health.damageEpisodeStartedAt) ||
+					now.Sub(health.damageEpisodeStartedAt) >= vehicleHealthDamageEpisodeWindow {
+					health.damageEpisodeStartedAt = now
+					health.damageEpisodeDamage = 0
+				}
+				if damage > health.damageEpisodeDamage {
+					// 同じ衝突の追撃候補は合計ダメージを最上位クラスまでだけ引き上げる。
+					damage -= health.damageEpisodeDamage
+					health.damageEpisodeDamage += damage
+					health.hp = math.Max(0, health.hp-damage)
+					health.lastUpdatedAt = now
+					changed = true
+					damageApplied = true
+				} else {
+					damage = 0
+					suppressionReason = "impact_episode"
+				}
 			} else {
 				suppressionReason = "below_damage_threshold"
 			}
