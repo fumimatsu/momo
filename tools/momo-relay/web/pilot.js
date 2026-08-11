@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-race-dc-probe-v1';
+  const PILOT_BUILD_ID = '20260811-gear-audit-v2';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -3095,6 +3095,7 @@
     }
     currentGear = nextGear;
     updateGearUi();
+    sendGearState();
     const throttle = Number(throttleInput.value);
     const limitedThrottle = clampRcAxisValue('throttle', throttle);
     if (limitedThrottle !== throttle) {
@@ -3427,6 +3428,7 @@
     }
     try {
       driveChannel.send(line);
+      sendGearState();
       recordAttempt({
         datachannelSendCalled: true,
         localSendAccepted: true,
@@ -3441,6 +3443,19 @@
         reason: 'send_failed',
         error: error.message || String(error),
       });
+      return false;
+    }
+  }
+
+  function sendGearState() {
+    if (!usesRelayTransport() || !driveChannel || driveChannel.readyState !== 'open') {
+      return false;
+    }
+    try {
+      driveChannel.send(`GEAR:${currentGear}`);
+      return true;
+    } catch (error) {
+      recordEvent('gear state send failed', error.message || String(error));
       return false;
     }
   }

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -245,6 +246,7 @@ type relay struct {
 
 	driveLoggingEnabled atomic.Bool
 	driveOwnerID        atomic.Uint64
+	driveGear           atomic.Int32
 }
 
 type relayServer struct {
@@ -1411,6 +1413,30 @@ func (r *relay) broadcastCommand(message webrtc.DataChannelMessage) {
 	}
 }
 
+func commandAuditWithGear(message webrtc.DataChannelMessage, gear int32) webrtc.DataChannelMessage {
+	if !message.IsString || gear < 1 || gear > 5 {
+		return message
+	}
+	text := strings.TrimSpace(string(message.Data))
+	hasThrottle := false
+	for _, field := range strings.Split(text, ",") {
+		field = strings.TrimSpace(field)
+		if !strings.HasPrefix(field, "T:") {
+			continue
+		}
+		pwm, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(field, "T:")))
+		if err == nil && pwm >= 1000 && pwm <= 2000 {
+			hasThrottle = true
+		}
+		break
+	}
+	if !hasThrottle {
+		return message
+	}
+	message.Data = []byte(fmt.Sprintf("%s,G:%d", text, gear))
+	return message
+}
+
 func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMessage) error {
 	if message.IsString {
 		return channel.SendText(string(message.Data))
@@ -1481,7 +1507,7 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	client.lastCommandUnixNano.Store(time.Now().UnixNano())
 	// コマンドは全員に同じ DataChannel で返す。クライアント側は受信時にのみ
 	// 表示するため、この監査メッセージが Momo に再送されることはない。
-	r.broadcastCommand(forwarded)
+	r.broadcastCommand(commandAuditWithGear(forwarded, r.driveGear.Load()))
 }
 
 func shouldLogCommandDrop(client *viewer, now time.Time) bool {
@@ -1510,12 +1536,20 @@ func (r *relay) handleDriveState(client *viewer, message webrtc.DataChannelMessa
 		return
 	}
 
-	switch strings.TrimSpace(string(message.Data)) {
+	text := strings.TrimSpace(string(message.Data))
+	switch text {
 	case "DRIVE:1":
 		r.setDriveLogging(client.id, true, "viewer drive on")
 	case "DRIVE:0":
 		r.setDriveLogging(client.id, false, "viewer drive off")
 	default:
+		if strings.HasPrefix(text, "GEAR:") {
+			gear, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(text, "GEAR:")))
+			if err == nil && gear >= 1 && gear <= 5 {
+				r.driveGear.Store(int32(gear))
+				return
+			}
+		}
 		log.Printf("drop invalid drive state from viewer %d", client.id)
 	}
 }
@@ -1592,6 +1626,7 @@ func (r *relay) removeViewer(id uint64) {
 	}
 	r.viewersMu.Unlock()
 	if wasPilot {
+		r.driveGear.Store(0)
 		r.setDriveLogging(id, false, "pilot disconnected")
 		r.sendNeutralToUpstream("pilot disconnect")
 	}
@@ -1705,6 +1740,7 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 				})
 				channel.OnClose(func() {
 					client.drive.CompareAndSwap(channel, nil)
+					r.driveGear.Store(0)
 					r.setDriveLogging(client.id, false, "Ayame drive channel closed")
 				})
 			case telemetryLabel:
@@ -1988,6 +2024,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			})
 			channel.OnClose(func() {
 				client.drive.CompareAndSwap(channel, nil)
+				r.driveGear.Store(0)
 				r.setDriveLogging(client.id, false, "drive channel closed")
 			})
 		case raceLabel:

@@ -18,10 +18,18 @@ export function parseControlCommand(message) {
   if (!throttleField) return null;
   const pwm = Number(throttleField.trim().slice(2));
   if (!Number.isInteger(pwm) || pwm < 1000 || pwm > 2000) return null;
+  const gearField = text.split(',').find((field) => /^G:\s*\d+$/.test(field.trim()));
+  const gear = gearField ? Number(gearField.trim().slice(2)) : null;
+  if (gear !== null && (!Number.isInteger(gear) || gear < 1 || gear > 5)) return null;
+  const throttleMaximums = [1600, 1700, 1800, 1900, 2000];
+  const brakeMinimums = [1300, 1300, 1200, 1100, 1000];
+  const throttleMaximum = gear === null ? 2000 : throttleMaximums[gear - 1];
+  const brakeMinimum = gear === null ? 1000 : brakeMinimums[gear - 1];
   return {
     pwm,
-    throttle: clamp((pwm - 1500) / 500, 0, 1),
-    brake: clamp((1500 - pwm) / 500, 0, 1),
+    gear,
+    throttle: clamp((pwm - 1500) / (throttleMaximum - 1500), 0, 1),
+    brake: clamp((1500 - pwm) / (1500 - brakeMinimum), 0, 1),
   };
 }
 

@@ -373,6 +373,50 @@ func TestCommandDropLogIsRateLimitedPerViewer(t *testing.T) {
 	}
 }
 
+func TestDriveStateTracksCurrentPilotGear(t *testing.T) {
+	source := newStatusTestRelay("11.5", "CP-3")
+	pilot := &viewer{id: 7, role: "pilot"}
+	source.viewers = map[uint64]*viewer{pilot.id: pilot}
+	source.pilotID = pilot.id
+
+	source.handleDriveState(pilot, webrtc.DataChannelMessage{Data: []byte("GEAR:3"), IsString: true})
+	if got := source.driveGear.Load(); got != 3 {
+		t.Fatalf("drive gear = %d, want 3", got)
+	}
+	source.handleDriveState(pilot, webrtc.DataChannelMessage{Data: []byte("GEAR:6"), IsString: true})
+	if got := source.driveGear.Load(); got != 3 {
+		t.Fatalf("invalid gear changed state to %d", got)
+	}
+	source.handleDriveState(&viewer{id: 8, role: "observer"}, webrtc.DataChannelMessage{Data: []byte("GEAR:2"), IsString: true})
+	if got := source.driveGear.Load(); got != 3 {
+		t.Fatalf("observer gear changed state to %d", got)
+	}
+}
+
+func TestCommandAuditAddsGearWithoutChangingUpstreamMessage(t *testing.T) {
+	message := webrtc.DataChannelMessage{Data: []byte("S:1500,T:1800\n"), IsString: true}
+	audit := commandAuditWithGear(message, 3)
+	if got := string(audit.Data); got != "S:1500,T:1800,G:3" {
+		t.Fatalf("command audit = %q", got)
+	}
+	if got := string(message.Data); got != "S:1500,T:1800\n" {
+		t.Fatalf("upstream command was changed to %q", got)
+	}
+	for _, item := range []struct {
+		message webrtc.DataChannelMessage
+		gear    int32
+	}{
+		{webrtc.DataChannelMessage{Data: []byte("S:1500,T:1800\n"), IsString: true}, 0},
+		{webrtc.DataChannelMessage{Data: []byte("PING:1"), IsString: true}, 3},
+		{webrtc.DataChannelMessage{Data: []byte("S:1500,T:1800")}, 3},
+	} {
+		got := commandAuditWithGear(item.message, item.gear)
+		if string(got.Data) != string(item.message.Data) || got.IsString != item.message.IsString {
+			t.Fatalf("unexpected audit mutation: %#v -> %#v", item.message, got)
+		}
+	}
+}
+
 func TestTelemetryDeliveryLogIsRateLimitedPerViewer(t *testing.T) {
 	client := &viewer{id: 7, role: "pilot"}
 	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)

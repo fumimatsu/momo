@@ -1093,7 +1093,7 @@ function createCameraTiles() {
     const brakeFill = element('b', 'camera-pedal-fill');
     brakeTrack.append(brakeFill);
     brakeMeter.append(brakeTrack, element('em', '', 'B'));
-    controls.append(throttleMeter, brakeMeter);
+    controls.append(brakeMeter, throttleMeter);
     controlNodesByCar.set(car.carId, { root: controls, throttle: throttleFill, brake: brakeFill });
     feed.append(video, telemetry, controls, videoState);
     tile.append(head, feed);
