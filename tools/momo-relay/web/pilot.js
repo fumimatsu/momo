@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260812-ffb-rear-v1';
+  const PILOT_BUILD_ID = '20260812-ffb-strength-v2';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -87,8 +87,8 @@
   const FFB_SPEED_DAMPER = Math.max(0, Math.min(1.0, getNumberParamWithProfile('ffbSpeedDamper', 'ffbSpeedDamper', 0.15)));
   const FFB_PRESETS = Object.freeze({
     weak: Object.freeze({ scale: 0.65, label: 'Weak' }),
-    medium: Object.freeze({ scale: 1.00, label: 'Medium' }),
-    strong: Object.freeze({ scale: 1.35, label: 'Strong' }),
+    medium: Object.freeze({ scale: 1.35, label: 'Medium' }),
+    strong: Object.freeze({ scale: 2.00, label: 'Strong' }),
   });
   const CALIBRATION_STEPS = Object.freeze([
     Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。' }),
