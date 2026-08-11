@@ -19,6 +19,7 @@
   - Fuel 0ではPITへ戻れるよう1速上限より10低いPWM 1590へ前進を制限する
   - `VGS:1`でHP、Fuel、Boost、実効gearをPilotとWeb Observerへ配信する
   - `raceInfo.sessionType=practice`ではFuel消費を停止する
+  - Pilot の3ゲージを太く短くし、Boost READY・ACTIVEの発光演出を強化する
 - [UPDATE] severe impactのダメージを28から20へ変更する
 
 ## 2025.1.3
