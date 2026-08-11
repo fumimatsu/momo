@@ -29,6 +29,10 @@ Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ�
 
 Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面の設計は、[Relay Operations Dashboard 設計](../../doc/RELAY_OPERATIONS_DASHBOARD_DESIGN.md) を参照する。
 
+特定の Pilot PC で M5 音声のバイナリ DataChannel は受信できる一方、文字列 DataChannel が
+受信できない場合の比較プローブと判定手順は、
+[Relay DataChannel text / binary diagnostic](../../doc/RELAY_DATACHANNEL_TEXT_DIAGNOSTIC.md) を参照する。
+
 ## 車体テレメトリ記録
 
 Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全車共通のRelay時計で
@@ -200,6 +204,20 @@ http://<momo-device>:8080/html/fpv-viewer.html#raceUrl=ws%3A%2F%2F<race-control-
 ## 車体HPとピット回復
 
 車体HP、衝突ダメージ、前進スロットル上限はRelayの `vehicle_health.go` が正本である。
+通常運用ではM5/Piから届くV2 `impact_candidate`だけを公式判定へ使用する。V1 stateは
+RAW診断とsynthetic testの互換用に残すが、V1 `impact`はHPを変更せず、
+`legacy_event_unsupported`としてログへ記録する。
+
+衝撃段階は`weak >= 10 m/s2`、`strong >= 12 m/s2 && jerk >= 250 m/s3`、
+`severe >= 18 m/s2 && jerk >= 250 m/s3`である。strongは12 HP、severeは28 HPを減算し、
+damage cooldownは600 msとする。同じ`carId:boot:sequence`の再送は重複として無視する。
+
+RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。
+各sourceはレース単位で直近32件を保持し、channel open時に`vehicle_event_snapshot`を送る。
+snapshotは履歴復元専用で、ViewerはFFB、点滅、音声、HP計算を再実行しない。live eventの
+配信は64件の有界専用queueへ分離し、詰まりがTelemetry受信や操縦転送を待たせない。
+詳細契約はViewer正本の`docs/authoritative-vehicle-events-implementation-plan.md`を参照する。
+
 MADSYSTEMが同じピット用ArUco markerを連続認識し、2秒ごとにRelayへtickを送る。
 Relayは有効なtick 1回につき20 HPを回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260808-r3-corner-torque';
+  const PILOT_BUILD_ID = '20260811-gear-audit-v3';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -74,6 +74,10 @@
   const OSD_UPDATE_INTERVAL_MS = getNumberParam('osdMs', 100);
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
   const DC_PING_INTERVAL_MS = getNumberParam('dcPingMs', 1000);
+  const DC_TEXT_PROBE_ENABLED = getBooleanParam('dcTextProbe', false);
+  const DC_TEXT_PROBE_ATTEMPTS = Math.max(1, Math.min(10, getIntegerParam('dcTextProbeAttempts', 3)));
+  const DC_TEXT_PROBE_INTERVAL_MS = Math.max(250, Math.min(5000, getNumberParam('dcTextProbeMs', 1000)));
+  const DC_TEXT_PROBE_PREFIX = 'DIAG:DC_TEXT_BINARY:';
   // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
   const FFB_ENABLED = getBooleanParamWithProfile('ffbEnabled', 'ffbEnabled', getBooleanParam('ffbTest', false));
   const FFB_BRIDGE_URL = getStringParam('ffbUrl', GAMEPAD_PROFILE?.ffbBridgeUrl || 'ws://127.0.0.1:24725');
@@ -335,8 +339,8 @@
   let ffbSpeedProxyAt = performance.now();
   let ffbFrontLoad = 0;
   let ffbFrontLoadAt = performance.now();
-  let lastImmediateImpactFfbAtMs = -Infinity;
-  let lastMotionEventHudAtMs = -Infinity;
+  let latestConfirmedImpact = null;
+  let lastMotionEventHudId = '';
   let motionEventFlashTimer = 0;
   let cursorHideTimer = 0;
   let activeFfbPreset = FFB_INITIAL_PRESET;
@@ -365,6 +369,7 @@
   let telemetryChannel = null;
   let raceChannel = null;
   let driveChannel = null;
+  let eventsChannel = null;
   let candidates = [];
   let hasReceivedSdp = false;
   let fpsFrameCount = 0;
@@ -423,12 +428,24 @@
   const motionExtractor = window.FpvTelemetry?.MotionFeatureExtractor
     ? new window.FpvTelemetry.MotionFeatureExtractor()
     : null;
+  const relayEventInbox = window.FpvTelemetry?.RelayEventInbox
+    ? new window.FpvTelemetry.RelayEventInbox()
+    : null;
   let latestMotion = null;
   let vehicleHealth = null;
   let m5AudioPlayer = null;
   let dcPingSeq = 0;
   let dcRttMs = null;
   let lastDcPongAt = 0;
+  let dcTextProbeTimer = 0;
+  const dcTextProbe = {
+    enabled: DC_TEXT_PROBE_ENABLED,
+    requestsSent: 0,
+    textReceived: 0,
+    binaryReceived: 0,
+    lastRequestToken: null,
+    samples: [],
+  };
   let lastDeviceHostHint = '';
   const pendingDcPings = new Map();
   let deviceClock = null;
@@ -470,6 +487,10 @@
   let activeRaceRunId = '';
   let raceServerClockOffsetMs = 0;
   let raceStartSignalGreenUntil = 0;
+  let acceptedRaceRunId = '';
+  let acceptedRaceSequence = null;
+  let acceptedRaceServerTimeMs = null;
+  const acceptedRaceRunIds = new Set();
   let raceBattleLayoutFrame = null;
   let lastRaceLapAnnouncementKey = '';
   let raceSignalAudioContext = null;
@@ -1312,6 +1333,46 @@
     }
   }
 
+  function normalizeRaceSequence(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 0 ? number : null;
+  }
+
+  function acceptRaceStateV2(state) {
+    if (state?.type !== 'race_state' || state?.version !== 2) {
+      return true;
+    }
+    const runId = typeof state.raceRunId === 'string' ? state.raceRunId.trim() : '';
+    const sequence = normalizeRaceSequence(state.sequence);
+    const serverTimeMs = normalizeRaceNumber(state.serverTimeMs);
+    if (runId && acceptedRaceRunId && runId !== acceptedRaceRunId) {
+      if (acceptedRaceRunIds.has(runId)) {
+        return false;
+      }
+    } else if (!runId || runId === acceptedRaceRunId) {
+      if (sequence !== null && acceptedRaceSequence !== null) {
+        if (sequence < acceptedRaceSequence) {
+          return false;
+        }
+        if (sequence === acceptedRaceSequence
+          && (serverTimeMs === null || (acceptedRaceServerTimeMs !== null
+            && serverTimeMs <= acceptedRaceServerTimeMs))) {
+          return false;
+        }
+      } else if (serverTimeMs !== null && acceptedRaceServerTimeMs !== null
+        && serverTimeMs <= acceptedRaceServerTimeMs) {
+        return false;
+      }
+    }
+    if (runId) {
+      acceptedRaceRunIds.add(runId);
+      acceptedRaceRunId = runId;
+    }
+    acceptedRaceSequence = sequence;
+    acceptedRaceServerTimeMs = serverTimeMs;
+    return true;
+  }
+
   function getRaceDisplayNowMs() {
     return Date.now() + raceServerClockOffsetMs;
   }
@@ -1541,11 +1602,23 @@
     }
     const lap = normalizeRaceNumber(standing?.lap);
     const lastLapMs = normalizeRaceNumber(standing?.lapTimeMs);
-    // MADSYSTEM はラップ確定後に LapNum を次周回へ進めてから snapshot を送る。
-    // 例: lap=2 と lapTimeMs は「1 周目の確定タイム」を表す。
-    const completedLap = lap === null ? null : Math.max(1, lap - 1);
-    if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
-      receivedRaceLapHistory.set(completedLap, lastLapMs);
+    const completedLaps = Array.isArray(state.lapHistory)
+      ? state.lapHistory.filter((entry) => entry?.carId === carId)
+      : [];
+    for (const entry of completedLaps) {
+      const completedLap = normalizeRaceNumber(entry?.lap);
+      const timeMs = normalizeRaceNumber(entry?.lapTimeMs);
+      if (completedLap !== null && completedLap > 0 && timeMs !== null && timeMs > 0) {
+        receivedRaceLapHistory.set(completedLap, timeMs);
+      }
+    }
+    if (completedLaps.length === 0) {
+      // 旧形式では、走行中の lapTimeMs は lap のひとつ前の確定タイムを表す。
+      const completedLap = lap === null ? null : Math.max(1,
+        state.phase === 'finished' ? lap : lap - 1);
+      if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
+        receivedRaceLapHistory.set(completedLap, lastLapMs);
+      }
     }
     const laps = Array.from(receivedRaceLapHistory, ([completedLap, timeMs]) => ({
       lap: completedLap,
@@ -1688,6 +1761,9 @@
   function setRaceState(nextState) {
     if (!nextState || typeof nextState !== 'object') {
       return false;
+    }
+    if (!acceptRaceStateV2(nextState)) {
+      return true;
     }
     const hadPreviousRaceState = raceState.sampledAt > 0;
     const previousAnnouncement = getRaceLapAnnouncement();
@@ -2235,7 +2311,7 @@
       * frontLoad.value * responseScale;
     const frontLoadDamper = FFB_TELEMETRY_FRONT_LOAD_DAMPER
       * frontLoad.value * responseScale;
-    const impactBoost = getImpactFfbBoost(motion, performance.now());
+    const impactBoost = getImpactFfbBoost(performance.now());
     const damageEffect = getDamageFfbEffect(performance.now(), responseScale);
     const telemetryTorque = getTelemetryFfbTorque(
       motion,
@@ -2272,16 +2348,16 @@
     ffbForceActive = true;
   }
 
-  function getImpactFfbBoost(motion, nowMs) {
-    if (!motion || motion.stale || !motion.impactRecent) {
+  function getImpactFfbBoost(nowMs) {
+    if (!latestConfirmedImpact) {
       return { damper: 0, friction: 0, torque: 0 };
     }
-    const impactClass = String(motion.lastImpactEvent?.impactClass || '').toLowerCase();
+    const impactClass = String(latestConfirmedImpact.impactClass || '').toLowerCase();
     const profile = FFB_IMPACT_PROFILES[impactClass];
     if (!profile) {
       return { damper: 0, friction: 0, torque: 0 };
     }
-    const ageMs = nowMs - motion.lastImpactAtMs;
+    const ageMs = nowMs - latestConfirmedImpact.receivedAtMs;
     if (ageMs < 0 || ageMs >= profile.boostDurationMs) {
       return { damper: 0, friction: 0, torque: 0 };
     }
@@ -2585,7 +2661,6 @@
     }
     const motion = getMotionSnapshot();
     updateMotionUi(motion);
-    sendImpactFfbImmediately(motion);
 
     const deviceStatus = formatTelemetryDeviceStatus(parseTelemetryFields(message));
     if (deviceStatus) {
@@ -2634,25 +2709,21 @@
     return motionExtractor.getSnapshot(latestMotion.src, performance.now());
   }
 
-  function sendImpactFfbImmediately(motion) {
-    const impactAtMs = Number(motion?.lastImpactAtMs);
-    if (!motion?.impactRecent || !Number.isFinite(impactAtMs)
-      || impactAtMs <= lastImmediateImpactFfbAtMs) {
-      return;
-    }
-    lastImmediateImpactFfbAtMs = impactAtMs;
+  function applyConfirmedVehicleEvent(event) {
+    latestConfirmedImpact = { ...event, receivedAtMs: performance.now() };
     sendFfbSteering();
+    updateMotionEventHud(event);
     if (!ffbClient || !ffbOutputEnabled || !rcDriveEnabled) return;
-    const pulse = getImpactPulseRequest(motion);
+    const pulse = getImpactPulseRequest(event, getMotionSnapshot());
     if (pulse) ffbClient.triggerImpactPulse(pulse);
   }
 
-  function getImpactPulseRequest(motion) {
-    const impactClass = String(motion?.lastImpactEvent?.impactClass || '').toLowerCase();
+  function getImpactPulseRequest(event, motion) {
+    const impactClass = String(event?.impactClass || '').toLowerCase();
     const profile = FFB_IMPACT_PROFILES[impactClass];
     if (!profile) return null;
-    const eventLateralAxis = Number(motion.lastImpactEvent?.axis?.[1]);
-    const measuredLateral = Number(motion.motion?.lateralMps2);
+    const eventLateralAxis = Number(event.axis?.[1]);
+    const measuredLateral = Number(motion?.motion?.lateralMps2);
     const lateral = Number.isFinite(eventLateralAxis)
       && Math.abs(eventLateralAxis) >= FFB_IMPACT_DIRECTION_MIN_AXIS
       ? eventLateralAxis
@@ -2672,7 +2743,6 @@
 
   function updateMotionUi(motion = getMotionSnapshot()) {
     updateDriveGmeter(motion);
-    updateMotionEventHud(motion);
     if (!motionState) return;
     if (!motion) {
       setText(motionState, 'waiting for flu_axes');
@@ -2684,11 +2754,8 @@
     }
     const direction = motion.motion.lateralMps2 >= 0 ? 'L' : 'R';
     const corner = `C${(motion.cornerLoad * 100).toFixed(0)} ${direction}`;
-    const impact = motion.impactRecent
-      ? ` ${String(motion.lastImpactEvent?.impactClass || 'impact').toUpperCase()} ${motion.impactLevel.toFixed(2)}`
-      : '';
     setText(motionState,
-      `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}${impact}`);
+      `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}`);
   }
 
   function formatGmeterValue(value) {
@@ -2732,15 +2799,14 @@
     );
   }
 
-  function updateMotionEventHud(motion) {
+  function updateMotionEventHud(event) {
     if (!motionEventHud) return;
-    const event = motion?.impactRecent ? motion.lastImpactEvent : null;
     const impactClass = String(event?.impactClass || '').toLowerCase();
-    const impactAtMs = Number(motion?.lastImpactAtMs);
-    if (!impactClass || !Number.isFinite(impactAtMs) || impactAtMs <= lastMotionEventHudAtMs) {
+    const eventId = String(event?.eventId || '');
+    if (!impactClass || !eventId || eventId === lastMotionEventHudId) {
       return;
     }
-    lastMotionEventHudAtMs = impactAtMs;
+    lastMotionEventHudId = eventId;
     const labels = {
       weak: 'Gravel',
       strong: 'Impact',
@@ -2762,7 +2828,7 @@
     }
     if (motionEventFlashTimer) window.clearTimeout(motionEventFlashTimer);
     motionEventFlashTimer = window.setTimeout(() => {
-      if (lastMotionEventHudAtMs !== impactAtMs) return;
+      if (lastMotionEventHudId !== eventId) return;
       motionEventHud.classList.remove('is-flashing');
       motionEventHud.dataset.impactClass = '';
       motionEventIndicators.forEach((indicator) => indicator.classList.remove('is-active'));
@@ -2840,7 +2906,53 @@
     setText(dcRttState, getDcRttStatus());
   }
 
+  function decodeDataChannelProbe(message) {
+    let payload = null;
+    let kind = null;
+    let byteLength = null;
+    if (typeof message === 'string') {
+      payload = message;
+      kind = 'text';
+      byteLength = new TextEncoder().encode(message).byteLength;
+    } else if (message instanceof ArrayBuffer) {
+      const bytes = new Uint8Array(message);
+      payload = new TextDecoder().decode(bytes);
+      kind = 'binary';
+      byteLength = bytes.byteLength;
+    } else if (ArrayBuffer.isView(message)) {
+      const bytes = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+      payload = new TextDecoder().decode(bytes);
+      kind = 'binary';
+      byteLength = bytes.byteLength;
+    }
+    if (!payload?.startsWith(DC_TEXT_PROBE_PREFIX)) {
+      return false;
+    }
+    const sample = {
+      kind,
+      token: payload.slice(DC_TEXT_PROBE_PREFIX.length),
+      byteLength,
+      receivedAt: new Date().toISOString(),
+      transportGeneration,
+      channel: snapshotDataChannelForCapture(telemetryChannel),
+    };
+    if (kind === 'text') {
+      dcTextProbe.textReceived += 1;
+    } else {
+      dcTextProbe.binaryReceived += 1;
+    }
+    dcTextProbe.samples.push(sample);
+    if (dcTextProbe.samples.length > 20) {
+      dcTextProbe.samples.shift();
+    }
+    recordEvent('dc text probe rx', `${kind} ${sample.token}`);
+    return true;
+  }
+
   function handleDataChannelMessage(message) {
+    if (decodeDataChannelProbe(message)) {
+      return;
+    }
     if (handleRaceStateMessage(message)) {
       return;
     }
@@ -2860,6 +2972,17 @@
       return;
     }
     console.log('DataChannel RX:', message);
+  }
+
+  function handleVehicleEventMessage(message) {
+    if (!relayEventInbox || typeof message !== 'string') return;
+    const result = relayEventInbox.ingest(message);
+    const expectedCarId = RACE_CAR_ID || raceState.carId || '';
+    if ((result.event && expectedCarId && result.event.carId !== expectedCarId)
+        || result.events?.some((event) => expectedCarId && event.carId !== expectedCarId)) return;
+    if (result.status === 'live' && result.transient && result.event) {
+      applyConfirmedVehicleEvent(result.event);
+    }
   }
 
   function clampRcValue(value, minValue = 1000, maxValue = 2000) {
@@ -2972,6 +3095,7 @@
     }
     currentGear = nextGear;
     updateGearUi();
+    sendGearState();
     const throttle = Number(throttleInput.value);
     const limitedThrottle = clampRcAxisValue('throttle', throttle);
     if (limitedThrottle !== throttle) {
@@ -3132,6 +3256,50 @@
     window.setInterval(sendDcPing, DC_PING_INTERVAL_MS);
   }
 
+  function stopDcTextProbe() {
+    if (dcTextProbeTimer) {
+      window.clearInterval(dcTextProbeTimer);
+      dcTextProbeTimer = 0;
+    }
+  }
+
+  function sendDcTextProbeRequest() {
+    if (!DC_TEXT_PROBE_ENABLED || isAyameSignaling()
+      || !ws || ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const token = `${transportGeneration}-${Date.now().toString(36)}-${dcTextProbe.requestsSent + 1}`;
+    try {
+      ws.send(JSON.stringify({ type: 'datachannel-probe', data: token }));
+    } catch (error) {
+      recordEvent('dc text probe request failed', error?.message || String(error));
+      return false;
+    }
+    dcTextProbe.requestsSent += 1;
+    dcTextProbe.lastRequestToken = token;
+    recordEvent('dc text probe request', token);
+    if (dcTextProbe.requestsSent >= DC_TEXT_PROBE_ATTEMPTS) {
+      stopDcTextProbe();
+    }
+    return true;
+  }
+
+  function startDcTextProbe() {
+    stopDcTextProbe();
+    if (!DC_TEXT_PROBE_ENABLED || isAyameSignaling()) {
+      return;
+    }
+    dcTextProbe.requestsSent = 0;
+    dcTextProbe.textReceived = 0;
+    dcTextProbe.binaryReceived = 0;
+    dcTextProbe.lastRequestToken = null;
+    dcTextProbe.samples = [];
+    sendDcTextProbeRequest();
+    if (dcTextProbe.requestsSent < DC_TEXT_PROBE_ATTEMPTS) {
+      dcTextProbeTimer = window.setInterval(sendDcTextProbeRequest, DC_TEXT_PROBE_INTERVAL_MS);
+    }
+  }
+
   function startRcTx() {
     if (rcTxTimer) {
       return;
@@ -3260,6 +3428,7 @@
     }
     try {
       driveChannel.send(line);
+      sendGearState();
       recordAttempt({
         datachannelSendCalled: true,
         localSendAccepted: true,
@@ -3274,6 +3443,19 @@
         reason: 'send_failed',
         error: error.message || String(error),
       });
+      return false;
+    }
+  }
+
+  function sendGearState() {
+    if (!usesRelayTransport() || !driveChannel || driveChannel.readyState !== 'open') {
+      return false;
+    }
+    try {
+      driveChannel.send(`GEAR:${currentGear}`);
+      return true;
+    } catch (error) {
+      recordEvent('gear state send failed', error.message || String(error));
       return false;
     }
   }
@@ -3805,6 +3987,7 @@
   }
 
   function closeTransport(options = {}) {
+    stopDcTextProbe();
     const sendSignalingClose = options.sendSignalingClose === true;
     stopShadowCaptureForTransport(
       options.captureReason || 'transport_closed',
@@ -3814,6 +3997,7 @@
     const currentTelemetryChannel = telemetryChannel;
     const currentRaceChannel = raceChannel;
     const currentDriveChannel = driveChannel;
+    const currentEventsChannel = eventsChannel;
     const currentPeerConnection = peerConnection;
 
     if (currentWs) {
@@ -3841,6 +4025,11 @@
       currentDriveChannel.onopen = null;
       currentDriveChannel.onclose = null;
       currentDriveChannel.onmessage = null;
+    }
+    if (currentEventsChannel) {
+      currentEventsChannel.onopen = null;
+      currentEventsChannel.onclose = null;
+      currentEventsChannel.onmessage = null;
     }
     if (currentPeerConnection) {
       currentPeerConnection.ontrack = null;
@@ -3881,6 +4070,12 @@
       } catch (_) {
       }
     }
+    if (currentEventsChannel) {
+      try {
+        currentEventsChannel.close();
+      } catch (_) {
+      }
+    }
     if (currentPeerConnection) {
       try {
         currentPeerConnection.close();
@@ -3899,6 +4094,7 @@
     telemetryChannel = null;
     raceChannel = null;
     driveChannel = null;
+    eventsChannel = null;
     audioSender = null;
     peerConnection = null;
     ws = null;
@@ -4292,6 +4488,16 @@
         return;
       }
       switch (message.type) {
+        case 'telemetry':
+          if (typeof message.data === 'string') {
+            handleDataChannelMessage(message.data);
+          }
+          break;
+        case 'vehicle-event':
+          if (typeof message.data === 'string') {
+            handleVehicleEventMessage(message.data);
+          }
+          break;
         case 'answer':
           setAnswer(new RTCSessionDescription(message));
           break;
@@ -4375,9 +4581,11 @@
       telemetryChannel.binaryType = 'arraybuffer';
       telemetryChannel.onopen = () => {
         recordEvent('telemetry dc open');
+        startDcTextProbe();
         updateUiState();
       };
       telemetryChannel.onclose = () => {
+        stopDcTextProbe();
         recordEvent('telemetry dc close');
         scheduleReconnect('dc closed');
         updateUiState();
@@ -4414,6 +4622,8 @@
       driveChannel.onopen = () => {
         recordEvent('drive dc open');
         sendDriveState();
+        // The command channel can still be opening, but gear only needs momo-drive.
+        sendGearState();
       };
       driveChannel.onclose = () => {
         recordEvent('drive dc close');
@@ -4422,7 +4632,21 @@
       if (driveChannel.readyState === 'open') {
         recordEvent('drive dc open');
         sendDriveState();
+        sendGearState();
       }
+    };
+
+    const attachEventsChannel = (channel) => {
+      channel.fpvTransportGeneration = generation;
+      if (eventsChannel && eventsChannel !== channel) {
+        eventsChannel.onopen = null;
+        eventsChannel.onclose = null;
+        eventsChannel.onmessage = null;
+      }
+      eventsChannel = channel;
+      eventsChannel.onopen = () => recordEvent('events dc open');
+      eventsChannel.onclose = () => recordEvent('events dc close');
+      eventsChannel.onmessage = (event) => handleVehicleEventMessage(event.data);
     };
 
     peer.ondatachannel = (event) => {
@@ -4432,6 +4656,8 @@
         attachTelemetryChannel(event.channel);
       } else if (event.channel.label === 'momo-drive') {
         attachDriveChannel(event.channel);
+      } else if (event.channel.label === 'momo-events') {
+        attachEventsChannel(event.channel);
       } else {
         attachDataChannel(event.channel);
       }
@@ -4450,6 +4676,9 @@
         ordered: true,
       }));
       attachDriveChannel(peer.createDataChannel('momo-drive', {
+        ordered: true,
+      }));
+      attachEventsChannel(peer.createDataChannel('momo-events', {
         ordered: true,
       }));
     }
@@ -4604,7 +4833,11 @@
         connectStartedAt > 0 &&
         now - connectStartedAt > CONNECT_GRACE_MS;
       if (hasNoVideo) {
-        scheduleReconnect('no video');
+        if (AUTO_RECONNECT_ON_VIDEO_LOST) {
+          scheduleReconnect('no video');
+        } else {
+          recordEvent('no video', 'auto reconnect disabled');
+        }
       }
     }, 500);
   }
@@ -5666,6 +5899,7 @@
       telemetry_channel: snapshotDataChannelForCapture(telemetryChannel),
       drive_channel: snapshotDataChannelForCapture(driveChannel),
       race_channel: snapshotDataChannelForCapture(raceChannel),
+      events_channel: snapshotDataChannelForCapture(eventsChannel),
       endpoint: endpointInput.value,
       source_identity: {
         signaling_mode: SIGNALING_MODE,
@@ -5693,6 +5927,10 @@
         contextState: audioContext?.state || 'none',
       },
       m5Audio: m5AudioPlayer?.snapshot() || null,
+      dataChannelTextProbe: {
+        ...dcTextProbe,
+        samples: dcTextProbe.samples.slice(),
+      },
       motion: getMotionSnapshot(),
       gamepad: {
         enabled: GAMEPAD_ENABLED,

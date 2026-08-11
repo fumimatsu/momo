@@ -14,7 +14,7 @@ const (
 	vehicleHealthMaximum             = 100.0
 	vehicleHealthStrongDamage        = 12.0
 	vehicleHealthSevereDamage        = 28.0
-	vehicleHealthDamageCooldown      = 800 * time.Millisecond
+	vehicleHealthDamageCooldown      = 600 * time.Millisecond
 	vehicleHealthRecoveryDelay       = 4 * time.Second
 	vehicleHealthForwardCommandGrace = 350 * time.Millisecond
 	vehicleHealthPublishInterval     = 100 * time.Millisecond
@@ -64,6 +64,7 @@ type vehicleHealth struct {
 	lastPitAt       time.Time
 	pitReceipts     map[string]pitRecoveryReceipt
 	pitSeenEntries  map[string]struct{}
+	impactSeen      map[string]struct{}
 }
 
 func newVehicleHealth(now time.Time) *vehicleHealth {
@@ -73,6 +74,7 @@ func newVehicleHealth(now time.Time) *vehicleHealth {
 		recoveryMode:   vehicleHealthRecoveryDefault,
 		pitReceipts:    make(map[string]pitRecoveryReceipt),
 		pitSeenEntries: make(map[string]struct{}),
+		impactSeen:     make(map[string]struct{}),
 	}
 }
 
@@ -107,6 +109,7 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 	health.activeRaceRunID = raceRunID
 	health.lastUpdatedAt = now
 	health.resetPitRecoveryLocked()
+	health.resetImpactDedupeLocked()
 }
 
 func (health *vehicleHealth) snapshot(now time.Time) vehicleHealthSnapshot {
@@ -142,6 +145,7 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 	health.lastForwardAt = time.Time{}
 	health.lastPublishedAt = now
 	health.resetPitRecoveryLocked()
+	health.resetImpactDedupeLocked()
 	return health.snapshotLocked(), true
 }
 
@@ -257,33 +261,79 @@ func (health *vehicleHealth) resetPitRecoveryLocked() {
 	health.pitSeenEntries = make(map[string]struct{})
 }
 
+func (health *vehicleHealth) resetImpactDedupeLocked() {
+	health.impactSeen = make(map[string]struct{})
+}
+
+func (health *vehicleHealth) rememberImpactLocked(eventID string) bool {
+	if eventID == "" {
+		return false
+	}
+	if _, exists := health.impactSeen[eventID]; exists {
+		return false
+	}
+	health.impactSeen[eventID] = struct{}{}
+	return true
+}
+
 // ingestTelemetry returns a new state only when it should be sent to Viewer
 // and Observer. Raw state frames clock recovery; impact events change HP.
-func (health *vehicleHealth) ingestTelemetry(raw string, now time.Time) (vehicleHealthSnapshot, bool) {
+func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.Time) (vehicleHealthSnapshot, bool, *vehicleImpactEvent) {
 	if health == nil {
-		return vehicleHealthSnapshot{HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy"}, false
+		return vehicleHealthSnapshot{HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy"}, false, nil
 	}
 	health.mu.Lock()
 	defer health.mu.Unlock()
 
 	changed := health.advanceRecoveryLocked(now)
-	if impactClass := classifyRelayImpact(raw); impactClass != "" {
-		health.lastUnsafeAt = now
-		damage := relayImpactDamage(impactClass)
-		if damage > 0 && (health.lastDamageAt.IsZero() || now.Sub(health.lastDamageAt) >= vehicleHealthDamageCooldown) {
-			health.hp = math.Max(0, health.hp-damage)
-			health.lastDamageAt = now
-			health.lastUpdatedAt = now
-			changed = true
+	var confirmed *vehicleImpactEvent
+	if candidate, ok := parseRelayImpactCandidate(raw); ok {
+		impactClass := classifyRelayImpactCandidate(candidate)
+		eventID := fmt.Sprintf("%s:%s:%d", carID, candidate.Boot, candidate.Sequence)
+		if impactClass != "" && health.rememberImpactLocked(eventID) {
+			hpBefore := health.hp
+			health.lastUnsafeAt = now
+			damage := relayImpactDamage(impactClass)
+			damageApplied := false
+			suppressionReason := ""
+			if damage > 0 && (health.lastDamageAt.IsZero() || now.Sub(health.lastDamageAt) >= vehicleHealthDamageCooldown) {
+				health.hp = math.Max(0, health.hp-damage)
+				health.lastDamageAt = now
+				health.lastUpdatedAt = now
+				changed = true
+				damageApplied = true
+			} else if damage > 0 {
+				damage = 0
+				suppressionReason = "cooldown"
+			} else {
+				suppressionReason = "below_damage_threshold"
+			}
+			confirmed = &vehicleImpactEvent{
+				Type:              "vehicle_event",
+				Version:           1,
+				EventID:           eventID,
+				RaceRunID:         health.activeRaceRunID,
+				CarID:             carID,
+				ImpactClass:       impactClass,
+				MagnitudeMPS2:     candidate.Magnitude,
+				JerkMPS3:          candidate.Jerk,
+				Axis:              candidate.Axis,
+				DamageApplied:     damageApplied,
+				Damage:            damage,
+				SuppressionReason: suppressionReason,
+				HPBefore:          hpBefore,
+				HPAfter:           health.hp,
+				ServerTimeMS:      now.UnixMilli(),
+			}
 		}
 	}
 
 	snapshot := health.snapshotLocked()
 	if changed || health.lastPublishedAt.IsZero() || now.Sub(health.lastPublishedAt) >= vehicleHealthPublishInterval {
 		health.lastPublishedAt = now
-		return snapshot, true
+		return snapshot, true, confirmed
 	}
-	return snapshot, false
+	return snapshot, false, confirmed
 }
 
 func (health *vehicleHealth) limitCommand(message string, now time.Time) string {
@@ -405,46 +455,88 @@ func relayImpactDamage(impactClass string) float64 {
 	}
 }
 
-func classifyRelayImpact(raw string) string {
+type relayImpactCandidate struct {
+	Boot      string
+	Sequence  uint64
+	Magnitude float64
+	Jerk      float64
+	Axis      [3]float64
+}
+
+func parseRelayImpactCandidate(raw string) (relayImpactCandidate, bool) {
 	if !strings.HasPrefix(raw, "TEL:") {
+		return relayImpactCandidate{}, false
+	}
+	var payload struct {
+		Version  int    `json:"v"`
+		Kind     string `json:"k"`
+		Boot     string `json:"boot"`
+		Sequence uint64 `json:"seq"`
+		Event    struct {
+			Name      string    `json:"n"`
+			Magnitude float64   `json:"m"`
+			Jerk      float64   `json:"j"`
+			Axis      []float64 `json:"a"`
+		} `json:"e"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(raw, "TEL:")), &payload); err != nil {
+		return relayImpactCandidate{}, false
+	}
+	if payload.Version != 2 || payload.Kind != "e" || payload.Event.Name != "impact_candidate" ||
+		strings.TrimSpace(payload.Boot) == "" || len(payload.Event.Axis) != 3 ||
+		math.IsNaN(payload.Event.Magnitude) || math.IsInf(payload.Event.Magnitude, 0) ||
+		math.IsNaN(payload.Event.Jerk) || math.IsInf(payload.Event.Jerk, 0) {
+		return relayImpactCandidate{}, false
+	}
+	candidate := relayImpactCandidate{
+		Boot:      payload.Boot,
+		Sequence:  payload.Sequence,
+		Magnitude: payload.Event.Magnitude,
+		Jerk:      payload.Event.Jerk,
+		Axis:      [3]float64{payload.Event.Axis[0], payload.Event.Axis[1], payload.Event.Axis[2]},
+	}
+	for _, value := range candidate.Axis {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return relayImpactCandidate{}, false
+		}
+	}
+	return candidate, true
+}
+
+func classifyRelayImpactCandidate(candidate relayImpactCandidate) string {
+	if candidate.Magnitude < 10 {
 		return ""
+	}
+	if candidate.Magnitude >= 18 && candidate.Jerk >= 250 {
+		return "severe"
+	}
+	if candidate.Magnitude >= 12 && candidate.Jerk >= 250 {
+		return "strong"
+	}
+	return "weak"
+}
+
+func classifyRelayImpact(raw string) string {
+	candidate, ok := parseRelayImpactCandidate(raw)
+	if !ok {
+		return ""
+	}
+	return classifyRelayImpactCandidate(candidate)
+}
+
+func isLegacyImpactEvent(raw string) bool {
+	if !strings.HasPrefix(raw, "TEL:") || !strings.Contains(raw, `"evt"`) {
+		return false
 	}
 	var payload struct {
 		Version int    `json:"v"`
 		Kind    string `json:"k"`
 		Event   struct {
-			Name      string  `json:"n"`
-			Magnitude float64 `json:"m"`
-			Jerk      float64 `json:"j"`
-		} `json:"e"`
-		LegacyEvent struct {
 			Name string `json:"name"`
-			Data struct {
-				Magnitude float64 `json:"mag_mps2"`
-				Jerk      float64 `json:"jerk_mps3"`
-			} `json:"data"`
 		} `json:"evt"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(raw, "TEL:")), &payload); err != nil {
-		return ""
+		return false
 	}
-
-	name := payload.Event.Name
-	magnitude := payload.Event.Magnitude
-	jerk := payload.Event.Jerk
-	if payload.Version != 2 {
-		name = payload.LegacyEvent.Name
-		magnitude = payload.LegacyEvent.Data.Magnitude
-		jerk = payload.LegacyEvent.Data.Jerk
-	}
-	if payload.Kind != "e" || (name != "impact" && name != "impact_candidate") || magnitude < 10 {
-		return ""
-	}
-	if magnitude >= 18 && jerk >= 250 {
-		return "severe"
-	}
-	if magnitude >= 12 {
-		return "strong"
-	}
-	return "weak"
+	return payload.Version == 1 && payload.Kind == "e" && payload.Event.Name == "impact"
 }

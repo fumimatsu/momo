@@ -182,6 +182,62 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 	}
 }
 
+func TestRaceStateAPIProvidesLatestStateWithoutCaching(t *testing.T) {
+	source := newStatusTestRelay("11.3", "CP-1")
+	source.raceState = `RACE:{"type":"race_state","version":2,"raceId":"race-test","sequence":7,"standings":[]}`
+	server := &relayServer{
+		sources:     map[string]*relay{"11.3": source},
+		sourceOrder: []string{"11.3"},
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/race-state", nil)
+	recorder := httptest.NewRecorder()
+	server.serveRaceState(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET race state code = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if !strings.Contains(recorder.Body.String(), `"sequence":7`) {
+		t.Fatalf("race state response = %s", recorder.Body.String())
+	}
+	var state raceStateEnvelope
+	if err := json.Unmarshal(recorder.Body.Bytes(), &state); err != nil {
+		t.Fatalf("race state response is not JSON: %v", err)
+	}
+	if state.Sequence != 7 {
+		t.Fatalf("race state sequence = %d, want 7", state.Sequence)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://relay.test/api/v1/race-state", nil)
+	recorder = httptest.NewRecorder()
+	server.serveRaceState(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("POST race state = %d Allow=%q, want 405 GET", recorder.Code, recorder.Header().Get("Allow"))
+	}
+
+	emptyServer := &relayServer{}
+	request = httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/race-state", nil)
+	recorder = httptest.NewRecorder()
+	emptyServer.serveRaceState(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("empty race state = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
+func TestRaceSnapshotRefreshIsObserverOnly(t *testing.T) {
+	if shouldRefreshRaceState("pilot") {
+		t.Fatal("pilot race channels must not receive periodic cached snapshots")
+	}
+	if !shouldRefreshRaceState("observer") {
+		t.Fatal("observer race channels must keep periodic cached snapshots")
+	}
+}
+
 func TestOperationsStatusFollowsConfiguredSourceOrder(t *testing.T) {
 	server := &relayServer{
 		sources: map[string]*relay{
@@ -205,7 +261,7 @@ func TestPilotDevicesAPIExposesOnlyPilotSelectionState(t *testing.T) {
 	inUse.videoHealth.Store(int32(videoReceiving))
 	inUse.pilotID = 42
 	server := &relayServer{
-		sources: map[string]*relay{"11.3": ready, "11.4": inUse},
+		sources:     map[string]*relay{"11.3": ready, "11.4": inUse},
 		sourceOrder: []string{"11.3", "11.4"},
 	}
 	policy, err := parseOperationsAccessPolicy([]string{"192.168.11.0/24"})
@@ -275,6 +331,7 @@ func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testi
 	pilot.state.Store(int32(viewerConnected))
 	pilot.telemetry.Store(new(webrtc.DataChannel))
 	pilot.race.Store(new(webrtc.DataChannel))
+	pilot.events.Store(new(webrtc.DataChannel))
 	observer := &viewer{id: 2, role: "observer"}
 	observer.state.Store(int32(viewerConnected))
 	negotiating := &viewer{id: 3, role: "observer"}
@@ -286,15 +343,144 @@ func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testi
 	if !status.PilotLeaseReserved || status.ConnectedPilots != 1 || status.ConnectedObservers != 1 || status.NegotiatingPeers != 1 {
 		t.Fatalf("unexpected downstream state: %#v", status)
 	}
-	if status.TelemetryOpen != 1 || status.RaceOpen != 1 {
+	if status.TelemetryOpen != 1 || status.RaceOpen != 1 || status.EventsOpen != 1 {
 		t.Fatalf("unexpected channel state: %#v", status)
 	}
 
 	pilot.telemetry.Store(nil)
 	pilot.race.Store(nil)
+	pilot.events.Store(nil)
 	status = source.downstreamStatusSnapshot()
-	if status.TelemetryOpen != 0 || status.RaceOpen != 0 {
+	if status.TelemetryOpen != 0 || status.RaceOpen != 0 || status.EventsOpen != 0 {
 		t.Fatalf("closed channels still counted: %#v", status)
+	}
+}
+
+func TestCommandDropLogIsRateLimitedPerViewer(t *testing.T) {
+	client := &viewer{id: 7}
+	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	if !shouldLogCommandDrop(client, base) {
+		t.Fatal("first unavailable command must be logged")
+	}
+	if shouldLogCommandDrop(client, base.Add(999*time.Millisecond)) {
+		t.Fatal("repeated unavailable command inside one second must be suppressed")
+	}
+	if !shouldLogCommandDrop(client, base.Add(time.Second)) {
+		t.Fatal("unavailable command at the one-second boundary must be logged")
+	}
+	if !shouldLogCommandDrop(&viewer{id: 8}, base.Add(time.Millisecond)) {
+		t.Fatal("a different viewer must have an independent log interval")
+	}
+}
+
+func TestDriveStateTracksCurrentPilotGear(t *testing.T) {
+	source := newStatusTestRelay("11.5", "CP-3")
+	pilot := &viewer{id: 7, role: "pilot"}
+	source.viewers = map[uint64]*viewer{pilot.id: pilot}
+	source.pilotID = pilot.id
+
+	source.handleDriveState(pilot, webrtc.DataChannelMessage{Data: []byte("GEAR:3"), IsString: true})
+	if got := source.driveGear.Load(); got != 3 {
+		t.Fatalf("drive gear = %d, want 3", got)
+	}
+	source.handleDriveState(pilot, webrtc.DataChannelMessage{Data: []byte("GEAR:6"), IsString: true})
+	if got := source.driveGear.Load(); got != 3 {
+		t.Fatalf("invalid gear changed state to %d", got)
+	}
+	source.handleDriveState(&viewer{id: 8, role: "observer"}, webrtc.DataChannelMessage{Data: []byte("GEAR:2"), IsString: true})
+	if got := source.driveGear.Load(); got != 3 {
+		t.Fatalf("observer gear changed state to %d", got)
+	}
+}
+
+func TestCommandAuditAddsGearWithoutChangingUpstreamMessage(t *testing.T) {
+	message := webrtc.DataChannelMessage{Data: []byte("S:1500,T:1800\n"), IsString: true}
+	audit := commandAuditWithGear(message, 3)
+	if got := string(audit.Data); got != "S:1500,T:1800,G:3" {
+		t.Fatalf("command audit = %q", got)
+	}
+	if got := string(message.Data); got != "S:1500,T:1800\n" {
+		t.Fatalf("upstream command was changed to %q", got)
+	}
+	for _, item := range []struct {
+		message webrtc.DataChannelMessage
+		gear    int32
+	}{
+		{webrtc.DataChannelMessage{Data: []byte("S:1500,T:1800\n"), IsString: true}, 0},
+		{webrtc.DataChannelMessage{Data: []byte("PING:1"), IsString: true}, 3},
+		{webrtc.DataChannelMessage{Data: []byte("S:1500,T:1800")}, 3},
+	} {
+		got := commandAuditWithGear(item.message, item.gear)
+		if string(got.Data) != string(item.message.Data) || got.IsString != item.message.IsString {
+			t.Fatalf("unexpected audit mutation: %#v -> %#v", item.message, got)
+		}
+	}
+}
+
+func TestTelemetryDeliveryLogIsRateLimitedPerViewer(t *testing.T) {
+	client := &viewer{id: 7, role: "pilot"}
+	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
+	if !shouldLogTelemetryDelivery(client, base) {
+		t.Fatal("first telemetry delivery must be logged")
+	}
+	if shouldLogTelemetryDelivery(client, base.Add(telemetryDeliveryLogInterval-time.Millisecond)) {
+		t.Fatal("telemetry delivery inside the interval must be suppressed")
+	}
+	if !shouldLogTelemetryDelivery(client, base.Add(telemetryDeliveryLogInterval)) {
+		t.Fatal("telemetry delivery at the interval boundary must be logged")
+	}
+	if shouldLogTelemetryDelivery(nil, base) {
+		t.Fatal("nil viewer must not request a telemetry delivery log")
+	}
+}
+
+func TestEnqueueLatestTelemetryReplacesStaleValue(t *testing.T) {
+	queue := make(chan string, 1)
+	enqueueLatestTelemetry(queue, "TEL:old")
+	enqueueLatestTelemetry(queue, "TEL:new")
+
+	select {
+	case got := <-queue:
+		if got != "TEL:new" {
+			t.Fatalf("latest telemetry = %q, want TEL:new", got)
+		}
+	default:
+		t.Fatal("latest telemetry was not queued")
+	}
+}
+
+func TestTelemetryDataChannelSaturationUsesHighWatermark(t *testing.T) {
+	if telemetryDataChannelSaturated(telemetryDataHighWatermark - 1) {
+		t.Fatal("buffer below the high watermark must remain writable")
+	}
+	if !telemetryDataChannelSaturated(telemetryDataHighWatermark) {
+		t.Fatal("buffer at the high watermark must drop telemetry")
+	}
+}
+
+func TestNormalizeDataChannelProbeToken(t *testing.T) {
+	for _, value := range []string{"1-labc-1", "viewer_11.6", "probe.3"} {
+		if got, ok := normalizeDataChannelProbeToken(value); !ok || got != value {
+			t.Fatalf("normalizeDataChannelProbeToken(%q) = %q, %t", value, got, ok)
+		}
+	}
+	for _, value := range []string{"", "has space", "bad:token", strings.Repeat("a", dataChannelProbeTokenMax+1)} {
+		if got, ok := normalizeDataChannelProbeToken(value); ok || got != "" {
+			t.Fatalf("normalizeDataChannelProbeToken(%q) accepted invalid token %q", value, got)
+		}
+	}
+}
+
+func TestEnqueueVehicleEventPreservesOrderAndReportsFullQueue(t *testing.T) {
+	queue := make(chan string, 2)
+	if !enqueueVehicleEvent(queue, "event-1") || !enqueueVehicleEvent(queue, "event-2") {
+		t.Fatal("vehicle events must be queued while capacity remains")
+	}
+	if enqueueVehicleEvent(queue, "event-3") {
+		t.Fatal("a full vehicle event queue must reject the new event")
+	}
+	if first, second := <-queue, <-queue; first != "event-1" || second != "event-2" {
+		t.Fatalf("vehicle event order = %q, %q", first, second)
 	}
 }
 

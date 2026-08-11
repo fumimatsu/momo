@@ -3,6 +3,7 @@ param(
     [string]$RaceId = 'race-test',
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = 'hybrid',
+    [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
     [switch]$OpenAdmin,
     [switch]$KeepOpenOnError
 )
@@ -126,7 +127,7 @@ try {
         RaceControlUrl = $raceControlWsUrl
         RaceControlViewerToken = $viewerToken
         HealthRecoveryMode = $HealthRecoveryMode
-        TelemetryLogDirectory = ''
+        TelemetryLogDirectory = $TelemetryLogDirectory
     }
     if ($rebuildRelay) {
         $launchParameters.RebuildRelay = $true
