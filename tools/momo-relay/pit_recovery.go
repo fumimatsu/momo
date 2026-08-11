@@ -14,8 +14,8 @@ import (
 const (
 	pitRecoveryCommandName     = "pit_recovery_tick"
 	pitRecoverySourceID        = "madsystem"
-	pitRecoveryAmount          = 20.0
-	pitRecoveryMinimumInterval = 2 * time.Second
+	pitRecoveryAmount          = 10.0
+	pitRecoveryMinimumInterval = time.Second
 	pitRecoveryMaxBodyBytes    = 16 * 1024
 )
 

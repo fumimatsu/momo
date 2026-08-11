@@ -50,7 +50,7 @@ Relay response の `hp`、`speedCap`、`mode` は診断表示に使えるが、M
 Relay 側の契約は実装済みであり、MADSYSTEM は次だけを担当する。
 
 1. 4 分割映像からピット専用 ArUco marker の presence を象限ごとに求める
-2. 同じ entry で 2 秒連続して presence が成立するたびに tick を 1 件送る
+2. 同じ entry で 1 秒連続して presence が成立するたびに tick を 1 件送る
 3. 象限を既存の Race Control `carId` へ変換する
 4. 通信失敗時に、同じ tick の同じ本文だけを限定的に再送する
 
@@ -134,7 +134,7 @@ PIT publisher から Race Control command を送らない。
 
 | File | Responsibility |
 | --- | --- |
-| `PitMarkerPresenceTracker.cs` | 1 象限分の presence 状態、未検出猶予、entry、2 秒境界を管理する純粋 C# class |
+| `PitMarkerPresenceTracker.cs` | 1 象限分の presence 状態、未検出猶予、entry、1 秒境界を管理する純粋 C# class |
 | `MomoPitRecoveryContract.cs` | request / response / error DTO と JSON serialization |
 | `MomoPitRecoveryPublisher.cs` | 4 tracker の統合、active run、carId、1 車両 1 in-flight、HTTP と retry |
 | `MomoPitRecoveryLocalSettings.cs` または既存 local settings 拡張 | Relay URL、gameplay token、機能 ON/OFF を machine-local に読む |
@@ -157,7 +157,7 @@ PIT publisher から Race Control command を送らない。
 
 PIT 専用 detector は追加しない。既存の 1 回の ArUco 検出結果と `detectedIdsPerQuadrant` から、
 4 象限それぞれの ID `8` の presence を取得する。既存 checkpoint 検出と PIT API 用 presence tracker は
-同じ検出結果を使うが、消失後の PIT IN 確定処理と 2 秒周期の回復 tick は別の状態として管理する。
+同じ検出結果を使うが、消失後の PIT IN 確定処理と 1 秒周期の回復 tick は別の状態として管理する。
 
 画像処理から Publisher へ渡す値は、フレームごとの次の観測だけにする。
 
@@ -209,7 +209,7 @@ OUTSIDE
 ENTER_CANDIDATE
   -> enter threshold satisfied
 ACTIVE
-  -> 2 seconds elapsed and no request is pending
+  -> 1 second elapsed and no request is pending
 TICK_PENDING
   -> HTTP 200 applied / duplicate
 ACTIVE
@@ -220,10 +220,10 @@ OUTSIDE
 `entryId` は `ENTER_CANDIDATE -> ACTIVE` で `Guid.NewGuid().ToString("D")` により 1 回だけ生成する。
 `tick` は 1 から開始する。`commandId` も tick ごとに新しい GUID とする。
 
-### 2 秒の数え方
+### 1 秒の数え方
 
-- 最初の tick は ACTIVE が 2 秒継続した後に作る
-- tick が Relay に受理された時点から、次の 2 秒を数える
+- 最初の tick は ACTIVE が 1 秒継続した後に作る
+- tick が Relay に受理された時点から、次の 1 秒を数える
 - 1 車両につき HTTP request は 1 件だけ in-flight にする
 - request が未確定の間に tick 2、3 を先行生成しない
 - 同じ marker ID が別の物理 marker へ切り替わっても、未検出猶予内なら entry を継続する
@@ -308,7 +308,7 @@ Race Control の timing outbox を流用しない。pit tick は非永続の車�
 
 | Result | Action |
 | --- | --- |
-| HTTP `200`, `status=applied` | tick 受理。次の 2 秒計測を開始 |
+| HTTP `200`, `status=applied` | tick 受理。次の 1 秒計測を開始 |
 | HTTP `200`, `status=duplicate` | 受理済みとして同じ処理 |
 | timeout / connection error / `5xx` | entry が ACTIVE の間だけ、同じ ID・同じ本文を再送 |
 | `429 recovery_too_soon` | `retryAfterMs` 後、ACTIVE なら同じ要求を再送 |
@@ -380,10 +380,10 @@ Race Control command / timing queue が詰まっている状態で pit API を�
 
 - 1 frame の検出だけでは ACTIVE にならない
 - enter threshold 後に ACTIVE になる
-- ACTIVE から 2 秒未満では tick を作らない
-- 2 秒で tick 1 を 1 回だけ作る
+- ACTIVE から 1 秒未満では tick を作らない
+- 1 秒で tick 1 を 1 回だけ作る
 - request pending 中は次 tick を作らない
-- tick 1 accepted 後、さらに 2 秒で tick 2 を作る
+- tick 1 accepted 後、さらに 1 秒で tick 2 を作る
 - 同じ ID が複数検出されても 1 回として扱う
 - 短い未検出では entry を維持する
 - grace 超過で entry を終了する
@@ -436,8 +436,8 @@ token や Authorization header を screenshot、issue、Unity log へ残さな�
 2. Race Control、Relay、Observer、MADSYSTEM を起動する
 3. `/api/v1/status` で対象 source の `vehicleHealth.recoveryMode` が `hybrid` であることを確認する
 4. damage を発生させ、HP が 100 未満になることを確認する
-5. 1 秒だけ marker を見せ、回復しないことを確認する
-6. 2 秒継続して見せ、20 HP 回復することを確認する
+5. 1 秒未満だけ marker を見せ、回復しないことを確認する
+6. 1 秒継続して見せ、10 HP 回復することを確認する
 7. 4 秒継続して見せ、合計 40 HP 回復することを確認する
 8. 同じ ID の marker 間を移動しても未検出猶予内なら entry が継続することを確認する
 9. marker を外した後に通信を復旧しても、古い tick が送られないことを確認する
@@ -455,7 +455,7 @@ token や Authorization header を screenshot、issue、Unity log へ残さな�
 6. machine-local settings と UnityWebRequest transport を接続する
 7. `ArUcoWebCamMulti` の既存検出結果へ象限別 PIT observation 出力だけを追加する
 8. replay / shared memory 入力で 4 象限を確認する
-9. Relay と結合し、1 秒 / 2 秒 / 4 秒の回復を確認する
+9. Relay と結合し、1 秒未満 / 1 秒 / 4 秒の回復を確認する
 10. Stop、run change、Race Control disconnect、marker exit の fail-closed を確認する
 
 画像認識、状態機械、HTTP を一度に `ArUcoWebCamMulti` へ書き込まない。最初に tracker と contract をテスト可能な
@@ -478,7 +478,7 @@ failure を直す変更も PIT commit へ混ぜない。
 - 新規 PIT 関連 EditMode tests がすべて成功する
 - Unity Compile と Windows Build が成功する
 - 既存 timing / command / sector tests に regression がない
-- 1 秒では回復せず、2 秒で `+20 HP`、4 秒で合計 `+40 HP` になる
+- 1 秒未満では回復せず、1 秒で `+10 HP`、4 秒で合計 `+40 HP` になる
 - `duplicate` response で HP が二重回復しない
 - Stop / exit / run change 後に古い request が送られない
 - 4 quadrant が Relay の正しい `carId` と一致する

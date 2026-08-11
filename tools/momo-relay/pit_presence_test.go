@@ -101,7 +101,7 @@ func TestPitPresenceExitAndRecoveryTickSynchronization(t *testing.T) {
 		t.Fatalf("tick status = %d body=%s", response.Code, response.Body.String())
 	}
 	snapshot := source.pitPresence.snapshot(source.vehicleHealth.snapshot(time.Now()))
-	if snapshot.LastAcceptedTick != 1 || snapshot.HP != 100 || snapshot.Fuel != 100 || snapshot.ServiceState != "complete" {
+	if snapshot.LastAcceptedTick != 1 || snapshot.HP != 90 || snapshot.Fuel != 100 || snapshot.ServiceState != "servicing" {
 		t.Fatalf("recovery snapshot = %#v", snapshot)
 	}
 

@@ -159,11 +159,11 @@ func TestVehicleGameplayPitTickRecoversFuelAndHealthAtomically(t *testing.T) {
 	health.setPitPresent(true, base.Add(20*time.Second))
 
 	command := pitRecoveryCommand{CommandID: "cmd-1", RaceRunID: "rr_gameplay", CarID: "CP-1", EntryID: "entry-1", Tick: 1}
-	result, applyErr := health.applyPitRecovery(command, base.Add(22*time.Second))
+	result, applyErr := health.applyPitRecovery(command, base.Add(21*time.Second))
 	if applyErr != nil {
 		t.Fatalf("pit recovery failed: %#v", applyErr)
 	}
-	if result.RecoveredAmount != 20 || result.FuelRecoveredAmount != 20 || result.Snapshot.HP != 100 || math.Abs(result.Snapshot.Fuel-80) > 0.001 {
+	if result.RecoveredAmount != 10 || result.FuelRecoveredAmount != 10 || result.Snapshot.HP != 90 || math.Abs(result.Snapshot.Fuel-70) > 0.001 {
 		t.Fatalf("pit recovery result = %#v", result)
 	}
 	duplicate, applyErr := health.applyPitRecovery(command, base.Add(24*time.Second))

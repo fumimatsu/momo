@@ -89,7 +89,8 @@ func TestVehicleHealthHybridModeAllowsDrivingAndPitRecovery(t *testing.T) {
 	if applyErr != nil {
 		t.Fatalf("hybrid pit recovery failed: %#v", applyErr)
 	}
-	if math.Abs(result.RecoveredAmount-(vehicleHealthMaximum-drivingHP)) > 0.0001 || result.Snapshot.HP != vehicleHealthMaximum {
+	wantHP := math.Min(vehicleHealthMaximum, drivingHP+pitRecoveryAmount)
+	if math.Abs(result.RecoveredAmount-pitRecoveryAmount) > 0.0001 || math.Abs(result.Snapshot.HP-wantHP) > 0.0001 {
 		t.Fatalf("hybrid pit recovery = %#v, driving HP was %.3f", result, drivingHP)
 	}
 }
@@ -108,37 +109,37 @@ func TestVehicleHealthAppliesPitRecoveryTicksIdempotently(t *testing.T) {
 		EntryID:   "entry-7",
 		Tick:      1,
 	}
-	result, applyErr := health.applyPitRecovery(first, base.Add(2*time.Second))
+	result, applyErr := health.applyPitRecovery(first, base.Add(time.Second))
 	if applyErr != nil {
 		t.Fatalf("first recovery failed: %#v", applyErr)
 	}
-	if result.Status != "applied" || result.RecoveredAmount != 20 || result.Snapshot.HP != 100 {
-		t.Fatalf("first recovery = %#v, want applied +20 to HP 100", result)
+	if result.Status != "applied" || result.RecoveredAmount != 10 || result.Snapshot.HP != 90 {
+		t.Fatalf("first recovery = %#v, want applied +10 to HP 90", result)
 	}
 
 	duplicate, applyErr := health.applyPitRecovery(first, base.Add(3*time.Second))
 	if applyErr != nil {
 		t.Fatalf("duplicate recovery failed: %#v", applyErr)
 	}
-	if duplicate.Status != "duplicate" || duplicate.Snapshot.HP != 100 {
+	if duplicate.Status != "duplicate" || duplicate.Snapshot.HP != 90 {
 		t.Fatalf("duplicate recovery = %#v, want original receipt", duplicate)
 	}
-	if got := health.snapshot(base.Add(3 * time.Second)).HP; got != 100 {
+	if got := health.snapshot(base.Add(3 * time.Second)).HP; got != 90 {
 		t.Fatalf("duplicate changed HP to %.1f", got)
 	}
 
 	second := first
 	second.CommandID = "rr_123:CP-1:entry-7:tick-2"
 	second.Tick = 2
-	if _, applyErr := health.applyPitRecovery(second, base.Add(3*time.Second)); applyErr == nil || applyErr.Code != "recovery_too_soon" {
+	if _, applyErr := health.applyPitRecovery(second, base.Add(1500*time.Millisecond)); applyErr == nil || applyErr.Code != "recovery_too_soon" {
 		t.Fatalf("early second tick error = %#v, want recovery_too_soon", applyErr)
 	}
-	result, applyErr = health.applyPitRecovery(second, base.Add(4*time.Second))
+	result, applyErr = health.applyPitRecovery(second, base.Add(2*time.Second))
 	if applyErr != nil {
 		t.Fatalf("second recovery failed: %#v", applyErr)
 	}
-	if result.RecoveredAmount != 0 || result.Snapshot.HP != 100 {
-		t.Fatalf("second recovery = %#v, want HP to remain clamped at 100", result)
+	if result.RecoveredAmount != 10 || result.Snapshot.HP != 100 {
+		t.Fatalf("second recovery = %#v, want applied +10 to HP 100", result)
 	}
 
 	newEntry := first
@@ -216,7 +217,7 @@ func TestPitRecoveryTickHTTPContract(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "applied" || payload.RecoveredAmount != 20 || payload.HP != 100 || payload.Fuel != 100 {
+	if payload.Status != "applied" || payload.RecoveredAmount != 10 || payload.HP != 90 || payload.Fuel != 100 {
 		t.Fatalf("recovery response = %#v", payload)
 	}
 

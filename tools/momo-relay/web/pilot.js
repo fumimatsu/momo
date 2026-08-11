@@ -187,6 +187,8 @@
 	const DRIVE_UI_TEST_BOOST_STATE = DRIVE_UI_TEST_MODE
 		? getStringParam(['boostStateUiTest'], 'ready').toLowerCase()
 		: 'charging';
+	const DRIVE_UI_TEST_PIT = DRIVE_UI_TEST_MODE && getBooleanParam('pitUiTest', false);
+	const VEHICLE_RESOURCE_RECOVERY_ANIMATION_MS = 850;
   const ICE_MODE = normalizeIceMode(getStringParam(['iceMode', 'ice'], 'auto'));
   const STUN_URLS = getStringListParam(['stunUrls', 'stunUrl'], ['stun:stun.l.google.com:19302']);
   const TURN_URLS = getStringListParam(['turnUrls', 'turnUrl'], []);
@@ -464,6 +466,10 @@
   let latestMotion = null;
   let vehicleHealth = null;
 	let vehicleGameplay = null;
+	let vehiclePitPresence = null;
+	let vehicleResourceAnimation = null;
+	let vehicleResourceAnimationFrame = 0;
+	const vehicleResourceDisplay = { hp: null, fuel: null };
   let m5AudioPlayer = null;
   let dcPingSeq = 0;
   let dcRttMs = null;
@@ -592,9 +598,30 @@
         '--drive-hud-bottom',
         `${Math.round(20 + scaledOverflow)}px`,
       );
+      updateVehicleResourcePosition(scale, height);
       scheduleRaceBattleLayout();
     });
   }
+
+	function updateVehicleResourcePosition(scale = null, viewportHeight = null) {
+		if (!vehicleResourceHud || vehicleResourceHud.hidden || !driveHudConnection
+			|| !document.body.classList.contains('drive-ui') || window.innerWidth <= 720) {
+			return;
+		}
+		const effectiveScale = Number.isFinite(scale)
+			? scale
+			: Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--osd-scale')) || 1;
+		const height = Number.isFinite(viewportHeight)
+			? viewportHeight
+			: (window.visualViewport?.height || window.innerHeight);
+		const connectionTop = driveHudConnection.getBoundingClientRect().top;
+		const resourceHeight = vehicleResourceHud.offsetHeight * effectiveScale;
+		if (!Number.isFinite(connectionTop) || resourceHeight <= 0) return;
+		document.documentElement.style.setProperty(
+			'--vehicle-resource-bottom',
+			`${Math.max(132, Math.round(height - connectionTop - resourceHeight))}px`,
+		);
+	}
 
   function scheduleRaceBattleLayout() {
     if (raceBattleLayoutFrame !== null) {
@@ -3023,26 +3050,103 @@
 		fill?.style.setProperty('--resource-level', String(Math.max(0, Math.min(1, value / 100))));
 	}
 
+	function renderVehicleResourceRecoveryValues(hp, fuel) {
+		if (Number.isFinite(hp)) {
+			vehicleResourceDisplay.hp = hp;
+			setVehicleResourceLevel(vehicleResourceHpFill, hp);
+			if (vehicleResourceHpValue) vehicleResourceHpValue.value = `${Math.round(hp)}`;
+		}
+		if (Number.isFinite(fuel)) {
+			vehicleResourceDisplay.fuel = fuel;
+			setVehicleResourceLevel(vehicleResourceFuelFill, fuel);
+			if (vehicleResourceFuelValue) {
+				vehicleResourceFuelValue.value = fuel <= 0.05 ? 'EMPTY' : `${Math.round(fuel)}`;
+			}
+		}
+	}
+
+	function updateVehicleResourceRecoveryDisplay(targetHp, targetFuel) {
+		const startHp = Number.isFinite(vehicleResourceDisplay.hp) ? vehicleResourceDisplay.hp : targetHp;
+		const startFuel = Number.isFinite(vehicleResourceDisplay.fuel) ? vehicleResourceDisplay.fuel : targetFuel;
+		const recovering = Boolean(vehiclePitPresence?.present)
+			&& (targetHp > startHp + 0.01 || targetFuel > startFuel + 0.01);
+		if (!recovering) {
+			if (vehicleResourceAnimationFrame) cancelAnimationFrame(vehicleResourceAnimationFrame);
+			vehicleResourceAnimationFrame = 0;
+			vehicleResourceAnimation = null;
+			renderVehicleResourceRecoveryValues(targetHp, targetFuel);
+			return;
+		}
+		if (vehicleResourceAnimation
+			&& Math.abs(vehicleResourceAnimation.targetHp - targetHp) < 0.01
+			&& Math.abs(vehicleResourceAnimation.targetFuel - targetFuel) < 0.01) {
+			return;
+		}
+		if (vehicleResourceAnimationFrame) cancelAnimationFrame(vehicleResourceAnimationFrame);
+		vehicleResourceAnimation = {
+			startedAt: performance.now(),
+			startHp,
+			startFuel,
+			targetHp,
+			targetFuel,
+		};
+		const animate = (now) => {
+			if (!vehicleResourceAnimation) return;
+			const progress = Math.min(1,
+				Math.max(0, (now - vehicleResourceAnimation.startedAt) / VEHICLE_RESOURCE_RECOVERY_ANIMATION_MS));
+			renderVehicleResourceRecoveryValues(
+				vehicleResourceAnimation.startHp
+					+ (vehicleResourceAnimation.targetHp - vehicleResourceAnimation.startHp) * progress,
+				vehicleResourceAnimation.startFuel
+					+ (vehicleResourceAnimation.targetFuel - vehicleResourceAnimation.startFuel) * progress,
+			);
+			if (progress < 1) {
+				vehicleResourceAnimationFrame = requestAnimationFrame(animate);
+				return;
+			}
+			vehicleResourceAnimation = null;
+			vehicleResourceAnimationFrame = 0;
+		};
+		vehicleResourceAnimationFrame = requestAnimationFrame(animate);
+	}
+
+	function applyPitPresence(message) {
+		if (typeof message !== 'string' || !message.startsWith('PIT:1,')) return;
+		let payload;
+		try {
+			payload = JSON.parse(message.slice('PIT:1,'.length));
+		} catch {
+			return;
+		}
+		if (typeof payload?.present !== 'boolean'
+			|| !['outside', 'servicing', 'complete'].includes(payload.serviceState)) {
+			return;
+		}
+		const expectedCarId = RACE_CAR_ID || raceState.carId || '';
+		if (expectedCarId && payload.carId && payload.carId !== expectedCarId) return;
+		vehiclePitPresence = payload;
+		if (vehicleResourceHud) {
+			vehicleResourceHud.dataset.pitState = payload.present ? payload.serviceState : 'outside';
+		}
+	}
+
 	function updateVehicleHealthUi(impact = false) {
 		if (!vehicleHealth || !vehicleResourceHud || !vehicleResourceHp) return;
 		vehicleResourceHud.hidden = false;
+		updateVehicleResourcePosition();
 		vehicleResourceHp.dataset.state = vehicleHealth.mode;
-		setVehicleResourceLevel(vehicleResourceHpFill, vehicleHealth.hp);
-		if (vehicleResourceHpValue) vehicleResourceHpValue.value = `${Math.round(vehicleHealth.hp)}`;
 		if (impact) {
 			vehicleResourceHp.classList.remove('is-impacting');
 			void vehicleResourceHp.offsetWidth;
 			vehicleResourceHp.classList.add('is-impacting');
 		}
 
-		if (!vehicleGameplay) return;
-		vehicleResourceFuel.dataset.state = vehicleGameplay.fuelState;
-		setVehicleResourceLevel(vehicleResourceFuelFill, vehicleGameplay.fuel);
-		if (vehicleResourceFuelValue) {
-			vehicleResourceFuelValue.value = vehicleGameplay.fuelState === 'empty'
-				? 'EMPTY'
-				: `${Math.round(vehicleGameplay.fuel)}`;
+		if (!vehicleGameplay) {
+			updateVehicleResourceRecoveryDisplay(vehicleHealth.hp, vehicleResourceDisplay.fuel);
+			return;
 		}
+		vehicleResourceFuel.dataset.state = vehicleGameplay.fuelState;
+		updateVehicleResourceRecoveryDisplay(vehicleHealth.hp, vehicleGameplay.fuel);
 		vehicleResourceBoost.dataset.state = vehicleGameplay.boostState;
 		setVehicleResourceLevel(vehicleResourceBoostFill, vehicleGameplay.boost);
 		if (vehicleResourceBoostValue) {
@@ -3158,6 +3262,10 @@
     }
 		if (typeof message === 'string' && message.startsWith('VGS:')) {
 			applyVehicleGameplay(message);
+			return;
+		}
+		if (typeof message === 'string' && message.startsWith('PIT:')) {
+			applyPitPresence(message);
 			return;
 		}
     if (typeof message === 'string' && message.startsWith('TEL:')) {
@@ -6329,6 +6437,14 @@
 			gear: boostState === 'active' ? 4 : 3,
 			normalGearMax: 3,
 		})}`);
+		if (DRIVE_UI_TEST_PIT) {
+			applyPitPresence(`PIT:1,${JSON.stringify({
+				carId: RACE_CAR_ID || 'CP-1',
+				present: true,
+				serviceState: hp >= 100 && fuel >= 100 ? 'complete' : 'servicing',
+				lastAcceptedTick: 0,
+			})}`);
+		}
   }
   if (AUTO_START) {
     connect().catch((error) => {

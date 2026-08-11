@@ -8,8 +8,8 @@
 - Endpoint: `POST /api/v1/gameplay/pit-recovery-ticks`
 - PIT presence endpoint: `POST /api/v1/gameplay/pit-presence-events`
 
-MADSYSTEM が同一のピットマーカーを連続認識した時間を管理し、2 秒継続するたびに 1 tick を送る。
-Relay は tick の正当性を検証し、受理した tick ごとに対象車両の HP と Fuel をそれぞれ 20 回復する。
+MADSYSTEM が同一のピットマーカーを連続認識した時間を管理し、1 秒継続するたびに 1 tick を送る。
+Relay は tick の正当性を検証し、受理した tick ごとに対象車両の HP と Fuel をそれぞれ 10 回復する。
 
 MADSYSTEM は回復量を指定しない。HP、Fuel、回復量、速度上限の正本は Relay に置く。
 
@@ -75,7 +75,7 @@ Content-Type: application/json
 1. 対象象限でピット用 marker ID が 1 枚以上見えたら滞在計測を開始する。
 2. 同じ ID のマーカーが複数枚見えても presence は 1 として扱う。
 3. 同じ ID の別マーカーへ視界が移っても、未検出猶予内なら滞在計測を継続する。
-4. 連続滞在 2 秒で tick 1、その後 2 秒ごとに tick 2、3 と送る。
+4. 連続滞在 1 秒で tick 1、その後 1 秒ごとに tick 2、3 と送る。
 5. 未検出が MADSYSTEM の猶予を超えたら entry を終了する。
 6. 次の検出では新しい `entryId` と tick 1 から始める。
 7. timeout または 5xx では、同じ `commandId` と同じ JSON 本文で再送する。
@@ -102,9 +102,9 @@ Relay は次の条件をすべて満たす要求だけを受理する。
 - `carId` が一意の Relay source に割り当て済み
 - `commandId` が未処理、または同一本文の再送
 - tick が entry 内で連続している
-- 前回受理した回復 tick から 2 秒以上経過
+- 前回受理した回復 tick から 1 秒以上経過
 
-受理時は `min(100, hp + 20)` と `min(100, fuel + 20)` を同じ vehicle health lock 内で計算し、
+受理時は `min(100, hp + 10)` と `min(100, fuel + 10)` を同じ vehicle health lock 内で計算し、
 更新後の `VHS:1` と `VGS:1` を Pilot と Observer へ即時配信する。HP または Fuel が既に 100 の場合も
 tick は受理し、対応する `recoveredAmount` または `fuelRecoveredAmount` は 0 になる。
 
@@ -125,10 +125,10 @@ tick は受理し、対応する `recoveredAmount` または `fuelRecoveredAmoun
   "carId": "CP-1",
   "entryId": "pit-entry-7",
   "tick": 2,
-  "recoveredAmount": 20,
-  "fuelRecoveredAmount": 20,
-  "hp": 100,
-  "fuel": 80,
+  "recoveredAmount": 10,
+  "fuelRecoveredAmount": 10,
+  "hp": 90,
+  "fuel": 70,
   "speedCap": 1,
   "mode": "healthy"
 }
@@ -161,7 +161,7 @@ tick は受理し、対応する `recoveredAmount` または `fuelRecoveredAmoun
 | `409` | `tick_out_of_sequence` | entry の tick が連続していない |
 | `409` | `entry_id_reused` | 同じ run で過去に使った entry ID が再利用された |
 | `409` | `command_id_conflict` | 同じ ID が異なる内容に使われた |
-| `429` | `recovery_too_soon` | 前回受理から 2 秒経っていない |
+| `429` | `recovery_too_soon` | 前回受理から 1 秒経っていない |
 | `503` | `gameplay_api_disabled` | Relay に gameplay token が未設定 |
 
 `429` は `retryAfterMs` を含む。
