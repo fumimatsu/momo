@@ -4,6 +4,7 @@ import {
   currentLapClockValue,
   deriveSituations,
   displayRaceStatus,
+  elapsedSinceRaceMarkerMs,
   classifyBestTime,
   estimateLapDurationMs,
   estimateLapPacedProgress,
@@ -45,6 +46,9 @@ const markerMotionByCar = new Map();
 const markerRenderByCar = new Map();
 const markerNodesByCar = new Map();
 const currentLapNodeByCar = new Map();
+const sectorLiveNodeByCar = new Map();
+const sectorCompletionHoldByCar = new Map();
+const sectorCompletionNodeByCar = new Map();
 const telemetryNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
 const pitMotionByCar = new Map();
@@ -473,6 +477,8 @@ function renderLeaderboard() {
 
 function renderSectorRows() {
   const root = document.getElementById('sectorRows');
+  sectorLiveNodeByCar.clear();
+  sectorCompletionNodeByCar.clear();
   const standings = raceState?.standings || [];
   const overallSectorBest = new Map();
   for (const standing of standings) {
@@ -489,18 +495,28 @@ function renderSectorRows() {
     const sectorCount = Number.isInteger(standing?.sectorCount) ? standing.sectorCount : 3;
     const sectorByNumber = new Map((standing?.sectorTimes || []).map((timing) => [timing.sector, timing]));
     const bars = element('div', 'sector-bars');
+    const holdS3 = currentSector === 1 && (sectorCompletionHoldByCar.get(car.carId) || 0) > performance.now();
     for (let sector = 1; sector <= Math.min(3, sectorCount); sector += 1) {
       const timing = sectorByNumber.get(sector);
-      const state = currentSector === sector ? 'active' : currentSector && sector < currentSector ? 'done' : '';
+      const state = currentSector === sector
+        ? 'active'
+        : currentSector && sector < currentSector
+          ? 'done'
+          : sector === 3 && holdS3 ? 'recent' : '';
       const bar = element('i', state, `S${sector}`);
+      bar.setAttribute('aria-label', `Sector ${sector} ${state || 'upcoming'}`);
       if (timing?.lastMs) bar.title = `S${sector} ${formatSplitTime(timing.lastMs)}`;
+      if (state === 'recent') sectorCompletionNodeByCar.set(car.carId, bar);
       bars.append(bar);
     }
     const activeTiming = currentSector ? sectorByNumber.get(currentSector) : null;
-    const sectorElapsed = Number.isFinite(standing?.allTimeMs) && Number.isFinite(standing?.lastMarkerRaceMs)
-      ? Math.max(0, standing.allTimeMs - standing.lastMarkerRaceMs)
-      : null;
+    const now = performance.now();
+    const localAdvance = raceReceivedAt ? Math.max(0, now - raceReceivedAt) : 0;
+    const currentLapElapsed = currentLapClockValue(standing, raceState, localAdvance);
+    const raceElapsed = markerRaceElapsedMs(car.carId, standing, now, currentLapElapsed);
+    const sectorElapsed = elapsedSinceRaceMarkerMs(standing, raceElapsed);
     const currentValue = element('span', 'sector-value sector-live timing-cell', formatSplitTime(sectorElapsed));
+    sectorLiveNodeByCar.set(car.carId, currentValue);
     const lastValue = element('span', 'sector-value sector-last timing-cell', formatSplitTime(activeTiming?.lastMs));
     const bestValue = element('span', 'sector-value sector-best timing-cell', formatSplitTime(activeTiming?.bestMs));
     const bestClass = classifyBestTime(activeTiming?.lastMs, activeTiming?.bestMs, overallSectorBest.get(currentSector));
@@ -923,8 +939,25 @@ function renderClocks(now) {
   if (raceState && observerConfig) {
     const elapsed = raceReceivedAt ? now - raceReceivedAt : 0;
     for (const car of observerConfig.cars) {
-      const value = formatDuration(currentLapClockValue(standingByCar.get(car.carId), raceState, elapsed));
+      const standing = standingByCar.get(car.carId);
+      const currentLapElapsed = currentLapClockValue(standing, raceState, elapsed);
+      const value = formatDuration(currentLapElapsed);
       setTextIfChanged(currentLapNodeByCar.get(car.carId), value);
+      const raceElapsed = markerRaceElapsedMs(car.carId, standing, now, currentLapElapsed);
+      setTextIfChanged(
+        sectorLiveNodeByCar.get(car.carId),
+        formatSplitTime(elapsedSinceRaceMarkerMs(standing, raceElapsed)),
+      );
+      const holdUntil = sectorCompletionHoldByCar.get(car.carId) || 0;
+      if (holdUntil > 0 && holdUntil <= now) {
+        sectorCompletionHoldByCar.delete(car.carId);
+        const completionNode = sectorCompletionNodeByCar.get(car.carId);
+        if (completionNode) {
+          completionNode.classList.remove('recent');
+          completionNode.setAttribute('aria-label', 'Sector 3 upcoming');
+          sectorCompletionNodeByCar.delete(car.carId);
+        }
+      }
     }
   }
 }
@@ -1063,6 +1096,15 @@ function handleRaceState(car, state) {
     pitMotionByCar.clear();
     markerMotionByCar.clear();
     markerRenderByCar.clear();
+    sectorCompletionHoldByCar.clear();
+  }
+  const previousStandingByCar = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
+  for (const standing of state.standings || []) {
+    const previous = previousStandingByCar.get(standing.carId);
+    const completedLap = previousRunId === nextRunId
+      && previous?.currentSector === 3 && standing.currentSector === 1
+      && previous.lastMarkerIndex === 2 && standing.lastMarkerIndex === 0;
+    if (completedLap) sectorCompletionHoldByCar.set(standing.carId, performance.now() + 2500);
   }
   raceState = state;
   raceReceivedAt = performance.now();

@@ -471,6 +471,13 @@ export function reconstructRaceElapsedMs(standing, lapHistory, currentLapElapsed
   return latestCompletedLap.completedAtRaceMs + currentLap;
 }
 
+export function elapsedSinceRaceMarkerMs(standing, raceElapsedMs) {
+  const raceElapsed = finiteNumber(raceElapsedMs);
+  const markerRaceMs = finiteNumber(standing?.lastMarkerRaceMs);
+  if (raceElapsed === null || markerRaceMs === null || markerRaceMs < 0) return null;
+  return Math.max(0, raceElapsed - markerRaceMs);
+}
+
 export function normalizeObserverConfig(config) {
   if (!config || !Array.isArray(config.cars) || config.cars.length < 1 || config.cars.length > 4) {
     throw new Error('observer config requires 1 to 4 cars');
