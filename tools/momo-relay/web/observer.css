@@ -276,7 +276,7 @@ html[data-mode="live"] .battle-map-link { display: none; }
 .sector-live { color: var(--cyan); }
 .sector-best { color: var(--green); }
 .timing-cell { border-radius: 2px; padding: 4px 5px; }
-.timing-cell.standard-time { color: #fff9dc; background: #756019; box-shadow: inset 0 0 0 1px rgba(240, 197, 74, .38); }
+.timing-cell.standard-time { color: #f4e7b6; background: color-mix(in srgb, var(--yellow) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yellow) 24%, transparent); }
 .timing-cell.personal-best { color: #effff1; background: #287947; box-shadow: inset 0 0 0 1px rgba(117, 227, 106, .34); }
 .timing-cell.overall-best { color: #fff8ff; background: #7c3b9c; box-shadow: inset 0 0 0 1px rgba(195, 122, 229, .42); }
 
