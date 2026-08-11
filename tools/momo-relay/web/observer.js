@@ -33,6 +33,7 @@ const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
+const RACE_FRESHNESS_STALE_MS = 12000;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
@@ -1081,7 +1082,7 @@ function renderCameraTitles() {
   for (const car of observerConfig.cars) {
     const nodes = cameraTitleNodesByCar.get(car.carId);
     if (!nodes) continue;
-    const driverName = carName(car, standingByCar.get(car.carId));
+    const driverName = standingByCar.get(car.carId)?.driver || car.driver || car.device;
     nodes.driver.textContent = driverName;
     nodes.root.title = driverName;
   }
@@ -1179,7 +1180,13 @@ function renderCameraTransportState(car, now) {
       : `RACE DC ${(raceAge / 1000).toFixed(1)}s`;
   setTextIfChanged(videoState, `${state.state} / ${raceText} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'} / EVT ${state.eventsOpen ? 'OPEN' : 'CLOSED'}`);
   const stateName = String(state.state || 'waiting').toLowerCase();
-  const freshness = raceAge === null ? 'waiting' : raceAge < 2500 ? 'live' : 'stale';
+  const standing = standingByCar.get(car.carId);
+  const activelyRacing = raceState?.phase === 'green' && standing?.status === 'racing';
+  const freshness = raceAge === null
+    ? 'waiting'
+    : !activelyRacing
+      ? 'settled'
+      : raceAge < RACE_FRESHNESS_STALE_MS ? 'live' : 'stale';
   if (videoState.dataset.state !== stateName) videoState.dataset.state = stateName;
   if (videoState.dataset.raceFreshness !== freshness) videoState.dataset.raceFreshness = freshness;
 }
