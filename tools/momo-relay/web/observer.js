@@ -107,6 +107,7 @@ function createWebSocketUrl(relayHost, device) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${protocol}//${relayHost}/ws`);
   url.searchParams.set('role', 'observer');
+  url.searchParams.set('client', 'web-observer');
   url.searchParams.set('device', device);
   return url.toString();
 }
@@ -181,6 +182,41 @@ class ObserverPeer {
     ws.onclose = () => this.scheduleReconnect(generation, 'SIGNALING CLOSED');
   }
 
+  handleTelemetryMessage(message) {
+    if (typeof message !== 'string') return;
+    const health = parseVehicleHealth(message);
+    if (health) this.onHealth(this.car, health);
+    const pit = parsePitPresence(message);
+    if (pit) this.onPit(this.car, pit);
+    if (!this.telemetryTracker || !message.startsWith('TEL:')) return;
+    const arrivalMs = performance.now();
+    const result = this.telemetryTracker.ingest(message, arrivalMs);
+    if (!result.accepted) return;
+    const motion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
+    const snapshot = this.telemetryTracker.getSnapshot(arrivalMs);
+    this.onTelemetry(this.car, {
+      motion,
+      primary: snapshot.primary,
+      counters: snapshot.counters,
+    });
+  }
+
+  handleCommandMessage(message) {
+    if (typeof message !== 'string') return;
+    const control = parseControlCommand(message);
+    if (control) this.onControl(this.car, control);
+  }
+
+  handleVehicleEventMessage(message) {
+    if (typeof message !== 'string' || !this.vehicleEvents) return;
+    const result = this.vehicleEvents.ingest(message);
+    if ((result.event && result.event.carId !== this.car.carId)
+        || result.events?.some((item) => item.carId !== this.car.carId)) return;
+    if (result.status === 'snapshot' || result.status === 'live') {
+      this.onVehicleEvent(this.car, result);
+    }
+  }
+
   createPeer(generation) {
     const pc = new RTCPeerConnection({ iceServers: [] });
     this.pc = pc;
@@ -197,22 +233,8 @@ class ObserverPeer {
       this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'TELEMETRY OPEN');
     };
     telemetry.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string') return;
-      const health = parseVehicleHealth(event.data);
-      if (health) this.onHealth(this.car, health);
-      const pit = parsePitPresence(event.data);
-      if (pit) this.onPit(this.car, pit);
-      if (!this.telemetryTracker || !event.data.startsWith('TEL:')) return;
-      const arrivalMs = performance.now();
-      const result = this.telemetryTracker.ingest(event.data, arrivalMs);
-      if (!result.accepted) return;
-      const motion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
-      const snapshot = this.telemetryTracker.getSnapshot(arrivalMs);
-      this.onTelemetry(this.car, {
-        motion,
-        primary: snapshot.primary,
-        counters: snapshot.counters,
-      });
+      if (generation !== this.generation) return;
+      this.handleTelemetryMessage(event.data);
     };
     telemetry.onclose = () => {
       if (generation !== this.generation) return;
@@ -225,9 +247,8 @@ class ObserverPeer {
       maxRetransmits: 0,
     });
     command.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string') return;
-      const control = parseControlCommand(event.data);
-      if (control) this.onControl(this.car, control);
+      if (generation !== this.generation) return;
+      this.handleCommandMessage(event.data);
     };
 
     const race = pc.createDataChannel('momo-race', { ordered: true });
@@ -258,13 +279,8 @@ class ObserverPeer {
       this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'EVENTS OPEN');
     };
     events.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string' || !this.vehicleEvents) return;
-      const result = this.vehicleEvents.ingest(event.data);
-      if ((result.event && result.event.carId !== this.car.carId)
-          || result.events?.some((item) => item.carId !== this.car.carId)) return;
-      if (result.status === 'snapshot' || result.status === 'live') {
-        this.onVehicleEvent(this.car, result);
-      }
+      if (generation !== this.generation) return;
+      this.handleVehicleEventMessage(event.data);
     };
     events.onclose = () => {
       if (generation !== this.generation) return;
@@ -344,6 +360,15 @@ class ObserverPeer {
         const candidate = new RTCIceCandidate(message.ice);
         if (this.remoteDescriptionSet) await this.pc.addIceCandidate(candidate);
         else this.pendingCandidates.push(candidate);
+      } else if (message.type === 'race-state' && typeof message.data === 'string') {
+        const state = parseRaceState(message.data);
+        if (state) this.onRace(this.car, state);
+      } else if (message.type === 'telemetry') {
+        this.handleTelemetryMessage(message.data);
+      } else if (message.type === 'command') {
+        this.handleCommandMessage(message.data);
+      } else if (message.type === 'vehicle-event') {
+        this.handleVehicleEventMessage(message.data);
       } else if (message.type === 'close' || message.type === 'error') {
         this.scheduleReconnect(generation, String(message.error || message.type).toUpperCase());
       }

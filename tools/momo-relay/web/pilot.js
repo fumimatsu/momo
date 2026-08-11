@@ -4218,7 +4218,7 @@
     if (!isRelaySignaling()) {
       return `${protocol}${host}/ws`;
     }
-    const query = new URLSearchParams({ role: 'pilot' });
+    const query = new URLSearchParams({ role: 'pilot', client: 'web-pilot' });
     const device = getRelayDevice();
     if (device) {
       query.set('device', device);
@@ -4228,6 +4228,11 @@
 
   function createSignalingWebSocketUrl() {
     return isAyameSignaling() ? AYAME_SIGNALING_URL : createWebSocketUrl();
+  }
+
+  function sendM5AudioSubscription(enabled = m5AudioPlayer?.snapshot().enabled === true) {
+    if (!usesRelayTransport() || ws?.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'm5-audio-subscription', data: enabled ? '1' : '0' }));
   }
 
   function sendAyameRegister() {
@@ -4463,6 +4468,7 @@
         sendAyameRegister();
       } else {
         makeOffer();
+        sendM5AudioSubscription();
       }
       updateUiState();
     };
@@ -4489,6 +4495,16 @@
       }
       switch (message.type) {
         case 'telemetry':
+          if (typeof message.data === 'string') {
+            handleDataChannelMessage(message.data);
+          }
+          break;
+        case 'race-state':
+          if (typeof message.data === 'string') {
+            handleRaceStateMessage(message.data);
+          }
+          break;
+        case 'm5-audio':
           if (typeof message.data === 'string') {
             handleDataChannelMessage(message.data);
           }
@@ -5842,10 +5858,11 @@
     if (!m5AudioPlayer) {
       return;
     }
-    const enabled = await m5AudioPlayer.setEnabled(!m5AudioPlayer.snapshot().enabled);
-    if (!enabled) {
+    const accepted = await m5AudioPlayer.setEnabled(!m5AudioPlayer.snapshot().enabled);
+    if (!accepted) {
       recordEvent('m5 audio unavailable');
     }
+    sendM5AudioSubscription();
     updateM5AudioUi();
   });
   btnMic?.addEventListener('click', toggleMic);
