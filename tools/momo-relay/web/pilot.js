@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-events-websocket-v2';
+  const PILOT_BUILD_ID = '20260811-race-snapshot-order-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -474,6 +474,10 @@
   let activeRaceRunId = '';
   let raceServerClockOffsetMs = 0;
   let raceStartSignalGreenUntil = 0;
+  let acceptedRaceRunId = '';
+  let acceptedRaceSequence = null;
+  let acceptedRaceServerTimeMs = null;
+  const acceptedRaceRunIds = new Set();
   let raceBattleLayoutFrame = null;
   let lastRaceLapAnnouncementKey = '';
   let raceSignalAudioContext = null;
@@ -1316,6 +1320,46 @@
     }
   }
 
+  function normalizeRaceSequence(value) {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 0 ? number : null;
+  }
+
+  function acceptRaceStateV2(state) {
+    if (state?.type !== 'race_state' || state?.version !== 2) {
+      return true;
+    }
+    const runId = typeof state.raceRunId === 'string' ? state.raceRunId.trim() : '';
+    const sequence = normalizeRaceSequence(state.sequence);
+    const serverTimeMs = normalizeRaceNumber(state.serverTimeMs);
+    if (runId && acceptedRaceRunId && runId !== acceptedRaceRunId) {
+      if (acceptedRaceRunIds.has(runId)) {
+        return false;
+      }
+    } else if (!runId || runId === acceptedRaceRunId) {
+      if (sequence !== null && acceptedRaceSequence !== null) {
+        if (sequence < acceptedRaceSequence) {
+          return false;
+        }
+        if (sequence === acceptedRaceSequence
+          && (serverTimeMs === null || (acceptedRaceServerTimeMs !== null
+            && serverTimeMs <= acceptedRaceServerTimeMs))) {
+          return false;
+        }
+      } else if (serverTimeMs !== null && acceptedRaceServerTimeMs !== null
+        && serverTimeMs <= acceptedRaceServerTimeMs) {
+        return false;
+      }
+    }
+    if (runId) {
+      acceptedRaceRunIds.add(runId);
+      acceptedRaceRunId = runId;
+    }
+    acceptedRaceSequence = sequence;
+    acceptedRaceServerTimeMs = serverTimeMs;
+    return true;
+  }
+
   function getRaceDisplayNowMs() {
     return Date.now() + raceServerClockOffsetMs;
   }
@@ -1692,6 +1736,9 @@
   function setRaceState(nextState) {
     if (!nextState || typeof nextState !== 'object') {
       return false;
+    }
+    if (!acceptRaceStateV2(nextState)) {
+      return true;
     }
     const hadPreviousRaceState = raceState.sampledAt > 0;
     const previousAnnouncement = getRaceLapAnnouncement();

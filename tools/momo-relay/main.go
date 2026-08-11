@@ -1347,6 +1347,10 @@ func (r *relay) openVehicleEventsChannel(client *viewer, channel *webrtc.DataCha
 func (r *relay) sendRaceState(client *viewer, channel *webrtc.DataChannel, message string) bool {
 	client.raceSendMu.Lock()
 	defer client.raceSendMu.Unlock()
+	return r.sendRaceStateLocked(client, channel, message)
+}
+
+func (r *relay) sendRaceStateLocked(client *viewer, channel *webrtc.DataChannel, message string) bool {
 	if client.race.Load() != channel {
 		return false
 	}
@@ -1360,14 +1364,26 @@ func (r *relay) sendRaceState(client *viewer, channel *webrtc.DataChannel, messa
 }
 
 func (r *relay) sendCurrentRaceState(client *viewer, channel *webrtc.DataChannel) {
+	client.raceSendMu.Lock()
+	defer client.raceSendMu.Unlock()
+	if client.race.Load() != channel {
+		return
+	}
 	message := r.currentRaceState()
 	if message == "" {
 		return
 	}
-	r.sendRaceState(client, channel, message)
+	r.sendRaceStateLocked(client, channel, message)
+}
+
+func shouldRefreshRaceState(role string) bool {
+	return role == "observer"
 }
 
 func (r *relay) refreshRaceState(client *viewer, channel *webrtc.DataChannel) {
+	if !shouldRefreshRaceState(client.role) {
+		return
+	}
 	go func() {
 		ticker := time.NewTicker(raceSnapshotRefreshInterval)
 		defer ticker.Stop()
