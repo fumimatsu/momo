@@ -16,9 +16,9 @@ Race Control は既存の phase、run、standings を配信し、MADSYSTEM は�
 | Fuel | 既定では合計120秒の有効前進で100から0まで定率消費する |
 | Practice | `raceInfo.sessionType=practice` の間はFuelを消費しない |
 | Fuel 0 | Boostを解除し、前進PWMを1速上限より10低い1590へ制限する。PITへ戻るため完全停止にはしない |
-| PIT tick | 2秒ごとにHP +20とFuel +20を同じlock内で適用する |
+| PIT tick | 1秒ごとにHP +10とFuel +10を同じlock内で適用する。回復速度は10/秒を維持する |
 | PIT完了表示 | HP 100かつFuel 100。途中退出は常に許可し、回復済みの値を保持する |
-| severe damage | HP -20。HP 100から1回で80となり、PIT 1 tickで戻せる |
+| severe damage | HP -20。HP 100から1回で80となり、PIT 2 tickで戻せる |
 | damage有効期間 | Practiceを含む有効な`green`セッション中だけHPを減算する |
 | run reset | 新runまたはreadyでHP 100、Fuel 100、Boost 0、G1へ戻す |
 

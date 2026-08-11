@@ -221,8 +221,8 @@ snapshotは履歴復元専用で、ViewerはFFB、点滅、音声、HP計算を�
 配信は64件の有界専用queueへ分離し、詰まりがTelemetry受信や操縦転送を待たせない。
 詳細契約はViewer正本の`docs/authoritative-vehicle-events-implementation-plan.md`を参照する。
 
-MADSYSTEMが同じピット用ArUco markerを連続認識し、2秒ごとにRelayへtickを送る。
-Relayは有効なtick 1回につき20 HPと20 Fuelを同じlock内で回復する。API契約は
+MADSYSTEMが同じピット用ArUco markerを連続認識し、1秒ごとにRelayへtickを送る。
+Relayは有効なtick 1回につき10 HPと10 Fuelを同じlock内で回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
 [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
 
@@ -231,8 +231,8 @@ Relayは有効なtick 1回につき20 HPと20 Fuelを同じlock内で回復す�
 | mode | 動作 |
 | --- | --- |
 | `legacy` | 安全時間経過後、前進指令中に従来の連続回復を行う |
-| `pit-marker` | `green` 中にMADSYSTEMのtickを受理した時だけ20 HP回復する |
-| `hybrid` | `legacy` の走行回復と `pit-marker` の20 HP回復を両方行う |
+| `pit-marker` | `green` 中にMADSYSTEMのtickを受理した時だけ10 HP回復する |
+| `hybrid` | `legacy` の走行回復と `pit-marker` の10 HP回復を両方行う |
 | `disabled` | 回復しない |
 
 `pit-marker` と `hybrid` ではRace Control接続とgameplay tokenが必須である。tokenは引数へ入れず環境変数で渡す。

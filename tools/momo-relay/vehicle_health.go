@@ -20,7 +20,7 @@ const (
 	vehicleHealthPublishInterval     = 100 * time.Millisecond
 	vehicleRaceStateFreshness        = 5 * time.Second
 	vehicleFuelMaximum               = 100.0
-	vehicleFuelRecoveryAmount        = 20.0
+	vehicleFuelRecoveryAmount        = 10.0
 	vehicleFuelDefaultDriveDuration  = 120 * time.Second
 	vehicleGearOneForwardMaximum     = 1600
 	vehicleFuelEmptyForwardPWM       = vehicleGearOneForwardMaximum - 10
@@ -348,7 +348,7 @@ func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now ti
 			return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
 				StatusCode: 429,
 				Code:       "recovery_too_soon",
-				Message:    "the previous recovery tick was accepted less than 2 seconds ago",
+				Message:    "the previous recovery tick was accepted less than 1 second ago",
 				RetryAfter: pitRecoveryMinimumInterval - elapsed,
 			}
 		}

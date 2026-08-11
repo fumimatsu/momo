@@ -2,8 +2,8 @@
 
 ## 目的
 
-MADSYSTEM が PIT marker ID `8` を認識している間、2 秒ごとに Relay へ回復 tick を送り、
-Relay が車体 HP と Fuel をそれぞれ 20 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
+MADSYSTEM が PIT marker ID `8` を認識している間、1 秒ごとに Relay へ回復 tick を送り、
+Relay が車体 HP と Fuel をそれぞれ 10 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
 本番 mode は `hybrid` とし、安全走行中の低速な連続回復も維持する。
 
 HP、回復量、速度上限の正本は Relay に置く。MADSYSTEM は marker presence と tick の順序だけを管理し、
@@ -11,7 +11,7 @@ Viewer は Relay が配信する `VHS:1` を表示する。Viewer から PIT API
 
 ```text
 MADSYSTEM
-  marker ID 8 / 2 秒継続
+  marker ID 8 / 1 秒継続
       |
       | POST /api/v1/gameplay/pit-recovery-ticks
       v
@@ -24,8 +24,8 @@ Relay :8090 ---- Race Control WebSocket ---- Race Control
 
 | Repository | Branch / commit | 必要な内容 |
 | --- | --- | --- |
-| `fumimatsu/momo` | `master` / `ad093ed` 以降 | PIT API、HP +20、`VHS:1` 配信 |
-| `fumimatsu/MADSYSTEM` | `codex/pit-recovery-publisher` / `281dea044` 以降 | marker presence、2 秒 tick、再送、Stop 処理 |
+| `fumimatsu/momo` | 現行 branch | PIT API、HP / Fuel +10、`VHS:1` / `VGS:1` / `PIT:1` 配信 |
+| `fumimatsu/MADSYSTEM` | PIT publisher 実装 branch | marker presence、1 秒 tick、再送、Stop 処理 |
 | `fumimatsu/momo-race-control` | `main` | active `raceRunId` と race phase の配信 |
 
 MADSYSTEM の PIT branch が main へ統合された後は、統合 commit を基準に読み替える。
@@ -260,8 +260,8 @@ MADSYSTEM で Practice を開始する。Race Control で次を確認する。
 
 1. 対象車両へ IMPACT または HEAVY IMPACT を発生させる。
 2. Viewer の HP が 100 未満へ減り、速度上限も下がることを確認する。
-3. 対象象限で marker ID `8` を連続して 2 秒以上認識させる。
-4. 2 秒ごとに HP が最大 20 ずつ増えることを確認する。
+3. 対象象限で marker ID `8` を連続して 1 秒以上認識させる。
+4. 1 秒ごとに HP と Fuel が最大 10 ずつ増えることを確認する。
 5. HP が 100 を超えないことを確認する。
 6. HP 回復に合わせて Viewer の HP bar と速度上限が戻ることを確認する。
 
@@ -346,7 +346,7 @@ Relay の受理条件を調べる。
 
 token、秘密鍵、password は記録しない。
 
-## 2026-08-10 ローカル結合実績
+## 2026-08-10 ローカル結合実績（旧 2 秒 / +20 契約）
 
 ローカル Race Control、ダミー source の Relay、別 Relay から映像を受ける Observer、MADSYSTEM を使い、
 次を確認した。
