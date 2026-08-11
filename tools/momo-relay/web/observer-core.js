@@ -199,7 +199,7 @@ export function classifyBestTime(value, personalBest, overallBest) {
   if (overall !== null && Math.round(overall) === rounded) return 'overall-best';
   const personal = finiteNumber(personalBest);
   if (personal !== null && Math.round(personal) === rounded) return 'personal-best';
-  return '';
+  return 'standard-time';
 }
 
 export function expectedSectorDurationMs(standing) {
