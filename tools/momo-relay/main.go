@@ -42,6 +42,8 @@ const (
 	commandDropLogInterval       = time.Second
 	telemetryDeliveryLogInterval = 5 * time.Second
 	telemetryDataHighWatermark   = uint64(64 * 1024)
+	dataChannelProbePrefix       = "DIAG:DC_TEXT_BINARY:"
+	dataChannelProbeTokenMax     = 80
 	raceSnapshotRefreshInterval  = 500 * time.Millisecond
 	keyframeRecoveryGrace        = 2 * time.Second
 	defaultVideoTimestampStep    = uint32(90000 / 50)
@@ -88,6 +90,7 @@ type viewer struct {
 	telemetryDropped    atomic.Uint64
 	telemetryWS         chan string
 	eventsWS            chan string
+	telemetrySendMu     sync.Mutex
 	raceSendMu          sync.Mutex
 	eventsSendMu        sync.Mutex
 }
@@ -1415,6 +1418,44 @@ func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMess
 	return channel.Send(message.Data)
 }
 
+func normalizeDataChannelProbeToken(value string) (string, bool) {
+	token := strings.TrimSpace(value)
+	if token == "" || len(token) > dataChannelProbeTokenMax {
+		return "", false
+	}
+	for _, char := range token {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return "", false
+	}
+	return token, true
+}
+
+func (r *relay) sendDataChannelTextBinaryProbe(client *viewer, tokenValue string) {
+	if client == nil || client.role != "pilot" {
+		return
+	}
+	token, ok := normalizeDataChannelProbeToken(tokenValue)
+	if !ok {
+		log.Printf("source %q: reject invalid DataChannel probe token from viewer %d", r.name, client.id)
+		return
+	}
+	channel := client.telemetry.Load()
+	if channel == nil {
+		log.Printf("source %q: cannot send DataChannel probe to viewer %d because telemetry channel is unavailable", r.name, client.id)
+		return
+	}
+	payload := dataChannelProbePrefix + token
+	client.telemetrySendMu.Lock()
+	defer client.telemetrySendMu.Unlock()
+	textErr := channel.SendText(payload)
+	binaryErr := channel.Send([]byte(payload))
+	log.Printf("source %q: DataChannel probe viewer=%d remote=%s token=%s text=%v binary=%v buffered=%d",
+		r.name, client.id, client.remoteAddr, token, textErr, binaryErr, channel.BufferedAmount())
+}
+
 func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage) {
 	if client.role != "pilot" && !r.allowObserverCommand {
 		log.Printf("drop command from observer viewer %d", client.id)
@@ -2028,6 +2069,8 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			if err := pc.AddICECandidate(*message.ICE); err != nil {
 				log.Printf("apply viewer %d ICE candidate: %v", client.id, err)
 			}
+		case "datachannel-probe":
+			r.sendDataChannelTextBinaryProbe(client, message.Data)
 		case "close", "bye":
 			r.removeViewer(client.id)
 			return

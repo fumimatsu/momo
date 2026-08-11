@@ -29,6 +29,10 @@ Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ�
 
 Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面の設計は、[Relay Operations Dashboard 設計](../../doc/RELAY_OPERATIONS_DASHBOARD_DESIGN.md) を参照する。
 
+特定の Pilot PC で M5 音声のバイナリ DataChannel は受信できる一方、文字列 DataChannel が
+受信できない場合の比較プローブと判定手順は、
+[Relay DataChannel text / binary diagnostic](../../doc/RELAY_DATACHANNEL_TEXT_DIAGNOSTIC.md) を参照する。
+
 ## 車体テレメトリ記録
 
 Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全車共通のRelay時計で

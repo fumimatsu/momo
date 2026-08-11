@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-complete-lap-history-v1';
+  const PILOT_BUILD_ID = '20260811-race-dc-probe-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -74,6 +74,10 @@
   const OSD_UPDATE_INTERVAL_MS = getNumberParam('osdMs', 100);
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
   const DC_PING_INTERVAL_MS = getNumberParam('dcPingMs', 1000);
+  const DC_TEXT_PROBE_ENABLED = getBooleanParam('dcTextProbe', false);
+  const DC_TEXT_PROBE_ATTEMPTS = Math.max(1, Math.min(10, getIntegerParam('dcTextProbeAttempts', 3)));
+  const DC_TEXT_PROBE_INTERVAL_MS = Math.max(250, Math.min(5000, getNumberParam('dcTextProbeMs', 1000)));
+  const DC_TEXT_PROBE_PREFIX = 'DIAG:DC_TEXT_BINARY:';
   // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
   const FFB_ENABLED = getBooleanParamWithProfile('ffbEnabled', 'ffbEnabled', getBooleanParam('ffbTest', false));
   const FFB_BRIDGE_URL = getStringParam('ffbUrl', GAMEPAD_PROFILE?.ffbBridgeUrl || 'ws://127.0.0.1:24725');
@@ -433,6 +437,15 @@
   let dcPingSeq = 0;
   let dcRttMs = null;
   let lastDcPongAt = 0;
+  let dcTextProbeTimer = 0;
+  const dcTextProbe = {
+    enabled: DC_TEXT_PROBE_ENABLED,
+    requestsSent: 0,
+    textReceived: 0,
+    binaryReceived: 0,
+    lastRequestToken: null,
+    samples: [],
+  };
   let lastDeviceHostHint = '';
   const pendingDcPings = new Map();
   let deviceClock = null;
@@ -2893,7 +2906,53 @@
     setText(dcRttState, getDcRttStatus());
   }
 
+  function decodeDataChannelProbe(message) {
+    let payload = null;
+    let kind = null;
+    let byteLength = null;
+    if (typeof message === 'string') {
+      payload = message;
+      kind = 'text';
+      byteLength = new TextEncoder().encode(message).byteLength;
+    } else if (message instanceof ArrayBuffer) {
+      const bytes = new Uint8Array(message);
+      payload = new TextDecoder().decode(bytes);
+      kind = 'binary';
+      byteLength = bytes.byteLength;
+    } else if (ArrayBuffer.isView(message)) {
+      const bytes = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+      payload = new TextDecoder().decode(bytes);
+      kind = 'binary';
+      byteLength = bytes.byteLength;
+    }
+    if (!payload?.startsWith(DC_TEXT_PROBE_PREFIX)) {
+      return false;
+    }
+    const sample = {
+      kind,
+      token: payload.slice(DC_TEXT_PROBE_PREFIX.length),
+      byteLength,
+      receivedAt: new Date().toISOString(),
+      transportGeneration,
+      channel: snapshotDataChannelForCapture(telemetryChannel),
+    };
+    if (kind === 'text') {
+      dcTextProbe.textReceived += 1;
+    } else {
+      dcTextProbe.binaryReceived += 1;
+    }
+    dcTextProbe.samples.push(sample);
+    if (dcTextProbe.samples.length > 20) {
+      dcTextProbe.samples.shift();
+    }
+    recordEvent('dc text probe rx', `${kind} ${sample.token}`);
+    return true;
+  }
+
   function handleDataChannelMessage(message) {
+    if (decodeDataChannelProbe(message)) {
+      return;
+    }
     if (handleRaceStateMessage(message)) {
       return;
     }
@@ -3194,6 +3253,50 @@
 
   function startDcPingMonitor() {
     window.setInterval(sendDcPing, DC_PING_INTERVAL_MS);
+  }
+
+  function stopDcTextProbe() {
+    if (dcTextProbeTimer) {
+      window.clearInterval(dcTextProbeTimer);
+      dcTextProbeTimer = 0;
+    }
+  }
+
+  function sendDcTextProbeRequest() {
+    if (!DC_TEXT_PROBE_ENABLED || isAyameSignaling()
+      || !ws || ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const token = `${transportGeneration}-${Date.now().toString(36)}-${dcTextProbe.requestsSent + 1}`;
+    try {
+      ws.send(JSON.stringify({ type: 'datachannel-probe', data: token }));
+    } catch (error) {
+      recordEvent('dc text probe request failed', error?.message || String(error));
+      return false;
+    }
+    dcTextProbe.requestsSent += 1;
+    dcTextProbe.lastRequestToken = token;
+    recordEvent('dc text probe request', token);
+    if (dcTextProbe.requestsSent >= DC_TEXT_PROBE_ATTEMPTS) {
+      stopDcTextProbe();
+    }
+    return true;
+  }
+
+  function startDcTextProbe() {
+    stopDcTextProbe();
+    if (!DC_TEXT_PROBE_ENABLED || isAyameSignaling()) {
+      return;
+    }
+    dcTextProbe.requestsSent = 0;
+    dcTextProbe.textReceived = 0;
+    dcTextProbe.binaryReceived = 0;
+    dcTextProbe.lastRequestToken = null;
+    dcTextProbe.samples = [];
+    sendDcTextProbeRequest();
+    if (dcTextProbe.requestsSent < DC_TEXT_PROBE_ATTEMPTS) {
+      dcTextProbeTimer = window.setInterval(sendDcTextProbeRequest, DC_TEXT_PROBE_INTERVAL_MS);
+    }
   }
 
   function startRcTx() {
@@ -3869,6 +3972,7 @@
   }
 
   function closeTransport(options = {}) {
+    stopDcTextProbe();
     const sendSignalingClose = options.sendSignalingClose === true;
     stopShadowCaptureForTransport(
       options.captureReason || 'transport_closed',
@@ -4462,9 +4566,11 @@
       telemetryChannel.binaryType = 'arraybuffer';
       telemetryChannel.onopen = () => {
         recordEvent('telemetry dc open');
+        startDcTextProbe();
         updateUiState();
       };
       telemetryChannel.onclose = () => {
+        stopDcTextProbe();
         recordEvent('telemetry dc close');
         scheduleReconnect('dc closed');
         updateUiState();
@@ -5803,6 +5909,10 @@
         contextState: audioContext?.state || 'none',
       },
       m5Audio: m5AudioPlayer?.snapshot() || null,
+      dataChannelTextProbe: {
+        ...dcTextProbe,
+        samples: dcTextProbe.samples.slice(),
+      },
       motion: getMotionSnapshot(),
       gamepad: {
         enabled: GAMEPAD_ENABLED,

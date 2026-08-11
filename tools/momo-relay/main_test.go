@@ -414,6 +414,19 @@ func TestTelemetryDataChannelSaturationUsesHighWatermark(t *testing.T) {
 	}
 }
 
+func TestNormalizeDataChannelProbeToken(t *testing.T) {
+	for _, value := range []string{"1-labc-1", "viewer_11.6", "probe.3"} {
+		if got, ok := normalizeDataChannelProbeToken(value); !ok || got != value {
+			t.Fatalf("normalizeDataChannelProbeToken(%q) = %q, %t", value, got, ok)
+		}
+	}
+	for _, value := range []string{"", "has space", "bad:token", strings.Repeat("a", dataChannelProbeTokenMax+1)} {
+		if got, ok := normalizeDataChannelProbeToken(value); ok || got != "" {
+			t.Fatalf("normalizeDataChannelProbeToken(%q) accepted invalid token %q", value, got)
+		}
+	}
+}
+
 func TestEnqueueVehicleEventPreservesOrderAndReportsFullQueue(t *testing.T) {
 	queue := make(chan string, 2)
 	if !enqueueVehicleEvent(queue, "event-1") || !enqueueVehicleEvent(queue, "event-2") {
