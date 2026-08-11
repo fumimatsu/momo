@@ -347,6 +347,77 @@ func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testi
 	}
 }
 
+func TestCommandDropLogIsRateLimitedPerViewer(t *testing.T) {
+	client := &viewer{id: 7}
+	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	if !shouldLogCommandDrop(client, base) {
+		t.Fatal("first unavailable command must be logged")
+	}
+	if shouldLogCommandDrop(client, base.Add(999*time.Millisecond)) {
+		t.Fatal("repeated unavailable command inside one second must be suppressed")
+	}
+	if !shouldLogCommandDrop(client, base.Add(time.Second)) {
+		t.Fatal("unavailable command at the one-second boundary must be logged")
+	}
+	if !shouldLogCommandDrop(&viewer{id: 8}, base.Add(time.Millisecond)) {
+		t.Fatal("a different viewer must have an independent log interval")
+	}
+}
+
+func TestTelemetryDeliveryLogIsRateLimitedPerViewer(t *testing.T) {
+	client := &viewer{id: 7, role: "pilot"}
+	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
+	if !shouldLogTelemetryDelivery(client, base) {
+		t.Fatal("first telemetry delivery must be logged")
+	}
+	if shouldLogTelemetryDelivery(client, base.Add(telemetryDeliveryLogInterval-time.Millisecond)) {
+		t.Fatal("telemetry delivery inside the interval must be suppressed")
+	}
+	if !shouldLogTelemetryDelivery(client, base.Add(telemetryDeliveryLogInterval)) {
+		t.Fatal("telemetry delivery at the interval boundary must be logged")
+	}
+	if shouldLogTelemetryDelivery(nil, base) {
+		t.Fatal("nil viewer must not request a telemetry delivery log")
+	}
+}
+
+func TestEnqueueLatestTelemetryReplacesStaleValue(t *testing.T) {
+	queue := make(chan string, 1)
+	enqueueLatestTelemetry(queue, "TEL:old")
+	enqueueLatestTelemetry(queue, "TEL:new")
+
+	select {
+	case got := <-queue:
+		if got != "TEL:new" {
+			t.Fatalf("latest telemetry = %q, want TEL:new", got)
+		}
+	default:
+		t.Fatal("latest telemetry was not queued")
+	}
+}
+
+func TestTelemetryDataChannelSaturationUsesHighWatermark(t *testing.T) {
+	if telemetryDataChannelSaturated(telemetryDataHighWatermark - 1) {
+		t.Fatal("buffer below the high watermark must remain writable")
+	}
+	if !telemetryDataChannelSaturated(telemetryDataHighWatermark) {
+		t.Fatal("buffer at the high watermark must drop telemetry")
+	}
+}
+
+func TestEnqueueVehicleEventPreservesOrderAndReportsFullQueue(t *testing.T) {
+	queue := make(chan string, 2)
+	if !enqueueVehicleEvent(queue, "event-1") || !enqueueVehicleEvent(queue, "event-2") {
+		t.Fatal("vehicle events must be queued while capacity remains")
+	}
+	if enqueueVehicleEvent(queue, "event-3") {
+		t.Fatal("a full vehicle event queue must reject the new event")
+	}
+	if first, second := <-queue, <-queue; first != "event-1" || second != "event-2" {
+		t.Fatalf("vehicle event order = %q, %q", first, second)
+	}
+}
+
 func TestOperationsPageHandlerHonorsCIDRAndHTTPMethod(t *testing.T) {
 	policy, err := parseOperationsAccessPolicy([]string{"192.168.11.0/24"})
 	if err != nil {

@@ -36,13 +36,16 @@ const (
 	eventsLabel    = "momo-events"
 	upstreamLabel  = "serial"
 
-	defaultRTPStallTimeout      = 5 * time.Second
-	defaultUpstreamStartTimeout = 20 * time.Second
-	defaultPilotCommandTimeout  = 250 * time.Millisecond
-	raceSnapshotRefreshInterval = 500 * time.Millisecond
-	keyframeRecoveryGrace       = 2 * time.Second
-	defaultVideoTimestampStep   = uint32(90000 / 50)
-	operationsPollWindow        = time.Second
+	defaultRTPStallTimeout       = 5 * time.Second
+	defaultUpstreamStartTimeout  = 20 * time.Second
+	defaultPilotCommandTimeout   = 250 * time.Millisecond
+	commandDropLogInterval       = time.Second
+	telemetryDeliveryLogInterval = 5 * time.Second
+	telemetryDataHighWatermark   = uint64(64 * 1024)
+	raceSnapshotRefreshInterval  = 500 * time.Millisecond
+	keyframeRecoveryGrace        = 2 * time.Second
+	defaultVideoTimestampStep    = uint32(90000 / 50)
+	operationsPollWindow         = time.Second
 )
 
 var h264Codec = webrtc.RTPCodecCapability{
@@ -53,6 +56,7 @@ var h264Codec = webrtc.RTPCodecCapability{
 
 type signalMessage struct {
 	Type        string                   `json:"type"`
+	Data        string                   `json:"data,omitempty"`
 	SDP         string                   `json:"sdp,omitempty"`
 	ICE         *webrtc.ICECandidateInit `json:"ice,omitempty"`
 	Error       string                   `json:"error,omitempty"`
@@ -67,6 +71,7 @@ type signalMessage struct {
 type viewer struct {
 	id                  uint64
 	role                string
+	remoteAddr          string
 	pc                  *webrtc.PeerConnection
 	state               atomic.Int32
 	telemetry           atomic.Pointer[webrtc.DataChannel]
@@ -75,6 +80,14 @@ type viewer struct {
 	drive               atomic.Pointer[webrtc.DataChannel]
 	events              atomic.Pointer[webrtc.DataChannel]
 	lastCommandUnixNano atomic.Int64
+	lastCommandDropLog  atomic.Int64
+	lastTelemetryLog    atomic.Int64
+	telemetryMessages   atomic.Uint64
+	telemetryBytes      atomic.Uint64
+	telemetrySendErrors atomic.Uint64
+	telemetryDropped    atomic.Uint64
+	telemetryWS         chan string
+	eventsWS            chan string
 	raceSendMu          sync.Mutex
 	eventsSendMu        sync.Mutex
 }
@@ -523,7 +536,6 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		defer writeMu.Unlock()
 		return ws.WriteJSON(message)
 	}
-
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate == nil {
 			return
@@ -1066,10 +1078,76 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
-		if channel := client.telemetry.Load(); channel != nil {
-			if err := sendDataChannel(channel, message); err != nil {
-				log.Printf("send telemetry to viewer %d: %v", client.id, err)
+		if client.role == "pilot" && message.IsString && client.telemetryWS != nil {
+			enqueueLatestTelemetry(client.telemetryWS, string(message.Data))
+			client.telemetryMessages.Add(1)
+			client.telemetryBytes.Add(uint64(len(message.Data)))
+			if shouldLogTelemetryDelivery(client, time.Now()) {
+				log.Printf("source %q: telemetry delivery viewer=%d role=%s remote=%s transport=websocket messages=%d bytes=%d errors=%d",
+					r.name, client.id, client.role, client.remoteAddr,
+					client.telemetryMessages.Load(), client.telemetryBytes.Load(), client.telemetrySendErrors.Load())
 			}
+			continue
+		}
+		if channel := client.telemetry.Load(); channel != nil {
+			if telemetryDataChannelSaturated(channel.BufferedAmount()) {
+				client.telemetryDropped.Add(1)
+				if client.role == "pilot" && shouldLogTelemetryDelivery(client, time.Now()) {
+					log.Printf("source %q: telemetry delivery viewer=%d role=%s remote=%s transport=datachannel action=drop buffered=%d dropped=%d errors=%d",
+						r.name, client.id, client.role, client.remoteAddr, channel.BufferedAmount(),
+						client.telemetryDropped.Load(), client.telemetrySendErrors.Load())
+				}
+				continue
+			}
+			if err := sendDataChannel(channel, message); err != nil {
+				client.telemetrySendErrors.Add(1)
+				log.Printf("send telemetry to viewer %d: %v", client.id, err)
+			} else {
+				client.telemetryMessages.Add(1)
+				client.telemetryBytes.Add(uint64(len(message.Data)))
+				if client.role == "pilot" && shouldLogTelemetryDelivery(client, time.Now()) {
+					log.Printf("source %q: telemetry delivery viewer=%d role=%s remote=%s messages=%d bytes=%d state=%s buffered=%d errors=%d",
+						r.name, client.id, client.role, client.remoteAddr,
+						client.telemetryMessages.Load(), client.telemetryBytes.Load(),
+						channel.ReadyState().String(), channel.BufferedAmount(), client.telemetrySendErrors.Load())
+				}
+			}
+		}
+	}
+}
+
+func telemetryDataChannelSaturated(buffered uint64) bool {
+	return buffered >= telemetryDataHighWatermark
+}
+
+func enqueueLatestTelemetry(queue chan string, payload string) {
+	select {
+	case queue <- payload:
+		return
+	default:
+	}
+	select {
+	case <-queue:
+	default:
+	}
+	select {
+	case queue <- payload:
+	default:
+	}
+}
+
+func shouldLogTelemetryDelivery(client *viewer, now time.Time) bool {
+	if client == nil {
+		return false
+	}
+	current := now.UnixNano()
+	for {
+		previous := client.lastTelemetryLog.Load()
+		if previous != 0 && current-previous < telemetryDeliveryLogInterval.Nanoseconds() {
+			return false
+		}
+		if client.lastTelemetryLog.CompareAndSwap(previous, current) {
+			return true
 		}
 	}
 }
@@ -1208,9 +1286,24 @@ func (r *relay) broadcastVehicleEventMessage(message string) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
+		if client.role == "pilot" && client.eventsWS != nil {
+			if !enqueueVehicleEvent(client.eventsWS, message) {
+				log.Printf("source %q: drop WebSocket vehicle event for viewer %d because the bounded queue is full", r.name, client.id)
+			}
+			continue
+		}
 		if channel := client.events.Load(); channel != nil {
 			r.sendVehicleEventMessage(client, channel, message)
 		}
+	}
+}
+
+func enqueueVehicleEvent(queue chan string, message string) bool {
+	select {
+	case queue <- message:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1236,6 +1329,12 @@ func (r *relay) openVehicleEventsChannel(client *viewer, channel *webrtc.DataCha
 	message, err := marshalVehicleEvent(r.vehicleEvents.snapshot())
 	if err != nil {
 		log.Printf("source %q: encode vehicle event snapshot: %v", r.name, err)
+		return
+	}
+	if client.role == "pilot" && client.eventsWS != nil {
+		if !enqueueVehicleEvent(client.eventsWS, message) {
+			log.Printf("source %q: drop WebSocket vehicle event snapshot for viewer %d because the bounded queue is full", r.name, client.id)
+		}
 		return
 	}
 	if err := channel.SendText(message); err != nil {
@@ -1309,7 +1408,9 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	upstream := r.upstreamDC
 	r.upstreamMu.RUnlock()
 	if upstream == nil {
-		log.Printf("drop command from viewer %d: upstream DataChannel is unavailable", client.id)
+		if shouldLogCommandDrop(client, time.Now()) {
+			log.Printf("drop command from viewer %d: upstream DataChannel is unavailable", client.id)
+		}
 		return
 	}
 	forwarded := message
@@ -1324,6 +1425,22 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	// コマンドは全員に同じ DataChannel で返す。クライアント側は受信時にのみ
 	// 表示するため、この監査メッセージが Momo に再送されることはない。
 	r.broadcastCommand(forwarded)
+}
+
+func shouldLogCommandDrop(client *viewer, now time.Time) bool {
+	if client == nil {
+		return true
+	}
+	current := now.UnixNano()
+	for {
+		previous := client.lastCommandDropLog.Load()
+		if previous != 0 && current-previous < commandDropLogInterval.Nanoseconds() {
+			return false
+		}
+		if client.lastCommandDropLog.CompareAndSwap(previous, current) {
+			return true
+		}
+	}
 }
 
 func (r *relay) handleDriveState(client *viewer, message webrtc.DataChannelMessage) {
@@ -1478,7 +1595,7 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 		if pc != nil {
 			return nil
 		}
-		client = &viewer{id: r.nextID.Add(1), role: "pilot"}
+		client = &viewer{id: r.nextID.Add(1), role: "pilot", remoteAddr: "ayame"}
 		client.state.Store(int32(viewerNegotiating))
 		if !r.reservePilot(client.id) {
 			return errors.New("a local or external pilot is already connected")
@@ -1690,7 +1807,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	if role != "pilot" {
 		role = "observer"
 	}
-	client := &viewer{id: r.nextID.Add(1), role: role}
+	client := &viewer{id: r.nextID.Add(1), role: role, remoteAddr: req.RemoteAddr}
 	client.state.Store(int32(viewerNegotiating))
 	if role == "pilot" && !r.reservePilot(client.id) {
 		http.Error(w, "a pilot viewer is already connected", http.StatusConflict)
@@ -1717,6 +1834,39 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return ws.WriteJSON(message)
+	}
+	telemetryDone := make(chan struct{})
+	defer close(telemetryDone)
+	if role == "pilot" {
+		client.telemetryWS = make(chan string, 1)
+		client.eventsWS = make(chan string, 64)
+		go func() {
+			for {
+				select {
+				case payload := <-client.eventsWS:
+					if err := sendSignal(signalMessage{Type: "vehicle-event", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket vehicle event to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+					continue
+				default:
+				}
+				select {
+				case payload := <-client.eventsWS:
+					if err := sendSignal(signalMessage{Type: "vehicle-event", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket vehicle event to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case payload := <-client.telemetryWS:
+					if err := sendSignal(signalMessage{Type: "telemetry", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket telemetry to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case <-telemetryDone:
+					return
+				}
+			}
+		}()
 	}
 
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
@@ -1752,10 +1902,13 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		case telemetryLabel:
 			channel.OnOpen(func() {
 				client.telemetry.Store(channel)
-				log.Printf("viewer %d telemetry channel opened", client.id)
+				log.Printf("source %q: viewer %d (%s remote=%s) telemetry channel opened", r.name, client.id, client.role, client.remoteAddr)
 				r.sendCurrentGameplayState(client, channel)
 			})
-			channel.OnClose(func() { client.telemetry.CompareAndSwap(channel, nil) })
+			channel.OnClose(func() {
+				client.telemetry.CompareAndSwap(channel, nil)
+				log.Printf("source %q: viewer %d (%s remote=%s) telemetry channel closed", r.name, client.id, client.role, client.remoteAddr)
+			})
 		case commandLabel:
 			channel.OnOpen(func() {
 				client.command.Store(channel)

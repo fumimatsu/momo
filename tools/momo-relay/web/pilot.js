@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-authoritative-events';
+  const PILOT_BUILD_ID = '20260811-events-websocket';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -4310,6 +4310,16 @@
         return;
       }
       switch (message.type) {
+        case 'telemetry':
+          if (typeof message.data === 'string') {
+            handleDataChannelMessage(message.data);
+          }
+          break;
+        case 'vehicle-event':
+          if (typeof message.data === 'string') {
+            handleVehicleEventMessage(message.data);
+          }
+          break;
         case 'answer':
           setAnswer(new RTCSessionDescription(message));
           break;
@@ -4640,7 +4650,11 @@
         connectStartedAt > 0 &&
         now - connectStartedAt > CONNECT_GRACE_MS;
       if (hasNoVideo) {
-        scheduleReconnect('no video');
+        if (AUTO_RECONNECT_ON_VIDEO_LOST) {
+          scheduleReconnect('no video');
+        } else {
+          recordEvent('no video', 'auto reconnect disabled');
+        }
       }
     }, 500);
   }
