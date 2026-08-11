@@ -3,7 +3,7 @@
 ## 目的
 
 MADSYSTEM が PIT marker ID `8` を認識している間、2 秒ごとに Relay へ回復 tick を送り、
-Relay が車体 HP を 20 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
+Relay が車体 HP と Fuel をそれぞれ 20 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
 本番 mode は `hybrid` とし、安全走行中の低速な連続回復も維持する。
 
 HP、回復量、速度上限の正本は Relay に置く。MADSYSTEM は marker presence と tick の順序だけを管理し、
@@ -354,7 +354,7 @@ token、秘密鍵、password は記録しない。
 - Practice / `OptionMode=PitIn`
 - `CP-3` で marker ID `8` を連続認識
 - tick 1 から 38 まで 2 秒周期で `200 applied`
-- HP 100 のため各 `recoveredAmount` は 0
+- HP / Fuel 100 のため各 `recoveredAmount` / `fuelRecoveredAmount` は 0
 - marker を映したまま Stop し、`entry ended reason=RaceStopped`
 - Stop 後 10 秒以上、追加 tick なし
 - Race Control は `finished`

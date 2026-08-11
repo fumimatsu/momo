@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -68,11 +69,14 @@ func TestVehicleHealthHybridModeAllowsDrivingAndPitRecovery(t *testing.T) {
 	health.setRecoveryMode(vehicleHealthRecoveryHybrid)
 	health.observeRaceRun("rr_hybrid", base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
+	health.observeRaceState(true, "rr_hybrid", "green", 1, 4, base)
+	health.setDriveEnabled(true, base)
 
+	health.observeRaceState(true, "rr_hybrid", "green", 1, 4, base.Add(5*time.Second))
 	health.limitCommand("S:1500,T:2000", base.Add(5*time.Second))
 	health.limitCommand("S:1500,T:2000", base.Add(5200*time.Millisecond))
 	drivingHP := health.snapshot(base.Add(5200 * time.Millisecond)).HP
-	if drivingHP <= 72 {
+	if drivingHP <= 80 {
 		t.Fatalf("hybrid mode did not apply driving recovery: HP %.3f", drivingHP)
 	}
 
@@ -86,7 +90,7 @@ func TestVehicleHealthHybridModeAllowsDrivingAndPitRecovery(t *testing.T) {
 	if applyErr != nil {
 		t.Fatalf("hybrid pit recovery failed: %#v", applyErr)
 	}
-	if result.RecoveredAmount != 20 || result.Snapshot.HP != drivingHP+20 {
+	if math.Abs(result.RecoveredAmount-(vehicleHealthMaximum-drivingHP)) > 0.0001 || result.Snapshot.HP != vehicleHealthMaximum {
 		t.Fatalf("hybrid pit recovery = %#v, driving HP was %.3f", result, drivingHP)
 	}
 }
@@ -109,18 +113,18 @@ func TestVehicleHealthAppliesPitRecoveryTicksIdempotently(t *testing.T) {
 	if applyErr != nil {
 		t.Fatalf("first recovery failed: %#v", applyErr)
 	}
-	if result.Status != "applied" || result.RecoveredAmount != 20 || result.Snapshot.HP != 92 {
-		t.Fatalf("first recovery = %#v, want applied +20 to HP 92", result)
+	if result.Status != "applied" || result.RecoveredAmount != 20 || result.Snapshot.HP != 100 {
+		t.Fatalf("first recovery = %#v, want applied +20 to HP 100", result)
 	}
 
 	duplicate, applyErr := health.applyPitRecovery(first, base.Add(3*time.Second))
 	if applyErr != nil {
 		t.Fatalf("duplicate recovery failed: %#v", applyErr)
 	}
-	if duplicate.Status != "duplicate" || duplicate.Snapshot.HP != 92 {
+	if duplicate.Status != "duplicate" || duplicate.Snapshot.HP != 100 {
 		t.Fatalf("duplicate recovery = %#v, want original receipt", duplicate)
 	}
-	if got := health.snapshot(base.Add(3 * time.Second)).HP; got != 92 {
+	if got := health.snapshot(base.Add(3 * time.Second)).HP; got != 100 {
 		t.Fatalf("duplicate changed HP to %.1f", got)
 	}
 
@@ -134,8 +138,8 @@ func TestVehicleHealthAppliesPitRecoveryTicksIdempotently(t *testing.T) {
 	if applyErr != nil {
 		t.Fatalf("second recovery failed: %#v", applyErr)
 	}
-	if result.RecoveredAmount != 8 || result.Snapshot.HP != 100 {
-		t.Fatalf("second recovery = %#v, want clamp +8 to HP 100", result)
+	if result.RecoveredAmount != 0 || result.Snapshot.HP != 100 {
+		t.Fatalf("second recovery = %#v, want HP to remain clamped at 100", result)
 	}
 
 	newEntry := first
@@ -159,7 +163,7 @@ func TestVehicleHealthPitModeDisablesLegacyRecoveryAndChecksSequence(t *testing.
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	health.limitCommand("S:1500,T:2000", base.Add(5*time.Second))
 	health.ingestTelemetry(`TEL:{"v":2,"k":"s"}`, "CP-1", base.Add(6*time.Second))
-	if got := health.snapshot(base.Add(6 * time.Second)).HP; got != 72 {
+	if got := health.snapshot(base.Add(6 * time.Second)).HP; got != 80 {
 		t.Fatalf("pit-marker mode used legacy recovery: HP %.1f", got)
 	}
 
@@ -213,7 +217,7 @@ func TestPitRecoveryTickHTTPContract(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "applied" || payload.RecoveredAmount != 20 || payload.HP != 92 {
+	if payload.Status != "applied" || payload.RecoveredAmount != 20 || payload.HP != 100 || payload.Fuel != 100 {
 		t.Fatalf("recovery response = %#v", payload)
 	}
 

@@ -14,6 +14,8 @@ param(
     [string]$GameplayAllowCidr = '127.0.0.1/32',
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
+    [ValidateRange(1, 86400)]
+    [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
     [string]$ObserverAudioSource = 'all',
     [string]$ObserverCrashDumpDirectory = '',
@@ -129,6 +131,7 @@ if ($relayRunning.Count -eq 0) {
         '-operations-allow-cidr', $OperationsAllowCidr,
         '-gameplay-allow-cidr', $GameplayAllowCidr,
         '-health-recovery-mode', $HealthRecoveryMode,
+        '-fuel-drive-duration', "$($FuelDriveDurationSeconds)s",
         '-garage-allow-cidr', '127.0.0.1/32',
         '-garage-allow-cidr', $GarageAllowCidr
     )

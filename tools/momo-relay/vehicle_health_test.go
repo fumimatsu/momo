@@ -22,8 +22,8 @@ func TestVehicleHealthAppliesDamageAndClampsForwardThrottle(t *testing.T) {
 	if snapshot.HP != 88 || snapshot.Mode != "healthy" {
 		t.Fatalf("strong impact snapshot = %#v, want HP 88 healthy", snapshot)
 	}
-	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1980\n" {
-		t.Fatalf("limited command = %q, want 1980", got)
+	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1596\n" {
+		t.Fatalf("limited command = %q, want gear-1 and health limit 1596", got)
 	}
 	if got := health.limitCommand("S:1500,T:1300\n", base.Add(1200*time.Millisecond)); got != "S:1500,T:1300\n" {
 		t.Fatalf("brake command must not be limited: %q", got)
@@ -54,18 +54,20 @@ func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T)
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
-	if got := health.snapshot(base).HP; got != 72 {
-		t.Fatalf("severe impact HP = %.1f, want 72", got)
+	if got := health.snapshot(base).HP; got != 80 {
+		t.Fatalf("severe impact HP = %.1f, want 80", got)
 	}
 
 	health.ingestTelemetry(`TEL:{"v":2,"k":"s"}`, "CP-1", base.Add(5*time.Second))
-	if got := health.snapshot(base.Add(5 * time.Second)).HP; got != 72 {
+	if got := health.snapshot(base.Add(5 * time.Second)).HP; got != 80 {
 		t.Fatalf("health recovered without forward command: %.1f", got)
 	}
+	health.observeRaceState(true, "rr_123", "green", 1, 4, base.Add(5*time.Second))
+	health.setDriveEnabled(true, base.Add(5*time.Second))
 	health.limitCommand("S:1500,T:2000", base.Add(5*time.Second))
 	health.limitCommand("S:1500,T:2000", base.Add(5950*time.Millisecond))
 	health.ingestTelemetry(`TEL:{"v":2,"k":"s"}`, "CP-1", base.Add(6*time.Second))
-	if got := health.snapshot(base.Add(6 * time.Second)).HP; got <= 72 {
+	if got := health.snapshot(base.Add(6 * time.Second)).HP; got <= 80 {
 		t.Fatalf("health did not recover during safe forward driving: %.1f", got)
 	}
 }

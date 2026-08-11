@@ -61,7 +61,7 @@ func TestPitPresenceHTTPContractAndIdempotency(t *testing.T) {
 		t.Fatalf("entered response = %#v", enteredResponse)
 	}
 	snapshot := source.pitPresence.snapshot(source.vehicleHealth.snapshot(time.Now()))
-	if !snapshot.Present || snapshot.EntryID != "entry-7" || snapshot.ServiceState != "servicing" || snapshot.HP != 72 {
+	if !snapshot.Present || snapshot.EntryID != "entry-7" || snapshot.ServiceState != "servicing" || snapshot.HP != 80 || snapshot.Fuel != 100 {
 		t.Fatalf("entered snapshot = %#v", snapshot)
 	}
 	if snapshot.EnteredAtUnixMs == 1786348800123 {
@@ -101,7 +101,7 @@ func TestPitPresenceExitAndRecoveryTickSynchronization(t *testing.T) {
 		t.Fatalf("tick status = %d body=%s", response.Code, response.Body.String())
 	}
 	snapshot := source.pitPresence.snapshot(source.vehicleHealth.snapshot(time.Now()))
-	if snapshot.LastAcceptedTick != 1 || snapshot.HP != 92 || snapshot.ServiceState != "servicing" {
+	if snapshot.LastAcceptedTick != 1 || snapshot.HP != 100 || snapshot.Fuel != 100 || snapshot.ServiceState != "complete" {
 		t.Fatalf("recovery snapshot = %#v", snapshot)
 	}
 
@@ -123,6 +123,19 @@ func TestPitPresenceExitAndRecoveryTickSynchronization(t *testing.T) {
 	}
 	if formatted := formatPitPresenceTelemetry(snapshot); !strings.HasPrefix(formatted, `PIT:1,{"raceRunId":"rr_123","carId":"CP-1","present":false`) {
 		t.Fatalf("formatted PIT telemetry = %q", formatted)
+	}
+}
+
+func TestPitPresenceRequiresHealthAndFuelForServiceComplete(t *testing.T) {
+	state := newPitPresenceState("CP-1", 100, 80)
+	event := pitPresenceEvent{RaceRunID: "rr_123", CarID: "CP-1", EntryID: "entry-1", Transition: "entered"}
+	snapshot, applyErr := state.applyGameplay(event, time.Now(), vehicleHealthSnapshot{HP: 100, Fuel: 80})
+	if applyErr != nil || snapshot.ServiceState != "servicing" {
+		t.Fatalf("partial fuel service = %#v error=%#v", snapshot, applyErr)
+	}
+	snapshot, changed := state.observeHealth(vehicleHealthSnapshot{HP: 100, Fuel: 100})
+	if !changed || snapshot.ServiceState != "complete" {
+		t.Fatalf("complete fuel service = %#v changed=%t", snapshot, changed)
 	}
 }
 

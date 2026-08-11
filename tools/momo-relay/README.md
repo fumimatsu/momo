@@ -209,7 +209,7 @@ RAW診断とsynthetic testの互換用に残すが、V1 `impact`はHPを変更�
 `legacy_event_unsupported`としてログへ記録する。
 
 衝撃段階は`weak >= 10 m/s2`、`strong >= 12 m/s2 && jerk >= 250 m/s3`、
-`severe >= 18 m/s2 && jerk >= 250 m/s3`である。strongは12 HP、severeは28 HPを減算し、
+`severe >= 18 m/s2 && jerk >= 250 m/s3`である。strongは12 HP、severeは20 HPを減算し、
 damage cooldownは600 msとする。同じ`carId:boot:sequence`の再送は重複として無視する。
 
 RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。
@@ -219,7 +219,7 @@ snapshotは履歴復元専用で、ViewerはFFB、点滅、音声、HP計算を�
 詳細契約はViewer正本の`docs/authoritative-vehicle-events-implementation-plan.md`を参照する。
 
 MADSYSTEMが同じピット用ArUco markerを連続認識し、2秒ごとにRelayへtickを送る。
-Relayは有効なtick 1回につき20 HPを回復する。API契約は
+Relayは有効なtick 1回につき20 HPと20 Fuelを同じlock内で回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
 [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
 
@@ -237,16 +237,28 @@ Relayは有効なtick 1回につき20 HPを回復する。API契約は
 MADSYSTEM は HP 回復を `/api/v1/gameplay/pit-recovery-ticks`、PIT IN / OUT を
 `/api/v1/gameplay/pit-presence-events` へ送る。Relay は presence と回復状態を
 `PIT:1` として telemetry DataChannel へ配信する。presence 未対応の旧 client からの
-回復 tick も受理するが、tick だけから PIT IN / OUT は推測しない。詳細は
+回復 tick も受理するが、tick だけから PIT IN / OUT は推測しない。`serviceState=complete` は
+HPとFuelがともに100の時だけ表示する。途中でPIT OUTしても回復済みの値は維持する。詳細は
 [Relay PIT Gameplay API](../../doc/PIT_RECOVERY_API.md) を参照する。
 
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
 .\tools\start-mads-observer.ps1 -RebuildRelay `
   -HealthRecoveryMode 'hybrid' `
+  -FuelDriveDurationSeconds 120 `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>'
 ```
+
+Fuelは`green`中、Race Control状態が新しく、Drive ONで前進指令が継続している間だけ減る。
+既定は合計120秒の有効前進で100から0になり、`-fuel-drive-duration`で変更できる。
+Fuel 0でもPITへ戻れるよう前進PWMを1550へ制限し、完全停止にはしない。
+
+通常ギア上限はG3である。前進中に溜まるBoostが100になると、G3から右パドルで2.5秒だけG4を起動できる。
+充填時間は4台時にP1=40秒、P2=34秒、P3=28秒、P4=22秒で、順位不明時は30秒とする。
+`GEAR:4`の直接指定は拒否し、G4終了時はRelayがG3へ戻す。
+
+Relayは旧client向けの`VHS:1`を維持し、HP、Fuel、Boost、実効gearをJSONの`VGS:1`でも配信する。
 
 APIは既定でloopbackだけを許可する。MADSYSTEMを別PCで動かす場合は `-GameplayAllowCidr` を明示できるが、
 Relay自身はHTTPのTLSを終端しない。平文tokenを信頼できないネットワークへ流してはならない。

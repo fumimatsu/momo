@@ -934,6 +934,24 @@
       box-shadow: 0 0 8px rgba(251, 214, 74, 0.76);
     }
 
+    .drive-gear-boost {
+      border-color: rgba(72, 224, 255, 0.34);
+      color: rgba(113, 226, 247, 0.42);
+    }
+
+    .drive-gear-boost.is-ready {
+      border-color: #53e6ff;
+      color: #c9f8ff;
+      box-shadow: 0 0 8px rgba(61, 224, 255, 0.58);
+    }
+
+    .drive-gear-boost.is-active {
+      border-color: #d9fbff;
+      background: #1aa8c4;
+      color: #ffffff;
+      box-shadow: 0 0 12px rgba(71, 231, 255, 0.92);
+    }
+
     .drive-state {
       color: #ffffff;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
@@ -1213,6 +1231,123 @@
       background: var(--health-color);
       box-shadow: 0 0 8px color-mix(in srgb, var(--health-color) 70%, transparent);
       transition: width 120ms linear, background-color 160ms linear;
+    }
+
+    .vehicle-resource-hud {
+      position: fixed;
+      z-index: 12;
+      right: auto;
+      bottom: max(96px, calc(env(safe-area-inset-bottom) + 72px));
+      left: 50%;
+      display: grid;
+      width: min(260px, calc(100vw - 32px));
+      gap: 4px;
+      padding: 6px 8px;
+      border-top: 1px solid rgba(194, 232, 244, 0.45);
+      border-bottom: 1px solid rgba(194, 232, 244, 0.3);
+      background: rgba(1, 8, 11, 0.68);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.44);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      pointer-events: none;
+      transform: translateX(-50%);
+    }
+
+    .vehicle-resource-hud[hidden] { display: none; }
+
+    .vehicle-resource-row {
+      --resource-color: #55df8f;
+      display: grid;
+      grid-template-columns: 54px 1fr 44px;
+      align-items: center;
+      gap: 6px;
+      min-height: 19px;
+      color: #f5fbff;
+    }
+
+    .vehicle-resource-label {
+      color: var(--resource-color);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .vehicle-resource-row output {
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-align: right;
+      text-shadow: 0 0 7px color-mix(in srgb, var(--resource-color) 70%, transparent);
+    }
+
+    .vehicle-resource-rail {
+      position: relative;
+      display: block;
+      height: 9px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--resource-color) 62%, #dff8ff);
+      background: rgba(0, 0, 0, 0.55);
+      box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.7);
+    }
+
+    .vehicle-resource-rail i {
+      position: absolute;
+      inset: 0;
+      background: var(--resource-color);
+      box-shadow: 0 0 10px color-mix(in srgb, var(--resource-color) 72%, transparent);
+      transform: scaleX(var(--resource-level, 1));
+      transform-origin: left center;
+      transition: transform 100ms linear, background-color 140ms linear;
+    }
+
+    .vehicle-resource-row[data-resource="hp"][data-state="damaged"] { --resource-color: #ffad42; }
+    .vehicle-resource-row[data-resource="hp"][data-state="critical"],
+    .vehicle-resource-row[data-resource="hp"][data-state="limp"] { --resource-color: #ff4e58; }
+    .vehicle-resource-row[data-resource="fuel"] { --resource-color: #f2e6ad; }
+    .vehicle-resource-row[data-resource="fuel"][data-state="low"],
+    .vehicle-resource-row[data-resource="fuel"][data-state="empty"] { --resource-color: #ff4f59; }
+    .vehicle-resource-row[data-resource="boost"] { --resource-color: #4de5ff; }
+
+    .vehicle-resource-row[data-resource="boost"][data-state="ready"] {
+      animation: vehicle-resource-ready 900ms ease-in-out infinite alternate;
+    }
+
+    .vehicle-resource-row[data-resource="boost"][data-state="active"] {
+      --resource-color: #9ef3ff;
+    }
+
+    .vehicle-resource-row.is-impacting {
+      animation: vehicle-resource-impact 260ms ease-out 2;
+    }
+
+    body.drive-ui .vehicle-resource-hud {
+      bottom: max(28px, env(safe-area-inset-bottom));
+    }
+
+    @keyframes vehicle-resource-ready {
+      from { filter: brightness(1); }
+      to { filter: brightness(1.45) drop-shadow(0 0 5px rgba(77, 229, 255, 0.7)); }
+    }
+
+    @keyframes vehicle-resource-impact {
+      0%, 100% { filter: brightness(1); }
+      45% { filter: brightness(1.8); }
+    }
+
+    .gear-button-boost {
+      border-color: rgba(76, 225, 252, 0.38);
+      color: rgba(116, 226, 245, 0.5);
+    }
+
+    .gear-button-boost.is-ready {
+      border-color: #50e5ff;
+      color: #d7fbff;
+      box-shadow: 0 0 8px rgba(68, 226, 255, 0.62);
+    }
+
+    .gear-button-boost[aria-pressed="true"] {
+      background: #1b9fb9;
+      color: #ffffff;
     }
 
     .drive-steering {
@@ -2200,8 +2335,7 @@
               <span class="drive-gear-step" data-gear="1">1</span>
               <span class="drive-gear-step" data-gear="2">2</span>
               <span class="drive-gear-step" data-gear="3">3</span>
-              <span class="drive-gear-step" data-gear="4">4</span>
-              <span class="drive-gear-step" data-gear="5">5</span>
+              <span class="drive-gear-step drive-gear-boost" data-gear="4">4</span>
             </span>
             <span id="ffbPresetControls" class="ffb-preset-controls" aria-label="FFB strength" hidden>
               <button class="ffb-preset-button" type="button" data-ffb-preset="weak" data-bars="1" aria-label="FFB Weak" aria-pressed="false"><i></i><i></i><i></i></button>
@@ -2237,11 +2371,6 @@
                 <span id="motionEventAnnouncement" class="visually-hidden" aria-live="polite" aria-atomic="true"></span>
               </div>
             </section>
-            <aside id="driveDamagePanel" class="drive-damage-panel" hidden aria-label="Vehicle health">
-              <span>HP</span>
-              <span class="drive-damage-rail"><i id="driveDamageFill" class="drive-damage-fill"></i></span>
-              <output id="driveDamageValue">--</output>
-            </aside>
           </div>
           <div class="drive-pedal throttle">
             <span>THR</span><span id="driveHudThrottle" class="drive-pedal-track"></span><span id="driveHudThrottleValue" class="drive-pedal-value">0%</span>
@@ -2254,14 +2383,31 @@
         </div>
       </section>
 
+      <section id="vehicleResourceHud" class="vehicle-resource-hud" hidden aria-label="Vehicle resources">
+        <div id="vehicleResourceHp" class="vehicle-resource-row" data-resource="hp" data-state="healthy">
+          <span class="vehicle-resource-label">DAMAGE</span>
+          <span class="vehicle-resource-rail"><i id="vehicleResourceHpFill"></i></span>
+          <output id="vehicleResourceHpValue">100</output>
+        </div>
+        <div id="vehicleResourceFuel" class="vehicle-resource-row" data-resource="fuel" data-state="normal">
+          <span class="vehicle-resource-label">FUEL</span>
+          <span class="vehicle-resource-rail"><i id="vehicleResourceFuelFill"></i></span>
+          <output id="vehicleResourceFuelValue">100</output>
+        </div>
+        <div id="vehicleResourceBoost" class="vehicle-resource-row" data-resource="boost" data-state="charging">
+          <span class="vehicle-resource-label">BOOST</span>
+          <span class="vehicle-resource-rail"><i id="vehicleResourceBoostFill"></i></span>
+          <output id="vehicleResourceBoostValue">0</output>
+        </div>
+      </section>
+
       <div class="rc-actions">
         <div class="rc-gear" aria-label="Throttle gear">
           <span id="gearState" class="rc-gear-label">Gear 1</span>
           <button class="gear-button" type="button" data-gear="1" aria-pressed="true">1</button>
           <button class="gear-button" type="button" data-gear="2" aria-pressed="false">2</button>
           <button class="gear-button" type="button" data-gear="3" aria-pressed="false">3</button>
-          <button class="gear-button" type="button" data-gear="4" aria-pressed="false">4</button>
-          <button class="gear-button" type="button" data-gear="5" aria-pressed="false">5</button>
+          <button class="gear-button gear-button-boost" type="button" data-gear="4" aria-pressed="false" aria-label="Activate boost gear 4">4</button>
         </div>
         <button id="btnReconnect" type="button">Connect</button>
         <button id="btnDrive" type="button" aria-pressed="false" disabled>Drive Off</button>
@@ -2277,7 +2423,7 @@
       onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260811-gear-audit-v3'"
     ></script>
     <script src="./ffb-bridge.js"></script>
-    <script src="./pilot.js?v=20260811-gear-audit-v3"></script>
+    <script src="./pilot.js?v=20260811-boost-fuel-v1"></script>
     <script
       src="./cpu-shadow-capture.js?v=20260731-cpu-shadow-capture"
       onerror="this.onerror=null;this.src='../../cpu-shadow-capture.js?v=20260731-cpu-shadow-capture'"

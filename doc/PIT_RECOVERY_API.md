@@ -9,9 +9,9 @@
 - PIT presence endpoint: `POST /api/v1/gameplay/pit-presence-events`
 
 MADSYSTEM が同一のピットマーカーを連続認識した時間を管理し、2 秒継続するたびに 1 tick を送る。
-Relay は tick の正当性を検証し、受理した tick ごとに対象車両の HP を 20 回復する。
+Relay は tick の正当性を検証し、受理した tick ごとに対象車両の HP と Fuel をそれぞれ 20 回復する。
 
-MADSYSTEM は回復量を指定しない。HP、回復量、速度上限の正本は Relay に置く。
+MADSYSTEM は回復量を指定しない。HP、Fuel、回復量、速度上限の正本は Relay に置く。
 
 ## Relay 設定
 
@@ -104,8 +104,9 @@ Relay は次の条件をすべて満たす要求だけを受理する。
 - tick が entry 内で連続している
 - 前回受理した回復 tick から 2 秒以上経過
 
-受理時は `min(100, hp + 20)` を同じ vehicle health lock 内で計算し、更新後の `VHS:1` を Pilot と
-Observer へ即時配信する。HP が既に 100 の場合も tick は受理し、`recoveredAmount` は 0 になる。
+受理時は `min(100, hp + 20)` と `min(100, fuel + 20)` を同じ vehicle health lock 内で計算し、
+更新後の `VHS:1` と `VGS:1` を Pilot と Observer へ即時配信する。HP または Fuel が既に 100 の場合も
+tick は受理し、対応する `recoveredAmount` または `fuelRecoveredAmount` は 0 になる。
 
 新しい `raceRunId`、`ready` phase、Relay 再起動では、entry、tick、重複排除履歴を破棄する。
 `pit-marker` mode では従来の安全走行による連続回復を行わない。
@@ -125,8 +126,10 @@ Observer へ即時配信する。HP が既に 100 の場合も tick は受理し
   "entryId": "pit-entry-7",
   "tick": 2,
   "recoveredAmount": 20,
-  "hp": 72,
-  "speedCap": 0.86,
+  "fuelRecoveredAmount": 20,
+  "hp": 100,
+  "fuel": 80,
+  "speedCap": 1,
   "mode": "healthy"
 }
 ```
@@ -208,16 +211,38 @@ Relay は Race Control 接続、active run、`green` phase、car mapping、enter
 
 MADSYSTEM の `occurredAtUnixMs` は診断用である。Observer の PIT 滞在時刻には Relay が受理した `serverTimeMs` を使う。
 
-presence event をまだ送らない旧 MADSYSTEM の回復 tick も引き続き受理する。この場合 HP 回復と `VHS:1` は動作するが、Relay は tick だけから PIT IN / PIT OUT を生成しない。
+presence event をまだ送らない旧 MADSYSTEM の回復 tick も引き続き受理する。この場合 HP / Fuel 回復と
+`VHS:1` / `VGS:1` は動作するが、Relay は tick だけから PIT IN / PIT OUT を生成しない。
 
 ## Observer Telemetry
 
 presence transition、active entry の回復 tick、run / phase / Race Control 接続の reset 時に、Relay は対象 source の `momo-telemetry` DataChannel へ `PIT:1` を送る。
 
 ```text
-PIT:1,{"raceRunId":"rr_123","carId":"CP-1","present":true,"entryId":"pit-entry-7","enteredAtUnixMs":1786348800201,"lastAcceptedTick":1,"serviceState":"servicing","hp":92}
+PIT:1,{"raceRunId":"rr_123","carId":"CP-1","present":true,"entryId":"pit-entry-7","enteredAtUnixMs":1786348800201,"lastAcceptedTick":1,"serviceState":"servicing","hp":92,"fuel":80}
 ```
 
-`serviceState` は `outside`、`servicing`、`complete` のいずれかである。`complete` は active entry かつ HP 100 を表す。`exited` 後は `exitedAtUnixMs` と `exitReason` を含める。
+`serviceState` は `outside`、`servicing`、`complete` のいずれかである。`complete` は active entry かつ
+HP 100 / Fuel 100 を表す表示値であり、PIT OUTを禁止する条件ではない。途中でPIT OUTした場合はその時点の
+HP / Fuelを保持し、以後のtickを停止する。`exited` 後は `exitedAtUnixMs` と `exitReason` を含める。
 
-新しい Pilot / Observer の telemetry DataChannel が開いた時、Relay は現在の `VHS:1` と `PIT:1` を各 1 回送る。新 run、`green` 以外の phase、Race Control 切断では active entry を解除し、`present: false` を配信する。
+新しい Pilot / Observer の telemetry DataChannel が開いた時、Relay は現在の `VHS:1`、`VGS:1`、`PIT:1` を
+各 1 回送る。新 run、`green` 以外の phase、Race Control 切断では active entry を解除し、`present: false` を配信する。
+
+## Vehicle Gameplay State
+
+`VHS:1` は旧 client 用に維持する。新しい Pilot / Observer は包括状態 `VGS:1` を正として表示する。
+
+```text
+VGS:1,{"hp":80,"speedCap":0.933,"mode":"healthy","fuel":42.5,"fuelState":"normal","boost":100,"boostState":"ready","boostRemainingMs":0,"gear":3,"normalGearMax":3,"position":2,"fieldSize":4,"fuelRatePerSecond":0.833,"requestedThrottle":1,"effectiveThrottle":0.56,"serverTimeMs":1786348800201}
+```
+
+- `fuelState`: `normal`、`low`、`empty`
+- `boostState`: `charging`、`ready`、`active`
+- `gear`: Relay が適用している実効gear。通常は1..3、Boost中だけ4
+- `requestedThrottle`: Pilotが要求した前進量を0..1へ正規化した値
+- `effectiveThrottle`: gear、HP、Fuel制限後の前進量を0..1へ正規化した値
+- `fuelRatePerSecond`: 現在のFuel消費率。初期版はスロットル量に依存しない
+
+FuelとBoostが進行する条件は、phaseが`green`、Race Control状態が5秒以内、Drive ON、PIT外、
+前進指令が350 ms以内であること。Fuel 0ではBoostを解除し、前進PWMを1550へ制限する。

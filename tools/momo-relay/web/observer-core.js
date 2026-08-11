@@ -1,4 +1,6 @@
 const HEALTH_MODES = new Set(['healthy', 'damaged', 'critical', 'limp']);
+const FUEL_STATES = new Set(['normal', 'low', 'empty']);
+const BOOST_STATES = new Set(['charging', 'ready', 'active']);
 const PIT_SERVICE_STATES = new Set(['outside', 'servicing', 'complete']);
 
 function finiteNumber(value) {
@@ -47,6 +49,37 @@ export function parseVehicleHealth(message) {
   };
 }
 
+export function parseVehicleGameplay(message) {
+  const text = String(message || '').trim();
+  if (!text.startsWith('VGS:1,')) return null;
+  let payload;
+  try {
+    payload = JSON.parse(text.slice(6));
+  } catch (_) {
+    return null;
+  }
+  const hp = finiteNumber(payload?.hp);
+  const speedCap = finiteNumber(payload?.speedCap);
+  const fuel = finiteNumber(payload?.fuel);
+  const boost = finiteNumber(payload?.boost);
+  const gear = finiteNumber(payload?.gear);
+  const boostRemainingMs = finiteNumber(payload?.boostRemainingMs);
+  if (hp === null || speedCap === null || fuel === null || boost === null || gear === null
+      || boostRemainingMs === null || !HEALTH_MODES.has(payload.mode)
+      || !FUEL_STATES.has(payload.fuelState) || !BOOST_STATES.has(payload.boostState)
+      || hp < 0 || hp > 100 || fuel < 0 || fuel > 100 || boost < 0 || boost > 100
+      || !Number.isInteger(gear) || gear < 1 || gear > 4 || boostRemainingMs < 0) return null;
+  return {
+    ...payload,
+    hp,
+    speedCap: clamp(speedCap, 0, 1),
+    fuel,
+    boost,
+    gear,
+    boostRemainingMs,
+  };
+}
+
 export function parsePitPresence(message) {
   const text = String(message || '').trim();
   if (!text.startsWith('PIT:1,')) return null;
@@ -63,8 +96,9 @@ export function parsePitPresence(message) {
     return null;
   }
   const hp = finiteNumber(payload.hp);
+  const fuel = payload.fuel === undefined ? 100 : finiteNumber(payload.fuel);
   const lastAcceptedTick = finiteNumber(payload.lastAcceptedTick);
-  if (hp === null || hp < 0 || hp > 100 || lastAcceptedTick === null
+  if (hp === null || hp < 0 || hp > 100 || fuel === null || fuel < 0 || fuel > 100 || lastAcceptedTick === null
       || !Number.isInteger(lastAcceptedTick) || lastAcceptedTick < 0) {
     return null;
   }
@@ -90,6 +124,7 @@ export function parsePitPresence(message) {
     lastAcceptedTick,
     serviceState: payload.serviceState,
     hp,
+    fuel,
   };
 }
 
@@ -634,7 +669,7 @@ export function deriveSituations(
       situations.push({
         type: complete ? 'pit-complete' : pit.lastAcceptedTick > 0 ? 'pit-service' : 'pit-in',
         label: complete ? 'SERVICE COMPLETE' : pit.lastAcceptedTick > 0 ? 'PIT SERVICE' : 'PIT IN',
-        primary: `CAR ${car.displayNumber} · HP ${Math.round(pit.hp)}`,
+				primary: `CAR ${car.displayNumber} · HP ${Math.round(pit.hp)} · FUEL ${Math.round(pit.fuel ?? 100)}`,
         detail: pit.lastAcceptedTick > 0 ? `RECOVERY TICK ${pit.lastAcceptedTick}` : 'MARKER CONFIRMED',
         tone: 'recovery',
         priority: complete ? 175 : 165,
@@ -651,6 +686,34 @@ export function deriveSituations(
         priority: 155,
       });
     }
+		if (health?.boostState === 'active') {
+			situations.push({
+				type: 'boost-active', label: 'BOOST ACTIVE', primary: `CAR ${car.displayNumber} · G4`,
+				detail: `${(health.boostRemainingMs / 1000).toFixed(1)}s REMAINING`, tone: 'battle', priority: 145,
+			});
+		} else if (health?.boostState === 'ready') {
+			situations.push({
+				type: 'boost-ready', label: 'BOOST READY', primary: `CAR ${car.displayNumber}`,
+				detail: 'G4 AVAILABLE', tone: 'recovery', priority: 65,
+			});
+		}
+		if (health?.fuelState === 'empty') {
+			situations.push({
+				type: 'fuel-empty', label: 'FUEL EMPTY', primary: `CAR ${car.displayNumber}`,
+				detail: 'LIMP MODE · PIT REQUIRED', tone: 'limited', priority: 190,
+			});
+		} else if (health?.fuelState === 'low') {
+			situations.push({
+				type: 'fuel-low', label: 'FUEL LOW', primary: `CAR ${car.displayNumber} · ${Math.round(health.fuel)}%`,
+				detail: 'PIT WINDOW OPEN', tone: 'watch', priority: 115,
+			});
+		}
+		if (pit?.present && pit.serviceState !== 'complete' && Number.isFinite(health?.fuel) && health.fuel < 100) {
+			situations.push({
+				type: 'refueling', label: 'REFUELING', primary: `CAR ${car.displayNumber} · ${Math.round(health.fuel)}%`,
+				detail: `PIT TICK ${pit.lastAcceptedTick}`, tone: 'recovery', priority: 170,
+			});
+		}
     if (health && health.speedCap < 0.999) {
       situations.push({
         type: 'limited',

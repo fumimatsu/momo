@@ -120,6 +120,7 @@ type pitPresenceSnapshot struct {
 	LastAcceptedTick int     `json:"lastAcceptedTick"`
 	ServiceState     string  `json:"serviceState"`
 	HP               float64 `json:"hp"`
+	Fuel             float64 `json:"fuel"`
 }
 
 type pitPresenceState struct {
@@ -134,18 +135,31 @@ type pitPresenceState struct {
 	exitReason       string
 	lastAcceptedTick int
 	hp               float64
+	fuel             float64
 	seenEntryIDs     map[string]struct{}
 }
 
-func newPitPresenceState(carID string, hp float64) *pitPresenceState {
+func newPitPresenceState(carID string, hp float64, fuels ...float64) *pitPresenceState {
+	fuel := vehicleFuelMaximum
+	if len(fuels) > 0 {
+		fuel = fuels[0]
+	}
 	return &pitPresenceState{
 		carID:        carID,
 		hp:           hp,
+		fuel:         fuel,
 		seenEntryIDs: make(map[string]struct{}),
 	}
 }
 
 func (state *pitPresenceState) apply(event pitPresenceEvent, now time.Time, hp float64) (pitPresenceSnapshot, *pitRecoveryApplyError) {
+	state.mu.Lock()
+	fuel := state.fuel
+	state.mu.Unlock()
+	return state.applyGameplay(event, now, vehicleHealthSnapshot{HP: hp, Fuel: fuel})
+}
+
+func (state *pitPresenceState) applyGameplay(event pitPresenceEvent, now time.Time, health vehicleHealthSnapshot) (pitPresenceSnapshot, *pitRecoveryApplyError) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.runID == "" {
@@ -187,7 +201,8 @@ func (state *pitPresenceState) apply(event pitPresenceEvent, now time.Time, hp f
 		state.exitedAtUnixMs = serverTimeMs
 		state.exitReason = event.Reason
 	}
-	state.hp = hp
+	state.hp = health.HP
+	state.fuel = health.Fuel
 	return state.snapshotLocked(), nil
 }
 
@@ -195,6 +210,7 @@ func (state *pitPresenceState) observeRecovery(command pitRecoveryCommand, healt
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.hp = health.HP
+	state.fuel = health.Fuel
 	if !state.present || state.runID != command.RaceRunID || state.entryID != command.EntryID {
 		return state.snapshotLocked(), false
 	}
@@ -209,8 +225,9 @@ func (state *pitPresenceState) observeHealth(health vehicleHealthSnapshot) (pitP
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	previousService := state.serviceStateLocked()
-	changed := math.Abs(state.hp-health.HP) >= 0.05
+	changed := math.Abs(state.hp-health.HP) >= 0.05 || math.Abs(state.fuel-health.Fuel) >= 0.05
 	state.hp = health.HP
+	state.fuel = health.Fuel
 	if state.present && previousService != state.serviceStateLocked() {
 		changed = true
 	}
@@ -218,10 +235,15 @@ func (state *pitPresenceState) observeHealth(health vehicleHealthSnapshot) (pitP
 }
 
 func (state *pitPresenceState) resetForRun(runID string, _ time.Time, hp float64) (pitPresenceSnapshot, bool) {
+	return state.resetForRunGameplay(runID, vehicleHealthSnapshot{HP: hp, Fuel: vehicleFuelMaximum})
+}
+
+func (state *pitPresenceState) resetForRunGameplay(runID string, health vehicleHealthSnapshot) (pitPresenceSnapshot, bool) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.runID == runID {
-		state.hp = hp
+		state.hp = health.HP
+		state.fuel = health.Fuel
 		return state.snapshotLocked(), false
 	}
 	state.runID = runID
@@ -231,15 +253,24 @@ func (state *pitPresenceState) resetForRun(runID string, _ time.Time, hp float64
 	state.exitedAtUnixMs = 0
 	state.exitReason = ""
 	state.lastAcceptedTick = 0
-	state.hp = hp
+	state.hp = health.HP
+	state.fuel = health.Fuel
 	state.seenEntryIDs = make(map[string]struct{})
 	return state.snapshotLocked(), true
 }
 
 func (state *pitPresenceState) resetActive(reason string, now time.Time, hp float64) (pitPresenceSnapshot, bool) {
 	state.mu.Lock()
+	fuel := state.fuel
+	state.mu.Unlock()
+	return state.resetActiveGameplay(reason, now, vehicleHealthSnapshot{HP: hp, Fuel: fuel})
+}
+
+func (state *pitPresenceState) resetActiveGameplay(reason string, now time.Time, health vehicleHealthSnapshot) (pitPresenceSnapshot, bool) {
+	state.mu.Lock()
 	defer state.mu.Unlock()
-	state.hp = hp
+	state.hp = health.HP
+	state.fuel = health.Fuel
 	if !state.present {
 		return state.snapshotLocked(), false
 	}
@@ -253,6 +284,7 @@ func (state *pitPresenceState) snapshot(health vehicleHealthSnapshot) pitPresenc
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.hp = health.HP
+	state.fuel = health.Fuel
 	return state.snapshotLocked()
 }
 
@@ -268,6 +300,7 @@ func (state *pitPresenceState) snapshotLocked() pitPresenceSnapshot {
 		LastAcceptedTick: state.lastAcceptedTick,
 		ServiceState:     state.serviceStateLocked(),
 		HP:               state.hp,
+		Fuel:             state.fuel,
 	}
 }
 
@@ -275,7 +308,7 @@ func (state *pitPresenceState) serviceStateLocked() string {
 	if !state.present {
 		return "outside"
 	}
-	if state.hp >= vehicleHealthMaximum {
+	if state.hp >= vehicleHealthMaximum && state.fuel >= vehicleFuelMaximum {
 		return "complete"
 	}
 	return "servicing"
@@ -299,7 +332,7 @@ func (r *relay) broadcastPitPresence(snapshot pitPresenceSnapshot) {
 
 func (r *relay) sendCurrentGameplayState(client *viewer, channel *webrtc.DataChannel) {
 	health := r.vehicleHealth.snapshot(time.Now())
-	messages := []string{formatVehicleHealthTelemetry(health)}
+	messages := []string{formatVehicleHealthTelemetry(health), formatVehicleGameplayTelemetry(health)}
 	if r.pitPresence != nil {
 		messages = append(messages, formatPitPresenceTelemetry(r.pitPresence.snapshot(health)))
 	}
@@ -376,7 +409,7 @@ func (server *relayServer) servePitPresenceEvent(w http.ResponseWriter, req *htt
 	}
 	now := time.Now()
 	health := source.vehicleHealth.snapshot(now)
-	snapshot, applyErr := source.pitPresence.apply(event, now, health.HP)
+	snapshot, applyErr := source.pitPresence.applyGameplay(event, now, health)
 	if applyErr != nil {
 		server.pitEventsMu.Unlock()
 		writePitRecoveryError(w, applyErr.StatusCode, applyErr.Code, applyErr.Message, 0)
@@ -402,6 +435,7 @@ func (server *relayServer) servePitPresenceEvent(w http.ResponseWriter, req *htt
 	}
 	server.pitEventsMu.Unlock()
 
+	source.broadcastVehicleGameplay(source.vehicleHealth.setPitPresent(snapshot.Present, now))
 	source.broadcastPitPresence(snapshot)
 	log.Printf("source %q car %q: applied PIT presence entry=%q transition=%s",
 		source.name, event.CarID, event.EntryID, event.Transition)

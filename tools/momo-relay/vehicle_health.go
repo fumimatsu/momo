@@ -13,23 +13,47 @@ import (
 const (
 	vehicleHealthMaximum             = 100.0
 	vehicleHealthStrongDamage        = 12.0
-	vehicleHealthSevereDamage        = 28.0
+	vehicleHealthSevereDamage        = 20.0
 	vehicleHealthDamageCooldown      = 600 * time.Millisecond
 	vehicleHealthRecoveryDelay       = 4 * time.Second
 	vehicleHealthForwardCommandGrace = 350 * time.Millisecond
 	vehicleHealthPublishInterval     = 100 * time.Millisecond
+	vehicleRaceStateFreshness        = 5 * time.Second
+	vehicleFuelMaximum               = 100.0
+	vehicleFuelRecoveryAmount        = 20.0
+	vehicleFuelDefaultDriveDuration  = 120 * time.Second
+	vehicleFuelEmptyForwardPWM       = 1550
+	vehicleBoostMaximum              = 100.0
+	vehicleBoostDuration             = 2500 * time.Millisecond
+	vehicleBoostFallbackCharge       = 30 * time.Second
+	vehicleNormalGearMaximum         = 3
+	vehicleBoostGear                 = 4
 )
 
 type vehicleHealthSnapshot struct {
-	HP       float64
-	SpeedCap float64
-	Mode     string
+	HP                float64 `json:"hp"`
+	SpeedCap          float64 `json:"speedCap"`
+	Mode              string  `json:"mode"`
+	Fuel              float64 `json:"fuel"`
+	FuelState         string  `json:"fuelState"`
+	Boost             float64 `json:"boost"`
+	BoostState        string  `json:"boostState"`
+	BoostRemainingMS  int64   `json:"boostRemainingMs"`
+	Gear              int     `json:"gear"`
+	NormalGearMax     int     `json:"normalGearMax"`
+	Position          int     `json:"position"`
+	FieldSize         int     `json:"fieldSize"`
+	FuelRatePerSec    float64 `json:"fuelRatePerSecond"`
+	RequestedThrottle float64 `json:"requestedThrottle"`
+	EffectiveThrottle float64 `json:"effectiveThrottle"`
+	ServerTimeMS      int64   `json:"serverTimeMs"`
 }
 
 type pitRecoveryApplyResult struct {
-	Status          string
-	RecoveredAmount float64
-	Snapshot        vehicleHealthSnapshot
+	Status              string
+	RecoveredAmount     float64
+	FuelRecoveredAmount float64
+	Snapshot            vehicleHealthSnapshot
 }
 
 type pitRecoveryApplyError struct {
@@ -40,9 +64,10 @@ type pitRecoveryApplyError struct {
 }
 
 type pitRecoveryReceipt struct {
-	Fingerprint     string
-	RecoveredAmount float64
-	Snapshot        vehicleHealthSnapshot
+	Fingerprint         string
+	RecoveredAmount     float64
+	FuelRecoveredAmount float64
+	Snapshot            vehicleHealthSnapshot
 }
 
 // vehicleHealth は Relay ごとの車体状態である。操縦上限を Viewer に預けると
@@ -50,31 +75,55 @@ type pitRecoveryReceipt struct {
 type vehicleHealth struct {
 	mu sync.Mutex
 
-	hp              float64
-	lastUpdatedAt   time.Time
-	lastUnsafeAt    time.Time
-	lastDamageAt    time.Time
-	lastForwardAt   time.Time
-	lastPublishedAt time.Time
-	lastRacePhase   string
-	recoveryMode    vehicleHealthRecoveryMode
-	activeRaceRunID string
-	pitEntryID      string
-	lastPitTick     int
-	lastPitAt       time.Time
-	pitReceipts     map[string]pitRecoveryReceipt
-	pitSeenEntries  map[string]struct{}
-	impactSeen      map[string]struct{}
+	hp                float64
+	fuel              float64
+	boost             float64
+	boostActiveUntil  time.Time
+	requestedGear     int
+	position          int
+	fieldSize         int
+	fuelDriveDuration time.Duration
+	fuelRatePerSec    float64
+	requestedThrottle float64
+	effectiveThrottle float64
+	driveEnabled      bool
+	pitPresent        bool
+	raceConnected     bool
+	lastRaceStateAt   time.Time
+	lastUpdatedAt     time.Time
+	lastUnsafeAt      time.Time
+	lastDamageAt      time.Time
+	lastForwardAt     time.Time
+	lastPublishedAt   time.Time
+	lastRacePhase     string
+	recoveryMode      vehicleHealthRecoveryMode
+	activeRaceRunID   string
+	pitEntryID        string
+	lastPitTick       int
+	lastPitAt         time.Time
+	pitReceipts       map[string]pitRecoveryReceipt
+	pitSeenEntries    map[string]struct{}
+	impactSeen        map[string]struct{}
 }
 
 func newVehicleHealth(now time.Time) *vehicleHealth {
+	return newVehicleHealthWithFuelDuration(now, vehicleFuelDefaultDriveDuration)
+}
+
+func newVehicleHealthWithFuelDuration(now time.Time, fuelDriveDuration time.Duration) *vehicleHealth {
+	if fuelDriveDuration <= 0 {
+		fuelDriveDuration = vehicleFuelDefaultDriveDuration
+	}
 	return &vehicleHealth{
-		hp:             vehicleHealthMaximum,
-		lastUpdatedAt:  now,
-		recoveryMode:   vehicleHealthRecoveryDefault,
-		pitReceipts:    make(map[string]pitRecoveryReceipt),
-		pitSeenEntries: make(map[string]struct{}),
-		impactSeen:     make(map[string]struct{}),
+		hp:                vehicleHealthMaximum,
+		fuel:              vehicleFuelMaximum,
+		requestedGear:     1,
+		fuelDriveDuration: fuelDriveDuration,
+		lastUpdatedAt:     now,
+		recoveryMode:      vehicleHealthRecoveryDefault,
+		pitReceipts:       make(map[string]pitRecoveryReceipt),
+		pitSeenEntries:    make(map[string]struct{}),
+		impactSeen:        make(map[string]struct{}),
 	}
 }
 
@@ -107,38 +156,66 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 		return
 	}
 	health.activeRaceRunID = raceRunID
+	health.hp = vehicleHealthMaximum
+	health.fuel = vehicleFuelMaximum
+	health.boost = 0
+	health.boostActiveUntil = time.Time{}
+	health.requestedGear = 1
+	health.requestedThrottle = 0
+	health.effectiveThrottle = 0
+	health.pitPresent = false
+	health.lastForwardAt = time.Time{}
+	health.lastUnsafeAt = time.Time{}
+	health.lastDamageAt = time.Time{}
+	health.lastPublishedAt = now
+	health.fuelRatePerSec = 0
 	health.lastUpdatedAt = now
+	health.lastRaceStateAt = now
 	health.resetPitRecoveryLocked()
 	health.resetImpactDedupeLocked()
 }
 
 func (health *vehicleHealth) snapshot(now time.Time) vehicleHealthSnapshot {
 	if health == nil {
-		return vehicleHealthSnapshot{HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy"}
+		return defaultVehicleHealthSnapshot(now)
 	}
 	health.mu.Lock()
 	defer health.mu.Unlock()
 	health.advanceRecoveryLocked(now)
-	return health.snapshotLocked()
+	return health.snapshotLocked(now)
 }
 
 func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehicleHealthSnapshot, bool) {
 	if health == nil {
-		return vehicleHealthSnapshot{HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy"}, false
+		return defaultVehicleHealthSnapshot(now), false
 	}
 	phase = strings.ToLower(strings.TrimSpace(phase))
 	health.mu.Lock()
 	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+	health.raceConnected = true
+	health.lastRaceStateAt = now
 
 	if phase == health.lastRacePhase {
-		return health.snapshotLocked(), false
+		return health.snapshotLocked(now), false
 	}
 	health.lastRacePhase = phase
 	if phase != "ready" {
-		return health.snapshotLocked(), false
+		if phase != "green" {
+			health.cancelBoostLocked()
+		}
+		return health.snapshotLocked(now), false
 	}
 
 	health.hp = vehicleHealthMaximum
+	health.fuel = vehicleFuelMaximum
+	health.boost = 0
+	health.boostActiveUntil = time.Time{}
+	health.requestedGear = 1
+	health.fuelRatePerSec = 0
+	health.requestedThrottle = 0
+	health.effectiveThrottle = 0
+	health.pitPresent = false
 	health.lastUpdatedAt = now
 	health.lastUnsafeAt = time.Time{}
 	health.lastDamageAt = time.Time{}
@@ -146,7 +223,49 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 	health.lastPublishedAt = now
 	health.resetPitRecoveryLocked()
 	health.resetImpactDedupeLocked()
-	return health.snapshotLocked(), true
+	return health.snapshotLocked(now), true
+}
+
+func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, phase string, position int, fieldSize int, now time.Time) (vehicleHealthSnapshot, bool) {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now), false
+	}
+	health.mu.Lock()
+	previousConnected := health.raceConnected
+	previousPhase := health.lastRacePhase
+	previousRunID := health.activeRaceRunID
+	previousPosition := health.position
+	previousFieldSize := health.fieldSize
+	health.mu.Unlock()
+	health.observeRaceRun(raceRunID, now)
+	snapshot, changed := health.observeRacePhase(phase, now)
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.raceConnected = connected
+	health.lastRaceStateAt = now
+	health.position = position
+	health.fieldSize = fieldSize
+	if !connected {
+		health.cancelBoostLocked()
+	}
+	if previousConnected != connected || previousPhase != strings.ToLower(strings.TrimSpace(phase)) || previousRunID != raceRunID ||
+		previousPosition != position || previousFieldSize != fieldSize || snapshot.BoostState != health.boostStateLocked(now) {
+		changed = true
+	}
+	return health.snapshotLocked(now), changed
+}
+
+func (health *vehicleHealth) markRaceDisconnected(now time.Time) (vehicleHealthSnapshot, bool) {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now), false
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+	changed := health.raceConnected || !health.boostActiveUntil.IsZero()
+	health.raceConnected = false
+	health.cancelBoostLocked()
+	return health.snapshotLocked(now), changed
 }
 
 func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now time.Time) (pitRecoveryApplyResult, *pitRecoveryApplyError) {
@@ -185,9 +304,10 @@ func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now ti
 			}
 		}
 		return pitRecoveryApplyResult{
-			Status:          "duplicate",
-			RecoveredAmount: receipt.RecoveredAmount,
-			Snapshot:        receipt.Snapshot,
+			Status:              "duplicate",
+			RecoveredAmount:     receipt.RecoveredAmount,
+			FuelRecoveredAmount: receipt.FuelRecoveredAmount,
+			Snapshot:            receipt.Snapshot,
 		}, nil
 	}
 
@@ -227,25 +347,31 @@ func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now ti
 		}
 	}
 
+	health.advanceRecoveryLocked(now)
 	previousHP := health.hp
+	previousFuel := health.fuel
 	health.hp = math.Min(vehicleHealthMaximum, health.hp+pitRecoveryAmount)
+	health.fuel = math.Min(vehicleFuelMaximum, health.fuel+vehicleFuelRecoveryAmount)
 	recoveredAmount := health.hp - previousHP
+	fuelRecoveredAmount := health.fuel - previousFuel
 	health.lastUpdatedAt = now
 	health.lastPublishedAt = now
 	health.pitEntryID = command.EntryID
 	health.pitSeenEntries[command.EntryID] = struct{}{}
 	health.lastPitTick = command.Tick
 	health.lastPitAt = now
-	snapshot := health.snapshotLocked()
+	snapshot := health.snapshotLocked(now)
 	health.recordPitReceiptLocked(command.CommandID, pitRecoveryReceipt{
-		Fingerprint:     fingerprint,
-		RecoveredAmount: recoveredAmount,
-		Snapshot:        snapshot,
+		Fingerprint:         fingerprint,
+		RecoveredAmount:     recoveredAmount,
+		FuelRecoveredAmount: fuelRecoveredAmount,
+		Snapshot:            snapshot,
 	})
 	return pitRecoveryApplyResult{
-		Status:          "applied",
-		RecoveredAmount: recoveredAmount,
-		Snapshot:        snapshot,
+		Status:              "applied",
+		RecoveredAmount:     recoveredAmount,
+		FuelRecoveredAmount: fuelRecoveredAmount,
+		Snapshot:            snapshot,
 	}, nil
 }
 
@@ -280,7 +406,7 @@ func (health *vehicleHealth) rememberImpactLocked(eventID string) bool {
 // and Observer. Raw state frames clock recovery; impact events change HP.
 func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.Time) (vehicleHealthSnapshot, bool, *vehicleImpactEvent) {
 	if health == nil {
-		return vehicleHealthSnapshot{HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy"}, false, nil
+		return defaultVehicleHealthSnapshot(now), false, nil
 	}
 	health.mu.Lock()
 	defer health.mu.Unlock()
@@ -328,7 +454,7 @@ func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.
 		}
 	}
 
-	snapshot := health.snapshotLocked()
+	snapshot := health.snapshotLocked(now)
 	if changed || health.lastPublishedAt.IsZero() || now.Sub(health.lastPublishedAt) >= vehicleHealthPublishInterval {
 		health.lastPublishedAt = now
 		return snapshot, true, confirmed
@@ -354,10 +480,17 @@ func (health *vehicleHealth) limitCommand(message string, now time.Time) string 
 		if err != nil {
 			return message
 		}
+		gear := health.effectiveGearLocked(now)
+		health.requestedThrottle = normalizeForwardThrottle(throttle, gear)
 		limited := throttle
 		if throttle > 1500 {
-			limited = 1500 + int(math.Round(float64(throttle-1500)*vehicleHealthSpeedCap(health.hp)))
+			limited = minInt(throttle, vehicleGearForwardMaximum(gear))
+			limited = 1500 + int(math.Round(float64(limited-1500)*vehicleHealthSpeedCap(health.hp)))
+			if health.fuel <= 0 {
+				limited = minInt(limited, vehicleFuelEmptyForwardPWM)
+			}
 		}
+		health.effectiveThrottle = normalizeForwardThrottle(limited, gear)
 		if limited > 1500 {
 			health.lastForwardAt = now
 		}
@@ -379,27 +512,233 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 	}
 	elapsed := now.Sub(health.lastUpdatedAt).Seconds()
 	health.lastUpdatedAt = now
-	if !health.recoveryMode.allowsDrivingRecovery() || elapsed <= 0 || health.hp >= vehicleHealthMaximum ||
-		(!health.lastUnsafeAt.IsZero() && now.Sub(health.lastUnsafeAt) < vehicleHealthRecoveryDelay) ||
-		health.lastForwardAt.IsZero() || now.Sub(health.lastForwardAt) > vehicleHealthForwardCommandGrace {
+	if elapsed <= 0 {
 		return false
 	}
 
-	rate := vehicleHealthRecoveryRate(health.hp)
-	if rate <= 0 {
-		return false
+	changed := false
+	activelyDriving := health.isActivelyDrivingLocked(now)
+	if health.recoveryMode.allowsDrivingRecovery() && activelyDriving && health.hp < vehicleHealthMaximum &&
+		(health.lastUnsafeAt.IsZero() || now.Sub(health.lastUnsafeAt) >= vehicleHealthRecoveryDelay) {
+		rate := vehicleHealthRecoveryRate(health.hp)
+		previous := health.hp
+		health.hp = math.Min(vehicleHealthMaximum, health.hp+(rate*elapsed))
+		changed = changed || health.hp != previous
 	}
-	previous := health.hp
-	health.hp = math.Min(vehicleHealthMaximum, health.hp+(rate*elapsed))
-	return health.hp != previous
+
+	if activelyDriving && health.fuel > 0 {
+		rate := health.fuelRateLocked()
+		previous := health.fuel
+		health.fuel = math.Max(0, health.fuel-(rate*elapsed))
+		health.fuelRatePerSec = rate
+		changed = changed || health.fuel != previous
+	} else {
+		health.fuelRatePerSec = 0
+	}
+
+	if !health.boostActiveUntil.IsZero() {
+		remaining := health.boostActiveUntil.Sub(now)
+		if remaining <= 0 || health.fuel <= 0 || !health.raceConnected || health.lastRacePhase != "green" ||
+			now.Sub(health.lastRaceStateAt) > vehicleRaceStateFreshness {
+			health.cancelBoostLocked()
+			changed = true
+		} else {
+			previous := health.boost
+			health.boost = vehicleBoostMaximum * remaining.Seconds() / vehicleBoostDuration.Seconds()
+			changed = changed || math.Abs(previous-health.boost) >= 0.01
+		}
+	} else if activelyDriving && health.fuel > 0 && health.boost < vehicleBoostMaximum {
+		previous := health.boost
+		health.boost = math.Min(vehicleBoostMaximum, health.boost+(vehicleBoostMaximum/health.boostChargeDurationLocked().Seconds()*elapsed))
+		if vehicleBoostMaximum-health.boost < 0.001 {
+			health.boost = vehicleBoostMaximum
+		}
+		changed = changed || health.boost != previous
+	}
+	return changed
 }
 
-func (health *vehicleHealth) snapshotLocked() vehicleHealthSnapshot {
+func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot {
 	return vehicleHealthSnapshot{
-		HP:       health.hp,
-		SpeedCap: vehicleHealthSpeedCap(health.hp),
-		Mode:     vehicleHealthMode(health.hp),
+		HP:                health.hp,
+		SpeedCap:          vehicleHealthSpeedCap(health.hp),
+		Mode:              vehicleHealthMode(health.hp),
+		Fuel:              health.fuel,
+		FuelState:         vehicleFuelState(health.fuel),
+		Boost:             health.boost,
+		BoostState:        health.boostStateLocked(now),
+		BoostRemainingMS:  maxInt64(0, health.boostActiveUntil.Sub(now).Milliseconds()),
+		Gear:              health.effectiveGearLocked(now),
+		NormalGearMax:     vehicleNormalGearMaximum,
+		Position:          health.position,
+		FieldSize:         health.fieldSize,
+		FuelRatePerSec:    health.fuelRatePerSec,
+		RequestedThrottle: health.requestedThrottle,
+		EffectiveThrottle: health.effectiveThrottle,
+		ServerTimeMS:      now.UnixMilli(),
 	}
+}
+
+func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
+	return vehicleHealthSnapshot{
+		HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
+		Fuel: vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
+		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, ServerTimeMS: now.UnixMilli(),
+	}
+}
+
+func (health *vehicleHealth) setDriveEnabled(enabled bool, now time.Time) vehicleHealthSnapshot {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now)
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+	health.driveEnabled = enabled
+	if !enabled {
+		health.requestedThrottle = 0
+		health.effectiveThrottle = 0
+		health.lastForwardAt = time.Time{}
+	}
+	return health.snapshotLocked(now)
+}
+
+func (health *vehicleHealth) setPitPresent(present bool, now time.Time) vehicleHealthSnapshot {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now)
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+	health.pitPresent = present
+	if present {
+		health.cancelBoostLocked()
+	}
+	return health.snapshotLocked(now)
+}
+
+func (health *vehicleHealth) setRequestedGear(gear int, now time.Time) (vehicleHealthSnapshot, bool) {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now), gear >= 1 && gear <= vehicleNormalGearMaximum
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+	if gear < 1 || gear > vehicleNormalGearMaximum || !health.boostActiveUntil.IsZero() {
+		return health.snapshotLocked(now), false
+	}
+	health.requestedGear = gear
+	return health.snapshotLocked(now), true
+}
+
+func (health *vehicleHealth) activateBoost(now time.Time) (vehicleHealthSnapshot, bool) {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now), false
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+	if health.requestedGear != vehicleNormalGearMaximum || health.boost < vehicleBoostMaximum || health.fuel <= 0 ||
+		health.pitPresent || !health.raceConnected || health.activeRaceRunID == "" || health.lastRacePhase != "green" ||
+		now.Sub(health.lastRaceStateAt) > vehicleRaceStateFreshness {
+		return health.snapshotLocked(now), false
+	}
+	health.boost = vehicleBoostMaximum
+	health.boostActiveUntil = now.Add(vehicleBoostDuration)
+	return health.snapshotLocked(now), true
+}
+
+func (health *vehicleHealth) effectiveGearLocked(now time.Time) int {
+	if !health.boostActiveUntil.IsZero() && now.Before(health.boostActiveUntil) && health.fuel > 0 {
+		return vehicleBoostGear
+	}
+	return maxInt(1, minInt(health.requestedGear, vehicleNormalGearMaximum))
+}
+
+func (health *vehicleHealth) cancelBoostLocked() {
+	health.boost = 0
+	health.boostActiveUntil = time.Time{}
+}
+
+func (health *vehicleHealth) boostStateLocked(now time.Time) string {
+	if !health.boostActiveUntil.IsZero() && now.Before(health.boostActiveUntil) {
+		return "active"
+	}
+	if health.boost >= vehicleBoostMaximum {
+		return "ready"
+	}
+	return "charging"
+}
+
+func (health *vehicleHealth) isActivelyDrivingLocked(now time.Time) bool {
+	return health.driveEnabled && health.raceConnected && health.activeRaceRunID != "" && health.lastRacePhase == "green" && !health.pitPresent &&
+		!health.lastRaceStateAt.IsZero() && now.Sub(health.lastRaceStateAt) <= vehicleRaceStateFreshness &&
+		!health.lastForwardAt.IsZero() && now.Sub(health.lastForwardAt) <= vehicleHealthForwardCommandGrace
+}
+
+func (health *vehicleHealth) fuelRateLocked() float64 {
+	// 初期版は入力やギアに依存しない。要求値と実効値は状態へ残し、後から
+	// この関数だけでスロットル量・ギア・Boost に応じた消費へ拡張できる。
+	return vehicleFuelMaximum / health.fuelDriveDuration.Seconds()
+}
+
+func (health *vehicleHealth) boostChargeDurationLocked() time.Duration {
+	if health.fieldSize <= 1 || health.position < 1 || health.position > health.fieldSize {
+		return vehicleBoostFallbackCharge
+	}
+	fraction := float64(health.position-1) / float64(health.fieldSize-1)
+	return time.Duration(float64(40*time.Second) - fraction*float64(18*time.Second))
+}
+
+func vehicleGearForwardMaximum(gear int) int {
+	switch gear {
+	case 1:
+		return 1600
+	case 2:
+		return 1700
+	case 3:
+		return 1800
+	case 4:
+		return 1900
+	default:
+		return 1600
+	}
+}
+
+func normalizeForwardThrottle(pwm int, gear int) float64 {
+	maximum := vehicleGearForwardMaximum(gear)
+	return math.Max(0, math.Min(1, float64(pwm-1500)/float64(maximum-1500)))
+}
+
+func vehicleFuelState(fuel float64) string {
+	if fuel <= 0 {
+		return "empty"
+	}
+	if fuel <= 20 {
+		return "low"
+	}
+	return "normal"
+}
+
+func minInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func maxInt(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func maxInt64(left int64, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func vehicleHealthSpeedCap(hp float64) float64 {
@@ -442,6 +781,14 @@ func vehicleHealthMode(hp float64) string {
 
 func formatVehicleHealthTelemetry(snapshot vehicleHealthSnapshot) string {
 	return fmt.Sprintf("VHS:1,%.1f,%.3f,%s", snapshot.HP, snapshot.SpeedCap, snapshot.Mode)
+}
+
+func formatVehicleGameplayTelemetry(snapshot vehicleHealthSnapshot) string {
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return ""
+	}
+	return "VGS:1," + string(payload)
 }
 
 func relayImpactDamage(impactClass string) float64 {

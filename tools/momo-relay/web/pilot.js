@@ -27,9 +27,9 @@
   const RC_BRAKE_VALUE = getNumberParam('rcBrakeValue', 1300);
   const RC_BRAKE_DURATION_MS = getNumberParam('rcBrakeMs', 1000);
   const RC_BRAKE_THRESHOLD = getNumberParam('rcBrakeThreshold', 1700);
-  const RC_THROTTLE_GEAR_MIN_VALUES = [1300, 1300, 1200, 1100, 1000];
-  const RC_THROTTLE_GEAR_MAX_VALUES = [1600, 1700, 1800, 1900, 2000];
-  const RC_GEAR_COUNT = Math.max(1, Math.min(5, getIntegerParam('rcGearCount', 5)));
+	const RC_THROTTLE_GEAR_MIN_VALUES = [1300, 1300, 1200, 1100];
+	const RC_THROTTLE_GEAR_MAX_VALUES = [1600, 1700, 1800, 1900];
+	const RC_GEAR_COUNT = 3;
   const RC_INITIAL_GEAR = Math.max(1, Math.min(RC_GEAR_COUNT, getIntegerParam('rcGear', 1)));
   const RC_STEERING_NEUTRAL_DEADBAND_US = getNumberParamAllowZero('rcSteeringNeutralDeadband', 10);
   const RC_THROTTLE_NEUTRAL_DEADBAND_US = getNumberParamAllowZero('rcThrottleNeutralDeadband', 10);
@@ -182,6 +182,11 @@
   const DRIVE_UI_TEST_HEALTH = DRIVE_UI_TEST_MODE
     ? getNumberParam('healthUiTest', -1)
     : -1;
+	const DRIVE_UI_TEST_FUEL = DRIVE_UI_TEST_MODE ? getNumberParam('fuelUiTest', 64) : -1;
+	const DRIVE_UI_TEST_BOOST = DRIVE_UI_TEST_MODE ? getNumberParam('boostUiTest', 100) : -1;
+	const DRIVE_UI_TEST_BOOST_STATE = DRIVE_UI_TEST_MODE
+		? getStringParam(['boostStateUiTest'], 'ready').toLowerCase()
+		: 'charging';
   const ICE_MODE = normalizeIceMode(getStringParam(['iceMode', 'ice'], 'auto'));
   const STUN_URLS = getStringListParam(['stunUrls', 'stunUrl'], ['stun:stun.l.google.com:19302']);
   const TURN_URLS = getStringListParam(['turnUrls', 'turnUrl'], []);
@@ -362,6 +367,16 @@
   const driveDamagePanel = document.getElementById('driveDamagePanel');
   const driveDamageFill = document.getElementById('driveDamageFill');
   const driveDamageValue = document.getElementById('driveDamageValue');
+	const vehicleResourceHud = document.getElementById('vehicleResourceHud');
+	const vehicleResourceHp = document.getElementById('vehicleResourceHp');
+	const vehicleResourceHpFill = document.getElementById('vehicleResourceHpFill');
+	const vehicleResourceHpValue = document.getElementById('vehicleResourceHpValue');
+	const vehicleResourceFuel = document.getElementById('vehicleResourceFuel');
+	const vehicleResourceFuelFill = document.getElementById('vehicleResourceFuelFill');
+	const vehicleResourceFuelValue = document.getElementById('vehicleResourceFuelValue');
+	const vehicleResourceBoost = document.getElementById('vehicleResourceBoost');
+	const vehicleResourceBoostFill = document.getElementById('vehicleResourceBoostFill');
+	const vehicleResourceBoostValue = document.getElementById('vehicleResourceBoostValue');
 
   let ws = null;
   let peerConnection = null;
@@ -433,6 +448,7 @@
     : null;
   let latestMotion = null;
   let vehicleHealth = null;
+	let vehicleGameplay = null;
   let m5AudioPlayer = null;
   let dcPingSeq = 0;
   let dcRttMs = null;
@@ -2846,26 +2862,97 @@
       || !['healthy', 'damaged', 'critical', 'limp'].includes(mode)) {
       return;
     }
+		const previousHp = vehicleHealth?.hp;
     vehicleHealth = {
       hp: Math.max(0, Math.min(100, hp)),
       speedCap: Math.max(0, Math.min(1, speedCap)),
       mode,
     };
-    updateVehicleHealthUi();
+		updateVehicleHealthUi(Number.isFinite(previousHp) && vehicleHealth.hp < previousHp);
     sendFfbSteering();
   }
 
-  function updateVehicleHealthUi() {
-    if (!vehicleHealth || !driveDamagePanel || !driveDamageFill || !driveDamageValue) return;
-    driveMetrics?.setAttribute('data-damage', 'active');
-    driveDamagePanel.hidden = false;
-    driveDamagePanel.dataset.healthBand = vehicleHealth.mode;
-    driveDamageFill.style.width = `${vehicleHealth.hp.toFixed(1)}%`;
-    driveDamageValue.value = `${Math.round(vehicleHealth.hp)}%`;
-    driveDamagePanel.setAttribute(
-      'aria-label',
-      `Vehicle health ${Math.round(vehicleHealth.hp)} percent, power ${Math.round(vehicleHealth.speedCap * 100)} percent`,
-    );
+  function applyVehicleGameplay(message) {
+		if (typeof message !== 'string' || !message.startsWith('VGS:1,')) return;
+		let payload;
+		try {
+			payload = JSON.parse(message.slice('VGS:1,'.length));
+		} catch {
+			return;
+		}
+		const hp = Number(payload?.hp);
+		const fuel = Number(payload?.fuel);
+		const boost = Number(payload?.boost);
+		const gear = Number(payload?.gear);
+		const speedCap = Number(payload?.speedCap);
+		const boostRemainingMs = Number(payload?.boostRemainingMs);
+		if (![hp, fuel, boost, gear, speedCap, boostRemainingMs].every(Number.isFinite)
+			|| hp < 0 || hp > 100 || fuel < 0 || fuel > 100 || boost < 0 || boost > 100
+			|| !Number.isInteger(gear) || gear < 1 || gear > 4
+			|| !['healthy', 'damaged', 'critical', 'limp'].includes(payload.mode)
+			|| !['normal', 'low', 'empty'].includes(payload.fuelState)
+			|| !['charging', 'ready', 'active'].includes(payload.boostState)) {
+			return;
+		}
+		const previousHp = vehicleHealth?.hp;
+		vehicleGameplay = {
+			...payload,
+			hp,
+			fuel,
+			boost,
+			gear,
+			speedCap,
+			boostRemainingMs: Math.max(0, boostRemainingMs),
+			receivedAt: performance.now(),
+		};
+		vehicleHealth = { hp, speedCap, mode: payload.mode };
+		if (gear <= RC_GEAR_COUNT && gear !== currentGear) {
+			currentGear = gear;
+		}
+		updateGearUi();
+		updateVehicleHealthUi(Number.isFinite(previousHp) && hp < previousHp);
+		sendFfbSteering();
+	}
+
+	function setVehicleResourceLevel(fill, value) {
+		fill?.style.setProperty('--resource-level', String(Math.max(0, Math.min(1, value / 100))));
+	}
+
+	function updateVehicleHealthUi(impact = false) {
+		if (!vehicleHealth || !vehicleResourceHud || !vehicleResourceHp) return;
+		vehicleResourceHud.hidden = false;
+		vehicleResourceHp.dataset.state = vehicleHealth.mode;
+		setVehicleResourceLevel(vehicleResourceHpFill, vehicleHealth.hp);
+		if (vehicleResourceHpValue) vehicleResourceHpValue.value = `${Math.round(vehicleHealth.hp)}`;
+		if (impact) {
+			vehicleResourceHp.classList.remove('is-impacting');
+			void vehicleResourceHp.offsetWidth;
+			vehicleResourceHp.classList.add('is-impacting');
+		}
+
+		if (!vehicleGameplay) return;
+		vehicleResourceFuel.dataset.state = vehicleGameplay.fuelState;
+		setVehicleResourceLevel(vehicleResourceFuelFill, vehicleGameplay.fuel);
+		if (vehicleResourceFuelValue) {
+			vehicleResourceFuelValue.value = vehicleGameplay.fuelState === 'empty'
+				? 'EMPTY'
+				: `${Math.round(vehicleGameplay.fuel)}`;
+		}
+		vehicleResourceBoost.dataset.state = vehicleGameplay.boostState;
+		setVehicleResourceLevel(vehicleResourceBoostFill, vehicleGameplay.boost);
+		if (vehicleResourceBoostValue) {
+			if (vehicleGameplay.boostState === 'active') {
+				vehicleResourceBoostValue.value = `${(vehicleGameplay.boostRemainingMs / 1000).toFixed(1)}s`;
+			} else if (vehicleGameplay.boostState === 'ready') {
+				vehicleResourceBoostValue.value = 'READY';
+			} else {
+				vehicleResourceBoostValue.value = `${Math.round(vehicleGameplay.boost)}`;
+			}
+		}
+		vehicleResourceHud.setAttribute(
+			'aria-label',
+			`Damage ${Math.round(vehicleGameplay.hp)}, fuel ${Math.round(vehicleGameplay.fuel)}, boost ${Math.round(vehicleGameplay.boost)}`,
+		);
   }
 
   function vehicleHealthModeForUiTest(hp) {
@@ -2964,6 +3051,10 @@
       applyVehicleHealth(message);
       return;
     }
+		if (typeof message === 'string' && message.startsWith('VGS:')) {
+			applyVehicleGameplay(message);
+			return;
+		}
     if (typeof message === 'string' && message.startsWith('TEL:')) {
       applyTelemetry(message);
       return;
@@ -2990,11 +3081,13 @@
   }
 
   function getThrottleGearMin() {
-    return RC_THROTTLE_GEAR_MIN_VALUES[currentGear - 1] || RC_THROTTLE_MIN;
+		const gear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
+		return RC_THROTTLE_GEAR_MIN_VALUES[gear - 1] || RC_THROTTLE_MIN;
   }
 
   function getThrottleGearMax() {
-    return RC_THROTTLE_GEAR_MAX_VALUES[currentGear - 1] || 2000;
+		const gear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
+		return RC_THROTTLE_GEAR_MAX_VALUES[gear - 1] || 1800;
   }
 
   function updateGearUi() {
@@ -3007,8 +3100,12 @@
     }
     for (const button of gearButtons) {
       const gear = Number(button.dataset.gear);
-      button.hidden = gear > RC_GEAR_COUNT;
-      button.setAttribute('aria-pressed', gear === currentGear ? 'true' : 'false');
+		const boostGear = gear === 4;
+		button.hidden = gear > 4;
+		button.classList.toggle('is-ready', boostGear && vehicleGameplay?.boostState === 'ready');
+		button.setAttribute('aria-pressed', boostGear
+			? String(vehicleGameplay?.boostState === 'active')
+			: String(gear === currentGear));
     }
     updateDriveHud();
   }
@@ -3018,6 +3115,9 @@
   }
 
   function isDriveUiVisible() {
+    if (DRIVE_UI_TEST_MODE) {
+      return true;
+    }
     if (CONTROL_UI_MODE === 'manual') {
       return false;
     }
@@ -3070,15 +3170,18 @@
     if (driveHudBrakeValue) {
       driveHudBrakeValue.textContent = `${Math.round(brake * 100)}%`;
     }
-    if (driveHudGear) {
-      driveHudGear.setAttribute('aria-label', `Throttle gear ${currentGear} of ${RC_GEAR_COUNT}`);
+		const displayedGear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
+		if (driveHudGear) {
+			driveHudGear.setAttribute('aria-label', `Throttle gear ${displayedGear}`);
     }
     for (const step of driveHudGearSteps) {
       const gear = Number(step.dataset.gear);
-      const available = gear <= RC_GEAR_COUNT;
+			const boostGear = gear === 4;
+			const available = gear <= RC_GEAR_COUNT || boostGear;
       step.hidden = !available;
-      step.classList.toggle('is-active', available && gear === currentGear);
-      step.setAttribute('aria-current', available && gear === currentGear ? 'true' : 'false');
+			step.classList.toggle('is-ready', boostGear && vehicleGameplay?.boostState === 'ready');
+			step.classList.toggle('is-active', available && gear === displayedGear);
+			step.setAttribute('aria-current', available && gear === displayedGear ? 'true' : 'false');
     }
     if (driveHudConnection) {
       const connected = dataChannel && dataChannel.readyState === 'open';
@@ -3088,6 +3191,11 @@
   }
 
   function setThrottleGear(gear) {
+		if (vehicleGameplay?.boostState === 'active') return;
+		if (Number(gear) === 4) {
+			requestBoostActivation();
+			return;
+		}
     const nextGear = Math.max(1, Math.min(RC_GEAR_COUNT, Number(gear) || 1));
     if (nextGear === currentGear) {
       updateGearUi();
@@ -3109,6 +3217,22 @@
     }
     recordEvent('gear', String(currentGear));
   }
+
+	function requestBoostActivation() {
+		if (currentGear !== RC_GEAR_COUNT || vehicleGameplay?.boostState !== 'ready'
+			|| !driveChannel || driveChannel.readyState !== 'open') {
+			recordEvent('boost', 'unavailable');
+			return false;
+		}
+		try {
+			driveChannel.send('BOOST:ACTIVATE');
+			recordEvent('boost', 'requested');
+			return true;
+		} catch (error) {
+			recordEvent('boost send failed', error.message || String(error));
+			return false;
+		}
+	}
 
   function applyNeutralDeadband(value, deadbandUs) {
     const pulse = clampRcValue(value);
@@ -3686,7 +3810,11 @@
       recordEvent('gamepad paddle', 'left');
     }
     if (getGamepadButtonRisingEdge(gamepad, GAMEPAD_PADDLE_RIGHT_BUTTON)) {
-      setThrottleGear(currentGear + 1);
+			if (currentGear >= RC_GEAR_COUNT) {
+				requestBoostActivation();
+			} else {
+				setThrottleGear(currentGear + 1);
+			}
       recordEvent('gamepad paddle', 'right');
     }
     if (GAMEPAD_FFB_PRESET_BUTTON >= 0 && getGamepadButtonRisingEdge(gamepad, GAMEPAD_FFB_PRESET_BUTTON)) {
@@ -6080,7 +6208,22 @@
   updateControlUiMode();
   if (DRIVE_UI_TEST_HEALTH >= 0 && DRIVE_UI_TEST_HEALTH <= 100) {
     const hp = Math.round(DRIVE_UI_TEST_HEALTH * 10) / 10;
-    applyVehicleHealth(`VHS:1,${hp.toFixed(1)},1.000,${vehicleHealthModeForUiTest(hp)}`);
+		const fuel = Math.max(0, Math.min(100, DRIVE_UI_TEST_FUEL));
+		const boost = Math.max(0, Math.min(100, DRIVE_UI_TEST_BOOST));
+		const boostState = ['charging', 'ready', 'active'].includes(DRIVE_UI_TEST_BOOST_STATE)
+			? DRIVE_UI_TEST_BOOST_STATE : 'charging';
+		applyVehicleGameplay(`VGS:1,${JSON.stringify({
+			hp,
+			speedCap: 1,
+			mode: vehicleHealthModeForUiTest(hp),
+			fuel,
+			fuelState: fuel <= 0 ? 'empty' : fuel <= 20 ? 'low' : 'normal',
+			boost,
+			boostState,
+			boostRemainingMs: boostState === 'active' ? 1800 : 0,
+			gear: boostState === 'active' ? 4 : 3,
+			normalGearMax: 3,
+		})}`);
   }
   if (AUTO_START) {
     connect().catch((error) => {

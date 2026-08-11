@@ -97,17 +97,19 @@ func (command pitRecoveryCommand) fingerprint() string {
 }
 
 type pitRecoveryResponse struct {
-	SchemaVersion   int     `json:"schemaVersion"`
-	Status          string  `json:"status"`
-	CommandID       string  `json:"commandId"`
-	RaceRunID       string  `json:"raceRunId"`
-	CarID           string  `json:"carId"`
-	EntryID         string  `json:"entryId"`
-	Tick            int     `json:"tick"`
-	RecoveredAmount float64 `json:"recoveredAmount"`
-	HP              float64 `json:"hp"`
-	SpeedCap        float64 `json:"speedCap"`
-	Mode            string  `json:"mode"`
+	SchemaVersion       int     `json:"schemaVersion"`
+	Status              string  `json:"status"`
+	CommandID           string  `json:"commandId"`
+	RaceRunID           string  `json:"raceRunId"`
+	CarID               string  `json:"carId"`
+	EntryID             string  `json:"entryId"`
+	Tick                int     `json:"tick"`
+	RecoveredAmount     float64 `json:"recoveredAmount"`
+	FuelRecoveredAmount float64 `json:"fuelRecoveredAmount"`
+	HP                  float64 `json:"hp"`
+	Fuel                float64 `json:"fuel"`
+	SpeedCap            float64 `json:"speedCap"`
+	Mode                string  `json:"mode"`
 }
 
 type pitRecoveryErrorResponse struct {
@@ -136,14 +138,24 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 	server.raceMu.Unlock()
 
 	for _, source := range server.sources {
+		position := 0
+		for _, standing := range envelope.Standings {
+			if standing.CarID == source.raceCarID {
+				position = standing.Position
+				break
+			}
+		}
+		health, changed := source.vehicleHealth.observeRaceState(true, currentRunID, currentPhase, position, len(envelope.Standings), now)
+		if changed {
+			source.driveGear.Store(int32(health.Gear))
+			source.broadcastVehicleGameplay(health)
+		}
 		if previous.RaceRunID != currentRunID {
-			source.vehicleHealth.observeRaceRun(currentRunID, now)
 			source.resetVehicleEvents(currentRunID)
 			if source.pitPresence == nil {
 				continue
 			}
-			health := source.vehicleHealth.snapshot(now)
-			if pit, changed := source.pitPresence.resetForRun(currentRunID, now, health.HP); changed {
+			if pit, changed := source.pitPresence.resetForRunGameplay(currentRunID, health); changed {
 				source.broadcastPitPresence(pit)
 			}
 			continue
@@ -152,8 +164,8 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 			if source.pitPresence == nil {
 				continue
 			}
-			health := source.vehicleHealth.snapshot(now)
-			if pit, changed := source.pitPresence.resetActive("race_phase_changed", now, health.HP); changed {
+			if pit, changed := source.pitPresence.resetActiveGameplay("race_phase_changed", now, health); changed {
+				source.vehicleHealth.setPitPresent(false, now)
 				source.broadcastPitPresence(pit)
 			}
 		}
@@ -166,11 +178,16 @@ func (server *relayServer) markRaceControlDisconnected() {
 	server.raceMu.Unlock()
 	now := time.Now()
 	for _, source := range server.sources {
+		health, changed := source.vehicleHealth.markRaceDisconnected(now)
+		if changed {
+			source.driveGear.Store(int32(health.Gear))
+			source.broadcastVehicleGameplay(health)
+		}
 		if source.pitPresence == nil {
 			continue
 		}
-		health := source.vehicleHealth.snapshot(now)
-		if pit, changed := source.pitPresence.resetActive("race_control_disconnected", now, health.HP); changed {
+		if pit, changed := source.pitPresence.resetActiveGameplay("race_control_disconnected", now, health); changed {
+			source.vehicleHealth.setPitPresent(false, now)
 			source.broadcastPitPresence(pit)
 		}
 	}
@@ -238,28 +255,30 @@ func (server *relayServer) servePitRecoveryTick(w http.ResponseWriter, req *http
 		return
 	}
 	if result.Status == "applied" {
-		source.broadcastVehicleHealth(result.Snapshot)
+		source.broadcastVehicleGameplay(result.Snapshot)
 		if source.pitPresence != nil {
 			if pit, changed := source.pitPresence.observeRecovery(command, result.Snapshot); changed {
 				source.broadcastPitPresence(pit)
 			}
 		}
-		log.Printf("source %q car %q: applied pit recovery entry=%q tick=%d recovered=%.1f hp=%.1f",
+		log.Printf("source %q car %q: applied pit recovery entry=%q tick=%d hpRecovered=%.1f fuelRecovered=%.1f hp=%.1f fuel=%.1f",
 			source.name, command.CarID, command.EntryID, command.Tick,
-			result.RecoveredAmount, result.Snapshot.HP)
+			result.RecoveredAmount, result.FuelRecoveredAmount, result.Snapshot.HP, result.Snapshot.Fuel)
 	}
 	writePitRecoveryJSON(w, http.StatusOK, pitRecoveryResponse{
-		SchemaVersion:   1,
-		Status:          result.Status,
-		CommandID:       command.CommandID,
-		RaceRunID:       command.RaceRunID,
-		CarID:           command.CarID,
-		EntryID:         command.EntryID,
-		Tick:            command.Tick,
-		RecoveredAmount: result.RecoveredAmount,
-		HP:              result.Snapshot.HP,
-		SpeedCap:        result.Snapshot.SpeedCap,
-		Mode:            result.Snapshot.Mode,
+		SchemaVersion:       1,
+		Status:              result.Status,
+		CommandID:           command.CommandID,
+		RaceRunID:           command.RaceRunID,
+		CarID:               command.CarID,
+		EntryID:             command.EntryID,
+		Tick:                command.Tick,
+		RecoveredAmount:     result.RecoveredAmount,
+		FuelRecoveredAmount: result.FuelRecoveredAmount,
+		HP:                  result.Snapshot.HP,
+		Fuel:                result.Snapshot.Fuel,
+		SpeedCap:            result.Snapshot.SpeedCap,
+		Mode:                result.Snapshot.Mode,
 	})
 }
 

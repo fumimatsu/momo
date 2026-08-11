@@ -17,6 +17,7 @@ import {
   parseControlCommand,
   parsePitPresence,
   parseRaceState,
+	parseVehicleGameplay,
   parseVehicleHealth,
   projectCourseProgress,
   raceClockValue,
@@ -189,6 +190,8 @@ class ObserverPeer {
     if (typeof message !== 'string') return;
     const health = parseVehicleHealth(message);
     if (health) this.onHealth(this.car, health);
+    const gameplay = parseVehicleGameplay(message);
+    if (gameplay) this.onHealth(this.car, gameplay);
     const pit = parsePitPresence(message);
     if (pit) this.onPit(this.car, pit);
     if (!this.telemetryTracker || !message.startsWith('TEL:')) return;
@@ -502,18 +505,25 @@ function renderLeaderboard() {
     best.append(element('strong', '', formatDuration(standing?.bestLapMs)));
     times.append(current, last, best);
     row.append(times);
-    const healthNode = element('div', 'leader-health');
-    const hp = health ? Math.round(health.hp) : null;
-    healthNode.dataset.state = hp === null ? 'unknown' : hp > 60 ? 'healthy' : hp > 30 ? 'warning' : 'critical';
-    const track = element('i', 'leader-health-track');
-    const fill = element('b', 'leader-health-fill');
-    fill.style.width = `${hp ?? 0}%`;
-    track.append(fill);
-    const state = health
-      ? (health.speedCap < 0.999 ? `LIMIT ${Math.round(health.speedCap * 100)}%` : health.mode.toUpperCase())
-      : standing?.status?.toUpperCase() || connection?.state || 'WAITING';
-    healthNode.append(element('span', '', `HP ${hp ?? '--'}`), track, element('strong', '', state));
-    row.append(healthNode);
+		const resources = element('div', 'leader-resources');
+		const appendResource = (label, value, state, text) => {
+			const resource = element('div', `leader-resource leader-resource-${label.toLowerCase()}`);
+			resource.dataset.state = state;
+			const track = element('i', 'leader-resource-track');
+			const fill = element('b', 'leader-resource-fill');
+			fill.style.width = `${Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0}%`;
+			track.append(fill);
+			resource.append(element('span', '', label), track, element('strong', '', text));
+			resources.append(resource);
+		};
+		const hp = Number.isFinite(health?.hp) ? Math.round(health.hp) : null;
+		const fuel = Number.isFinite(health?.fuel) ? Math.round(health.fuel) : null;
+		const boost = Number.isFinite(health?.boost) ? Math.round(health.boost) : null;
+		appendResource('HP', hp, hp === null ? 'unknown' : health.mode, hp ?? '--');
+		appendResource('FUEL', fuel, health?.fuelState || 'unknown', health?.fuelState === 'empty' ? 'EMPTY' : fuel ?? '--');
+		appendResource('BOOST', boost, health?.boostState || 'unknown',
+			health?.boostState === 'ready' ? 'READY' : health?.boostState === 'active' ? `${(health.boostRemainingMs / 1000).toFixed(1)}s` : boost ?? '--');
+		row.append(resources);
     return row;
   }));
 }
@@ -1260,8 +1270,11 @@ function startRaceStatePolling(relayHost) {
 
 function handleHealth(car, health) {
   const previous = healthByCar.get(car.carId);
-  if (previous?.hp === health.hp && previous?.speedCap === health.speedCap && previous?.mode === health.mode) return;
-  healthByCar.set(car.carId, health);
+	const next = health.fuel === undefined && previous?.fuel !== undefined ? { ...previous, ...health } : health;
+	if (previous?.hp === next.hp && previous?.speedCap === next.speedCap && previous?.mode === next.mode
+		&& previous?.fuel === next.fuel && previous?.boost === next.boost
+		&& previous?.boostState === next.boostState && previous?.gear === next.gear) return;
+  healthByCar.set(car.carId, next);
   renderLeaderboard();
   renderSituations();
 }
@@ -1381,6 +1394,33 @@ function updateDisplayClass() {
   document.documentElement.classList.toggle('scaled-4k', scaled4k);
 }
 
+function seedObserverUiTest() {
+	const now = Date.now();
+	raceState = {
+		type: 'race_state', version: 2, raceId: 'race-test', raceRunId: 'rr-ui-test', phase: 'green', flag: 'none',
+		serverTimeMs: now, raceTimeMs: 84500, raceInfo: { title: 'FINAL', track: observerConfig.trackName, totalLaps: 10 },
+		standings: observerConfig.cars.map((car, index) => ({
+			carId: car.carId, driver: car.driver, position: index + 1, status: 'racing', lap: 6 - index,
+			currentLapMs: 9100 + index * 430, lapTimeMs: 14200 + index * 510, bestLapMs: 13700 + index * 390,
+		})),
+		lapHistory: [],
+	};
+	const gameplayFixtures = [
+		{ hp: 100, fuel: 68, fuelState: 'normal', boost: 100, boostState: 'ready', boostRemainingMs: 0, gear: 3 },
+		{ hp: 80, fuel: 17, fuelState: 'low', boost: 56, boostState: 'charging', boostRemainingMs: 0, gear: 3 },
+		{ hp: 92, fuel: 44, fuelState: 'normal', boost: 72, boostState: 'active', boostRemainingMs: 1800, gear: 4 },
+		{ hp: 48, fuel: 0, fuelState: 'empty', boost: 0, boostState: 'charging', boostRemainingMs: 0, gear: 2 },
+	];
+	observerConfig.cars.forEach((car, index) => {
+		const fixture = gameplayFixtures[index] || gameplayFixtures[0];
+		healthByCar.set(car.carId, {
+			...fixture,
+			speedCap: fixture.hp >= 70 ? 0.9 + ((fixture.hp - 70) / 300) : 0.7,
+			mode: fixture.hp < 70 ? 'damaged' : 'healthy',
+		});
+	});
+}
+
 async function initialize() {
   document.documentElement.dataset.mode = 'live';
   updateDisplayClass();
@@ -1395,8 +1435,14 @@ async function initialize() {
       state: 'WAITING', detail: 'NOT CONNECTED', fps: 0, videoActive: false,
       raceOpen: false, telemetryOpen: false, eventsOpen: false,
     });
+		const params = new URLSearchParams(location.search);
+		if (params.get('uiTest') === '1') {
+			seedObserverUiTest();
+			renderAll();
+			animationFrame = requestAnimationFrame(updateAnimationFrame);
+			return;
+		}
     renderAll();
-    const params = new URLSearchParams(location.search);
     const relayHost = params.get('relayHost') || location.host;
     for (const car of observerConfig.cars) {
       const client = new ObserverPeer(

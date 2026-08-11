@@ -3,6 +3,8 @@ param(
     [string]$RaceId = 'race-test',
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = 'hybrid',
+    [ValidateRange(1, 86400)]
+    [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
     [switch]$OpenAdmin,
     [switch]$KeepOpenOnError
@@ -120,13 +122,15 @@ try {
     $relayHasExpectedConfig = $relayProcesses.Count -gt 0 -and
         @($relayProcesses | Where-Object {
             $_.CommandLine -like "*${raceControlWsUrl}*" -and
-            $_.CommandLine -like "*-health-recovery-mode $HealthRecoveryMode*"
+            $_.CommandLine -like "*-health-recovery-mode $HealthRecoveryMode*" -and
+            $_.CommandLine -like "*-fuel-drive-duration $($FuelDriveDurationSeconds)s*"
         }).Count -gt 0
 
     $launchParameters = @{
         RaceControlUrl = $raceControlWsUrl
         RaceControlViewerToken = $viewerToken
         HealthRecoveryMode = $HealthRecoveryMode
+        FuelDriveDurationSeconds = $FuelDriveDurationSeconds
         TelemetryLogDirectory = $TelemetryLogDirectory
     }
     if ($rebuildRelay) {

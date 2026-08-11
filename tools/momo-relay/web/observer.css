@@ -113,9 +113,9 @@ button, input, select, textarea { font: inherit; }
   display: grid;
   grid-template-columns: 28px 36px minmax(0, 1fr) auto;
   grid-template-rows: auto auto auto;
-  gap: 4px 8px;
+  gap: 3px 8px;
   min-height: 0;
-  padding: 9px 16px 8px 20px;
+  padding: 5px 16px 4px 20px;
   border-bottom: 1px solid var(--line-soft);
 }
 
@@ -128,9 +128,9 @@ button, input, select, textarea { font: inherit; }
 .leader-pos { grid-row: 1 / 4; align-self: center; color: var(--car); font-size: 16px; font-weight: 900; line-height: 1; font-variant-numeric: tabular-nums; }
 .leader-avatar { grid-row: 1 / 4; display: grid; align-self: center; width: 36px; height: 36px; overflow: hidden; place-items: center; border: 2px solid var(--car); border-radius: 50%; color: var(--text); background: #151c1f; box-shadow: 0 0 10px color-mix(in srgb, var(--car) 26%, transparent); font-size: 11px; font-weight: 800; }
 .leader-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.leader-driver { align-self: center; min-width: 0; }
-.leader-driver strong { display: block; overflow: hidden; font-size: 18px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
-.leader-car { display: inline-block; margin-top: 4px; padding: 2px 5px; border: 1px solid color-mix(in srgb, var(--car) 70%, #273137); border-radius: 2px; color: var(--car); background: rgba(255, 255, 255, .02); font-size: 9px; font-weight: 800; }
+.leader-driver { display: flex; align-self: center; align-items: center; gap: 7px; min-width: 0; }
+.leader-driver strong { display: block; overflow: hidden; min-width: 0; font-size: 16px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.leader-car { display: inline-block; flex: 0 0 auto; margin-top: 0; padding: 2px 5px; border: 1px solid color-mix(in srgb, var(--car) 70%, #273137); border-radius: 2px; color: var(--car); background: rgba(255, 255, 255, .02); font-size: 9px; font-weight: 800; }
 .leader-gap { align-self: center; color: var(--car); font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .leader-times { grid-column: 3 / 5; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; color: #9fadb2; font-size: 10px; font-weight: 700; }
 .leader-times span { display: grid; gap: 2px; min-width: 0; }
@@ -146,6 +146,20 @@ button, input, select, textarea { font: inherit; }
 .leader-health[data-state="critical"] .leader-health-fill { background: var(--red); }
 .leader-health[data-state="warning"] > span, .leader-health[data-state="warning"] strong { color: var(--yellow); }
 .leader-health[data-state="critical"] > span, .leader-health[data-state="critical"] strong { color: var(--red); }
+.leader-resources { grid-column: 3 / 5; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; min-width: 0; }
+.leader-resource { --resource: #89999f; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto 4px; align-items: center; gap: 2px 4px; min-width: 0; color: var(--muted); font-size: 8px; font-weight: 800; }
+.leader-resource > span { grid-column: 1; grid-row: 1; }
+.leader-resource-track { grid-column: 1 / 3; grid-row: 2; height: 4px; overflow: hidden; background: #1a2428; }
+.leader-resource-fill { display: block; height: 100%; background: var(--resource); box-shadow: 0 0 6px color-mix(in srgb, var(--resource) 55%, transparent); transition: width 100ms linear; }
+.leader-resource strong { grid-column: 2; grid-row: 1; overflow: hidden; color: #dce7ea; font-size: 8px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.leader-resource-hp { --resource: var(--green); }
+.leader-resource-hp[data-state="damaged"] { --resource: var(--yellow); }
+.leader-resource-hp[data-state="critical"], .leader-resource-hp[data-state="limp"] { --resource: var(--red); }
+.leader-resource-fuel { --resource: #eee0a1; }
+.leader-resource-fuel[data-state="low"], .leader-resource-fuel[data-state="empty"] { --resource: var(--red); }
+.leader-resource-boost { --resource: var(--cyan); }
+.leader-resource-boost[data-state="ready"] { filter: brightness(1.35); }
+.leader-resource-boost[data-state="active"] { --resource: #a8f5ff; }
 
 .track-panel { display: grid; grid-template-rows: auto 1fr; min-height: 0; background: radial-gradient(circle at 54% 45%, rgba(19, 76, 85, .16), rgba(5, 9, 11, .84) 58%); }
 .track-heading { min-height: 52px; }

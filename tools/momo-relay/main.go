@@ -273,6 +273,11 @@ type raceStateEnvelope struct {
 	Phase     string `json:"phase"`
 	Flag      string `json:"flag"`
 	Sequence  uint64 `json:"sequence"`
+	Standings []struct {
+		CarID    string `json:"carId"`
+		Position int    `json:"position"`
+		Status   string `json:"status"`
+	} `json:"standings"`
 }
 
 type sourceFlag []string
@@ -389,10 +394,19 @@ type telemetryOperationsState struct {
 }
 
 type vehicleHealthOperationsState struct {
-	HP           float64 `json:"hp"`
-	SpeedCap     float64 `json:"speedCap"`
-	Mode         string  `json:"mode"`
-	RecoveryMode string  `json:"recoveryMode"`
+	HP               float64 `json:"hp"`
+	SpeedCap         float64 `json:"speedCap"`
+	Mode             string  `json:"mode"`
+	RecoveryMode     string  `json:"recoveryMode"`
+	Fuel             float64 `json:"fuel"`
+	FuelState        string  `json:"fuelState"`
+	Boost            float64 `json:"boost"`
+	BoostState       string  `json:"boostState"`
+	BoostRemainingMS int64   `json:"boostRemainingMs"`
+	Gear             int     `json:"gear"`
+	Position         int     `json:"position"`
+	FieldSize        int     `json:"fieldSize"`
+	FuelRatePerSec   float64 `json:"fuelRatePerSecond"`
 }
 
 type downstreamOperationsState struct {
@@ -420,7 +434,7 @@ type recoveryOperationsState struct {
 
 func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCommand bool,
 	rtpStallTimeout time.Duration, upstreamStartTimeout time.Duration,
-	healthRecoveryMode vehicleHealthRecoveryMode) (*relay, error) {
+	healthRecoveryMode vehicleHealthRecoveryMode, fuelDriveDurations ...time.Duration) (*relay, error) {
 	api, err := newH264API()
 	if err != nil {
 		return nil, err
@@ -428,6 +442,10 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 	videoTrack, err := webrtc.NewTrackLocalStaticRTP(h264Codec, "video", "momo")
 	if err != nil {
 		return nil, fmt.Errorf("create local H264 track: %w", err)
+	}
+	fuelDriveDuration := vehicleFuelDefaultDriveDuration
+	if len(fuelDriveDurations) > 0 && fuelDriveDurations[0] > 0 {
+		fuelDriveDuration = fuelDriveDurations[0]
 	}
 	relay := &relay{
 		name:                 name,
@@ -440,7 +458,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		rtpStallTimeout:      rtpStallTimeout,
 		upstreamStartTimeout: upstreamStartTimeout,
 		pilotCommandTimeout:  defaultPilotCommandTimeout,
-		vehicleHealth:        newVehicleHealth(time.Now()),
+		vehicleHealth:        newVehicleHealthWithFuelDuration(time.Now(), fuelDriveDuration),
 		vehicleEvents:        newVehicleEventStore(),
 		eventDispatch:        make(chan string, vehicleEventQueueLimit),
 	}
@@ -865,10 +883,19 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		Lifecycle:   lifecycle.String(),
 		VideoHealth: videoHealth.String(),
 		VehicleHealth: vehicleHealthOperationsState{
-			HP:           health.HP,
-			SpeedCap:     health.SpeedCap,
-			Mode:         health.Mode,
-			RecoveryMode: string(r.vehicleHealth.recoveryModeSnapshot()),
+			HP:               health.HP,
+			SpeedCap:         health.SpeedCap,
+			Mode:             health.Mode,
+			RecoveryMode:     string(r.vehicleHealth.recoveryModeSnapshot()),
+			Fuel:             health.Fuel,
+			FuelState:        health.FuelState,
+			Boost:            health.Boost,
+			BoostState:       health.BoostState,
+			BoostRemainingMS: health.BoostRemainingMS,
+			Gear:             health.Gear,
+			Position:         health.Position,
+			FieldSize:        health.FieldSize,
+			FuelRatePerSec:   health.FuelRatePerSec,
 		},
 		Upstream: upstreamOperationsState{
 			PeerState:               peerState,
@@ -1208,7 +1235,7 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 			log.Printf("source %q: ignore diagnostic V1 impact event: legacy_event_unsupported", r.name)
 		}
 		if publish {
-			r.broadcastVehicleHealth(health)
+			r.broadcastVehicleGameplay(health)
 			if r.pitPresence != nil {
 				if pit, changed := r.pitPresence.observeHealth(health); changed {
 					r.broadcastPitPresence(pit)
@@ -1230,17 +1257,23 @@ func (r *relay) broadcastVehicleHealth(health vehicleHealthSnapshot) {
 	})
 }
 
+func (r *relay) broadcastVehicleGameplay(health vehicleHealthSnapshot) {
+	r.broadcastVehicleHealth(health)
+	message := formatVehicleGameplayTelemetry(health)
+	if message == "" {
+		return
+	}
+	r.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(message), IsString: true})
+}
+
 // Race Control の状態は操縦テレメトリーと分離した reliable DataChannel で配る。
 // 順位やフラグは最新値を確実に渡す必要があり、低遅延・非信頼の telemetry channel
 // に混在させると再送されず、Viewer が古い状態のまま残るためである。
-func (r *relay) publishRaceState(message string, phase string) {
+func (r *relay) publishRaceState(message string) {
 	r.raceStateMu.Lock()
 	r.raceState = message
 	r.raceStateMu.Unlock()
 	r.broadcastRaceState(message)
-	if health, reset := r.vehicleHealth.observeRacePhase(phase, time.Now()); reset {
-		r.broadcastVehicleHealth(health)
-	}
 }
 
 func (r *relay) currentRaceState() string {
@@ -1528,8 +1561,9 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 		return
 	}
 	forwarded := message
+	now := time.Now()
 	if message.IsString {
-		forwarded.Data = []byte(r.vehicleHealth.limitCommand(string(message.Data), time.Now()))
+		forwarded.Data = []byte(r.vehicleHealth.limitCommand(string(message.Data), now))
 	}
 	if err := sendDataChannel(upstream, forwarded); err != nil {
 		log.Printf("forward command from viewer %d to Momo: %v", client.id, err)
@@ -1538,7 +1572,9 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	client.lastCommandUnixNano.Store(time.Now().UnixNano())
 	// 表示用にはダメージ制限前のペダル入力を返す。車両へ送る forwarded は
 	// 引き続き制限後の値なので、走行性能の制御には影響しない。
-	r.broadcastCommand(commandAuditWithGear(message, r.driveGear.Load()))
+	health := r.vehicleHealth.snapshot(now)
+	r.driveGear.Store(int32(health.Gear))
+	r.broadcastCommand(commandAuditWithGear(message, int32(health.Gear)))
 }
 
 func shouldLogCommandDrop(client *viewer, now time.Time) bool {
@@ -1573,11 +1609,27 @@ func (r *relay) handleDriveState(client *viewer, message webrtc.DataChannelMessa
 		r.setDriveLogging(client.id, true, "viewer drive on")
 	case "DRIVE:0":
 		r.setDriveLogging(client.id, false, "viewer drive off")
+	case "BOOST:ACTIVATE":
+		if health, activated := r.vehicleHealth.activateBoost(time.Now()); activated {
+			r.driveGear.Store(int32(health.Gear))
+			r.broadcastVehicleGameplay(health)
+		} else {
+			log.Printf("drop unavailable boost activation from viewer %d", client.id)
+		}
 	default:
 		if strings.HasPrefix(text, "GEAR:") {
 			gear, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(text, "GEAR:")))
-			if err == nil && gear >= 1 && gear <= 5 {
-				r.driveGear.Store(int32(gear))
+			if err == nil {
+				if r.vehicleHealth == nil && gear >= 1 && gear <= vehicleNormalGearMaximum {
+					r.driveGear.Store(int32(gear))
+					return
+				}
+				if health, accepted := r.vehicleHealth.setRequestedGear(gear, time.Now()); accepted {
+					r.driveGear.Store(int32(health.Gear))
+					r.broadcastVehicleGameplay(health)
+					return
+				}
+				log.Printf("drop unavailable gear %d from viewer %d", gear, client.id)
 				return
 			}
 		}
@@ -1617,6 +1669,7 @@ func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
 	if r.recorder != nil {
 		r.recorder.RecordDriveState(r.name, r.raceCarID, pilotID, enabled, reason)
 	}
+	r.broadcastVehicleGameplay(r.vehicleHealth.setDriveEnabled(enabled, time.Now()))
 }
 
 func (r *relay) sendNeutralToUpstream(reason string) {
@@ -2286,7 +2339,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
 				continue
 			}
-			source.publishRaceState(message, envelope.Phase)
+			source.publishRaceState(message)
 		}
 	}
 }
@@ -2310,6 +2363,7 @@ func main() {
 	var ayamePilotRooms sourceFlag
 	var telemetryLogDir string
 	var healthRecoveryModeValue string
+	var fuelDriveDuration time.Duration
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
@@ -2325,12 +2379,13 @@ func main() {
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
 	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
+	flag.DurationVar(&fuelDriveDuration, "fuel-drive-duration", vehicleFuelDefaultDriveDuration, "active forward-driving time required to consume a full fuel tank")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
 	flag.Parse()
-	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 {
-		log.Fatal("-rtp-stall-timeout and -upstream-start-timeout must be positive")
+	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 || fuelDriveDuration <= 0 {
+		log.Fatal("-rtp-stall-timeout, -upstream-start-timeout, and -fuel-drive-duration must be positive")
 	}
 	if strings.TrimSpace(healthRecoveryModeValue) == "" {
 		healthRecoveryModeValue = string(vehicleHealthRecoveryDefault)
@@ -2433,7 +2488,7 @@ func main() {
 			log.Fatalf("Race Control is enabled but source %q has no -race-car mapping", name)
 		}
 		relay, err := newRelay(name, sourceURL, raceCarID, allowObserverCommand,
-			rtpStallTimeout, upstreamStartTimeout, healthRecoveryMode)
+			rtpStallTimeout, upstreamStartTimeout, healthRecoveryMode, fuelDriveDuration)
 		if err != nil {
 			log.Fatal(err)
 		}

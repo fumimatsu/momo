@@ -11,6 +11,12 @@
 
 ## develop
 
+- [ADD] Local Relay に順位連動 Boost、G4、仮想 Fuel、PIT 給油を追加する
+  - 通常gearをG3上限とし、Boost充填後だけ2.5秒のG4を許可する
+  - Fuel 0ではPITへ戻れるPWM 1550へ前進を制限する
+  - `VGS:1`でHP、Fuel、Boost、実効gearをPilotとWeb Observerへ配信する
+- [UPDATE] severe impactのダメージを28から20へ変更する
+
 ## 2025.1.3
 
 **リリース日**: 2026-02-12
