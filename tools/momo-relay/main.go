@@ -1505,9 +1505,9 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 		return
 	}
 	client.lastCommandUnixNano.Store(time.Now().UnixNano())
-	// コマンドは全員に同じ DataChannel で返す。クライアント側は受信時にのみ
-	// 表示するため、この監査メッセージが Momo に再送されることはない。
-	r.broadcastCommand(commandAuditWithGear(forwarded, r.driveGear.Load()))
+	// 表示用にはダメージ制限前のペダル入力を返す。車両へ送る forwarded は
+	// 引き続き制限後の値なので、走行性能の制御には影響しない。
+	r.broadcastCommand(commandAuditWithGear(message, r.driveGear.Load()))
 }
 
 func shouldLogCommandDrop(client *viewer, now time.Time) bool {

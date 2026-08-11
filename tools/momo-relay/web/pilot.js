@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-gear-audit-v2';
+  const PILOT_BUILD_ID = '20260811-gear-audit-v3';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -4622,6 +4622,8 @@
       driveChannel.onopen = () => {
         recordEvent('drive dc open');
         sendDriveState();
+        // The command channel can still be opening, but gear only needs momo-drive.
+        sendGearState();
       };
       driveChannel.onclose = () => {
         recordEvent('drive dc close');
@@ -4630,6 +4632,7 @@
       if (driveChannel.readyState === 'open') {
         recordEvent('drive dc open');
         sendDriveState();
+        sendGearState();
       }
     };
 
