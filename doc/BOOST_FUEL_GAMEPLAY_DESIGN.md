@@ -14,6 +14,7 @@ Race Control は既存の phase、run、standings を配信し、MADSYSTEM は�
 | G4上限 | 前進PWM 1900。終了時はRelayがG3へ戻す |
 | Boost充填 | 4台時はP1=40秒、P2=34秒、P3=28秒、P4=22秒。順位不明時は30秒 |
 | Fuel | 既定では合計120秒の有効前進で100から0まで定率消費する |
+| Practice | `raceInfo.sessionType=practice` の間はFuelを消費しない |
 | Fuel 0 | Boostを解除し、前進PWMを1550へ制限する。PITへ戻るため完全停止にはしない |
 | PIT tick | 2秒ごとにHP +20とFuel +20を同じlock内で適用する |
 | PIT完了表示 | HP 100かつFuel 100。途中退出は常に許可し、回復済みの値を保持する |
@@ -29,6 +30,9 @@ Fuel消費とBoost充填は、次をすべて満たす間だけ進行する。
 - PIT外
 - 350 ms以内に有効な前進指令を受信
 - Fuelが0より大きい
+
+Fuel消費だけは `raceInfo.sessionType=practice` のとき停止する。Boost充填はPracticeでも進行する。
+`sessionType` がない旧Race Controlでは後方互換のためFuelを消費する。
 
 ## Fuel拡張境界
 

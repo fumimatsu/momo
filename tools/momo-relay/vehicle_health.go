@@ -46,6 +46,7 @@ type vehicleHealthSnapshot struct {
 	FuelRatePerSec    float64 `json:"fuelRatePerSecond"`
 	RequestedThrottle float64 `json:"requestedThrottle"`
 	EffectiveThrottle float64 `json:"effectiveThrottle"`
+	SessionType       string  `json:"sessionType"`
 	ServerTimeMS      int64   `json:"serverTimeMs"`
 }
 
@@ -96,6 +97,7 @@ type vehicleHealth struct {
 	lastForwardAt     time.Time
 	lastPublishedAt   time.Time
 	lastRacePhase     string
+	lastSessionType   string
 	recoveryMode      vehicleHealthRecoveryMode
 	activeRaceRunID   string
 	pitEntryID        string
@@ -226,7 +228,7 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 	return health.snapshotLocked(now), true
 }
 
-func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, phase string, position int, fieldSize int, now time.Time) (vehicleHealthSnapshot, bool) {
+func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, phase string, position int, fieldSize int, now time.Time, sessionTypes ...string) (vehicleHealthSnapshot, bool) {
 	if health == nil {
 		return defaultVehicleHealthSnapshot(now), false
 	}
@@ -236,6 +238,7 @@ func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, 
 	previousRunID := health.activeRaceRunID
 	previousPosition := health.position
 	previousFieldSize := health.fieldSize
+	previousSessionType := health.lastSessionType
 	health.mu.Unlock()
 	health.observeRaceRun(raceRunID, now)
 	snapshot, changed := health.observeRacePhase(phase, now)
@@ -245,11 +248,13 @@ func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, 
 	health.lastRaceStateAt = now
 	health.position = position
 	health.fieldSize = fieldSize
+	health.lastSessionType = normalizeRaceSessionType(firstString(sessionTypes))
 	if !connected {
 		health.cancelBoostLocked()
 	}
 	if previousConnected != connected || previousPhase != strings.ToLower(strings.TrimSpace(phase)) || previousRunID != raceRunID ||
-		previousPosition != position || previousFieldSize != fieldSize || snapshot.BoostState != health.boostStateLocked(now) {
+		previousPosition != position || previousFieldSize != fieldSize || previousSessionType != health.lastSessionType ||
+		snapshot.BoostState != health.boostStateLocked(now) {
 		changed = true
 	}
 	return health.snapshotLocked(now), changed
@@ -526,7 +531,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 		changed = changed || health.hp != previous
 	}
 
-	if activelyDriving && health.fuel > 0 {
+	if activelyDriving && health.fuel > 0 && health.fuelConsumptionEnabledLocked() {
 		rate := health.fuelRateLocked()
 		previous := health.fuel
 		health.fuel = math.Max(0, health.fuel-(rate*elapsed))
@@ -575,6 +580,7 @@ func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot
 		FuelRatePerSec:    health.fuelRatePerSec,
 		RequestedThrottle: health.requestedThrottle,
 		EffectiveThrottle: health.effectiveThrottle,
+		SessionType:       vehicleSessionTypeState(health.lastSessionType),
 		ServerTimeMS:      now.UnixMilli(),
 	}
 }
@@ -583,7 +589,7 @@ func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
 	return vehicleHealthSnapshot{
 		HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
 		Fuel: vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
-		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, ServerTimeMS: now.UnixMilli(),
+		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, SessionType: "unknown", ServerTimeMS: now.UnixMilli(),
 	}
 }
 
@@ -680,6 +686,37 @@ func (health *vehicleHealth) fuelRateLocked() float64 {
 	// 初期版は入力やギアに依存しない。要求値と実効値は状態へ残し、後から
 	// この関数だけでスロットル量・ギア・Boost に応じた消費へ拡張できる。
 	return vehicleFuelMaximum / health.fuelDriveDuration.Seconds()
+}
+
+func (health *vehicleHealth) fuelConsumptionEnabledLocked() bool {
+	return health.lastSessionType != "practice"
+}
+
+func normalizeRaceSessionType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "practice":
+		return "practice"
+	case "qualify":
+		return "qualify"
+	case "race":
+		return "race"
+	default:
+		return ""
+	}
+}
+
+func vehicleSessionTypeState(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func (health *vehicleHealth) boostChargeDurationLocked() time.Duration {

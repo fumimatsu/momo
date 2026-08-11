@@ -27,6 +27,16 @@ func advanceGameplayDriving(health *vehicleHealth, base time.Time, seconds int, 
 	}
 }
 
+func advanceGameplayDrivingInSession(health *vehicleHealth, base time.Time, seconds int, sessionType string) {
+	for tick := 1; tick <= seconds*10; tick++ {
+		now := base.Add(time.Duration(tick) * 100 * time.Millisecond)
+		if tick%10 == 0 {
+			health.observeRaceState(true, "rr_"+sessionType, "green", 1, 4, now, sessionType)
+		}
+		health.limitCommand("S:1500,T:1800", now)
+	}
+}
+
 func TestVehicleGameplayFuelDrainAndEmptyLimit(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := prepareGameplayHealth(base, 10*time.Second, 1, 4)
@@ -38,6 +48,42 @@ func TestVehicleGameplayFuelDrainAndEmptyLimit(t *testing.T) {
 	}
 	if got := health.limitCommand("S:1500,T:2000", base.Add(10*time.Second)); got != "S:1500,T:1550" {
 		t.Fatalf("empty-fuel command = %q, want limp PWM 1550", got)
+	}
+}
+
+func TestVehicleGameplayPracticeDoesNotConsumeFuel(t *testing.T) {
+	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealthWithFuelDuration(base, 10*time.Second)
+	health.observeRaceState(true, "rr_practice", "green", 1, 4, base, "practice")
+	health.setDriveEnabled(true, base)
+	health.limitCommand("S:1500,T:1800", base)
+
+	advanceGameplayDrivingInSession(health, base, 12, "practice")
+
+	snapshot := health.snapshot(base.Add(12 * time.Second))
+	if snapshot.Fuel != vehicleFuelMaximum || snapshot.FuelRatePerSec != 0 {
+		t.Fatalf("practice fuel = %#v, want full tank with zero consumption", snapshot)
+	}
+	if snapshot.SessionType != "practice" {
+		t.Fatalf("practice session type = %q", snapshot.SessionType)
+	}
+	if snapshot.Boost <= 0 {
+		t.Fatalf("practice boost = %.2f, want boost charging to remain enabled", snapshot.Boost)
+	}
+}
+
+func TestVehicleGameplayQualifyConsumesFuel(t *testing.T) {
+	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealthWithFuelDuration(base, 10*time.Second)
+	health.observeRaceState(true, "rr_qualify", "green", 1, 4, base, "qualify")
+	health.setDriveEnabled(true, base)
+	health.limitCommand("S:1500,T:1800", base)
+
+	advanceGameplayDrivingInSession(health, base, 5, "qualify")
+	now := base.Add(5 * time.Second)
+	snapshot := health.snapshot(now)
+	if math.Abs(snapshot.Fuel-50) > 0.001 {
+		t.Fatalf("qualify fuel = %#v, want 50", snapshot)
 	}
 }
 

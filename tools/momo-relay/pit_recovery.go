@@ -145,7 +145,15 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 				break
 			}
 		}
-		health, changed := source.vehicleHealth.observeRaceState(true, currentRunID, currentPhase, position, len(envelope.Standings), now)
+		health, changed := source.vehicleHealth.observeRaceState(
+			true,
+			currentRunID,
+			currentPhase,
+			position,
+			len(envelope.Standings),
+			now,
+			envelope.RaceInfo.SessionType,
+		)
 		if changed {
 			source.driveGear.Store(int32(health.Gear))
 			source.broadcastVehicleGameplay(health)

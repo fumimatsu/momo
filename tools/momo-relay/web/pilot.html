@@ -1237,12 +1237,12 @@
       position: fixed;
       z-index: 12;
       right: auto;
-      bottom: max(96px, calc(env(safe-area-inset-bottom) + 72px));
+      bottom: max(104px, calc(env(safe-area-inset-bottom) + 88px));
       left: 50%;
       display: grid;
-      width: min(260px, calc(100vw - 32px));
-      gap: 4px;
-      padding: 6px 8px;
+      width: min(440px, calc(100vw - 32px));
+      gap: 7px;
+      padding: 10px 12px;
       border-top: 1px solid rgba(194, 232, 244, 0.45);
       border-bottom: 1px solid rgba(194, 232, 244, 0.3);
       background: rgba(1, 8, 11, 0.68);
@@ -1257,23 +1257,23 @@
     .vehicle-resource-row {
       --resource-color: #55df8f;
       display: grid;
-      grid-template-columns: 54px 1fr 44px;
+      grid-template-columns: 76px 1fr 62px;
       align-items: center;
-      gap: 6px;
-      min-height: 19px;
+      gap: 10px;
+      min-height: 29px;
       color: #f5fbff;
     }
 
     .vehicle-resource-label {
       color: var(--resource-color);
-      font-size: 10px;
+      font-size: 14px;
       font-weight: 800;
       letter-spacing: 0.08em;
     }
 
     .vehicle-resource-row output {
       color: #ffffff;
-      font-size: 11px;
+      font-size: 16px;
       font-weight: 800;
       letter-spacing: 0;
       text-align: right;
@@ -1283,7 +1283,7 @@
     .vehicle-resource-rail {
       position: relative;
       display: block;
-      height: 9px;
+      height: 15px;
       overflow: hidden;
       border: 1px solid color-mix(in srgb, var(--resource-color) 62%, #dff8ff);
       background: rgba(0, 0, 0, 0.55);
@@ -1318,10 +1318,6 @@
 
     .vehicle-resource-row.is-impacting {
       animation: vehicle-resource-impact 260ms ease-out 2;
-    }
-
-    body.drive-ui .vehicle-resource-hud {
-      bottom: max(28px, env(safe-area-inset-bottom));
     }
 
     @keyframes vehicle-resource-ready {
@@ -1908,6 +1904,31 @@
     }
 
     @media (max-width: 720px) {
+      .vehicle-resource-hud {
+        bottom: max(204px, calc(env(safe-area-inset-bottom) + 188px));
+        width: min(340px, calc(100vw - 32px));
+        gap: 4px;
+        padding: 5px 9px;
+      }
+
+      .vehicle-resource-row {
+        grid-template-columns: 62px 1fr 52px;
+        gap: 8px;
+        min-height: 22px;
+      }
+
+      .vehicle-resource-label {
+        font-size: 12px;
+      }
+
+      .vehicle-resource-row output {
+        font-size: 13px;
+      }
+
+      .vehicle-resource-rail {
+        height: 11px;
+      }
+
       .menu-sheet {
         max-height: 92vh;
         padding: calc(18px + env(safe-area-inset-top)) 16px 24px;

@@ -273,6 +273,9 @@ type raceStateEnvelope struct {
 	Phase     string `json:"phase"`
 	Flag      string `json:"flag"`
 	Sequence  uint64 `json:"sequence"`
+	RaceInfo  struct {
+		SessionType string `json:"sessionType"`
+	} `json:"raceInfo"`
 	Standings []struct {
 		CarID    string `json:"carId"`
 		Position int    `json:"position"`
