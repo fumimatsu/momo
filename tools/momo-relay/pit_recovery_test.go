@@ -67,9 +67,8 @@ func TestVehicleHealthHybridModeAllowsDrivingAndPitRecovery(t *testing.T) {
 	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.setRecoveryMode(vehicleHealthRecoveryHybrid)
-	health.observeRaceRun("rr_hybrid", base)
-	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	health.observeRaceState(true, "rr_hybrid", "green", 1, 4, base)
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	health.setDriveEnabled(true, base)
 
 	health.observeRaceState(true, "rr_hybrid", "green", 1, 4, base.Add(5*time.Second))
@@ -99,7 +98,7 @@ func TestVehicleHealthAppliesPitRecoveryTicksIdempotently(t *testing.T) {
 	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.setRecoveryMode(vehicleHealthRecoveryPitMarker)
-	health.observeRaceRun("rr_123", base)
+	health.observeRaceState(true, "rr_123", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 
 	first := pitRecoveryCommand{
@@ -159,7 +158,7 @@ func TestVehicleHealthPitModeDisablesLegacyRecoveryAndChecksSequence(t *testing.
 	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.setRecoveryMode(vehicleHealthRecoveryPitMarker)
-	health.observeRaceRun("rr_123", base)
+	health.observeRaceState(true, "rr_123", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	health.limitCommand("S:1500,T:2000", base.Add(5*time.Second))
 	health.ingestTelemetry(`TEL:{"v":2,"k":"s"}`, "CP-1", base.Add(6*time.Second))
@@ -183,7 +182,7 @@ func TestPitRecoveryTickHTTPContract(t *testing.T) {
 	base := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.setRecoveryMode(vehicleHealthRecoveryPitMarker)
-	health.observeRaceRun("rr_123", base)
+	health.observeRaceState(true, "rr_123", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	server := &relayServer{
 		sources: map[string]*relay{

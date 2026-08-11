@@ -10,6 +10,7 @@ import (
 func TestVehicleHealthAppliesDamageAndClampsForwardThrottle(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_damage", "green", 1, 4, base)
 
 	_, published, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`, "CP-1", base.Add(time.Second))
 	if !published {
@@ -53,6 +54,7 @@ func TestVehicleHealthSpeedCapUsesGentleHealthyRange(t *testing.T) {
 func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_123", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	if got := health.snapshot(base).HP; got != 80 {
 		t.Fatalf("severe impact HP = %.1f, want 80", got)
@@ -75,6 +77,7 @@ func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T)
 func TestVehicleHealthReadyTransitionResetsOnlyOnce(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_ready", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
 	if _, reset := health.observeRacePhase("green", base.Add(time.Second)); reset {
 		t.Fatal("green must not reset health")
@@ -112,6 +115,7 @@ func TestVehicleHealthClassifiesOnlyImpactEvents(t *testing.T) {
 func TestVehicleHealthCooldownAndDuplicateEventsDoNotApplyDamageTwice(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_cooldown", "green", 1, 4, base)
 	firstRaw := `TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
 	_, _, first := health.ingestTelemetry(firstRaw, "CP-1", base)
 	if first == nil || !first.DamageApplied || first.HPAfter != 88 {
@@ -130,5 +134,53 @@ func TestVehicleHealthCooldownAndDuplicateEventsDoNotApplyDamageTwice(t *testing
 	_, _, applied := health.ingestTelemetry(thirdRaw, "CP-1", base.Add(600*time.Millisecond))
 	if applied == nil || !applied.DamageApplied || applied.HPAfter != 76 {
 		t.Fatalf("event at 600ms = %#v", applied)
+	}
+}
+
+func TestVehicleHealthSuppressesDamageOutsideActiveRace(t *testing.T) {
+	base := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		setup func(*vehicleHealth)
+		now   time.Time
+	}{
+		{name: "not_started", setup: func(*vehicleHealth) {}, now: base},
+		{name: "ready", setup: func(health *vehicleHealth) {
+			health.observeRaceState(true, "rr_ready", "ready", 1, 4, base)
+		}, now: base.Add(time.Second)},
+		{name: "finished", setup: func(health *vehicleHealth) {
+			health.observeRaceState(true, "rr_finished", "finished", 1, 4, base)
+		}, now: base.Add(time.Second)},
+		{name: "disconnected", setup: func(health *vehicleHealth) {
+			health.observeRaceState(false, "rr_disconnected", "green", 1, 4, base)
+		}, now: base.Add(time.Second)},
+		{name: "stale", setup: func(health *vehicleHealth) {
+			health.observeRaceState(true, "rr_stale", "green", 1, 4, base)
+		}, now: base.Add(vehicleRaceStateFreshness + time.Millisecond)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			health := newVehicleHealth(base)
+			test.setup(health)
+			_, _, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", test.now)
+			if event == nil || event.DamageApplied || event.Damage != 0 || event.SuppressionReason != "race_inactive" {
+				t.Fatalf("inactive race event = %#v", event)
+			}
+			if snapshot := health.snapshot(test.now); snapshot.HP != vehicleHealthMaximum {
+				t.Fatalf("inactive race HP = %.1f, want %.1f", snapshot.HP, vehicleHealthMaximum)
+			}
+		})
+	}
+}
+
+func TestVehicleHealthAppliesDamageDuringPractice(t *testing.T) {
+	base := time.Date(2026, 8, 12, 13, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_practice", "green", 1, 4, base, "practice")
+
+	_, _, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base.Add(time.Second))
+	if event == nil || !event.DamageApplied || event.Damage != vehicleHealthSevereDamage || event.HPAfter != 80 {
+		t.Fatalf("practice impact event = %#v", event)
 	}
 }

@@ -298,7 +298,7 @@
       min-height: 49px;
       padding: 4px 7px;
       border-left: 2px solid rgba(108, 221, 244, 0.48);
-      background: rgba(13, 28, 35, 0.68);
+      background: rgba(13, 28, 35, 0.22);
     }
 
     .race-battle-rival.ahead {
@@ -320,12 +320,12 @@
 
     .race-battle-rival.behind[data-gap-state="pressure"] {
       border-left-color: #ffbf3f;
-      background: rgba(82, 48, 4, 0.72);
+      background: rgba(82, 48, 4, 0.4);
     }
 
     .race-battle-rival.behind[data-gap-state="critical"] {
       border-left-color: #ff6159;
-      background: rgba(89, 16, 14, 0.78);
+      background: rgba(89, 16, 14, 0.48);
       box-shadow: inset 0 0 16px rgba(255, 71, 64, 0.18);
     }
 
@@ -443,7 +443,7 @@
       top: 50%;
       min-height: 49px;
       border-left-color: #6ce4fb;
-      background: rgba(15, 46, 56, 0.78);
+      background: rgba(15, 46, 56, 0.34);
       box-shadow: none;
       transform: translateY(-50%);
     }
@@ -715,6 +715,15 @@
       transform: scale(var(--osd-scale));
       transform-origin: bottom right;
       pointer-events: auto;
+    }
+
+    .race-position,
+    .race-battle,
+    .race-history {
+      border-color: rgba(151, 211, 230, 0.28);
+      background: linear-gradient(112deg, rgba(1, 8, 12, 0.2), rgba(6, 18, 28, 0.08));
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.08);
+      backdrop-filter: none;
     }
 
     .race-history ol {

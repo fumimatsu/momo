@@ -15,7 +15,7 @@ func newPitPresenceTestServer(t *testing.T) (*relayServer, *relay) {
 	now := time.Now()
 	health := newVehicleHealth(now)
 	health.setRecoveryMode(vehicleHealthRecoveryHybrid)
-	health.observeRaceRun("rr_123", now)
+	health.observeRaceState(true, "rr_123", "green", 1, 4, now)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", now)
 	source := &relay{
 		name:          "11.5",

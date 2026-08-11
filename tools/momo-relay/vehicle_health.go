@@ -424,17 +424,21 @@ func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.
 		eventID := fmt.Sprintf("%s:%s:%d", carID, candidate.Boot, candidate.Sequence)
 		if impactClass != "" && health.rememberImpactLocked(eventID) {
 			hpBefore := health.hp
-			health.lastUnsafeAt = now
 			damage := relayImpactDamage(impactClass)
 			damageApplied := false
 			suppressionReason := ""
-			if damage > 0 && (health.lastDamageAt.IsZero() || now.Sub(health.lastDamageAt) >= vehicleHealthDamageCooldown) {
+			if damage > 0 && !health.raceGameplayActiveLocked(now) {
+				damage = 0
+				suppressionReason = "race_inactive"
+			} else if damage > 0 && (health.lastDamageAt.IsZero() || now.Sub(health.lastDamageAt) >= vehicleHealthDamageCooldown) {
+				health.lastUnsafeAt = now
 				health.hp = math.Max(0, health.hp-damage)
 				health.lastDamageAt = now
 				health.lastUpdatedAt = now
 				changed = true
 				damageApplied = true
 			} else if damage > 0 {
+				health.lastUnsafeAt = now
 				damage = 0
 				suppressionReason = "cooldown"
 			} else {
@@ -646,8 +650,7 @@ func (health *vehicleHealth) activateBoost(now time.Time) (vehicleHealthSnapshot
 	defer health.mu.Unlock()
 	health.advanceRecoveryLocked(now)
 	if health.requestedGear != vehicleNormalGearMaximum || health.boost < vehicleBoostMaximum || health.fuel <= 0 ||
-		health.pitPresent || !health.raceConnected || health.activeRaceRunID == "" || health.lastRacePhase != "green" ||
-		now.Sub(health.lastRaceStateAt) > vehicleRaceStateFreshness {
+		health.pitPresent || !health.raceGameplayActiveLocked(now) {
 		return health.snapshotLocked(now), false
 	}
 	health.boost = vehicleBoostMaximum
@@ -678,9 +681,16 @@ func (health *vehicleHealth) boostStateLocked(now time.Time) string {
 }
 
 func (health *vehicleHealth) isActivelyDrivingLocked(now time.Time) bool {
-	return health.driveEnabled && health.raceConnected && health.activeRaceRunID != "" && health.lastRacePhase == "green" && !health.pitPresent &&
-		!health.lastRaceStateAt.IsZero() && now.Sub(health.lastRaceStateAt) <= vehicleRaceStateFreshness &&
+	return health.driveEnabled && health.raceGameplayActiveLocked(now) && !health.pitPresent &&
 		!health.lastForwardAt.IsZero() && now.Sub(health.lastForwardAt) <= vehicleHealthForwardCommandGrace
+}
+
+func (health *vehicleHealth) raceGameplayActiveLocked(now time.Time) bool {
+	if !health.raceConnected || health.activeRaceRunID == "" || health.lastRacePhase != "green" || health.lastRaceStateAt.IsZero() {
+		return false
+	}
+	age := now.Sub(health.lastRaceStateAt)
+	return age >= 0 && age <= vehicleRaceStateFreshness
 }
 
 func (health *vehicleHealth) fuelRateLocked() float64 {

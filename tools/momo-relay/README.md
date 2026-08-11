@@ -211,6 +211,9 @@ RAW診断とsynthetic testの互換用に残すが、V1 `impact`はHPを変更�
 衝撃段階は`weak >= 10 m/s2`、`strong >= 12 m/s2 && jerk >= 250 m/s3`、
 `severe >= 18 m/s2 && jerk >= 250 m/s3`である。strongは12 HP、severeは20 HPを減算し、
 damage cooldownは600 msとする。同じ`carId:boot:sequence`の再送は重複として無視する。
+HPダメージはPracticeを含む有効なレースセッション中だけ適用する。Race Control接続中、
+raceRunIdあり、phaseが`green`、最終race state受信から5秒以内の条件を満たさない衝撃は、
+`race_inactive`としてイベントへ記録するがHPと回復待ち時間を変更しない。
 
 RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。
 各sourceはレース単位で直近32件を保持し、channel open時に`vehicle_event_snapshot`を送る。
