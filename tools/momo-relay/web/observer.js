@@ -717,6 +717,7 @@ function motionOptions() {
     minimumMs: observerConfig.motion.checkpointGraceMinMs,
     maximumMs: observerConfig.motion.checkpointGraceMaxMs,
     ratio: observerConfig.motion.checkpointGraceRatio,
+    clockToleranceMs: observerConfig.motion.markerClockToleranceMs,
   };
 }
 

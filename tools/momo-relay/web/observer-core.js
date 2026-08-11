@@ -336,11 +336,13 @@ export function estimateLapPacedProgress(
   const markerIndex = finiteNumber(standing?.lastMarkerIndex);
   const markerRaceMs = finiteNumber(standing?.lastMarkerRaceMs);
   const raceElapsed = finiteNumber(raceElapsedMs);
+  const clockToleranceValue = finiteNumber(options.clockToleranceMs);
+  const clockToleranceMs = clamp(clockToleranceValue ?? 500, 0, 5000);
   const markerValid = Number.isInteger(markerIndex) && markerIndex >= 0 && markerIndex < sectorCount
     && Number.isInteger(markerRaceMs) && markerRaceMs >= 0
-    && raceElapsed !== null && raceElapsed >= markerRaceMs;
+    && raceElapsed !== null && raceElapsed + clockToleranceMs >= markerRaceMs;
   const anchorIndex = markerValid ? markerIndex : 0;
-  const elapsedSinceAnchorMs = markerValid ? raceElapsed - markerRaceMs : lapElapsed;
+  const elapsedSinceAnchorMs = markerValid ? Math.max(0, raceElapsed - markerRaceMs) : lapElapsed;
   const projection = projectCourseProgress(
     normalized[anchorIndex],
     normalized[anchorIndex + 1],
@@ -500,6 +502,7 @@ export function normalizeObserverConfig(config) {
       checkpointGraceMinMs,
       checkpointGraceMaxMs,
       checkpointGraceRatio: motionNumber('checkpointGraceRatio', 0.25, 0.01, 1),
+      markerClockToleranceMs: motionNumber('markerClockToleranceMs', 500, 0, 5000),
       markerCorrectionMs: motionNumber('markerCorrectionMs', 360, 0, 3000),
       pitEntryMs: motionNumber('pitEntryMs', 650, 0, 5000),
       pitExitMs: motionNumber('pitExitMs', 1800, 100, 10000),

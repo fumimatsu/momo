@@ -5,6 +5,7 @@
     "checkpointGraceMinMs": 1200,
     "checkpointGraceMaxMs": 3000,
     "checkpointGraceRatio": 0.25,
+    "markerClockToleranceMs": 500,
     "markerCorrectionMs": 360,
     "pitEntryMs": 650,
     "pitExitMs": 1800,
