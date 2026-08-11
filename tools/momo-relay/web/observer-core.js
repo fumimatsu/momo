@@ -530,6 +530,7 @@ export function deriveSituations(
   healthByCar,
   connectionByCar,
   telemetryByCar = new Map(),
+  vehicleEventByCar = new Map(),
   pitByCar = new Map(),
   nowUnixMs = Date.now(),
 ) {
@@ -558,7 +559,7 @@ export function deriveSituations(
   for (const car of configCars) {
     const health = healthByCar.get(car.carId);
     const connection = connectionByCar.get(car.carId);
-    const telemetry = telemetryByCar.get(car.carId);
+    const vehicleEvent = vehicleEventByCar.get(car.carId);
     const pit = pitByCar.get(car.carId);
     if (pit?.present) {
       const complete = pit.serviceState === 'complete';
@@ -602,13 +603,18 @@ export function deriveSituations(
         priority: 30,
       });
     }
-    if (telemetry?.motion?.impactRecent && telemetry.motion.lastImpactEvent) {
-      const event = telemetry.motion.lastImpactEvent;
+    if (vehicleEvent) {
+      const event = vehicleEvent;
+      const detail = event.damageApplied
+        ? `DAMAGE -${Math.round(event.damage)} · HP ${Math.round(event.hpAfter)}`
+        : event.suppressionReason === 'cooldown'
+          ? `DAMAGE COOLDOWN · HP ${Math.round(event.hpAfter)}`
+          : `NO DAMAGE · JERK ${Math.round(event.jerkMps3)}`;
       situations.push({
         type: 'impact',
         label: event.impactClass === 'severe' ? 'HEAVY IMPACT' : event.impactClass === 'strong' ? 'IMPACT' : 'GRAVEL',
         primary: `CAR ${car.displayNumber} · ${event.magnitudeMps2.toFixed(1)} m/s²`,
-        detail: `JERK ${Math.round(event.jerkMps3 || 0)}`,
+        detail,
         tone: event.impactClass === 'weak' ? 'watch' : 'limited',
         priority: event.impactClass === 'severe' ? 180 : event.impactClass === 'strong' ? 150 : 80,
       });

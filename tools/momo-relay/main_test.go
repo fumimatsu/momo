@@ -322,6 +322,7 @@ func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testi
 	pilot.state.Store(int32(viewerConnected))
 	pilot.telemetry.Store(new(webrtc.DataChannel))
 	pilot.race.Store(new(webrtc.DataChannel))
+	pilot.events.Store(new(webrtc.DataChannel))
 	observer := &viewer{id: 2, role: "observer"}
 	observer.state.Store(int32(viewerConnected))
 	negotiating := &viewer{id: 3, role: "observer"}
@@ -333,14 +334,15 @@ func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testi
 	if !status.PilotLeaseReserved || status.ConnectedPilots != 1 || status.ConnectedObservers != 1 || status.NegotiatingPeers != 1 {
 		t.Fatalf("unexpected downstream state: %#v", status)
 	}
-	if status.TelemetryOpen != 1 || status.RaceOpen != 1 {
+	if status.TelemetryOpen != 1 || status.RaceOpen != 1 || status.EventsOpen != 1 {
 		t.Fatalf("unexpected channel state: %#v", status)
 	}
 
 	pilot.telemetry.Store(nil)
 	pilot.race.Store(nil)
+	pilot.events.Store(nil)
 	status = source.downstreamStatusSnapshot()
-	if status.TelemetryOpen != 0 || status.RaceOpen != 0 {
+	if status.TelemetryOpen != 0 || status.RaceOpen != 0 || status.EventsOpen != 0 {
 		t.Fatalf("closed channels still counted: %#v", status)
 	}
 }

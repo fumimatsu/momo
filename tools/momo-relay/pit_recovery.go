@@ -138,6 +138,7 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 	for _, source := range server.sources {
 		if previous.RaceRunID != currentRunID {
 			source.vehicleHealth.observeRaceRun(currentRunID, now)
+			source.resetVehicleEvents(currentRunID)
 			if source.pitPresence == nil {
 				continue
 			}

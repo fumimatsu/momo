@@ -33,6 +33,7 @@ const (
 	telemetryLabel = "momo-telemetry"
 	raceLabel      = "momo-race"
 	driveLabel     = "momo-drive"
+	eventsLabel    = "momo-events"
 	upstreamLabel  = "serial"
 
 	defaultRTPStallTimeout      = 5 * time.Second
@@ -72,8 +73,10 @@ type viewer struct {
 	command             atomic.Pointer[webrtc.DataChannel]
 	race                atomic.Pointer[webrtc.DataChannel]
 	drive               atomic.Pointer[webrtc.DataChannel]
+	events              atomic.Pointer[webrtc.DataChannel]
 	lastCommandUnixNano atomic.Int64
 	raceSendMu          sync.Mutex
+	eventsSendMu        sync.Mutex
 }
 
 type sourceLifecycle int32
@@ -208,6 +211,8 @@ type relay struct {
 	frameRate              frameRateWindow
 	vehicleHealth          *vehicleHealth
 	pitPresence            *pitPresenceState
+	vehicleEvents          *vehicleEventStore
+	eventDispatch          chan string
 
 	rtpRewriteMu          sync.Mutex
 	rtpRewriteInitialized bool
@@ -374,6 +379,7 @@ type downstreamOperationsState struct {
 	ConnectedObservers int  `json:"connectedObservers"`
 	TelemetryOpen      int  `json:"telemetryChannelsOpen"`
 	RaceOpen           int  `json:"raceChannelsOpen"`
+	EventsOpen         int  `json:"eventsChannelsOpen"`
 }
 
 type pliRequestCounts struct {
@@ -412,6 +418,8 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		upstreamStartTimeout: upstreamStartTimeout,
 		pilotCommandTimeout:  defaultPilotCommandTimeout,
 		vehicleHealth:        newVehicleHealth(time.Now()),
+		vehicleEvents:        newVehicleEventStore(),
+		eventDispatch:        make(chan string, vehicleEventQueueLimit),
 	}
 	relay.pitPresence = newPitPresenceState(raceCarID, vehicleHealthMaximum)
 	relay.lifecycle.Store(int32(sourceWaiting))
@@ -439,6 +447,7 @@ func newH264API() (*webrtc.API, error) {
 
 func (r *relay) start(ctx context.Context) {
 	go r.watchPilotCommands(ctx)
+	go r.runVehicleEventDispatcher(ctx)
 	go func() {
 		for {
 			r.lifecycle.Store(int32(sourceConnecting))
@@ -889,6 +898,9 @@ func (r *relay) downstreamStatusSnapshot() downstreamOperationsState {
 		if client.race.Load() != nil {
 			state.RaceOpen++
 		}
+		if client.events.Load() != nil {
+			state.EventsOpen++
+		}
 	}
 	return state
 }
@@ -1088,7 +1100,13 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
 		}
 		message = normalized
-		if health, publish := r.vehicleHealth.ingestTelemetry(raw, time.Now()); publish {
+		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, time.Now())
+		if event != nil {
+			r.publishVehicleEvent(*event)
+		} else if isLegacyImpactEvent(raw) {
+			log.Printf("source %q: ignore diagnostic V1 impact event: legacy_event_unsupported", r.name)
+		}
+		if publish {
 			r.broadcastVehicleHealth(health)
 			if r.pitPresence != nil {
 				if pit, changed := r.pitPresence.observeHealth(health); changed {
@@ -1137,6 +1155,93 @@ func (r *relay) broadcastRaceState(message string) {
 		if channel := client.race.Load(); channel != nil {
 			r.sendRaceState(client, channel, message)
 		}
+	}
+}
+
+func (r *relay) publishVehicleEvent(event vehicleImpactEvent) {
+	if r.vehicleEvents == nil || !r.vehicleEvents.add(event) {
+		return
+	}
+	message, err := marshalVehicleEvent(event)
+	if err != nil {
+		log.Printf("source %q: encode vehicle event %q: %v", r.name, event.EventID, err)
+		return
+	}
+	r.enqueueVehicleEventMessage(message)
+}
+
+func (r *relay) resetVehicleEvents(raceRunID string) {
+	if r.vehicleEvents == nil || !r.vehicleEvents.reset(raceRunID) {
+		return
+	}
+	message, err := marshalVehicleEvent(r.vehicleEvents.snapshot())
+	if err != nil {
+		log.Printf("source %q: encode empty vehicle event snapshot: %v", r.name, err)
+		return
+	}
+	r.enqueueVehicleEventMessage(message)
+}
+
+func (r *relay) enqueueVehicleEventMessage(message string) {
+	if r.eventDispatch == nil {
+		return
+	}
+	select {
+	case r.eventDispatch <- message:
+	default:
+		log.Printf("source %q: drop vehicle event delivery because the bounded queue is full", r.name)
+	}
+}
+
+func (r *relay) runVehicleEventDispatcher(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case message := <-r.eventDispatch:
+			r.broadcastVehicleEventMessage(message)
+		}
+	}
+}
+
+func (r *relay) broadcastVehicleEventMessage(message string) {
+	r.viewersMu.RLock()
+	defer r.viewersMu.RUnlock()
+	for _, client := range r.viewers {
+		if channel := client.events.Load(); channel != nil {
+			r.sendVehicleEventMessage(client, channel, message)
+		}
+	}
+}
+
+func (r *relay) sendVehicleEventMessage(client *viewer, channel *webrtc.DataChannel, message string) bool {
+	client.eventsSendMu.Lock()
+	defer client.eventsSendMu.Unlock()
+	if client.events.Load() != channel {
+		return false
+	}
+	if err := channel.SendText(message); err != nil {
+		client.events.CompareAndSwap(channel, nil)
+		log.Printf("send vehicle event to viewer %d: %v", client.id, err)
+		_ = channel.Close()
+		return false
+	}
+	return true
+}
+
+func (r *relay) openVehicleEventsChannel(client *viewer, channel *webrtc.DataChannel) {
+	client.eventsSendMu.Lock()
+	defer client.eventsSendMu.Unlock()
+	client.events.Store(channel)
+	message, err := marshalVehicleEvent(r.vehicleEvents.snapshot())
+	if err != nil {
+		log.Printf("source %q: encode vehicle event snapshot: %v", r.name, err)
+		return
+	}
+	if err := channel.SendText(message); err != nil {
+		client.events.CompareAndSwap(channel, nil)
+		log.Printf("send vehicle event snapshot to viewer %d: %v", client.id, err)
+		_ = channel.Close()
 	}
 }
 
@@ -1441,6 +1546,12 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 					r.refreshRaceState(client, channel)
 				})
 				channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
+			case eventsLabel:
+				channel.OnOpen(func() {
+					r.openVehicleEventsChannel(client, channel)
+					log.Printf("source %q: Ayame pilot events channel opened", r.name)
+				})
+				channel.OnClose(func() { client.events.CompareAndSwap(channel, nil) })
 			default:
 				log.Printf("source %q: Ayame pilot opened unsupported DataChannel %q", r.name, channel.Label())
 			}
@@ -1677,6 +1788,12 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				r.refreshRaceState(client, channel)
 			})
 			channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
+		case eventsLabel:
+			channel.OnOpen(func() {
+				r.openVehicleEventsChannel(client, channel)
+				log.Printf("viewer %d events channel opened", client.id)
+			})
+			channel.OnClose(func() { client.events.CompareAndSwap(channel, nil) })
 		default:
 			log.Printf("viewer %d opened unsupported DataChannel %q", client.id, channel.Label())
 		}

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260808-r3-corner-torque';
+  const PILOT_BUILD_ID = '20260811-authoritative-events';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -335,8 +335,8 @@
   let ffbSpeedProxyAt = performance.now();
   let ffbFrontLoad = 0;
   let ffbFrontLoadAt = performance.now();
-  let lastImmediateImpactFfbAtMs = -Infinity;
-  let lastMotionEventHudAtMs = -Infinity;
+  let latestConfirmedImpact = null;
+  let lastMotionEventHudId = '';
   let motionEventFlashTimer = 0;
   let cursorHideTimer = 0;
   let activeFfbPreset = FFB_INITIAL_PRESET;
@@ -365,6 +365,7 @@
   let telemetryChannel = null;
   let raceChannel = null;
   let driveChannel = null;
+  let eventsChannel = null;
   let candidates = [];
   let hasReceivedSdp = false;
   let fpsFrameCount = 0;
@@ -422,6 +423,9 @@
     : null;
   const motionExtractor = window.FpvTelemetry?.MotionFeatureExtractor
     ? new window.FpvTelemetry.MotionFeatureExtractor()
+    : null;
+  const relayEventInbox = window.FpvTelemetry?.RelayEventInbox
+    ? new window.FpvTelemetry.RelayEventInbox()
     : null;
   let latestMotion = null;
   let vehicleHealth = null;
@@ -2235,7 +2239,7 @@
       * frontLoad.value * responseScale;
     const frontLoadDamper = FFB_TELEMETRY_FRONT_LOAD_DAMPER
       * frontLoad.value * responseScale;
-    const impactBoost = getImpactFfbBoost(motion, performance.now());
+    const impactBoost = getImpactFfbBoost(performance.now());
     const damageEffect = getDamageFfbEffect(performance.now(), responseScale);
     const telemetryTorque = getTelemetryFfbTorque(
       motion,
@@ -2272,16 +2276,16 @@
     ffbForceActive = true;
   }
 
-  function getImpactFfbBoost(motion, nowMs) {
-    if (!motion || motion.stale || !motion.impactRecent) {
+  function getImpactFfbBoost(nowMs) {
+    if (!latestConfirmedImpact) {
       return { damper: 0, friction: 0, torque: 0 };
     }
-    const impactClass = String(motion.lastImpactEvent?.impactClass || '').toLowerCase();
+    const impactClass = String(latestConfirmedImpact.impactClass || '').toLowerCase();
     const profile = FFB_IMPACT_PROFILES[impactClass];
     if (!profile) {
       return { damper: 0, friction: 0, torque: 0 };
     }
-    const ageMs = nowMs - motion.lastImpactAtMs;
+    const ageMs = nowMs - latestConfirmedImpact.receivedAtMs;
     if (ageMs < 0 || ageMs >= profile.boostDurationMs) {
       return { damper: 0, friction: 0, torque: 0 };
     }
@@ -2585,7 +2589,6 @@
     }
     const motion = getMotionSnapshot();
     updateMotionUi(motion);
-    sendImpactFfbImmediately(motion);
 
     const deviceStatus = formatTelemetryDeviceStatus(parseTelemetryFields(message));
     if (deviceStatus) {
@@ -2634,25 +2637,21 @@
     return motionExtractor.getSnapshot(latestMotion.src, performance.now());
   }
 
-  function sendImpactFfbImmediately(motion) {
-    const impactAtMs = Number(motion?.lastImpactAtMs);
-    if (!motion?.impactRecent || !Number.isFinite(impactAtMs)
-      || impactAtMs <= lastImmediateImpactFfbAtMs) {
-      return;
-    }
-    lastImmediateImpactFfbAtMs = impactAtMs;
+  function applyConfirmedVehicleEvent(event) {
+    latestConfirmedImpact = { ...event, receivedAtMs: performance.now() };
     sendFfbSteering();
+    updateMotionEventHud(event);
     if (!ffbClient || !ffbOutputEnabled || !rcDriveEnabled) return;
-    const pulse = getImpactPulseRequest(motion);
+    const pulse = getImpactPulseRequest(event, getMotionSnapshot());
     if (pulse) ffbClient.triggerImpactPulse(pulse);
   }
 
-  function getImpactPulseRequest(motion) {
-    const impactClass = String(motion?.lastImpactEvent?.impactClass || '').toLowerCase();
+  function getImpactPulseRequest(event, motion) {
+    const impactClass = String(event?.impactClass || '').toLowerCase();
     const profile = FFB_IMPACT_PROFILES[impactClass];
     if (!profile) return null;
-    const eventLateralAxis = Number(motion.lastImpactEvent?.axis?.[1]);
-    const measuredLateral = Number(motion.motion?.lateralMps2);
+    const eventLateralAxis = Number(event.axis?.[1]);
+    const measuredLateral = Number(motion?.motion?.lateralMps2);
     const lateral = Number.isFinite(eventLateralAxis)
       && Math.abs(eventLateralAxis) >= FFB_IMPACT_DIRECTION_MIN_AXIS
       ? eventLateralAxis
@@ -2672,7 +2671,6 @@
 
   function updateMotionUi(motion = getMotionSnapshot()) {
     updateDriveGmeter(motion);
-    updateMotionEventHud(motion);
     if (!motionState) return;
     if (!motion) {
       setText(motionState, 'waiting for flu_axes');
@@ -2684,11 +2682,8 @@
     }
     const direction = motion.motion.lateralMps2 >= 0 ? 'L' : 'R';
     const corner = `C${(motion.cornerLoad * 100).toFixed(0)} ${direction}`;
-    const impact = motion.impactRecent
-      ? ` ${String(motion.lastImpactEvent?.impactClass || 'impact').toUpperCase()} ${motion.impactLevel.toFixed(2)}`
-      : '';
     setText(motionState,
-      `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}${impact}`);
+      `${corner} a${motion.motion.lateralMps2.toFixed(1)} y${motion.motion.yawRateRadPerSec.toFixed(2)}`);
   }
 
   function formatGmeterValue(value) {
@@ -2732,15 +2727,14 @@
     );
   }
 
-  function updateMotionEventHud(motion) {
+  function updateMotionEventHud(event) {
     if (!motionEventHud) return;
-    const event = motion?.impactRecent ? motion.lastImpactEvent : null;
     const impactClass = String(event?.impactClass || '').toLowerCase();
-    const impactAtMs = Number(motion?.lastImpactAtMs);
-    if (!impactClass || !Number.isFinite(impactAtMs) || impactAtMs <= lastMotionEventHudAtMs) {
+    const eventId = String(event?.eventId || '');
+    if (!impactClass || !eventId || eventId === lastMotionEventHudId) {
       return;
     }
-    lastMotionEventHudAtMs = impactAtMs;
+    lastMotionEventHudId = eventId;
     const labels = {
       weak: 'Gravel',
       strong: 'Impact',
@@ -2762,7 +2756,7 @@
     }
     if (motionEventFlashTimer) window.clearTimeout(motionEventFlashTimer);
     motionEventFlashTimer = window.setTimeout(() => {
-      if (lastMotionEventHudAtMs !== impactAtMs) return;
+      if (lastMotionEventHudId !== eventId) return;
       motionEventHud.classList.remove('is-flashing');
       motionEventHud.dataset.impactClass = '';
       motionEventIndicators.forEach((indicator) => indicator.classList.remove('is-active'));
@@ -2860,6 +2854,17 @@
       return;
     }
     console.log('DataChannel RX:', message);
+  }
+
+  function handleVehicleEventMessage(message) {
+    if (!relayEventInbox || typeof message !== 'string') return;
+    const result = relayEventInbox.ingest(message);
+    const expectedCarId = RACE_CAR_ID || raceState.carId || '';
+    if ((result.event && expectedCarId && result.event.carId !== expectedCarId)
+        || result.events?.some((event) => expectedCarId && event.carId !== expectedCarId)) return;
+    if (result.status === 'live' && result.transient && result.event) {
+      applyConfirmedVehicleEvent(result.event);
+    }
   }
 
   function clampRcValue(value, minValue = 1000, maxValue = 2000) {
@@ -3814,6 +3819,7 @@
     const currentTelemetryChannel = telemetryChannel;
     const currentRaceChannel = raceChannel;
     const currentDriveChannel = driveChannel;
+    const currentEventsChannel = eventsChannel;
     const currentPeerConnection = peerConnection;
 
     if (currentWs) {
@@ -3841,6 +3847,11 @@
       currentDriveChannel.onopen = null;
       currentDriveChannel.onclose = null;
       currentDriveChannel.onmessage = null;
+    }
+    if (currentEventsChannel) {
+      currentEventsChannel.onopen = null;
+      currentEventsChannel.onclose = null;
+      currentEventsChannel.onmessage = null;
     }
     if (currentPeerConnection) {
       currentPeerConnection.ontrack = null;
@@ -3881,6 +3892,12 @@
       } catch (_) {
       }
     }
+    if (currentEventsChannel) {
+      try {
+        currentEventsChannel.close();
+      } catch (_) {
+      }
+    }
     if (currentPeerConnection) {
       try {
         currentPeerConnection.close();
@@ -3899,6 +3916,7 @@
     telemetryChannel = null;
     raceChannel = null;
     driveChannel = null;
+    eventsChannel = null;
     audioSender = null;
     peerConnection = null;
     ws = null;
@@ -4425,6 +4443,19 @@
       }
     };
 
+    const attachEventsChannel = (channel) => {
+      channel.fpvTransportGeneration = generation;
+      if (eventsChannel && eventsChannel !== channel) {
+        eventsChannel.onopen = null;
+        eventsChannel.onclose = null;
+        eventsChannel.onmessage = null;
+      }
+      eventsChannel = channel;
+      eventsChannel.onopen = () => recordEvent('events dc open');
+      eventsChannel.onclose = () => recordEvent('events dc close');
+      eventsChannel.onmessage = (event) => handleVehicleEventMessage(event.data);
+    };
+
     peer.ondatachannel = (event) => {
       if (event.channel.label === 'momo-race') {
         attachRaceChannel(event.channel);
@@ -4432,6 +4463,8 @@
         attachTelemetryChannel(event.channel);
       } else if (event.channel.label === 'momo-drive') {
         attachDriveChannel(event.channel);
+      } else if (event.channel.label === 'momo-events') {
+        attachEventsChannel(event.channel);
       } else {
         attachDataChannel(event.channel);
       }
@@ -4450,6 +4483,9 @@
         ordered: true,
       }));
       attachDriveChannel(peer.createDataChannel('momo-drive', {
+        ordered: true,
+      }));
+      attachEventsChannel(peer.createDataChannel('momo-events', {
         ordered: true,
       }));
     }
@@ -5666,6 +5702,7 @@
       telemetry_channel: snapshotDataChannelForCapture(telemetryChannel),
       drive_channel: snapshotDataChannelForCapture(driveChannel),
       race_channel: snapshotDataChannelForCapture(raceChannel),
+      events_channel: snapshotDataChannelForCapture(eventsChannel),
       endpoint: endpointInput.value,
       source_identity: {
         signaling_mode: SIGNALING_MODE,
