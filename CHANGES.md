@@ -16,9 +16,12 @@
   - 衝突とは独立した路面roughnessを生成し、停車中はBridgeへ出力しない
 - [FIX] 1回の衝突を1.5秒のエピソードへまとめ、重複ダメージを抑止する
   - StrongからSevereへ上がった場合は差分ダメージだけを追加する
+- [ADD] Pilot にチェックポイント連動の後方接近警告を追加する
+  - 後続車との間隔が縮んだ場合に画面上部へ警告を表示する
+  - BATTLE 表示の前走車・後続車・タイム差を拡大し、接近度を色分けする
 - [ADD] Local Relay に順位連動 Boost、G4、仮想 Fuel、PIT 給油を追加する
   - 通常gearをG3上限とし、Boost充填後だけ2.5秒のG4を許可する
-  - Fuel 0ではPITへ戻れるPWM 1550へ前進を制限する
+  - Fuel 0ではPITへ戻れるよう1速上限より10低いPWM 1590へ前進を制限する
   - `VGS:1`でHP、Fuel、Boost、実効gearをPilotとWeb Observerへ配信する
   - `raceInfo.sessionType=practice`ではFuel消費を停止する
 - [UPDATE] severe impactのダメージを28から20へ変更する

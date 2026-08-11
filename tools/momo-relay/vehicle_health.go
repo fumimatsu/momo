@@ -22,7 +22,8 @@ const (
 	vehicleFuelMaximum               = 100.0
 	vehicleFuelRecoveryAmount        = 20.0
 	vehicleFuelDefaultDriveDuration  = 120 * time.Second
-	vehicleFuelEmptyForwardPWM       = 1550
+	vehicleGearOneForwardMaximum     = 1600
+	vehicleFuelEmptyForwardPWM       = vehicleGearOneForwardMaximum - 10
 	vehicleBoostMaximum              = 100.0
 	vehicleBoostDuration             = 2500 * time.Millisecond
 	vehicleBoostFallbackCharge       = 30 * time.Second
@@ -745,7 +746,7 @@ func (health *vehicleHealth) boostChargeDurationLocked() time.Duration {
 func vehicleGearForwardMaximum(gear int) int {
 	switch gear {
 	case 1:
-		return 1600
+		return vehicleGearOneForwardMaximum
 	case 2:
 		return 1700
 	case 3:
@@ -753,7 +754,7 @@ func vehicleGearForwardMaximum(gear int) int {
 	case 4:
 		return 1900
 	default:
-		return 1600
+		return vehicleGearOneForwardMaximum
 	}
 }
 

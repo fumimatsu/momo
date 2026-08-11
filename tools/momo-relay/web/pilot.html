@@ -217,14 +217,15 @@
       right: calc(16px + env(safe-area-inset-right));
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      width: min(150px, calc(100vw - 32px));
-      height: clamp(210px, 31vh, 250px);
-      padding: 0;
-      border: 0;
-      background: transparent;
-      box-shadow: none;
+      width: min(220px, calc(100vw - 32px));
+      height: clamp(250px, 36vh, 290px);
+      padding: 9px 10px 10px;
+      border: 1px solid rgba(132, 195, 218, 0.34);
+      border-radius: 4px;
+      background: rgba(1, 8, 12, 0.76);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
       clip-path: none;
-      backdrop-filter: none;
+      backdrop-filter: blur(3px);
       transform: scale(var(--osd-scale));
       transform-origin: top right;
     }
@@ -235,15 +236,21 @@
 
     .race-battle-head {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
       gap: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(132, 195, 218, 0.22);
+    }
+
+    .race-battle-head .race-label {
+      font-size: 11px;
     }
 
     .race-battle-state {
       color: rgba(169, 197, 221, 0.78);
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 8px;
+      font-size: 10px;
       font-weight: 700;
       letter-spacing: 0;
       white-space: nowrap;
@@ -260,18 +267,18 @@
     .race-battle-track {
       position: relative;
       min-height: 0;
-      margin-top: 3px;
+      margin-top: 6px;
     }
 
     .race-battle-track::before {
       position: absolute;
       top: 7%;
       bottom: 7%;
-      left: 35px;
+      left: 57px;
       width: 1px;
       background: repeating-linear-gradient(
         to bottom,
-        rgba(173, 221, 240, 0.30) 0 4px,
+        rgba(173, 221, 240, 0.42) 0 4px,
         transparent 5px 10px
       );
       box-shadow: none;
@@ -284,11 +291,14 @@
       right: 0;
       left: 0;
       display: grid;
-      grid-template-columns: 18px 34px minmax(0, 1fr);
+      grid-template-rows: 16px 25px;
+      grid-template-columns: 28px 44px minmax(0, 1fr);
       align-items: center;
-      gap: 4px;
-      min-height: 34px;
-      padding: 2px 0;
+      column-gap: 8px;
+      min-height: 49px;
+      padding: 4px 7px;
+      border-left: 2px solid rgba(108, 221, 244, 0.48);
+      background: rgba(13, 28, 35, 0.68);
     }
 
     .race-battle-rival.ahead {
@@ -304,45 +314,84 @@
       opacity: 0.38;
     }
 
+    .race-battle-rival.behind {
+      border-left-color: rgba(255, 196, 70, 0.72);
+    }
+
+    .race-battle-rival.behind[data-gap-state="pressure"] {
+      border-left-color: #ffbf3f;
+      background: rgba(82, 48, 4, 0.72);
+    }
+
+    .race-battle-rival.behind[data-gap-state="critical"] {
+      border-left-color: #ff6159;
+      background: rgba(89, 16, 14, 0.78);
+      box-shadow: inset 0 0 16px rgba(255, 71, 64, 0.18);
+    }
+
     .race-battle-position {
       color: #a9c5dd;
+      grid-row: 1 / 3;
+      grid-column: 1;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 10px;
+      font-size: 13px;
       font-weight: 700;
       text-align: right;
     }
 
     .race-battle-name {
-      z-index: 1;
-      grid-column: 2;
+      grid-column: 3;
       grid-row: 1;
-      width: 34px;
-      max-width: 34px;
+      width: 100%;
+      max-width: 100%;
       padding: 0;
       overflow: hidden;
       border-radius: 0;
       background: transparent;
-      color: rgba(231, 243, 251, 0.76);
+      color: rgba(231, 243, 251, 0.9);
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 8px;
+      font-size: 10px;
       font-weight: 700;
       letter-spacing: 0;
       line-height: 1.15;
-      text-align: center;
+      text-align: left;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
+    .race-battle-rival.ahead .race-battle-name::before {
+      color: #68ddf5;
+      content: "AHEAD  ";
+    }
+
+    .race-battle-rival.behind .race-battle-name::before {
+      color: #ffc44d;
+      content: "BEHIND  ";
+    }
+
     .race-battle-gap {
       grid-column: 3;
-      grid-row: 1;
-      justify-self: end;
-      color: rgba(247, 251, 255, 0.78);
+      grid-row: 2;
+      justify-self: start;
+      color: #f7fbff;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 10px;
-      font-weight: 700;
-      text-align: right;
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1;
+      text-align: left;
       white-space: nowrap;
+    }
+
+    .race-battle-rival.ahead .race-battle-gap {
+      color: #7fe8fb;
+    }
+
+    .race-battle-rival.behind[data-gap-state="pressure"] .race-battle-gap {
+      color: #ffd061;
+    }
+
+    .race-battle-rival.behind[data-gap-state="critical"] .race-battle-gap {
+      color: #ff827c;
     }
 
     .race-battle-car {
@@ -350,11 +399,11 @@
       position: relative;
       z-index: 0;
       grid-column: 2;
-      grid-row: 1;
+      grid-row: 1 / 3;
       display: block;
-      width: 34px;
-      height: 27px;
-      opacity: 0.56;
+      width: 44px;
+      height: 34px;
+      opacity: 0.82;
       filter: none;
     }
 
@@ -369,10 +418,10 @@
 
     .race-battle-car::after {
       position: absolute;
-      top: 6px;
-      left: 11px;
-      width: 12px;
-      height: 8px;
+      top: 8px;
+      left: 14px;
+      width: 16px;
+      height: 10px;
       border: 1px solid rgba(1, 11, 18, 0.86);
       background: rgba(225, 248, 255, 0.78);
       clip-path: polygon(22% 0, 78% 0, 100% 100%, 0 100%);
@@ -381,20 +430,20 @@
 
     .race-battle-car-wheels {
       position: absolute;
-      top: 3px;
+      top: 4px;
       left: 0;
-      width: 5px;
-      height: 6px;
+      width: 6px;
+      height: 7px;
       border-radius: 1px;
       background: #050608;
-      box-shadow: 0 14px 0 #050608, 29px 0 0 #050608, 29px 14px 0 #050608;
+      box-shadow: 0 17px 0 #050608, 38px 0 0 #050608, 38px 17px 0 #050608;
     }
 
     .race-battle-self {
       top: 50%;
-      min-height: 36px;
-      border: 0;
-      background: transparent;
+      min-height: 49px;
+      border-left-color: #6ce4fb;
+      background: rgba(15, 46, 56, 0.78);
       box-shadow: none;
       transform: translateY(-50%);
     }
@@ -407,10 +456,104 @@
       color: rgba(255, 255, 255, 0.84);
     }
 
+    .race-battle-self .race-battle-name::before {
+      color: #6ce4fb;
+      content: "YOU  ";
+    }
+
     .race-battle-self .race-battle-gap {
-      color: rgba(103, 233, 255, 0.82);
-      font-size: 9px;
+      color: rgba(103, 233, 255, 0.9);
+      font-size: 13px;
       letter-spacing: 0;
+    }
+
+    .rear-attention {
+      position: fixed;
+      z-index: 18;
+      top: var(--rear-attention-top, calc(112px + env(safe-area-inset-top)));
+      left: 50%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2px 16px;
+      align-items: center;
+      width: min(390px, calc(100vw - 32px));
+      min-height: 62px;
+      padding: 8px 14px;
+      border: 2px solid #ffd04f;
+      border-radius: 4px;
+      background: rgba(67, 43, 3, 0.94);
+      box-shadow: 0 10px 34px rgba(0, 0, 0, 0.48);
+      color: #ffffff;
+      transform: translateX(-50%) scale(var(--osd-scale));
+      transform-origin: top center;
+    }
+
+    .rear-attention[hidden] {
+      display: none;
+    }
+
+    .rear-attention-kicker {
+      color: rgba(255, 240, 185, 0.82);
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .rear-attention strong {
+      display: block;
+      font-size: 20px;
+      letter-spacing: 0;
+      line-height: 1.05;
+    }
+
+    .rear-attention output {
+      grid-row: 1 / 3;
+      grid-column: 2;
+      color: #ffe06c;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 27px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .rear-attention-detail {
+      grid-column: 1 / 3;
+      color: rgba(255, 242, 207, 0.9);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .rear-attention[data-severity="critical"] {
+      border-color: #ff6159;
+      background: rgba(91, 13, 11, 0.95);
+    }
+
+    .rear-attention[data-severity="critical"] output {
+      color: #ff8a84;
+    }
+
+    .rear-attention.is-active[data-severity="warning"] {
+      animation: rear-attention-warning 460ms step-end 6;
+    }
+
+    .rear-attention.is-active[data-severity="critical"] {
+      animation: rear-attention-critical 280ms step-end 10;
+    }
+
+    @keyframes rear-attention-warning {
+      50% { filter: brightness(1.55); }
+    }
+
+    @keyframes rear-attention-critical {
+      50% { filter: brightness(1.7); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .rear-attention.is-active {
+        animation: none;
+      }
     }
 
     .race-total-anchor .race-start-signal {
@@ -1993,20 +2136,22 @@
 
       .race-battle {
         right: calc(8px + env(safe-area-inset-right));
-        width: min(140px, calc(100vw - 16px));
-        height: clamp(180px, 30vh, 220px);
-        padding: 0;
+        width: min(180px, calc(100vw - 16px));
+        height: clamp(195px, 32vh, 220px);
+        padding: 6px 7px;
       }
 
       .race-battle-rival,
       .race-battle-self {
-        grid-template-columns: 18px 38px minmax(0, 1fr);
-        gap: 4px;
-        min-height: 36px;
+        grid-template-rows: 13px 20px;
+        grid-template-columns: 22px 34px minmax(0, 1fr);
+        column-gap: 6px;
+        min-height: 39px;
+        padding: 3px 4px;
       }
 
       .race-battle-self {
-        min-height: 40px;
+        min-height: 39px;
       }
 
       .race-battle-rival.ahead {
@@ -2018,12 +2163,12 @@
       }
 
       .race-battle-track::before {
-        left: 41px;
+        left: 45px;
       }
 
       .race-battle-car {
-        width: 38px;
-        height: 30px;
+        width: 34px;
+        height: 27px;
       }
 
       .race-battle-car::before {
@@ -2031,27 +2176,38 @@
       }
 
       .race-battle-car::after {
-        top: 7px;
-        left: 12px;
-        width: 14px;
-        height: 9px;
+        top: 6px;
+        left: 11px;
+        width: 12px;
+        height: 8px;
       }
 
       .race-battle-car-wheels {
-        top: 4px;
-        width: 6px;
-        height: 7px;
-        box-shadow: 0 15px 0 #050608, 32px 0 0 #050608, 32px 15px 0 #050608;
+        top: 3px;
+        width: 5px;
+        height: 6px;
+        box-shadow: 0 14px 0 #050608, 29px 0 0 #050608, 29px 14px 0 #050608;
       }
 
       .race-battle-name {
-        width: 38px;
-        max-width: 38px;
         font-size: 8px;
       }
 
       .race-battle-gap {
-        font-size: 10px;
+        font-size: 14px;
+      }
+
+      .rear-attention {
+        width: min(330px, calc(100vw - 24px));
+        min-height: 54px;
+      }
+
+      .rear-attention strong {
+        font-size: 17px;
+      }
+
+      .rear-attention output {
+        font-size: 22px;
       }
 
       .race-history {
@@ -2129,6 +2285,15 @@
       <strong id="motionEventLabel" class="motion-event-label">IMPACT</strong>
       <span id="motionEventDetail" class="motion-event-detail">--</span>
     </div>
+
+    <section id="rearAttention" class="rear-attention" data-severity="warning" aria-live="assertive" aria-atomic="true" hidden>
+      <div>
+        <span class="rear-attention-kicker">PROXIMITY ALERT</span>
+        <strong id="rearAttentionLabel">REAR CLOSING</strong>
+      </div>
+      <output id="rearAttentionGap">+0.000s</output>
+      <span id="rearAttentionDetail" class="rear-attention-detail">CHECKPOINT GAP UPDATE</span>
+    </section>
     <div class="race-summary race-card">
       <div class="race-summary-head">
         <span id="racePhase" class="race-phase">STANDBY</span>
@@ -2437,14 +2602,15 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260812-ffb-surface-v1"></script>
+    <script src="../../telemetry.js?v=20260812-ffb-rear-v1"></script>
     <script src="../../m5-audio.js?v=20260811-gear-audit-v3"></script>
     <script
-      src="./gamepad-profile.js?v=20260812-ffb-surface-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260812-ffb-surface-v1'"
+      src="./gamepad-profile.js?v=20260812-ffb-rear-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260812-ffb-rear-v1'"
     ></script>
     <script src="./ffb-bridge.js"></script>
-    <script src="./pilot.js?v=20260812-ffb-surface-v1"></script>
+    <script src="./race-battle.js?v=20260812-ffb-rear-v1"></script>
+    <script src="./pilot.js?v=20260812-ffb-rear-v1"></script>
     <script
       src="./cpu-shadow-capture.js?v=20260731-cpu-shadow-capture"
       onerror="this.onerror=null;this.src='../../cpu-shadow-capture.js?v=20260731-cpu-shadow-capture'"
