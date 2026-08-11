@@ -203,3 +203,34 @@ func TestVehicleHealthAppliesDamageDuringPractice(t *testing.T) {
 		t.Fatalf("practice impact event = %#v", event)
 	}
 }
+
+func TestVehicleHealthSuppressesDamageOnlyWhileBoostIsActive(t *testing.T) {
+	base := time.Date(2026, 8, 12, 14, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_boost_guard", "green", 1, 4, base)
+	health.mu.Lock()
+	health.boost = vehicleBoostMaximum
+	health.requestedGear = vehicleNormalGearMaximum
+	health.mu.Unlock()
+	if _, accepted := health.activateBoost(base); !accepted {
+		t.Fatal("boost activation was rejected")
+	}
+
+	_, _, protected := health.ingestTelemetry(
+		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`,
+		"CP-1",
+		base.Add(time.Second),
+	)
+	if protected == nil || protected.DamageApplied || protected.Damage != 0 || protected.SuppressionReason != "boost_active" || protected.HPAfter != vehicleHealthMaximum {
+		t.Fatalf("boost-protected impact = %#v", protected)
+	}
+
+	_, _, afterBoost := health.ingestTelemetry(
+		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`,
+		"CP-1",
+		base.Add(vehicleBoostDuration),
+	)
+	if afterBoost == nil || !afterBoost.DamageApplied || afterBoost.Damage != vehicleHealthSevereDamage || afterBoost.HPAfter != 80 {
+		t.Fatalf("post-boost impact = %#v", afterBoost)
+	}
+}

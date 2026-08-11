@@ -436,6 +436,9 @@ func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.
 			if damage > 0 && !health.raceGameplayActiveLocked(now) {
 				damage = 0
 				suppressionReason = "race_inactive"
+			} else if damage > 0 && health.boostStateLocked(now) == "active" {
+				damage = 0
+				suppressionReason = "boost_active"
 			} else if damage > 0 {
 				health.lastUnsafeAt = now
 				if health.damageEpisodeStartedAt.IsZero() || now.Before(health.damageEpisodeStartedAt) ||
