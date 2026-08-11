@@ -210,7 +210,17 @@ button, input, select, textarea { font: inherit; }
 .car-marker[data-motion-state="pit-rejoin"] .marker-confidence { opacity: .14; stroke: currentColor; stroke-width: 1; stroke-dasharray: 3 3; }
 .car-marker[data-motion-state="holding-checkpoint"] .marker-confidence { opacity: .1; stroke: var(--yellow); stroke-width: 1.5; stroke-dasharray: 3 3; }
 .car-marker[data-motion-state^="pit-"] .marker-core { stroke: var(--cyan); }
-.marker-number { fill: #071013; font-size: 9px; }
+.marker-label { fill: #071013; font-size: 8px; letter-spacing: 0; }
+.car-marker[data-label-mode="number"] .marker-label { font-size: 12px; }
+.car-marker[data-effect="impact"] .marker-core,
+.car-marker[data-effect="heavy-impact"] .marker-core,
+.car-marker[data-effect="fuel-empty"] .marker-core { animation: marker-alert-pulse .32s steps(2, end) 5; }
+.car-marker[data-effect="boost-ready"] .marker-confidence,
+.car-marker[data-effect="boost-active"] .marker-confidence,
+.car-marker[data-effect="pit-complete"] .marker-confidence,
+.car-marker[data-effect="overall-best"] .marker-confidence { animation: marker-success-pulse .48s ease-out 4; }
+@keyframes marker-alert-pulse { 50% { fill: var(--red); filter: drop-shadow(0 0 8px var(--red)); } }
+@keyframes marker-success-pulse { 50% { opacity: .65; stroke-width: 3; } }
 .marker-state-bg { fill: #071013; stroke: currentColor; stroke-width: 1; }
 .marker-state { fill: currentColor; font-size: 9px; }
 .marker-hp-track { fill: #1b2529; stroke: rgba(255, 255, 255, .35); stroke-width: .6; }
@@ -328,7 +338,7 @@ td:last-child { color: var(--cyan); }
 .situation-watch { --situation: #e9eef0; }
 
 .camera-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); min-height: 0; background: #030506; }
-.camera-tile { --car: var(--green); display: grid; grid-template-rows: 38px 1fr; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+.camera-tile { --car: var(--green); position: relative; display: grid; grid-template-rows: 38px 1fr; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
 .camera-tile:last-child { border-right: 0; }
 .camera-head { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; min-width: 0; padding: 0 11px; border-bottom: 2px solid var(--car); background: #090d0f; }
 .camera-head strong { overflow: hidden; color: var(--text); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
@@ -385,6 +395,53 @@ td:last-child { color: var(--cyan); }
 .video-state[data-state="streaming"] { color: var(--cyan); }
 .video-state[data-race-freshness="live"] { border-bottom: 1px solid var(--green); }
 .video-state[data-race-freshness="stale"] { border-bottom: 1px solid var(--red); color: var(--red); }
+.camera-event-flash {
+  position: absolute;
+  z-index: 3;
+  top: 34px;
+  left: 9px;
+  padding: 4px 7px;
+  border: 1px solid currentColor;
+  color: var(--effect, var(--cyan));
+  background: rgba(3, 5, 6, .72);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--effect, var(--cyan)) 55%, transparent);
+  font-size: 11px;
+  line-height: 1;
+}
+.camera-event-flash[hidden] { display: none; }
+.camera-tile[data-effect], .leader-row[data-effect] { --effect: var(--cyan); }
+.camera-tile[data-effect="gravel"], .leader-row[data-effect="gravel"],
+.camera-tile[data-effect="fuel-low"], .leader-row[data-effect="fuel-low"] { --effect: var(--yellow); }
+.camera-tile[data-effect="impact"], .leader-row[data-effect="impact"],
+.camera-tile[data-effect="heavy-impact"], .leader-row[data-effect="heavy-impact"],
+.camera-tile[data-effect="fuel-empty"], .leader-row[data-effect="fuel-empty"],
+.camera-tile[data-effect="position-down"], .leader-row[data-effect="position-down"] { --effect: var(--red); }
+.camera-tile[data-effect="personal-best"], .leader-row[data-effect="personal-best"],
+.camera-tile[data-effect="position-up"], .leader-row[data-effect="position-up"],
+.camera-tile[data-effect="pit-complete"], .leader-row[data-effect="pit-complete"] { --effect: var(--green); }
+.camera-tile[data-effect="overall-best"], .leader-row[data-effect="overall-best"] { --effect: var(--purple); }
+.camera-tile[data-effect]:not([data-effect=""]) { animation: camera-event-edge .46s ease-out 4; }
+.camera-tile[data-effect]:not([data-effect=""])::after {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  left: -35%;
+  width: 35%;
+  height: 3px;
+  pointer-events: none;
+  background: var(--effect);
+  box-shadow: 0 0 12px var(--effect);
+  content: "";
+  animation: camera-event-sweep .75s ease-out 3;
+}
+.leader-row[data-effect]:not([data-effect=""]) { animation: leader-event-flash .42s ease-out 4; }
+.leader-row[data-effect="position-up"] { animation-name: leader-position-up; }
+.leader-row[data-effect="position-down"] { animation-name: leader-position-down; }
+@keyframes camera-event-edge { 50% { box-shadow: inset 0 0 0 3px var(--effect), inset 0 0 22px color-mix(in srgb, var(--effect) 32%, transparent); } }
+@keyframes camera-event-sweep { to { left: 100%; } }
+@keyframes leader-event-flash { 50% { background-color: color-mix(in srgb, var(--effect) 20%, transparent); } }
+@keyframes leader-position-up { 50% { transform: translateY(-3px); background-color: color-mix(in srgb, var(--green) 18%, transparent); } }
+@keyframes leader-position-down { 50% { transform: translateY(3px); background-color: color-mix(in srgb, var(--red) 18%, transparent); } }
 .situation-empty { grid-column: 1 / -1; color: var(--muted); }
 
 .camera-green, .leader-row.car-green, .sector-row.car-green { --car: var(--green); }
@@ -393,6 +450,11 @@ td:last-child { color: var(--cyan); }
 .camera-red, .leader-row.car-red, .sector-row.car-red { --car: var(--red); }
 .camera-tile { border-top: 2px solid var(--car); }
 .camera-head { background: linear-gradient(90deg, color-mix(in srgb, var(--car) 13%, #080c0e), #080c0e 68%); }
+
+@media (prefers-reduced-motion: reduce) {
+  .camera-tile[data-effect], .camera-tile[data-effect]::after, .leader-row[data-effect],
+  .car-marker[data-effect] .marker-core, .car-marker[data-effect] .marker-confidence { animation: none !important; }
+}
 
 @media (max-width: 1500px) {
   .race-grid { grid-template-columns: 286px minmax(450px, 1fr) minmax(430px, 34%); }

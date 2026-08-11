@@ -36,7 +36,22 @@ const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
 const RACE_FRESHNESS_STALE_MS = 12000;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
-const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
+const MARKER_RENDER_OFFSETS = [[-16, -16], [16, -16], [-16, 16], [16, 16]];
+const CAR_EFFECTS = Object.freeze({
+  'gravel': { label: 'GRAVEL', durationMs: 1100, priority: 20 },
+  'impact': { label: 'IMPACT', durationMs: 1900, priority: 80 },
+  'heavy-impact': { label: 'HEAVY IMPACT', durationMs: 2600, priority: 100 },
+  'boost-ready': { label: 'BOOST READY', durationMs: 1800, priority: 45 },
+  'boost-active': { label: 'BOOST ACTIVE', durationMs: 2400, priority: 65 },
+  'fuel-low': { label: 'FUEL LOW', durationMs: 1800, priority: 55 },
+  'fuel-empty': { label: 'FUEL EMPTY', durationMs: 2800, priority: 95 },
+  'pit-service': { label: 'PIT SERVICE', durationMs: 1800, priority: 50 },
+  'pit-complete': { label: 'SERVICE COMPLETE', durationMs: 2300, priority: 75 },
+  'position-up': { label: 'POSITION GAIN', durationMs: 1800, priority: 35 },
+  'position-down': { label: 'POSITION LOST', durationMs: 1800, priority: 35 },
+  'personal-best': { label: 'PERSONAL BEST', durationMs: 2100, priority: 60 },
+  'overall-best': { label: 'OVERALL BEST', durationMs: 2400, priority: 70 },
+});
 const raceDeduplicator = new RaceStateDeduplicator();
 const healthByCar = new Map();
 const telemetryByCar = new Map();
@@ -48,6 +63,8 @@ const pendingPitByCar = new Map();
 const connectionByCar = new Map();
 const clients = [];
 const vehicleEventTimers = new Map();
+const carEffectTimers = new Map();
+const activeEffectByCar = new Map();
 const markerMotionByCar = new Map();
 const markerRenderByCar = new Map();
 const markerNodesByCar = new Map();
@@ -56,6 +73,8 @@ const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
 const cameraTitleNodesByCar = new Map();
+const cameraEffectNodesByCar = new Map();
+const leaderboardNodesByCar = new Map();
 const telemetryNodesByCar = new Map();
 const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
@@ -87,6 +106,43 @@ function svgElement(tag, attributes = {}) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value));
   return node;
+}
+
+function applyCarEffect(carId) {
+  const effect = activeEffectByCar.get(carId);
+  const name = effect?.name || '';
+  for (const node of [
+    cameraEffectNodesByCar.get(carId)?.root,
+    leaderboardNodesByCar.get(carId),
+    markerNodesByCar.get(carId)?.marker,
+  ]) {
+    if (!node) continue;
+    if (name) node.dataset.effect = name;
+    else delete node.dataset.effect;
+  }
+  const badge = cameraEffectNodesByCar.get(carId)?.badge;
+  if (badge) {
+    badge.hidden = !effect;
+    setTextIfChanged(badge, effect?.label || '');
+  }
+}
+
+function triggerCarEffect(carId, name) {
+  const definition = CAR_EFFECTS[name];
+  if (!definition) return;
+  const now = performance.now();
+  const current = activeEffectByCar.get(carId);
+  if (current && current.expiresAt > now && current.priority > definition.priority) return;
+  const token = `${name}:${now}`;
+  activeEffectByCar.set(carId, { name, token, expiresAt: now + definition.durationMs, ...definition });
+  applyCarEffect(carId);
+  if (carEffectTimers.has(carId)) window.clearTimeout(carEffectTimers.get(carId));
+  carEffectTimers.set(carId, window.setTimeout(() => {
+    carEffectTimers.delete(carId);
+    if (activeEffectByCar.get(carId)?.token !== token) return;
+    activeEffectByCar.delete(carId);
+    applyCarEffect(carId);
+  }, definition.durationMs));
 }
 
 function carName(car, standing = null) {
@@ -484,6 +540,7 @@ function renderLeaderboard() {
   const root = document.getElementById('leaderboardRows');
   const rows = standingsByConfiguredCar(observerConfig.cars, raceState);
   currentLapNodeByCar.clear();
+  leaderboardNodesByCar.clear();
   root.replaceChildren(...rows.map(({ car, standing }) => {
     const health = healthByCar.get(car.carId);
     const connection = connectionByCar.get(car.carId);
@@ -524,6 +581,8 @@ function renderLeaderboard() {
 		appendResource('BOOST', boost, health?.boostState || 'unknown',
 			health?.boostState === 'ready' ? 'READY' : health?.boostState === 'active' ? `${(health.boostRemainingMs / 1000).toFixed(1)}s` : boost ?? '--');
 		row.append(resources);
+    leaderboardNodesByCar.set(car.carId, row);
+    applyCarEffect(car.carId);
     return row;
   }));
 }
@@ -721,16 +780,33 @@ function createTrackMarkers() {
       'aria-label': `${car.carId} estimated course position`,
       hidden: '',
     });
-    const confidence = svgElement('circle', { class: 'marker-confidence', r: 14 });
-    marker.append(confidence, svgElement('circle', { class: 'marker-core', r: 10 }));
-    const number = svgElement('text', { class: 'marker-number', y: 3.5 });
-    number.textContent = car.displayNumber;
+    const confidence = svgElement('circle', { class: 'marker-confidence', r: 23 });
+    marker.append(confidence, svgElement('circle', { class: 'marker-core', r: 16 }));
+    const label = svgElement('text', { class: 'marker-label', y: 3 });
+    label.textContent = car.displayNumber;
     const title = svgElement('title');
     title.textContent = `${car.carId} waiting for sector timing`;
-    marker.append(number, title);
-    markerNodesByCar.set(car.carId, { marker, confidence, title });
+    marker.append(label, title);
+    markerNodesByCar.set(car.carId, { marker, confidence, label, title });
     return marker;
   }));
+}
+
+function updateTrackMarkerLabel(nodes, car, standing) {
+  const driverLabel = abbreviateDriverName(standing?.driver || car.driver, '');
+  const preferred = driverLabel || car.displayNumber;
+  setTextIfChanged(nodes.label, preferred);
+  nodes.marker.dataset.labelMode = driverLabel ? 'name' : 'number';
+  if (!driverLabel || typeof nodes.label.getComputedTextLength !== 'function') return;
+  let width = 0;
+  try {
+    width = nodes.label.getComputedTextLength();
+  } catch (_) {
+    return;
+  }
+  if (width <= 28) return;
+  setTextIfChanged(nodes.label, car.displayNumber);
+  nodes.marker.dataset.labelMode = 'number';
 }
 
 function readTrackGeometry() {
@@ -831,7 +907,7 @@ function markerTargetOnTrack(car, standing, now, path, length) {
     y: point.y,
     key: `${raceState.raceRunId || ''}:track:${markerKey(standing)}:${correctionState}`,
     state: estimate.state,
-    confidenceRadius: estimate.state === 'projected' ? 17 : estimate.state === 'awaiting-checkpoint' ? 22 : 25,
+    confidenceRadius: estimate.state === 'projected' ? 23 : estimate.state === 'awaiting-checkpoint' ? 28 : 31,
     title: `CAR ${car.displayNumber} ${estimate.state.replaceAll('-', ' ')} / ${pace.source} ${Math.round(pace.durationMs / 100) / 10}s`,
     correctionMs: observerConfig.motion.markerCorrectionMs,
   };
@@ -865,7 +941,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
         y: point.y,
         key: `${raceState.raceRunId || ''}:pit-entry:${motion.entryId}`,
         state: 'pit-entry',
-        confidenceRadius: 17,
+        confidenceRadius: 23,
         title: `CAR ${car.displayNumber} PIT IN`,
         correctionMs: observerConfig.motion.markerCorrectionMs,
       };
@@ -875,7 +951,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
       y: servicePoint.y,
       key: `${raceState.raceRunId || ''}:pit-service:${motion.entryId}`,
       state: pit.serviceState === 'complete' ? 'pit-complete' : 'pit-service',
-      confidenceRadius: 15,
+      confidenceRadius: 21,
       title: `CAR ${car.displayNumber} ${pit.serviceState === 'complete' ? 'SERVICE COMPLETE' : 'PIT SERVICE'}`,
       correctionMs: observerConfig.motion.markerCorrectionMs,
     };
@@ -898,7 +974,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
       y: point.y,
       key: `${raceState.raceRunId || ''}:pit-exit:${motion.entryId}`,
       state: 'pit-exit',
-      confidenceRadius: 18,
+      confidenceRadius: 24,
       title: `CAR ${car.displayNumber} PIT OUT`,
       correctionMs: 0,
     };
@@ -926,7 +1002,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
       y: point.y,
       key: `${raceState.raceRunId || ''}:track-after-pit:${motion.entryId}:${projection.state === 'holding-checkpoint' ? 'hold' : 'drive'}`,
       state: projection.state === 'holding-checkpoint' ? 'holding-checkpoint' : 'pit-rejoin',
-      confidenceRadius: projection.state === 'holding-checkpoint' ? 25 : 20,
+      confidenceRadius: projection.state === 'holding-checkpoint' ? 31 : 26,
       title: `CAR ${car.displayNumber} PIT REJOIN / ${pace.source}`,
       correctionMs: observerConfig.motion.markerCorrectionMs,
     };
@@ -984,6 +1060,8 @@ function updateTrackMarkers(now) {
     }
     marker.dataset.sector = Number.isInteger(standing.currentSector) ? String(standing.currentSector) : '';
     renderMarkerTarget(nodes, car, index, target, now);
+    updateTrackMarkerLabel(nodes, car, standing);
+    applyCarEffect(car.carId);
   });
 }
 
@@ -1101,6 +1179,7 @@ function renderCameraTitles() {
 function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
   cameraTitleNodesByCar.clear();
+  cameraEffectNodesByCar.clear();
   telemetryNodesByCar.clear();
   controlNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
@@ -1126,6 +1205,8 @@ function createCameraTiles() {
     video.setAttribute('aria-label', `CAR ${car.displayNumber} onboard video`);
     const videoState = element('span', 'video-state', 'WAITING FOR RELAY');
     videoState.id = `video-state-${car.carId}`;
+    const eventFlash = element('strong', 'camera-event-flash');
+    eventFlash.hidden = true;
     const telemetry = element('div', 'camera-telemetry');
     telemetry.id = `camera-telemetry-${car.carId}`;
     const rate = element('strong', 'telemetry-rate', 'TEL --');
@@ -1150,8 +1231,10 @@ function createCameraTiles() {
     brakeMeter.append(brakeTrack, element('em', '', 'B'));
     controls.append(brakeMeter, throttleMeter);
     controlNodesByCar.set(car.carId, { root: controls, throttle: throttleFill, brake: brakeFill });
-    feed.append(video, telemetry, controls, videoState);
+    feed.append(video, telemetry, controls, videoState, eventFlash);
     tile.append(head, feed);
+    cameraEffectNodesByCar.set(car.carId, { root: tile, badge: eventFlash });
+    applyCarEffect(car.carId);
     return tile;
   }));
 }
@@ -1220,12 +1303,33 @@ function handleRaceState(car, state) {
     sectorCompletionHoldByCar.clear();
   }
   const previousStandingByCar = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
+  const overallSectorBest = new Map();
+  for (const standing of state.standings || []) {
+    for (const timing of standing.sectorTimes || []) {
+      if (!Number.isFinite(timing?.bestMs)) continue;
+      const previous = overallSectorBest.get(timing.sector);
+      if (previous === undefined || timing.bestMs < previous) overallSectorBest.set(timing.sector, timing.bestMs);
+    }
+  }
   for (const standing of state.standings || []) {
     const previous = previousStandingByCar.get(standing.carId);
     const completedLap = previousRunId === nextRunId
       && previous?.currentSector === 3 && standing.currentSector === 1
       && previous.lastMarkerIndex === 2 && standing.lastMarkerIndex === 0;
     if (completedLap) sectorCompletionHoldByCar.set(standing.carId, performance.now() + 2500);
+    if (previousRunId === nextRunId && Number.isInteger(previous?.position)
+        && Number.isInteger(standing.position) && previous.position !== standing.position) {
+      triggerCarEffect(standing.carId, standing.position < previous.position ? 'position-up' : 'position-down');
+    }
+    if (previousRunId === nextRunId) {
+      const previousSectors = new Map((previous?.sectorTimes || []).map((timing) => [timing.sector, timing]));
+      for (const timing of standing.sectorTimes || []) {
+        if (!Number.isFinite(timing?.lastMs)
+            || previousSectors.get(timing.sector)?.lastMs === timing.lastMs) continue;
+        const result = classifyBestTime(timing.lastMs, timing.bestMs, overallSectorBest.get(timing.sector));
+        if (result === 'overall-best' || result === 'personal-best') triggerCarEffect(standing.carId, result);
+      }
+    }
   }
   raceState = state;
   raceReceivedAt = performance.now();
@@ -1275,6 +1379,14 @@ function handleHealth(car, health) {
 		&& previous?.fuel === next.fuel && previous?.boost === next.boost
 		&& previous?.boostState === next.boostState && previous?.gear === next.gear) return;
   healthByCar.set(car.carId, next);
+  if (previous?.boostState !== next.boostState) {
+    if (next.boostState === 'ready') triggerCarEffect(car.carId, 'boost-ready');
+    if (next.boostState === 'active') triggerCarEffect(car.carId, 'boost-active');
+  }
+  if (previous?.fuelState !== next.fuelState) {
+    if (next.fuelState === 'low') triggerCarEffect(car.carId, 'fuel-low');
+    if (next.fuelState === 'empty') triggerCarEffect(car.carId, 'fuel-empty');
+  }
   renderLeaderboard();
   renderSituations();
 }
@@ -1330,6 +1442,10 @@ function handlePit(car, pit) {
     && previous.hp === pit.hp;
   if (unchanged) return;
   pitByCar.set(car.carId, pit);
+  if (pit.present && !previous?.present) triggerCarEffect(car.carId, 'pit-service');
+  if (pit.present && pit.serviceState === 'complete' && previous?.serviceState !== 'complete') {
+    triggerCarEffect(car.carId, 'pit-complete');
+  }
   if (raceState?.raceRunId) updatePitMotion(car, pit, previous);
   renderSituations();
   renderPitState();
@@ -1367,6 +1483,8 @@ function handleVehicleEvent(car, result) {
   vehicleEventHistoryByCar.set(car.carId, result.events || []);
   if (!result.transient || !result.event) return;
   vehicleEventByCar.set(car.carId, result.event);
+  triggerCarEffect(car.carId, result.event.impactClass === 'severe'
+    ? 'heavy-impact' : result.event.impactClass === 'strong' ? 'impact' : 'gravel');
   renderSituations();
   if (vehicleEventTimers.has(car.carId)) window.clearTimeout(vehicleEventTimers.get(car.carId));
   vehicleEventTimers.set(car.carId, window.setTimeout(() => {
@@ -1396,12 +1514,18 @@ function updateDisplayClass() {
 
 function seedObserverUiTest() {
 	const now = Date.now();
+	const drivers = ['マッドエックス', '給電セレリタ', 'ノーパイロット', 'テストドライバー'];
 	raceState = {
 		type: 'race_state', version: 2, raceId: 'race-test', raceRunId: 'rr-ui-test', phase: 'green', flag: 'none',
 		serverTimeMs: now, raceTimeMs: 84500, raceInfo: { title: 'FINAL', track: observerConfig.trackName, totalLaps: 10 },
 		standings: observerConfig.cars.map((car, index) => ({
-			carId: car.carId, driver: car.driver, position: index + 1, status: 'racing', lap: 6 - index,
+			carId: car.carId, driver: drivers[index] || car.driver, position: index + 1, status: 'racing', lap: 6 - index,
 			currentLapMs: 9100 + index * 430, lapTimeMs: 14200 + index * 510, bestLapMs: 13700 + index * 390,
+			sectorCount: 3, currentSector: (index % 3) + 1, lastMarkerIndex: index % 3,
+			lastMarkerRaceMs: 78000 + index * 900, raceElapsedMs: 84500,
+			sectorTimes: [1, 2, 3].map((sector) => ({
+				sector, lastMs: 4400 + (sector * 240) + (index * 170), bestMs: 4300 + (sector * 220) + (index * 150),
+			})),
 		})),
 		lapHistory: [],
 	};
@@ -1419,6 +1543,8 @@ function seedObserverUiTest() {
 			mode: fixture.hp < 70 ? 'damaged' : 'healthy',
 		});
 	});
+	raceReceivedAt = performance.now();
+	rebuildRaceViewCache();
 }
 
 async function initialize() {
@@ -1439,6 +1565,12 @@ async function initialize() {
 		if (params.get('uiTest') === '1') {
 			seedObserverUiTest();
 			renderAll();
+			if (params.get('effectTest') === '1') {
+				['heavy-impact', 'boost-ready', 'pit-complete', 'overall-best'].forEach((effect, index) => {
+					const car = observerConfig.cars[index];
+					if (car) triggerCarEffect(car.carId, effect);
+				});
+			}
 			animationFrame = requestAnimationFrame(updateAnimationFrame);
 			return;
 		}
@@ -1474,6 +1606,8 @@ window.addEventListener('pagehide', () => {
   for (const client of clients) client.close();
   for (const timer of vehicleEventTimers.values()) window.clearTimeout(timer);
   vehicleEventTimers.clear();
+  for (const timer of carEffectTimers.values()) window.clearTimeout(timer);
+  carEffectTimers.clear();
   window.removeEventListener('resize', updateDisplayClass);
 });
 
