@@ -262,11 +262,14 @@ html[data-mode="live"] .battle-map-link { display: none; }
 .race-car-status { overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .sector-bars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
 .sector-bars i { position: relative; height: 16px; border: 1px solid #2a353a; border-radius: 2px; background: #111719; color: var(--muted); font-size: 9px; font-style: normal; font-weight: 800; line-height: 14px; text-align: center; }
-.sector-bars i.done { border-color: #66757a; color: #0a0e10; background: #77858a; }
-.sector-bars i.done::after { position: absolute; top: -1px; right: 3px; color: #e7eff1; content: "\2713"; }
+.sector-bars i.done { border-color: var(--yellow); color: #0a0e10; background: var(--yellow); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yellow) 48%, transparent); }
 .sector-bars i.active { border-color: var(--car); color: #071013; background: repeating-linear-gradient(110deg, var(--car) 0 18px, color-mix(in srgb, var(--car) 72%, #fff) 18px 28px); background-size: 56px 100%; box-shadow: 0 0 9px color-mix(in srgb, var(--car) 55%, transparent); animation: sector-active-flow .8s linear infinite; }
-.sector-bars i.recent { border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 18%, #111719); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 45%, transparent), 0 0 10px color-mix(in srgb, var(--green) 36%, transparent); animation: sector-complete-hold .6s ease-in-out infinite alternate; }
-.sector-bars i.recent::after { position: absolute; top: -1px; right: 3px; content: "\2713"; }
+.sector-bars i.recent { border-color: var(--yellow); color: var(--yellow); background: color-mix(in srgb, var(--yellow) 18%, #111719); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yellow) 45%, transparent), 0 0 10px color-mix(in srgb, var(--yellow) 36%, transparent); animation: sector-complete-hold .6s ease-in-out infinite alternate; }
+.sector-bars i.done.personal-best { border-color: var(--green); background: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 48%, transparent); }
+.sector-bars i.recent.personal-best { border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 18%, #111719); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 45%, transparent), 0 0 10px color-mix(in srgb, var(--green) 36%, transparent); }
+.sector-bars i.done.overall-best { border-color: var(--purple); background: var(--purple); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 48%, transparent); }
+.sector-bars i.recent.overall-best { border-color: var(--purple); color: var(--purple); background: color-mix(in srgb, var(--purple) 18%, #111719); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 45%, transparent), 0 0 10px color-mix(in srgb, var(--purple) 36%, transparent); }
+.sector-bars i.done::after, .sector-bars i.recent::after { position: absolute; top: -1px; right: 3px; color: currentColor; content: "\2713"; }
 @keyframes sector-active-flow { to { background-position: 56px 0; } }
 @keyframes sector-complete-hold { to { filter: brightness(1.45); } }
 .sector-value { color: #e1e8ea; font-size: 13px; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }

@@ -503,8 +503,14 @@ function renderSectorRows() {
         : currentSector && sector < currentSector
           ? 'done'
           : sector === 3 && holdS3 ? 'recent' : '';
-      const bar = element('i', state, `S${sector}`);
-      bar.setAttribute('aria-label', `Sector ${sector} ${state || 'upcoming'}`);
+      const resultClass = state === 'done' || state === 'recent'
+        ? classifyBestTime(timing?.lastMs, timing?.bestMs, overallSectorBest.get(sector))
+        : '';
+      const bar = element('i', [state, resultClass].filter(Boolean).join(' '), `S${sector}`);
+      const resultLabel = resultClass === 'overall-best'
+        ? ' overall best'
+        : resultClass === 'personal-best' ? ' personal best' : '';
+      bar.setAttribute('aria-label', `Sector ${sector} ${state || 'upcoming'}${resultLabel}`);
       if (timing?.lastMs) bar.title = `S${sector} ${formatSplitTime(timing.lastMs)}`;
       if (state === 'recent') sectorCompletionNodeByCar.set(car.carId, bar);
       bars.append(bar);
