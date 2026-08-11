@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260811-race-snapshot-order-v1';
+  const PILOT_BUILD_ID = '20260811-complete-lap-history-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -1589,11 +1589,23 @@
     }
     const lap = normalizeRaceNumber(standing?.lap);
     const lastLapMs = normalizeRaceNumber(standing?.lapTimeMs);
-    // MADSYSTEM はラップ確定後に LapNum を次周回へ進めてから snapshot を送る。
-    // 例: lap=2 と lapTimeMs は「1 周目の確定タイム」を表す。
-    const completedLap = lap === null ? null : Math.max(1, lap - 1);
-    if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
-      receivedRaceLapHistory.set(completedLap, lastLapMs);
+    const completedLaps = Array.isArray(state.lapHistory)
+      ? state.lapHistory.filter((entry) => entry?.carId === carId)
+      : [];
+    for (const entry of completedLaps) {
+      const completedLap = normalizeRaceNumber(entry?.lap);
+      const timeMs = normalizeRaceNumber(entry?.lapTimeMs);
+      if (completedLap !== null && completedLap > 0 && timeMs !== null && timeMs > 0) {
+        receivedRaceLapHistory.set(completedLap, timeMs);
+      }
+    }
+    if (completedLaps.length === 0) {
+      // 旧形式では、走行中の lapTimeMs は lap のひとつ前の確定タイムを表す。
+      const completedLap = lap === null ? null : Math.max(1,
+        state.phase === 'finished' ? lap : lap - 1);
+      if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
+        receivedRaceLapHistory.set(completedLap, lastLapMs);
+      }
     }
     const laps = Array.from(receivedRaceLapHistory, ([completedLap, timeMs]) => ({
       lap: completedLap,
