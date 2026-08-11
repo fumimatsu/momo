@@ -1,4 +1,5 @@
 import {
+  abbreviateDriverName,
   RaceStateDeduplicator,
   countActiveVideos,
   currentLapClockValue,
@@ -32,6 +33,7 @@ const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
+const RACE_FRESHNESS_STALE_MS = 12000;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-10, -10], [10, -10], [-10, 10], [10, 10]];
 const raceDeduplicator = new RaceStateDeduplicator();
@@ -52,6 +54,7 @@ const currentLapNodeByCar = new Map();
 const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
+const cameraTitleNodesByCar = new Map();
 const telemetryNodesByCar = new Map();
 const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
@@ -107,6 +110,7 @@ function createWebSocketUrl(relayHost, device) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${protocol}//${relayHost}/ws`);
   url.searchParams.set('role', 'observer');
+  url.searchParams.set('client', 'web-observer');
   url.searchParams.set('device', device);
   return url.toString();
 }
@@ -181,6 +185,41 @@ class ObserverPeer {
     ws.onclose = () => this.scheduleReconnect(generation, 'SIGNALING CLOSED');
   }
 
+  handleTelemetryMessage(message) {
+    if (typeof message !== 'string') return;
+    const health = parseVehicleHealth(message);
+    if (health) this.onHealth(this.car, health);
+    const pit = parsePitPresence(message);
+    if (pit) this.onPit(this.car, pit);
+    if (!this.telemetryTracker || !message.startsWith('TEL:')) return;
+    const arrivalMs = performance.now();
+    const result = this.telemetryTracker.ingest(message, arrivalMs);
+    if (!result.accepted) return;
+    const motion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
+    const snapshot = this.telemetryTracker.getSnapshot(arrivalMs);
+    this.onTelemetry(this.car, {
+      motion,
+      primary: snapshot.primary,
+      counters: snapshot.counters,
+    });
+  }
+
+  handleCommandMessage(message) {
+    if (typeof message !== 'string') return;
+    const control = parseControlCommand(message);
+    if (control) this.onControl(this.car, control);
+  }
+
+  handleVehicleEventMessage(message) {
+    if (typeof message !== 'string' || !this.vehicleEvents) return;
+    const result = this.vehicleEvents.ingest(message);
+    if ((result.event && result.event.carId !== this.car.carId)
+        || result.events?.some((item) => item.carId !== this.car.carId)) return;
+    if (result.status === 'snapshot' || result.status === 'live') {
+      this.onVehicleEvent(this.car, result);
+    }
+  }
+
   createPeer(generation) {
     const pc = new RTCPeerConnection({ iceServers: [] });
     this.pc = pc;
@@ -197,22 +236,8 @@ class ObserverPeer {
       this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'TELEMETRY OPEN');
     };
     telemetry.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string') return;
-      const health = parseVehicleHealth(event.data);
-      if (health) this.onHealth(this.car, health);
-      const pit = parsePitPresence(event.data);
-      if (pit) this.onPit(this.car, pit);
-      if (!this.telemetryTracker || !event.data.startsWith('TEL:')) return;
-      const arrivalMs = performance.now();
-      const result = this.telemetryTracker.ingest(event.data, arrivalMs);
-      if (!result.accepted) return;
-      const motion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
-      const snapshot = this.telemetryTracker.getSnapshot(arrivalMs);
-      this.onTelemetry(this.car, {
-        motion,
-        primary: snapshot.primary,
-        counters: snapshot.counters,
-      });
+      if (generation !== this.generation) return;
+      this.handleTelemetryMessage(event.data);
     };
     telemetry.onclose = () => {
       if (generation !== this.generation) return;
@@ -225,9 +250,8 @@ class ObserverPeer {
       maxRetransmits: 0,
     });
     command.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string') return;
-      const control = parseControlCommand(event.data);
-      if (control) this.onControl(this.car, control);
+      if (generation !== this.generation) return;
+      this.handleCommandMessage(event.data);
     };
 
     const race = pc.createDataChannel('momo-race', { ordered: true });
@@ -258,13 +282,8 @@ class ObserverPeer {
       this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'EVENTS OPEN');
     };
     events.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string' || !this.vehicleEvents) return;
-      const result = this.vehicleEvents.ingest(event.data);
-      if ((result.event && result.event.carId !== this.car.carId)
-          || result.events?.some((item) => item.carId !== this.car.carId)) return;
-      if (result.status === 'snapshot' || result.status === 'live') {
-        this.onVehicleEvent(this.car, result);
-      }
+      if (generation !== this.generation) return;
+      this.handleVehicleEventMessage(event.data);
     };
     events.onclose = () => {
       if (generation !== this.generation) return;
@@ -344,6 +363,15 @@ class ObserverPeer {
         const candidate = new RTCIceCandidate(message.ice);
         if (this.remoteDescriptionSet) await this.pc.addIceCandidate(candidate);
         else this.pendingCandidates.push(candidate);
+      } else if (message.type === 'race-state' && typeof message.data === 'string') {
+        const state = parseRaceState(message.data);
+        if (state) this.onRace(this.car, state);
+      } else if (message.type === 'telemetry') {
+        this.handleTelemetryMessage(message.data);
+      } else if (message.type === 'command') {
+        this.handleCommandMessage(message.data);
+      } else if (message.type === 'vehicle-event') {
+        this.handleVehicleEventMessage(message.data);
       } else if (message.type === 'close' || message.type === 'error') {
         this.scheduleReconnect(generation, String(message.error || message.type).toUpperCase());
       }
@@ -540,12 +568,7 @@ function renderSectorRows() {
     sectorLiveNodeByCar.set(car.carId, currentValue);
     const lastValue = element('span', 'sector-value sector-last timing-cell', formatSplitTime(activeTiming?.lastMs));
     const bestValue = element('span', 'sector-value sector-best timing-cell', formatSplitTime(activeTiming?.bestMs));
-    const bestClass = classifyBestTime(
-      activeTiming?.lastMs,
-      activeTiming?.bestMs,
-      overallSectorBest.get(currentSector),
-      'slower-than-best',
-    );
+    const bestClass = classifyBestTime(activeTiming?.lastMs, activeTiming?.bestMs, overallSectorBest.get(currentSector));
     if (bestClass) lastValue.classList.add(bestClass);
     const storedBestClass = classifyBestTime(activeTiming?.bestMs, activeTiming?.bestMs, overallSectorBest.get(currentSector));
     if (storedBestClass) bestValue.classList.add(storedBestClass);
@@ -590,11 +613,13 @@ function renderTimingRows() {
   root.replaceChildren(...history.map((entry) => {
     const car = carById.get(entry.carId);
     const standing = standingById.get(entry.carId);
+    const driverName = String(standing?.driver || car?.driver || entry.carId).trim();
+    const driverShortName = abbreviateDriverName(driverName, entry.carId);
     const sectorTimeByNumber = new Map(entry.sectorTimes.map((timing) => [timing.sector, timing.timeMs]));
     const row = document.createElement('tr');
     const values = [
       formatDuration(entry.completedAtRaceMs),
-      car ? `#${car.displayNumber}` : entry.carId,
+      `${car ? `#${car.displayNumber}` : entry.carId} ${driverShortName}`,
       `L${entry.lap}`,
       formatSplitTime(sectorTimeByNumber.get(1)),
       formatSplitTime(sectorTimeByNumber.get(2)),
@@ -606,17 +631,13 @@ function renderTimingRows() {
       if (index === 1) {
         const badge = element('span', 'table-car', value);
         badge.style.setProperty('--car', `var(--${car?.color || 'green'})`);
+        badge.title = driverName;
         cell.append(badge);
       } else cell.textContent = value;
       if (index >= 3 && index <= 5) {
         const sector = index - 2;
         const personalBest = standing?.sectorTimes?.find((timing) => timing.sector === sector)?.bestMs;
-        const className = classifyBestTime(
-          sectorTimeByNumber.get(sector),
-          personalBest,
-          overallSectorBest.get(sector),
-          'slower-than-best',
-        );
+        const className = classifyBestTime(sectorTimeByNumber.get(sector), personalBest, overallSectorBest.get(sector));
         cell.classList.add('timing-cell');
         if (className) cell.classList.add(className);
       }
@@ -1049,6 +1070,7 @@ function updateAnimationFrame(now) {
 function renderAll() {
   if (!observerConfig) return;
   renderHeader();
+  renderCameraTitles();
   renderLeaderboard();
   renderSectorRows();
   renderTimingRows();
@@ -1056,15 +1078,28 @@ function renderAll() {
   renderPitState();
 }
 
+function renderCameraTitles() {
+  for (const car of observerConfig.cars) {
+    const nodes = cameraTitleNodesByCar.get(car.carId);
+    if (!nodes) continue;
+    const driverName = standingByCar.get(car.carId)?.driver || car.driver || car.device;
+    nodes.driver.textContent = driverName;
+    nodes.root.title = driverName;
+  }
+}
+
 function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
+  cameraTitleNodesByCar.clear();
   telemetryNodesByCar.clear();
   controlNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
     const tile = element('article', `camera-tile camera-${car.color}`);
     const head = element('div', 'camera-head');
     const title = element('strong', '', `CAR ${car.displayNumber} `);
-    title.append(element('span', '', car.driver || car.device));
+    const driver = element('span', '', car.driver || car.device);
+    title.append(driver);
+    cameraTitleNodesByCar.set(car.carId, { root: title, driver });
     const status = element('span', '', '');
     status.id = `camera-status-${car.carId}`;
     status.append(element('i'), document.createTextNode('WAITING'));
@@ -1145,7 +1180,13 @@ function renderCameraTransportState(car, now) {
       : `RACE DC ${(raceAge / 1000).toFixed(1)}s`;
   setTextIfChanged(videoState, `${state.state} / ${raceText} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'} / EVT ${state.eventsOpen ? 'OPEN' : 'CLOSED'}`);
   const stateName = String(state.state || 'waiting').toLowerCase();
-  const freshness = raceAge === null ? 'waiting' : raceAge < 2500 ? 'live' : 'stale';
+  const standing = standingByCar.get(car.carId);
+  const activelyRacing = raceState?.phase === 'green' && standing?.status === 'racing';
+  const freshness = raceAge === null
+    ? 'waiting'
+    : !activelyRacing
+      ? 'settled'
+      : raceAge < RACE_FRESHNESS_STALE_MS ? 'live' : 'stale';
   if (videoState.dataset.state !== stateName) videoState.dataset.state = stateName;
   if (videoState.dataset.raceFreshness !== freshness) videoState.dataset.raceFreshness = freshness;
 }

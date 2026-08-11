@@ -316,6 +316,42 @@ func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
 	}
 }
 
+func TestM5AudioMessageClassification(t *testing.T) {
+	if !isM5AudioMessage(webrtc.DataChannelMessage{Data: []byte("AUD:1,deadbeef,1,8,ima,AAAA"), IsString: false}) {
+		t.Fatal("AUD frame was not classified as M5 audio")
+	}
+	if isM5AudioMessage(webrtc.DataChannelMessage{Data: []byte("TEL:1,2,3"), IsString: true}) {
+		t.Fatal("TEL frame was classified as M5 audio")
+	}
+}
+
+func TestPilotM5AudioUsesWebSocketOnlyWhileSubscribed(t *testing.T) {
+	client := &viewer{id: 1, role: "pilot", audioWS: make(chan string, 1)}
+	relay := &relay{viewers: map[uint64]*viewer{client.id: client}}
+	message := webrtc.DataChannelMessage{Data: []byte("AUD:1,deadbeef,1,8,ima,AAAA")}
+
+	relay.broadcastTelemetry(message)
+	if got := len(client.audioWS); got != 0 {
+		t.Fatalf("audio queue length while unsubscribed = %d, want 0", got)
+	}
+
+	client.audioSubscribed.Store(true)
+	relay.broadcastTelemetry(message)
+	if got := <-client.audioWS; got != string(message.Data) {
+		t.Fatalf("queued audio = %q, want %q", got, message.Data)
+	}
+}
+
+func TestRaceStateUsesViewerWebSocketQueue(t *testing.T) {
+	client := &viewer{id: 1, role: "pilot", raceWS: make(chan string, 1)}
+	relay := &relay{viewers: map[uint64]*viewer{client.id: client}}
+
+	relay.broadcastRaceState(`RACE:{"sequence":7}`)
+	if got := <-client.raceWS; got != `RACE:{"sequence":7}` {
+		t.Fatalf("queued race state = %q", got)
+	}
+}
+
 func TestBinaryTELIsNormalizedForViewerDelivery(t *testing.T) {
 	normalized, raw, isTEL, wasBinaryTEL := normalizeTelemetryMessage(
 		webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}")},

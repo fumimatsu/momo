@@ -74,6 +74,7 @@ type signalMessage struct {
 type viewer struct {
 	id                  uint64
 	role                string
+	clientKind          string
 	remoteAddr          string
 	pc                  *webrtc.PeerConnection
 	state               atomic.Int32
@@ -90,7 +91,11 @@ type viewer struct {
 	telemetrySendErrors atomic.Uint64
 	telemetryDropped    atomic.Uint64
 	telemetryWS         chan string
+	commandWS           chan string
+	raceWS              chan string
+	audioWS             chan string
 	eventsWS            chan string
+	audioSubscribed     atomic.Bool
 	telemetrySendMu     sync.Mutex
 	raceSendMu          sync.Mutex
 	eventsSendMu        sync.Mutex
@@ -1083,7 +1088,16 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
-		if client.role == "pilot" && message.IsString && client.telemetryWS != nil {
+		if client.role == "pilot" && isM5AudioMessage(message) && client.audioWS != nil {
+			if client.audioSubscribed.Load() {
+				enqueueLatestTelemetry(client.audioWS, string(message.Data))
+			}
+			continue
+		}
+		if client.clientKind == "web-observer" && isM5AudioMessage(message) {
+			continue
+		}
+		if message.IsString && client.telemetryWS != nil {
 			enqueueLatestTelemetry(client.telemetryWS, string(message.Data))
 			client.telemetryMessages.Add(1)
 			client.telemetryBytes.Add(uint64(len(message.Data)))
@@ -1119,6 +1133,10 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 			}
 		}
 	}
+}
+
+func isM5AudioMessage(message webrtc.DataChannelMessage) bool {
+	return bytes.HasPrefix(message.Data, []byte("AUD:"))
 }
 
 func telemetryDataChannelSaturated(buffered uint64) bool {
@@ -1235,6 +1253,10 @@ func (r *relay) broadcastRaceState(message string) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
+		if client.raceWS != nil {
+			enqueueLatestTelemetry(client.raceWS, message)
+			continue
+		}
 		if channel := client.race.Load(); channel != nil {
 			r.sendRaceState(client, channel, message)
 		}
@@ -1291,7 +1313,7 @@ func (r *relay) broadcastVehicleEventMessage(message string) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
-		if client.role == "pilot" && client.eventsWS != nil {
+		if client.eventsWS != nil {
 			if !enqueueVehicleEvent(client.eventsWS, message) {
 				log.Printf("source %q: drop WebSocket vehicle event for viewer %d because the bounded queue is full", r.name, client.id)
 			}
@@ -1336,7 +1358,7 @@ func (r *relay) openVehicleEventsChannel(client *viewer, channel *webrtc.DataCha
 		log.Printf("source %q: encode vehicle event snapshot: %v", r.name, err)
 		return
 	}
-	if client.role == "pilot" && client.eventsWS != nil {
+	if client.eventsWS != nil {
 		if !enqueueVehicleEvent(client.eventsWS, message) {
 			log.Printf("source %q: drop WebSocket vehicle event snapshot for viewer %d because the bounded queue is full", r.name, client.id)
 		}
@@ -1405,6 +1427,15 @@ func (r *relay) broadcastCommand(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
+		if client.role == "pilot" {
+			// Pilot は自分の入力値をローカル表示しており、Relay からの監査エコーは
+			// 使用しない。高頻度の下り SCTP トラフィックを作らないよう送信しない。
+			continue
+		}
+		if message.IsString && client.commandWS != nil {
+			enqueueLatestTelemetry(client.commandWS, string(message.Data))
+			continue
+		}
 		if channel := client.command.Load(); channel != nil {
 			if err := sendDataChannel(channel, message); err != nil {
 				log.Printf("send command audit to viewer %d: %v", client.id, err)
@@ -1900,7 +1931,11 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	if role != "pilot" {
 		role = "observer"
 	}
-	client := &viewer{id: r.nextID.Add(1), role: role, remoteAddr: req.RemoteAddr}
+	clientKind := req.URL.Query().Get("client")
+	if clientKind != "web-observer" && clientKind != "web-pilot" {
+		clientKind = ""
+	}
+	client := &viewer{id: r.nextID.Add(1), role: role, clientKind: clientKind, remoteAddr: req.RemoteAddr}
 	client.state.Store(int32(viewerNegotiating))
 	if role == "pilot" && !r.reservePilot(client.id) {
 		http.Error(w, "a pilot viewer is already connected", http.StatusConflict)
@@ -1928,13 +1963,33 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		defer writeMu.Unlock()
 		return ws.WriteJSON(message)
 	}
-	telemetryDone := make(chan struct{})
-	defer close(telemetryDone)
-	if role == "pilot" {
+	viewerDataDone := make(chan struct{})
+	defer close(viewerDataDone)
+	if role == "pilot" || clientKind == "web-observer" {
 		client.telemetryWS = make(chan string, 1)
 		client.eventsWS = make(chan string, 64)
+	}
+	if clientKind == "web-pilot" || clientKind == "web-observer" {
+		client.raceWS = make(chan string, 1)
+	}
+	if clientKind == "web-observer" {
+		client.commandWS = make(chan string, 1)
+	}
+	if role == "pilot" {
+		client.audioWS = make(chan string, 8)
+	}
+	if role == "pilot" || clientKind == "web-observer" {
 		go func() {
 			for {
+				select {
+				case payload := <-client.raceWS:
+					if err := sendSignal(signalMessage{Type: "race-state", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket race state to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+					continue
+				default:
+				}
 				select {
 				case payload := <-client.eventsWS:
 					if err := sendSignal(signalMessage{Type: "vehicle-event", Data: payload}); err != nil {
@@ -1955,7 +2010,22 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 						log.Printf("source %q: send WebSocket telemetry to viewer %d: %v", r.name, client.id, err)
 						return
 					}
-				case <-telemetryDone:
+				case payload := <-client.commandWS:
+					if err := sendSignal(signalMessage{Type: "command", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket command audit to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case payload := <-client.raceWS:
+					if err := sendSignal(signalMessage{Type: "race-state", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket race state to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case payload := <-client.audioWS:
+					if err := sendSignal(signalMessage{Type: "m5-audio", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket M5 audio to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case <-viewerDataDone:
 					return
 				}
 			}
@@ -2092,6 +2162,11 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 			r.addViewer(client)
+			if client.raceWS != nil {
+				if state := r.currentRaceState(); state != "" {
+					enqueueLatestTelemetry(client.raceWS, state)
+				}
+			}
 			if err := sendSignal(signalMessage{Type: "answer", SDP: answer.SDP}); err != nil {
 				return
 			}
@@ -2108,6 +2183,12 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			}
 		case "datachannel-probe":
 			r.sendDataChannelTextBinaryProbe(client, message.Data)
+		case "m5-audio-subscription":
+			if client.role == "pilot" {
+				enabled := message.Data == "1"
+				client.audioSubscribed.Store(enabled)
+				log.Printf("source %q: viewer %d M5 audio subscription=%t", r.name, client.id, enabled)
+			}
 		case "close", "bye":
 			r.removeViewer(client.id)
 			return
