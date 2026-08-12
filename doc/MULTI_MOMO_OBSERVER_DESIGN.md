@@ -2,6 +2,8 @@
 
 > 現行の Unity 連携は OBS Virtual Camera を採用しない。Observer が出力する Windows 共有メモリを Unity Native Plugin で直接読む。実装契約は [MADSYSTEM Unity 連携実装ガイド](MADSYSTEM_UNITY_SHARED_MEMORY_GUIDE.md) を正とする。この文書内の OBS／WebCam に関する記述は初期検討時の案であり、現行構成には適用しない。
 
+> この文書は現行の最大4台、2x2合成構成を扱う。マーカー検出をMADSYSTEMから独立させ、10台、20台へ水平拡張し、観客向け映像を注目車両へ切り替える将来計画は [Scalable Marker Observer and Program Observer Design](SCALABLE_MARKER_AND_PROGRAM_OBSERVER_DESIGN.md) を参照する。
+
 ## 目的
 
 ローカル relay を経由して最大 4 台の Momo 映像を 1 つの C++ Observer アプリケーションで受信し、1 つの SDL ウィンドウに固定 2 × 2 で合成表示する。その合成映像を Windows の仮想 WebCam として Unity に渡す。
