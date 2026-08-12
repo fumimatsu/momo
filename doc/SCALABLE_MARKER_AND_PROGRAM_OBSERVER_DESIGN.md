@@ -83,14 +83,14 @@ Relay試験では擬似Momo 1台あたりH.264 RTP 30 FPS、8 packet/frame、120
 | 4/8/12/16/24/32 source、各Observer 1台 | 各30秒 | 全件合格 | 最大6.84% | 上りと下りを同時中継 |
 | 32 source、各Observer 2台 | 60秒 | 合格 | 7.56% | 64 Viewer、下り約147 Mbps |
 | 24 source、各Observer 1台、Pilot 1台、1 source切断 | 120秒 | 合格 | 6.33% | 3.43秒で復旧、他23台は継続 |
-| 32 source、各Observer 1台、Pilot 1台、1 source切断 | 120秒 | 合格 | 6.58% | 3.52秒で復旧、他31台は継続 |
+| 32 source、各Observer 1台、Pilot 1台、1 source切断 | 600秒 | 合格 | 6.46% | 3.44秒で復旧、他31台は継続 |
 
 32台障害試験の初回だけ、強制切断対象とは別の2 sourceで約10秒の映像停止を観測した。同条件の
-再試験は合格したため、現時点ではRelayの再現性ある不具合とは断定しない。ただし32台を本番上限に
-採用する前に、実ネットワークと実機Momoで最低10分、推奨1時間のsoak testを複数回行う。
+再試験と10分soak testは合格したため、現時点ではRelayの再現性ある不具合とは断定しない。ただし
+32台を本番上限に採用する前に、実ネットワークと実機Momoで推奨1時間のsoak testを複数回行う。
 
 Pilot共存試験は`sim-01`へ`momo-command`を50 Hzで送信し、`momo-drive`を開いた状態で実施した。
-32台・120秒で6,215 commandを送信し、Telemetry dropとRace write errorは0だった。echoを持たないため
+32台・600秒で30,200 commandを送信し、Telemetry dropとRace write errorは0だった。echoを持たないため
 command RTTそのものは未測定であり、実車の適用時刻を返す診断契約は今後の課題とする。
 
 ArUco試験には上下反転していた実走録画を180度回転し、H.264へ変換した入力を使用した。元映像は
@@ -109,6 +109,9 @@ event化し、未知IDは診断カウンタへ残してrace eventには変換し
 
 物理限界と運用上限を分ける。CPU、温度、OS、Relay、ネットワークの余力を残すため、現PCでは
 `maxSourcesPerNode=12`を既定、16をhard capとする。20台は10台×2 node、32台は8台×4 nodeを推奨する。
+QSV 12 sourceは10分soak testでも最低復号・検出14.97 Hz、検出latency p95 20.80ms、CPU p95
+48.70%で合格した。Relay 32台とQSV 12台は別々に測定しており、同一PCへ同居させる場合は
+end-to-end試験を別途行う。
 現在のMomo Windows buildが公開するH.264 hardware decoderはIntel VPLであり、CUDA結果は将来の
 Marker ObserverがFFmpeg/NVDEC経路を採用した場合の比較値である。現段階の試験は録画を独立processへ
 入力したcapacity試験で、WebRTC受信からArUco eventまでのend-to-end保証ではない。
