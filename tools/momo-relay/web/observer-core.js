@@ -242,6 +242,19 @@ export function classifyBestTime(value, personalBest, overallBest) {
   return 'standard-time';
 }
 
+// S1/S2 は進行中ラップの通過直後に lastMs だけが届き、bestMs はラップ完了まで
+// null のままになる。完了済み履歴のベストを基準に、新記録もその場で判定する。
+export function classifyCompletedSectorTime(value, personalBest, overallBest) {
+  const time = finiteNumber(value);
+  if (time === null || time <= 0) return '';
+  const rounded = Math.round(time);
+  const overall = finiteNumber(overallBest);
+  if (overall === null || rounded <= Math.round(overall)) return 'overall-best';
+  const personal = finiteNumber(personalBest);
+  if (personal === null || rounded <= Math.round(personal)) return 'personal-best';
+  return 'standard-time';
+}
+
 export function expectedSectorDurationMs(standing) {
   const currentSector = finiteNumber(standing?.currentSector);
   if (!Number.isInteger(currentSector) || currentSector < 1 || !Array.isArray(standing?.sectorTimes)) return null;

@@ -6,6 +6,7 @@ import {
   deriveSituations,
   displayRaceStatus,
   elapsedSinceRaceMarkerMs,
+  classifyCompletedSectorTime,
   classifyBestTime,
   estimateLapDurationMs,
   estimateLapPacedProgress,
@@ -593,11 +594,24 @@ function renderSectorRows() {
   sectorCompletionNodeByCar.clear();
   const standings = raceState?.standings || [];
   const overallSectorBest = new Map();
+  const personalSectorBest = new Map();
+  const recordSectorBest = (carId, sector, value) => {
+    if (!Number.isFinite(value) || value <= 0 || !Number.isInteger(sector)) return;
+    if (!personalSectorBest.has(carId)) personalSectorBest.set(carId, new Map());
+    const personal = personalSectorBest.get(carId);
+    const previousPersonal = personal.get(sector);
+    if (previousPersonal === undefined || value < previousPersonal) personal.set(sector, value);
+    const previousOverall = overallSectorBest.get(sector);
+    if (previousOverall === undefined || value < previousOverall) overallSectorBest.set(sector, value);
+  };
   for (const standing of standings) {
     for (const timing of standing.sectorTimes || []) {
-      if (!Number.isFinite(timing?.bestMs)) continue;
-      const previous = overallSectorBest.get(timing.sector);
-      if (previous === undefined || timing.bestMs < previous) overallSectorBest.set(timing.sector, timing.bestMs);
+      recordSectorBest(standing.carId, timing?.sector, timing?.bestMs);
+    }
+  }
+  for (const entry of normalizedLapHistory) {
+    for (const timing of entry.sectorTimes || []) {
+      recordSectorBest(entry.carId, timing?.sector, timing?.timeMs);
     }
   }
   root.replaceChildren(...standingsByConfiguredCar(observerConfig.cars, raceState).map(({ car, standing }) => {
@@ -616,7 +630,11 @@ function renderSectorRows() {
           ? 'done'
           : sector === 3 && holdS3 ? 'recent' : '';
       const resultClass = state === 'done' || state === 'recent'
-        ? classifyBestTime(timing?.lastMs, timing?.bestMs, overallSectorBest.get(sector))
+        ? classifyCompletedSectorTime(
+          timing?.lastMs,
+          personalSectorBest.get(car.carId)?.get(sector),
+          overallSectorBest.get(sector),
+        )
         : '';
       const bar = element('i', [state, resultClass].filter(Boolean).join(' '), `S${sector}`);
       const resultLabel = resultClass === 'overall-best'
@@ -1303,6 +1321,14 @@ function handleRaceState(car, state) {
     sectorCompletionHoldByCar.clear();
   }
   const previousStandingByCar = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
+  const previousOverallSectorBest = new Map();
+  for (const standing of raceState?.standings || []) {
+    for (const timing of standing.sectorTimes || []) {
+      if (!Number.isFinite(timing?.bestMs)) continue;
+      const previous = previousOverallSectorBest.get(timing.sector);
+      if (previous === undefined || timing.bestMs < previous) previousOverallSectorBest.set(timing.sector, timing.bestMs);
+    }
+  }
   const overallSectorBest = new Map();
   for (const standing of state.standings || []) {
     for (const timing of standing.sectorTimes || []) {
@@ -1326,7 +1352,16 @@ function handleRaceState(car, state) {
       for (const timing of standing.sectorTimes || []) {
         if (!Number.isFinite(timing?.lastMs)
             || previousSectors.get(timing.sector)?.lastMs === timing.lastMs) continue;
-        const result = classifyBestTime(timing.lastMs, timing.bestMs, overallSectorBest.get(timing.sector));
+        const currentOverall = overallSectorBest.get(timing.sector);
+        const previousOverall = previousOverallSectorBest.get(timing.sector);
+        const overallReference = currentOverall === undefined
+          ? previousOverall
+          : previousOverall === undefined ? currentOverall : Math.min(currentOverall, previousOverall);
+        const result = classifyCompletedSectorTime(
+          timing.lastMs,
+          timing.bestMs ?? previousSectors.get(timing.sector)?.bestMs,
+          overallReference,
+        );
         if (result === 'overall-best' || result === 'personal-best') triggerCarEffect(standing.carId, result);
       }
     }
