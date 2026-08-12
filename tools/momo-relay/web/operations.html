@@ -210,7 +210,7 @@
 
       function clientHealth(client) {
         const ageText = Number.isFinite(client?.lastTelemetryDeliveryAgeMs) ? `${client.lastTelemetryDeliveryAgeMs}ms` : '--';
-        return `TX ${ageText} D${client?.telemetryDropped || 0} E${client?.telemetrySendErrors || 0}`;
+        return `TX ${ageText} T${client?.telemetryThrottled || 0} D${client?.telemetryDropped || 0} E${client?.telemetrySendErrors || 0}`;
       }
 
       function clientsPanel(clients) {

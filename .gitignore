@@ -19,6 +19,8 @@
 # Fortran module files
 *.mod
 *.smod
+!/tools/momo-relay-load/go.mod
+!/tools/momo-relay-sim/go.mod
 
 # Compiled Static libraries
 *.lai
@@ -39,6 +41,7 @@ webrtc_logs_*
 *.swp
 
 /__pycache__
+**/__pycache__/
 /_build
 /_source
 /_install
@@ -65,3 +68,4 @@ CLAUDE.local.md
 /tools/momo-relay/observer-unity.launch.log
 /tools/momo-relay/crash_dumps/
 /tools/momo-relay/*.exe~
+/tools/.artifacts/

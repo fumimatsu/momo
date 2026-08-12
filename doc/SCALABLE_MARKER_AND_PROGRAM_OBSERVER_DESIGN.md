@@ -2,8 +2,8 @@
 
 ## Status
 
-- 状態: foundation-in-progress
-- 実装: Relayの設定、診断、負荷計測、Web Observer選択購読の初期基盤を実装。Marker ObserverとAuto Directorは未着手
+- 状態: foundation-measured
+- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定を実装。Marker Observer本体とAuto Directorは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
 
@@ -47,7 +47,7 @@ MADSYSTEM計測は維持しつつ、Relay側から段階的に固定台数前提
 
 | 項目 | 状態 | 現在の内容 | 次段階 |
 | --- | --- | --- | --- |
-| 1. 4/8/12/16台負荷試験 | 初期実装 | `tools/Measure-RelayScale.ps1`で実Relayを採取し、Go benchmarkでstatus生成コストを比較する | 録画または実機sourceを8台以上用意して長時間測定する |
+| 1. 4/8/12/16/24/32台負荷試験 | 実測済み | 擬似Momo、WebRTC Viewer、Pilotを含むmatrixを自動実行し、32台まで測定した | 実機複数台と別PC間の長時間測定を行う |
 | 2. 合格基準 | 暫定定義 | CPU、メモリ増加、source/streaming数、RTP age、ingress FPS、Race WS error、Telemetry dropを機械判定する | Pilot RTTとMarker検出遅延を測定項目へ追加する |
 | 3. 接続単位の運用診断 | 実装 | Operations API v2に送信先host、role、client種別、transport、最終送出時刻、drop/errorを追加する | 接続履歴とアラート保持が必要か実運用で判断する |
 | 4. Relay設定ファイル | 実装 | `-config relay-config.json`、`1..32`の安全上限、重複・未知項目・URLの厳格検証を追加する | active rosterとの照合と無停止reloadを別設計する |
@@ -68,8 +68,50 @@ MADSYSTEM計測は維持しつつ、Relay側から段階的に固定台数前提
 | Race WebSocket write error | 測定中の増加0 |
 | Viewer Telemetry drop | 測定中の増加0 |
 
-16台で不合格になってもsource上限をコードだけで緩和しない。8台、12台の最後に合格した構成を
-暫定node capacityとし、別Relayまたは将来のMarker Observer Nodeへ分割する。
+高台数で不合格になってもsource上限をコードだけで緩和しない。最後に安定合格した構成を
+暫定node capacityとし、別RelayまたはMarker Observer Nodeへ分割する。
+
+### 2026-08-13 実測結果
+
+測定PCはCore i7-8700（6 core / 12 thread）、32GB RAM、Intel UHD 630、GeForce RTX 3060である。
+Relay試験では擬似Momo 1台あたりH.264 RTP 30 FPS、8 packet/frame、1200 byte/packet
+（約2.304 Mbps）とTelemetry 15 Hzを送った。擬似RTPは中継負荷用であり復号可能な映像ではない。
+
+| Relay条件 | 時間 | 結果 | CPU p95 | 補足 |
+| --- | ---: | --- | ---: | --- |
+| 4/8/12/16/24/32 source、下流なし | 各30秒 | 全件合格 | 最大3.49% | 32台で上り約73.7 Mbps |
+| 4/8/12/16/24/32 source、各Observer 1台 | 各30秒 | 全件合格 | 最大6.84% | 上りと下りを同時中継 |
+| 32 source、各Observer 2台 | 60秒 | 合格 | 7.56% | 64 Viewer、下り約147 Mbps |
+| 24 source、各Observer 1台、Pilot 1台、1 source切断 | 120秒 | 合格 | 6.33% | 3.43秒で復旧、他23台は継続 |
+| 32 source、各Observer 1台、Pilot 1台、1 source切断 | 120秒 | 合格 | 6.58% | 3.52秒で復旧、他31台は継続 |
+
+32台障害試験の初回だけ、強制切断対象とは別の2 sourceで約10秒の映像停止を観測した。同条件の
+再試験は合格したため、現時点ではRelayの再現性ある不具合とは断定しない。ただし32台を本番上限に
+採用する前に、実ネットワークと実機Momoで最低10分、推奨1時間のsoak testを複数回行う。
+
+Pilot共存試験は`sim-01`へ`momo-command`を50 Hzで送信し、`momo-drive`を開いた状態で実施した。
+32台・120秒で6,215 commandを送信し、Telemetry dropとRace write errorは0だった。echoを持たないため
+command RTTそのものは未測定であり、実車の適用時刻を返す診断契約は今後の課題とする。
+
+ArUco試験には上下反転していた実走録画を180度回転し、H.264へ変換した入力を使用した。元映像は
+960x528、50 FPS、VP9、SHA-256
+`91A843493429A61C40E65474C829B60A83079C7DD0D63BCF8ABD7712D9E20E5D`で、marker ID 1、2、3を確認した。
+検出はOpenCV 4.10、`DICT_4X4_50`、MADSYSTEMと同じ認識parameter、quality 0.6、15 Hzである。
+主要ID 1、2、3のほか、少数の17、30、37なども検出された。capacity計測では全IDを数えるが、
+Marker Observer本体はactive courseのmarker allowlistと通過順、連続認識条件を満たすIDだけを
+event化し、未知IDは診断カウンタへ残してrace eventには変換しない。
+
+| 復号経路 | 60秒で維持できた最大 | 境界 | 運用推奨 |
+| --- | ---: | --- | ---: |
+| OpenCV software | 16 source（短時間） | 24 sourceで13.70 Hz、CPU p95 85.80% | 6から8 source/node |
+| Intel QSV / VPL | 18 source | 20 sourceで14.24 Hz、latency p95 80.27ms | 12から16 source/node |
+| NVIDIA NVDEC / CUDA | 26 source | 28 sourceで13.28 Hz | 12から16 source/node |
+
+物理限界と運用上限を分ける。CPU、温度、OS、Relay、ネットワークの余力を残すため、現PCでは
+`maxSourcesPerNode=12`を既定、16をhard capとする。20台は10台×2 node、32台は8台×4 nodeを推奨する。
+現在のMomo Windows buildが公開するH.264 hardware decoderはIntel VPLであり、CUDA結果は将来の
+Marker ObserverがFFmpeg/NVDEC経路を採用した場合の比較値である。現段階の試験は録画を独立processへ
+入力したcapacity試験で、WebRTC受信からArUco eventまでのend-to-end保証ではない。
 
 ## 非目標
 

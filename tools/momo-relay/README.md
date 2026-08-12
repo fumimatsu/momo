@@ -119,6 +119,41 @@ CPU/メモリは取得できないため、`-ProcessId`はRelayと同じPCで実
 暫定閾値と更新方針は
 [Scalable Marker Observer and Program Observer Design](../../doc/SCALABLE_MARKER_AND_PROGRAM_OBSERVER_DESIGN.md)を参照する。
 
+擬似Momoとread-only Viewerを同時起動して4から32台を比較する場合はmatrixを使う。`PilotSource`を
+指定すると1台だけ50 Hzのcommandとdrive channelを追加し、`RecoverySource`を指定すると対象Momoを
+1回切断して、既存Viewerまでの復旧と他sourceの継続を判定する。
+
+```powershell
+../Invoke-RelayScaleMatrix.ps1 `
+  -SourceCounts 4,8,12,16,24,32 `
+  -DurationSeconds 600 -WarmupSeconds 30 `
+  -ObserversPerSource 1 -PilotSource sim-01
+
+../Invoke-RelayScaleMatrix.ps1 `
+  -SourceCounts 16 -DurationSeconds 600 `
+  -ObserversPerSource 1 -PilotSource sim-01 -RecoverySource sim-08
+```
+
+成果物は`tools/.artifacts/relay-scale-matrix/`へ保存する。擬似H.264 RTPは中継負荷用であり、
+復号結果や画質を検証する入力ではない。
+
+## ArUco capacity測定
+
+実走録画を複数sourceとして実時間再生し、描画なしでH.264復号とArUco検出の上限を測る。
+
+```powershell
+../Initialize-ArucoCapacity.ps1
+../Measure-ArucoCapacity.ps1 `
+  -InputPath D:\recordings\upright-h264.mp4 `
+  -SourceCounts 1,2,4,8,12,16,20,24,32 `
+  -DurationSeconds 60 -Decoder qsv `
+  -FfmpegExecutable C:\tools\ffmpeg.exe
+```
+
+`Decoder`は`opencv`、`qsv`、`cuda`を指定できる。hardware経路では対応FFmpegが必要である。
+合否は各sourceの出力FPS、検出FPS、検出latency p95、process tree CPU p95で判定する。
+本番上限の決定には60秒以上を使い、結果の読み方と現在の推奨値は設計書を参照する。
+
 ## LAN Pilot 車両選択
 
 別 PC の Pilot は Relay が配信する `garage.html` を開き、映像が到着している未使用車体を

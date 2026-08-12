@@ -95,6 +95,7 @@ type viewer struct {
 	telemetryBytes      atomic.Uint64
 	telemetrySendErrors atomic.Uint64
 	telemetryDropped    atomic.Uint64
+	telemetryThrottled  atomic.Uint64
 	telemetryWS         chan string
 	gameplayWS          chan string
 	commandWS           chan string
@@ -509,6 +510,7 @@ type viewerOperationsState struct {
 	TelemetryBytes             uint64 `json:"telemetryBytes"`
 	TelemetrySendErrors        uint64 `json:"telemetrySendErrors"`
 	TelemetryDropped           uint64 `json:"telemetryDropped"`
+	TelemetryThrottled         uint64 `json:"telemetryThrottled"`
 }
 
 type pliRequestCounts struct {
@@ -1076,6 +1078,7 @@ func viewerStatusSnapshot(client *viewer, now time.Time) viewerOperationsState {
 		TelemetryBytes:             client.telemetryBytes.Load(),
 		TelemetrySendErrors:        client.telemetrySendErrors.Load(),
 		TelemetryDropped:           client.telemetryDropped.Load(),
+		TelemetryThrottled:         client.telemetryThrottled.Load(),
 	}
 }
 
@@ -1515,7 +1518,7 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 			continue
 		}
 		if client.clientKind == "web-observer" && !shouldDeliverObserverTelemetry(client, message, now) {
-			client.telemetryDropped.Add(1)
+			client.telemetryThrottled.Add(1)
 			continue
 		}
 		if message.IsString && client.telemetryWS != nil {

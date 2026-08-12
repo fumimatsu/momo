@@ -504,6 +504,22 @@ func TestObserverTelemetrySamplingKeepsEventsAndLimitsState(t *testing.T) {
 	}
 }
 
+func TestObserverTelemetrySamplingCountsThrottleSeparatelyFromDrop(t *testing.T) {
+	client := &viewer{id: 1, role: "observer", clientKind: "web-observer", telemetryWS: make(chan string, 1)}
+	source := &relay{viewers: map[uint64]*viewer{client.id: client}}
+	state := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"s","seq":1}`), IsString: true}
+
+	source.broadcastTelemetry(state)
+	source.broadcastTelemetry(state)
+
+	if got := client.telemetryThrottled.Load(); got != 1 {
+		t.Fatalf("telemetry throttled = %d, want 1", got)
+	}
+	if got := client.telemetryDropped.Load(); got != 0 {
+		t.Fatalf("telemetry dropped = %d, want 0", got)
+	}
+}
+
 func TestM5AudioMessageClassification(t *testing.T) {
 	if !isM5AudioMessage(webrtc.DataChannelMessage{Data: []byte("AUD:1,deadbeef,1,8,ima,AAAA"), IsString: false}) {
 		t.Fatal("AUD frame was not classified as M5 audio")
