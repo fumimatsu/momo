@@ -8,6 +8,12 @@
 // WebRTC
 #include <rtc_base/logging.h>
 
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+
+}  // namespace
+
 FakeAudioCapturer::FakeAudioCapturer(Config config)
     : env_(webrtc::CreateEnvironment()), config_(config) {}
 
@@ -160,15 +166,15 @@ void FakeAudioCapturer::GenerateBeep(std::vector<int16_t>& buffer,
   const double frequency = beep_frequency_;
   const double amplitude = 16000;  // 音量（最大32767の半分程度）
   const double sample_rate = config_.sample_rate;
-  const double phase_increment = 2.0 * M_PI * frequency / sample_rate;
+  const double phase_increment = 2.0 * kPi * frequency / sample_rate;
 
   for (int i = 0; i < samples; ++i) {
-    int16_t value = static_cast<int16_t>(amplitude * sin(beep_phase_));
+    int16_t value = static_cast<int16_t>(amplitude * std::sin(beep_phase_));
     beep_phase_ += phase_increment;
 
     // 位相を 0 ~ 2π の範囲に保つ
-    if (beep_phase_ >= 2.0 * M_PI) {
-      beep_phase_ -= 2.0 * M_PI;
+    if (beep_phase_ >= 2.0 * kPi) {
+      beep_phase_ -= 2.0 * kPi;
     }
 
     for (int ch = 0; ch < config_.channels; ++ch) {

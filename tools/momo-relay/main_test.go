@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -93,6 +95,144 @@ func TestRaceMessageForCarPreservesCanonicalFixture(t *testing.T) {
 func TestRaceMessageForCarRejectsEmptyCarID(t *testing.T) {
 	if _, err := raceMessageForCar([]byte(`{"type":"race_state","version":2}`), ""); err == nil {
 		t.Fatal("raceMessageForCar accepted an empty car ID")
+	}
+}
+
+func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("contracts", "sector-progress.race-state-v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization := make(chan string, 1)
+	releaseConnection := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseConnection) })
+	}
+	races := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		authorization <- req.Header.Get("Authorization")
+		ws, err := wsUpgrader.Upgrade(w, req, nil)
+		if err != nil {
+			return
+		}
+		defer ws.Close()
+		if err := ws.WriteMessage(websocket.TextMessage, fixture); err != nil {
+			return
+		}
+		<-releaseConnection
+	}))
+	defer races.Close()
+	defer release()
+
+	now := time.Now()
+	first := &relay{
+		name:          "11.5",
+		raceCarID:     "CP-1",
+		viewers:       make(map[uint64]*viewer),
+		vehicleHealth: newVehicleHealth(now),
+		vehicleEvents: newVehicleEventStore(),
+	}
+	first.pitPresence = newPitPresenceState(first.raceCarID, vehicleHealthMaximum)
+	second := &relay{
+		name:          "11.6",
+		raceCarID:     "CP-2",
+		viewers:       make(map[uint64]*viewer),
+		vehicleHealth: newVehicleHealth(now),
+		vehicleEvents: newVehicleEventStore(),
+	}
+	second.pitPresence = newPitPresenceState(second.raceCarID, vehicleHealthMaximum)
+	server := &relayServer{
+		sources: map[string]*relay{
+			first.name:  first,
+			second.name: second,
+		},
+		sourceOrder: []string{first.name, second.name},
+	}
+
+	connectionResult := make(chan error, 1)
+	go func() {
+		wsURL := "ws" + strings.TrimPrefix(races.URL, "http")
+		connectionResult <- server.connectRaceControl(context.Background(), wsURL, "viewer-token")
+	}()
+
+	select {
+	case got := <-authorization:
+		if got != "Bearer viewer-token" {
+			t.Fatalf("Authorization = %q, want Bearer viewer-token", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Race Control WebSocket was not connected")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for server.currentGlobalRaceState() == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("canonical race state was not published")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var globalState struct {
+		RaceRunID string `json:"raceRunId"`
+		Sequence  uint64 `json:"sequence"`
+		Standings []struct {
+			CarID       string `json:"carId"`
+			SectorTimes []struct {
+				Sector int  `json:"sector"`
+				LastMS *int `json:"lastMs"`
+				BestMS *int `json:"bestMs"`
+			} `json:"sectorTimes"`
+		} `json:"standings"`
+	}
+	globalJSON := strings.TrimPrefix(server.currentGlobalRaceState(), "RACE:")
+	if err := json.Unmarshal([]byte(globalJSON), &globalState); err != nil {
+		t.Fatal(err)
+	}
+	if globalState.RaceRunID != "rr_contract_fixture" || globalState.Sequence != 1 {
+		t.Fatalf("global race identity = %#v", globalState)
+	}
+	if len(globalState.Standings) != 2 || len(globalState.Standings[0].SectorTimes) != 3 {
+		t.Fatalf("global standings lost canonical timing data: %#v", globalState.Standings)
+	}
+	if sector := globalState.Standings[0].SectorTimes[1]; sector.Sector != 2 || sector.LastMS == nil || *sector.LastMS != 4700 || sector.BestMS != nil {
+		t.Fatalf("partial sector timing changed in Relay: %#v", sector)
+	}
+
+	for _, source := range []*relay{first, second} {
+		var state struct {
+			ViewerCarID string `json:"viewerCarId"`
+			RaceRunID   string `json:"raceRunId"`
+		}
+		message := strings.TrimPrefix(source.currentRaceState(), "RACE:")
+		if err := json.Unmarshal([]byte(message), &state); err != nil {
+			t.Fatalf("decode source %s race state: %v", source.name, err)
+		}
+		if state.ViewerCarID != source.raceCarID || state.RaceRunID != "rr_contract_fixture" {
+			t.Fatalf("source %s race state = %#v", source.name, state)
+		}
+	}
+
+	contextState := server.raceContextSnapshot()
+	if !contextState.Connected || contextState.RaceRunID != "rr_contract_fixture" || contextState.Phase != "green" {
+		t.Fatalf("Relay race context = %#v", contextState)
+	}
+	firstHealth := first.vehicleHealth.snapshot(time.Now())
+	secondHealth := second.vehicleHealth.snapshot(time.Now())
+	if firstHealth.Position != 1 || secondHealth.Position != 2 || firstHealth.FieldSize != 2 || secondHealth.FieldSize != 2 {
+		t.Fatalf("gameplay positions = first %#v second %#v", firstHealth, secondHealth)
+	}
+	if firstHealth.SessionType != "race" || secondHealth.SessionType != "race" {
+		t.Fatalf("gameplay session types = %q, %q", firstHealth.SessionType, secondHealth.SessionType)
+	}
+
+	release()
+	select {
+	case err := <-connectionResult:
+		if err == nil {
+			t.Fatal("Race Control connection ended without a close error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Race Control connection did not close")
 	}
 }
 

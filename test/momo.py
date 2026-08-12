@@ -4,13 +4,67 @@ import json
 import platform
 import shlex
 import subprocess
+import tempfile
 import time
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, TextIO
 
 import httpx
+import pytest
+
+
+MOMO_EXECUTABLE_RELATIVE_PATHS = (
+    Path("release/momo/momo"),
+    Path("release/momo/momo.exe"),
+    Path("release/momo/Release/momo.exe"),
+)
+
+
+def find_momo_executable(target_dir: Path) -> Path | None:
+    """Return the first supported Momo executable layout in a build target."""
+    return next(
+        (
+            target_dir / relative_path
+            for relative_path in MOMO_EXECUTABLE_RELATIVE_PATHS
+            if (target_dir / relative_path).is_file()
+        ),
+        None,
+    )
+
+
+def preferred_build_targets(system: str, machine: str) -> list[str]:
+    """Return build target preference for the current host."""
+    match system.lower(), machine.lower():
+        case "darwin", "arm64" | "aarch64":
+            return ["macos_arm64", "macos_x86_64"]
+        case "darwin", _:
+            return ["macos_x86_64", "macos_arm64"]
+        case "linux", "arm64" | "aarch64":
+            return ["ubuntu-24.04_armv8", "ubuntu-22.04_armv8", "ubuntu-20.04_armv8"]
+        case "linux", _:
+            return [
+                "ubuntu-24.04_x86_64",
+                "ubuntu-22.04_x86_64",
+                "ubuntu-20.04_x86_64",
+            ]
+        case "windows", _:
+            return ["windows_x86_64"]
+        case _:
+            return []
+
+
+def select_momo_target(available_targets: list[str], system: str, machine: str) -> str:
+    """Select a deterministic host-compatible target from built targets."""
+    if not available_targets:
+        raise ValueError("available_targets must not be empty")
+    targets = sorted(available_targets)
+    return next(
+        (target for target in preferred_build_targets(system, machine) if target in targets),
+        targets[0],
+    )
 
 
 class MomoMode(StrEnum):
@@ -137,6 +191,7 @@ class Momo:
         # 実行ファイルのパスを自動検出
         self.executable_path = self._get_momo_executable_path()
         self.process: subprocess.Popen[Any] | None = None
+        self._stderr_file: TextIO | None = None
         self.metrics_port = metrics_port
         # デフォルトの初期待機時間を設定
         self.initial_wait = initial_wait if initial_wait is not None else 2
@@ -242,7 +297,7 @@ class Momo:
         available_targets = [
             d.name
             for d in build_dir.iterdir()
-            if d.is_dir() and (d / "release" / "momo" / "momo").exists()
+            if d.is_dir() and find_momo_executable(d) is not None
         ]
 
         if not available_targets:
@@ -260,55 +315,43 @@ class Momo:
             system = platform.system().lower()
             machine = platform.machine().lower()
 
-            # プラットフォームに応じた優先順位リスト
-            if system == "darwin":
-                if machine == "arm64" or machine == "aarch64":
-                    preferred = ["macos_arm64", "macos_x86_64"]
-                else:
-                    preferred = ["macos_x86_64", "macos_arm64"]
-            elif system == "linux":
-                if machine == "aarch64":
-                    preferred = ["ubuntu-24.04_armv8", "ubuntu-22.04_armv8", "ubuntu-20.04_armv8"]
-                else:
-                    preferred = [
-                        "ubuntu-24.04_x86_64",
-                        "ubuntu-22.04_x86_64",
-                        "ubuntu-20.04_x86_64",
-                    ]
-            else:
-                preferred = []
-
-            # 優先順位に従って選択
-            target = None
-            for pref in preferred:
-                if pref in available_targets:
-                    target = pref
-                    print(
-                        f"Auto-detected momo target: {target} (from {len(available_targets)} available)"
-                    )
-                    break
-
-            if not target:
-                # 優先順位で見つからない場合は最初のものを使用
-                target = available_targets[0]
-                print(
-                    f"Using first available target: {target} (available: {', '.join(available_targets)})"
-                )
+            target = select_momo_target(available_targets, system, machine)
+            print(
+                f"Auto-detected momo target: {target} "
+                f"(available: {', '.join(sorted(available_targets))})"
+            )
 
         # momo のパスを構築
         assert target is not None
-        momo_path = project_root / "_build" / target / "release" / "momo" / "momo"
+        momo_path = find_momo_executable(project_root / "_build" / target)
 
-        if not momo_path.exists():
+        if momo_path is None:
             raise RuntimeError(
-                f"momo executable not found at {momo_path}. "
+                f"momo executable not found for target {target}. "
                 f"Please build with: python3 run.py build {target}"
             )
 
         return str(momo_path)
 
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _supports_cli_option(executable_path: str, option: str) -> bool:
+        result = subprocess.run(
+            [executable_path, "--help-all"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        return option in f"{result.stdout}\n{result.stderr}"
+
     def __enter__(self) -> Self:
         """コンテキストマネージャーの開始"""
+        if self.kwargs["fake_capture_device"] and not self._supports_cli_option(
+            self.executable_path, "--fake-capture-device"
+        ):
+            pytest.skip(
+                f"{self.executable_path} was built without fake capture device support"
+            )
         try:
             # コマンドライン引数を構築
             args = self._build_args(**self.kwargs)
@@ -319,11 +362,12 @@ class Momo:
             quoted_cmd = " ".join(shlex.quote(arg) for arg in cmd)
             print(f"Starting momo with command: {quoted_cmd}")
 
-            # プロセスを起動 (エラー出力をキャプチャして問題発生時に確認できるようにする)
+            # PIPE はログが溜まると子プロセスを停止させるため、一時ファイルへ退避する。
+            self._stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=self._stderr_file,
                 text=True,
             )
             print(f"Started momo process with PID: {self.process.pid}")
@@ -676,11 +720,9 @@ class Momo:
                     error_msg = (
                         f"momo process exited unexpectedly with code {self.process.returncode}"
                     )
-                    # stderrの内容を表示
-                    if hasattr(self.process, "stderr") and self.process.stderr:
-                        stderr_output = self.process.stderr.read()
-                        if stderr_output:
-                            error_msg += f"\nStderr output:\n{stderr_output}"
+                    stderr_output = self._read_stderr()
+                    if stderr_output:
+                        error_msg += f"\nStderr output:\n{stderr_output}"
                     raise RuntimeError(error_msg)
 
                 # メトリクスエンドポイントをチェック
@@ -718,27 +760,6 @@ class Momo:
                         print(
                             f"  Still waiting for metrics on port {metrics_port} ({elapsed:.1f}s elapsed)"
                         )
-                        # stderr を非ブロッキングで確認
-                        if hasattr(self.process, "stderr") and self.process.stderr:
-                            import select
-
-                            # stderr に読み取り可能なデータがあるか確認
-                            if select.select([self.process.stderr], [], [], 0)[0]:
-                                # 非ブロッキングモードに設定
-                                import fcntl
-                                import os
-
-                                fd = self.process.stderr.fileno()
-                                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-                                try:
-                                    stderr_chunk = self.process.stderr.read(4096)
-                                    if stderr_chunk:
-                                        print(f"  Stderr (during startup): {stderr_chunk}")
-                                except IOError:
-                                    pass
-                                # 元に戻す
-                                fcntl.fcntl(fd, fcntl.F_SETFL, fl)
                     pass
                 except httpx.ConnectTimeout:
                     pass
@@ -751,14 +772,19 @@ class Momo:
             # タイムアウト
             if self.process:
                 print(f"Timeout waiting for momo process (PID: {self.process.pid}) to start")
-                # stderrの内容を表示
-                if hasattr(self.process, "stderr") and self.process.stderr:
-                    print("Checking for stderr output...")
-                    stderr_output = self.process.stderr.read()
-                    if stderr_output:
-                        print(f"Stderr output:\n{stderr_output}")
+                stderr_output = self._read_stderr()
+                if stderr_output:
+                    print(f"Stderr output:\n{stderr_output}")
             self._cleanup()
             raise RuntimeError(f"momo process failed to start within {timeout} seconds")
+
+    def _read_stderr(self) -> str:
+        if self._stderr_file is None:
+            return ""
+        self._stderr_file.seek(0)
+        output = self._stderr_file.read()
+        self._stderr_file.seek(0, 2)
+        return output
 
     def _cleanup(self) -> None:
         """プロセスをクリーンアップ"""
@@ -780,6 +806,9 @@ class Momo:
             import time
 
             time.sleep(0.2)
+        if self._stderr_file is not None:
+            self._stderr_file.close()
+            self._stderr_file = None
 
     def get_metrics(
         self,

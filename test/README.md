@@ -23,6 +23,9 @@ uv run ruff format
 # macOS ARM64 の場合
 python3 run.py build macos_arm64
 
+# Windows x86_64 の場合
+python3 run.py build windows_x86_64
+
 # その他のプラットフォームの場合
 python3 run.py build <target>
 ```
@@ -69,6 +72,9 @@ uv run pytest test_momo.py::test_metrics_endpoint_returns_200
      1. `ubuntu-24.04_x86_64`
      2. `ubuntu-22.04_x86_64`
      3. `ubuntu-20.04_x86_64`
+
+   **Windows**
+   - `windows_x86_64`
 
 3. **フォールバック**  
    優先順位リストにマッチするビルドが見つからない場合、利用可能な最初のビルドを使用します。
@@ -230,7 +236,11 @@ E2E テストは GitHub Actions で自動実行されます（`.github/workflows
 ### momo が起動しない場合
 
 - ビルドが完了していることを確認
-- `_build/<target>/release/momo/momo` に実行ファイルが存在することを確認
+- 次のいずれかに実行ファイルが存在することを確認
+  - `_build/<target>/release/momo/momo`
+  - `_build/<target>/release/momo/momo.exe`
+  - `_build/<target>/release/momo/Release/momo.exe`
+- fake capture を使うテストでは、`momo --help-all` に `--fake-capture-device` が表示されることを確認
 - ポート 8080、8081 が他のプロセスで使用されていないことを確認
 
 ### Sora モードのテストが失敗する場合
