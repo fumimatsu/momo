@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 2,
+  "raceRunId": "rr_contract_fixture",
+  "sequence": 1,
+  "allTimeMode": "elapsed",
+  "standings": [
+    {
+      "carId": "CP-1",
+      "driver": "Fixture One",
+      "position": 1,
+      "status": "racing",
+      "lap": 2,
+      "allTimeMs": 30000,
+      "currentLapMs": 10200,
+      "bestLapMs": 13711,
+      "currentSector": 3,
+      "sectorCount": 3,
+      "lastMarkerIndex": 2,
+      "lastMarkerRaceMs": 29600,
+      "sectorTimes": [
+        { "sector": 1, "lastMs": 4500, "bestMs": 4400 },
+        { "sector": 2, "lastMs": 4700 },
+        { "sector": 3, "bestMs": 4600 }
+      ]
+    },
+    {
+      "carId": "CP-2",
+      "driver": "Fixture Two",
+      "position": 2,
+      "status": "racing",
+      "lap": 2,
+      "allTimeMs": 31200,
+      "currentLapMs": 11400,
+      "intervalToAheadMs": 1200,
+      "currentSector": 2,
+      "sectorCount": 3,
+      "lastMarkerIndex": 1,
+      "lastMarkerRaceMs": 30800,
+      "sectorTimes": [
+        { "sector": 1, "lastMs": 4800, "bestMs": 4700 },
+        { "sector": 2, "bestMs": 4900 }
+      ]
+    }
+  ],
+  "lapHistory": [
+    {
+      "carId": "CP-1",
+      "lap": 1,
+      "completedAtRaceMs": 19800,
+      "lapTimeMs": 14000,
+      "sectorTimes": [
+        { "sector": 1, "timeMs": 4500 },
+        { "sector": 2, "timeMs": 4700 },
+        { "sector": 3, "timeMs": 4800 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fumimatsu/momo-race-control/contracts/race-state-v2.schema.json",
+  "title": "Momo Race State v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "version", "raceId", "phase", "flag", "serverTimeMs", "standings", "lapHistory"],
+  "properties": {
+    "type": { "const": "race_state" },
+    "version": { "const": 2 },
+    "raceId": { "type": "string", "minLength": 1 },
+    "raceRunId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "phase": { "enum": ["idle", "ready", "countdown", "green", "finished", "paused"] },
+    "flag": { "enum": ["none", "green", "yellow", "red", "finish"] },
+    "serverTimeMs": { "type": "integer", "minimum": 0 },
+    "startAtMs": { "type": "integer", "minimum": 0 },
+    "countdown": { "type": "number", "minimum": 0 },
+    "message": { "type": "string" },
+    "allTimeMode": { "enum": ["elapsed", "countdown"] },
+    "viewerCarId": { "type": "string" },
+    "raceInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "totalLaps": { "type": "integer", "minimum": 1 },
+        "track": { "type": "string" },
+        "note": { "type": "string" },
+        "viewerBaseUrl": { "type": "string" },
+        "sessionType": { "enum": ["practice", "qualify", "race"] }
+      }
+    },
+    "self": { "$ref": "#/$defs/standing" },
+    "standings": { "type": "array", "items": { "$ref": "#/$defs/standing" } },
+    "lapHistory": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/lapHistory" } }
+  },
+  "$defs": {
+    "sectorTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sector"],
+      "properties": {
+        "sector": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "lastMs": { "type": "integer", "minimum": 1 },
+        "bestMs": { "type": "integer", "minimum": 1 }
+      },
+      "anyOf": [{ "required": ["lastMs"] }, { "required": ["bestMs"] }]
+    },
+    "standing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["carId", "position", "status", "lap"],
+      "properties": {
+        "carId": { "type": "string", "minLength": 1 },
+        "roomId": { "type": "string" },
+        "driver": { "type": "string" },
+        "position": { "type": "integer", "minimum": 1 },
+        "status": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "lap": { "type": "integer", "minimum": 0 },
+        "lapTimeMs": { "type": "integer", "minimum": 0 },
+        "bestLapMs": { "type": "integer", "minimum": 0 },
+        "allTimeMs": { "type": "integer", "minimum": 0 },
+        "currentLapMs": { "type": "integer", "minimum": 0 },
+        "intervalToAheadMs": { "type": "integer", "minimum": 0 },
+        "lapDeltaToAhead": { "type": "integer", "minimum": 1 },
+        "currentSector": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "sectorCount": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "lastMarkerIndex": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "lastMarkerRaceMs": { "type": "integer", "minimum": 0 },
+        "sectorTimes": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/sectorTime" } }
+      }
+    },
+    "lapSectorTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sector", "timeMs"],
+      "properties": {
+        "sector": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "timeMs": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "lapHistory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["carId", "lap", "completedAtRaceMs", "lapTimeMs", "sectorTimes"],
+      "properties": {
+        "carId": { "type": "string", "minLength": 1 },
+        "lap": { "type": "integer", "minimum": 1 },
+        "completedAtRaceMs": { "type": "integer", "minimum": 0 },
+        "lapTimeMs": { "type": "integer", "minimum": 1 },
+        "sectorTimes": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/lapSectorTime" } }
+      }
+    }
+  }
+}

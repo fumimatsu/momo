@@ -299,12 +299,17 @@
 
       function render(snapshot) {
         const sources = Array.isArray(snapshot?.sources) ? snapshot.sources : [];
+        const race = snapshot?.raceStream || {};
         grid.replaceChildren(...sources.map(card));
         list.replaceChildren(listTable(sources));
         renderSummary(sources);
         const time = snapshot?.serverTime ? new Date(snapshot.serverTime).toLocaleTimeString() : '--:--:--';
         statusLine.classList.remove('error');
-        statusLine.replaceChildren(element('span', '', `STATUS API / ${sources.length} SOURCES`), element('strong', '', time));
+        const raceErrors = (race.queueReplacements || 0) + (race.writeErrors || 0);
+        statusLine.replaceChildren(
+          element('span', '', `STATUS API / ${sources.length} SOURCES / RACE WS ${race.subscribers || 0} / TX ${race.deliveredMessages || 0} / DROP+ERR ${raceErrors}`),
+          element('strong', '', time),
+        );
         applyView();
       }
 

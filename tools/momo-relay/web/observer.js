@@ -30,6 +30,7 @@ const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 const DISCONNECTED_RECONNECT_MS = 3000;
 const RACE_STATE_POLL_MS = 500;
+const RACE_STREAM_STALE_MS = 15_000;
 const CLOCK_RENDER_INTERVAL_MS = 50;
 const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
@@ -97,6 +98,9 @@ let raceStatusRenderedAt = 0;
 let clockRenderedAt = 0;
 let markerRenderedAt = 0;
 let telemetryRenderedAt = 0;
+let leaderboardSignature = '';
+let sectorRowsSignature = '';
+let timingRowsSignature = '';
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -208,6 +212,8 @@ class RaceStateStream {
     this.reconnectAttempt = 0;
     this.closed = false;
     this.generation = 0;
+    this.activityTimer = 0;
+    this.live = false;
   }
 
   connect() {
@@ -219,7 +225,7 @@ class RaceStateStream {
     ws.onopen = () => {
       if (generation !== this.generation) return;
       this.reconnectAttempt = 0;
-      this.onState(true);
+      this.markActivity(generation);
     };
     ws.onmessage = (event) => {
       if (generation !== this.generation) return;
@@ -229,7 +235,12 @@ class RaceStateStream {
       } catch (_) {
         return;
       }
+      if (message.type === 'race-heartbeat') {
+        this.markActivity(generation);
+        return;
+      }
       if (message.type !== 'race-state' || typeof message.data !== 'string') return;
+      this.markActivity(generation);
       const state = parseRaceState(message.data);
       if (state) this.onRace(state, 'websocket');
     };
@@ -239,7 +250,7 @@ class RaceStateStream {
 
   scheduleReconnect(generation) {
     if (generation !== this.generation || this.closed || this.reconnectTimer) return;
-    this.onState(false);
+    this.setLive(false);
     this.closeTransport();
     const delay = Math.min(RECONNECT_BASE_MS * (2 ** Math.min(this.reconnectAttempt, 4)), RECONNECT_MAX_MS);
     this.reconnectAttempt += 1;
@@ -250,6 +261,8 @@ class RaceStateStream {
   }
 
   closeTransport() {
+    if (this.activityTimer) window.clearTimeout(this.activityTimer);
+    this.activityTimer = 0;
     if (!this.ws) return;
     this.ws.onopen = null;
     this.ws.onmessage = null;
@@ -259,11 +272,24 @@ class RaceStateStream {
     this.ws = null;
   }
 
+  markActivity(generation) {
+    if (generation !== this.generation || this.closed) return;
+    if (this.activityTimer) window.clearTimeout(this.activityTimer);
+    this.activityTimer = window.setTimeout(() => this.scheduleReconnect(generation), RACE_STREAM_STALE_MS);
+    this.setLive(true);
+  }
+
+  setLive(live) {
+    if (this.live === live) return;
+    this.live = live;
+    this.onState(live);
+  }
+
   close() {
     this.closed = true;
     if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = 0;
-    this.onState(false);
+    this.setLive(false);
     this.closeTransport();
   }
 }
@@ -547,6 +573,16 @@ class ObserverPeer {
 function renderLeaderboard() {
   const root = document.getElementById('leaderboardRows');
   const rows = standingsByConfiguredCar(observerConfig.cars, raceState);
+  const signature = JSON.stringify(rows.map(({ car, standing }) => ({
+    carId: car.carId,
+    standing: standing ? {
+      position: standing.position, status: standing.status, lapTimeMs: standing.lapTimeMs,
+      bestLapMs: standing.bestLapMs, driver: standing.driver,
+    } : null,
+    health: healthByCar.get(car.carId) || null,
+  })));
+  if (signature === leaderboardSignature) return;
+  leaderboardSignature = signature;
   currentLapNodeByCar.clear();
   leaderboardNodesByCar.clear();
   root.replaceChildren(...rows.map(({ car, standing }) => {
@@ -597,6 +633,16 @@ function renderLeaderboard() {
 
 function renderSectorRows() {
   const root = document.getElementById('sectorRows');
+  const signature = JSON.stringify({
+    standings: (raceState?.standings || []).map((standing) => ({
+      carId: standing.carId, status: standing.status, currentSector: standing.currentSector,
+      sectorCount: standing.sectorCount, sectorTimes: standing.sectorTimes,
+    })),
+    history: normalizedLapHistory.map((entry) => ({ carId: entry.carId, sectorTimes: entry.sectorTimes })),
+    holds: Array.from(sectorCompletionHoldByCar.entries()),
+  });
+  if (signature === sectorRowsSignature) return;
+  sectorRowsSignature = signature;
   sectorLiveNodeByCar.clear();
   sectorCompletionNodeByCar.clear();
   const standings = raceState?.standings || [];
@@ -680,6 +726,15 @@ function renderSectorRows() {
 function renderTimingRows() {
   const root = document.getElementById('timingRows');
   const history = normalizedLapHistory;
+  const signature = JSON.stringify({
+    history,
+    best: (raceState?.standings || []).map((standing) => ({
+      carId: standing.carId, driver: standing.driver, bestLapMs: standing.bestLapMs,
+      sectorTimes: standing.sectorTimes,
+    })),
+  });
+  if (signature === timingRowsSignature) return;
+  timingRowsSignature = signature;
   const carById = new Map(observerConfig.cars.map((car) => [car.carId, car]));
   const standingById = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
   const overallLapBest = Math.min(...(raceState?.standings || [])
@@ -1633,7 +1688,7 @@ async function initialize() {
 		}
     renderAll();
     const relayHost = params.get('relayHost') || location.host;
-    raceFallbackEnabled = params.get('raceFallback') === 'http';
+    raceFallbackEnabled = params.get('raceFallback') !== 'off';
     raceClient = new RaceStateStream(relayHost, handleRaceState, (open) => {
       raceStreamOpen = open;
       syncRaceStateFallback(relayHost);

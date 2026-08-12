@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +55,38 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 	}
 	if len(payload.Standings) != 2 || payload.Standings[0].CarID != "CP-1" || payload.Standings[1].IntervalToAheadMs == nil || *payload.Standings[1].IntervalToAheadMs != 1200 {
 		t.Fatalf("standings = %#v, want preserved timing values", payload.Standings)
+	}
+}
+
+func TestRaceMessageForCarPreservesCanonicalFixture(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("contracts", "sector-progress.race-state-v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := raceMessageForCar(fixture, "CP-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		ViewerCarID string `json:"viewerCarId"`
+		Standings   []struct {
+			CarID       string `json:"carId"`
+			SectorTimes []struct {
+				Sector int  `json:"sector"`
+				LastMS *int `json:"lastMs"`
+				BestMS *int `json:"bestMs"`
+			} `json:"sectorTimes"`
+		} `json:"standings"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "RACE:")), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.ViewerCarID != "CP-1" || len(state.Standings) == 0 || len(state.Standings[0].SectorTimes) < 2 {
+		t.Fatalf("canonical fixture identity was not preserved: %#v", state)
+	}
+	sector2 := state.Standings[0].SectorTimes[1]
+	if sector2.Sector != 2 || sector2.LastMS == nil || *sector2.LastMS != 4700 || sector2.BestMS != nil {
+		t.Fatalf("canonical in-progress sector = %#v", sector2)
 	}
 }
 
@@ -304,6 +339,28 @@ func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
 	}
 }
 
+func TestObserverTelemetrySamplingKeepsEventsAndLimitsState(t *testing.T) {
+	client := &viewer{id: 1, role: "observer", clientKind: "web-observer"}
+	base := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	state := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"s","seq":1}`), IsString: true}
+	if !shouldDeliverObserverTelemetry(client, state, base) {
+		t.Fatal("first observer telemetry state must be delivered")
+	}
+	if shouldDeliverObserverTelemetry(client, state, base.Add(observerTelemetryInterval-time.Millisecond)) {
+		t.Fatal("observer telemetry state inside the sample interval must be dropped")
+	}
+	if !shouldDeliverObserverTelemetry(client, state, base.Add(observerTelemetryInterval)) {
+		t.Fatal("observer telemetry state at the sample interval must be delivered")
+	}
+	event := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"e","seq":2}`), IsString: true}
+	if !shouldDeliverObserverTelemetry(client, event, base.Add(observerTelemetryInterval+time.Millisecond)) {
+		t.Fatal("observer telemetry events must bypass state sampling")
+	}
+	if !shouldDeliverObserverTelemetry(client, webrtc.DataChannelMessage{Data: []byte(`PIT:1,{}`), IsString: true}, base) {
+		t.Fatal("gameplay messages must bypass telemetry sampling")
+	}
+}
+
 func TestM5AudioMessageClassification(t *testing.T) {
 	if !isM5AudioMessage(webrtc.DataChannelMessage{Data: []byte("AUD:1,deadbeef,1,8,ima,AAAA"), IsString: false}) {
 		t.Fatal("AUD frame was not classified as M5 audio")
@@ -358,6 +415,13 @@ func TestGlobalRaceStateStreamKeepsLatestStateForOneObserverSubscription(t *test
 	if got := server.currentGlobalRaceState(); got != `RACE:{"sequence":8}` {
 		t.Fatalf("current race state = %q", got)
 	}
+	status := server.raceStreamStatusSnapshot()
+	if status.PublishedMessages != 2 || status.PublishedBytes == 0 || status.QueueReplacements != 1 {
+		t.Fatalf("race publish diagnostics = %#v", status)
+	}
+	if status.LastPublishedAt == nil || status.DeliveredMessages != 0 || status.LastDeliveredAt != nil {
+		t.Fatalf("race publish timestamps = %#v", status)
+	}
 
 	server.unsubscribeRaceState(id)
 	if got := server.raceStreamStatusSnapshot().Subscribers; got != 0 {
@@ -383,6 +447,10 @@ func TestRaceStateWebSocketSendsLatestStateAndUnsubscribes(t *testing.T) {
 	}
 	if message.Type != "race-state" || message.Data != `RACE:{"sequence":9}` {
 		t.Fatalf("race stream message = %#v", message)
+	}
+	status := server.raceStreamStatusSnapshot()
+	if status.DeliveredMessages != 1 || status.DeliveredBytes != uint64(len(message.Data)) || status.LastDeliveredAt == nil || status.WriteErrors != 0 {
+		t.Fatalf("race delivery diagnostics = %#v", status)
 	}
 	if err := connection.Close(); err != nil {
 		t.Fatal(err)
@@ -563,6 +631,64 @@ func TestEnqueueLatestTelemetryReplacesStaleValue(t *testing.T) {
 		}
 	default:
 		t.Fatal("latest telemetry was not queued")
+	}
+}
+
+func TestGameplayTelemetryUsesOrderedQueueDuringTelemetryFlood(t *testing.T) {
+	client := &viewer{
+		id:          1,
+		role:        "pilot",
+		clientKind:  "web-pilot",
+		telemetryWS: make(chan string, 1),
+		gameplayWS:  make(chan string, 8),
+	}
+	relay := &relay{viewers: map[uint64]*viewer{client.id: client}}
+	gameplay := []string{
+		"VHS:1,80.0,1.000,healthy",
+		`VGS:1,{"hp":80,"fuel":40}`,
+		`PIT:1,{"present":true,"serviceState":"servicing"}`,
+	}
+	for _, payload := range gameplay {
+		relay.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(payload), IsString: true})
+	}
+	for index := 0; index < 100; index++ {
+		payload := fmt.Sprintf(`TEL:{"v":2,"k":"s","seq":%d}`, index)
+		relay.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(payload), IsString: true})
+	}
+
+	for index, want := range gameplay {
+		select {
+		case got := <-client.gameplayWS:
+			if got != want {
+				t.Fatalf("gameplay message %d = %q, want %q", index, got, want)
+			}
+		default:
+			t.Fatalf("gameplay message %d was dropped", index)
+		}
+	}
+	select {
+	case got := <-client.telemetryWS:
+		if got != `TEL:{"v":2,"k":"s","seq":99}` {
+			t.Fatalf("latest ordinary telemetry = %q", got)
+		}
+	default:
+		t.Fatal("ordinary telemetry queue is empty")
+	}
+}
+
+func TestGameplayTelemetryClassification(t *testing.T) {
+	for _, payload := range []string{"VHS:1,100,1,healthy", "VGS:1,{}", "PIT:1,{}"} {
+		if !isVehicleGameplayTelemetry(webrtc.DataChannelMessage{Data: []byte(payload), IsString: true}) {
+			t.Fatalf("gameplay payload was not classified: %q", payload)
+		}
+	}
+	for _, message := range []webrtc.DataChannelMessage{
+		{Data: []byte(`TEL:{"v":2}`), IsString: true},
+		{Data: []byte("VGS:1,{}"), IsString: false},
+	} {
+		if isVehicleGameplayTelemetry(message) {
+			t.Fatalf("non-gameplay payload was classified: %#v", message)
+		}
 	}
 }
 

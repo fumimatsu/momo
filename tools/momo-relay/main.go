@@ -43,6 +43,11 @@ const (
 	commandDropLogInterval       = time.Second
 	telemetryDeliveryLogInterval = 5 * time.Second
 	telemetryDataHighWatermark   = uint64(64 * 1024)
+	gameplayWebSocketQueueSize   = 128
+	observerTelemetryInterval    = time.Second / 15
+	raceStreamPingInterval       = 5 * time.Second
+	raceStreamPongWait           = 15 * time.Second
+	raceStreamWriteTimeout       = 5 * time.Second
 	keyframeRecoveryGrace        = 2 * time.Second
 	defaultVideoTimestampStep    = uint32(90000 / 50)
 	operationsPollWindow         = time.Second
@@ -83,11 +88,13 @@ type viewer struct {
 	lastCommandUnixNano atomic.Int64
 	lastCommandDropLog  atomic.Int64
 	lastTelemetryLog    atomic.Int64
+	lastObserverStateAt atomic.Int64
 	telemetryMessages   atomic.Uint64
 	telemetryBytes      atomic.Uint64
 	telemetrySendErrors atomic.Uint64
 	telemetryDropped    atomic.Uint64
 	telemetryWS         chan string
+	gameplayWS          chan string
 	commandWS           chan string
 	raceWS              chan string
 	audioWS             chan string
@@ -252,18 +259,26 @@ type relay struct {
 }
 
 type relayServer struct {
-	sources              map[string]*relay
-	sourceOrder          []string
-	recorder             *telemetryRecorder
-	raceMu               sync.RWMutex
-	raceContext          relayRaceContext
-	raceStreamMu         sync.RWMutex
-	raceState            string
-	raceSubscribers      map[uint64]chan string
-	nextRaceSubscriberID atomic.Uint64
-	pitEventsMu          sync.Mutex
-	pitEvents            map[string]pitPresenceReceipt
-	pitEventIDs          []string
+	sources               map[string]*relay
+	sourceOrder           []string
+	recorder              *telemetryRecorder
+	raceMu                sync.RWMutex
+	raceContext           relayRaceContext
+	raceStreamMu          sync.RWMutex
+	raceState             string
+	raceSubscribers       map[uint64]chan string
+	nextRaceSubscriberID  atomic.Uint64
+	racePublishedMessages atomic.Uint64
+	racePublishedBytes    atomic.Uint64
+	raceDeliveredMessages atomic.Uint64
+	raceDeliveredBytes    atomic.Uint64
+	raceQueueReplacements atomic.Uint64
+	raceWriteErrors       atomic.Uint64
+	raceLastPublishedAt   atomic.Int64
+	raceLastDeliveredAt   atomic.Int64
+	pitEventsMu           sync.Mutex
+	pitEvents             map[string]pitPresenceReceipt
+	pitEventIDs           []string
 }
 
 type raceStateEnvelope struct {
@@ -349,8 +364,16 @@ type operationsStatus struct {
 }
 
 type raceStreamOperationsState struct {
-	Subscribers int  `json:"subscribers"`
-	HasState    bool `json:"hasState"`
+	Subscribers       int        `json:"subscribers"`
+	HasState          bool       `json:"hasState"`
+	PublishedMessages uint64     `json:"publishedMessages"`
+	PublishedBytes    uint64     `json:"publishedBytes"`
+	DeliveredMessages uint64     `json:"deliveredMessages"`
+	DeliveredBytes    uint64     `json:"deliveredBytes"`
+	QueueReplacements uint64     `json:"queueReplacements"`
+	WriteErrors       uint64     `json:"writeErrors"`
+	LastPublishedAt   *time.Time `json:"lastPublishedAt"`
+	LastDeliveredAt   *time.Time `json:"lastDeliveredAt"`
 }
 
 // pilotDevicesStatus は Pilot 用の車両選択画面だけに渡す縮約状態です。
@@ -1007,9 +1030,25 @@ func (server *relayServer) raceStreamStatusSnapshot() raceStreamOperationsState 
 	server.raceStreamMu.RLock()
 	defer server.raceStreamMu.RUnlock()
 	return raceStreamOperationsState{
-		Subscribers: len(server.raceSubscribers),
-		HasState:    strings.TrimSpace(server.raceState) != "",
+		Subscribers:       len(server.raceSubscribers),
+		HasState:          strings.TrimSpace(server.raceState) != "",
+		PublishedMessages: server.racePublishedMessages.Load(),
+		PublishedBytes:    server.racePublishedBytes.Load(),
+		DeliveredMessages: server.raceDeliveredMessages.Load(),
+		DeliveredBytes:    server.raceDeliveredBytes.Load(),
+		QueueReplacements: server.raceQueueReplacements.Load(),
+		WriteErrors:       server.raceWriteErrors.Load(),
+		LastPublishedAt:   timeFromUnixMilliseconds(server.raceLastPublishedAt.Load()),
+		LastDeliveredAt:   timeFromUnixMilliseconds(server.raceLastDeliveredAt.Load()),
 	}
+}
+
+func timeFromUnixMilliseconds(value int64) *time.Time {
+	if value <= 0 {
+		return nil
+	}
+	result := time.UnixMilli(value).UTC()
+	return &result
 }
 
 func (server *relayServer) serveOperationsStatus(w http.ResponseWriter, req *http.Request) {
@@ -1045,12 +1084,37 @@ func (server *relayServer) publishGlobalRaceState(message string) {
 	if message == "" {
 		return
 	}
+	now := time.Now()
+	server.racePublishedMessages.Add(1)
+	server.racePublishedBytes.Add(uint64(len(message)))
+	server.raceLastPublishedAt.Store(now.UnixMilli())
 	server.raceStreamMu.Lock()
 	server.raceState = message
 	for _, queue := range server.raceSubscribers {
-		enqueueLatestTelemetry(queue, message)
+		if enqueueLatestRaceState(queue, message) {
+			server.raceQueueReplacements.Add(1)
+		}
 	}
 	server.raceStreamMu.Unlock()
+}
+
+func enqueueLatestRaceState(queue chan string, payload string) bool {
+	select {
+	case queue <- payload:
+		return false
+	default:
+	}
+	replaced := false
+	select {
+	case <-queue:
+		replaced = true
+	default:
+	}
+	select {
+	case queue <- payload:
+	default:
+	}
+	return replaced
 }
 
 func (server *relayServer) currentGlobalRaceState() string {
@@ -1090,6 +1154,11 @@ func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Req
 		return
 	}
 	defer ws.Close()
+	ws.SetReadLimit(1024)
+	_ = ws.SetReadDeadline(time.Now().Add(raceStreamPongWait))
+	ws.SetPongHandler(func(string) error {
+		return ws.SetReadDeadline(time.Now().Add(raceStreamPongWait))
+	})
 	id, queue, current := server.subscribeRaceState()
 	defer server.unsubscribeRaceState(id)
 
@@ -1103,18 +1172,44 @@ func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Req
 		}
 	}()
 	send := func(payload string) error {
-		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		return ws.WriteJSON(signalMessage{Type: "race-state", Data: payload})
+		_ = ws.SetWriteDeadline(time.Now().Add(raceStreamWriteTimeout))
+		if err := ws.WriteJSON(signalMessage{Type: "race-state", Data: payload}); err != nil {
+			server.raceWriteErrors.Add(1)
+			return err
+		}
+		server.raceDeliveredMessages.Add(1)
+		server.raceDeliveredBytes.Add(uint64(len(payload)))
+		server.raceLastDeliveredAt.Store(time.Now().UnixMilli())
+		return nil
+	}
+	sendHeartbeat := func() error {
+		deadline := time.Now().Add(raceStreamWriteTimeout)
+		_ = ws.SetWriteDeadline(deadline)
+		if err := ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+			server.raceWriteErrors.Add(1)
+			return err
+		}
+		if err := ws.WriteJSON(signalMessage{Type: "race-heartbeat"}); err != nil {
+			server.raceWriteErrors.Add(1)
+			return err
+		}
+		return nil
 	}
 	if strings.TrimSpace(current) != "" {
 		if err := send(current); err != nil {
 			return
 		}
 	}
+	heartbeat := time.NewTicker(raceStreamPingInterval)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case payload := <-queue:
 			if err := send(payload); err != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if err := sendHeartbeat(); err != nil {
 				return
 			}
 		case <-done:
@@ -1231,6 +1326,7 @@ func (r *relay) requestKeyframe(reason string) {
 }
 
 func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
+	now := time.Now()
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
@@ -1243,11 +1339,26 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 		if client.clientKind == "web-observer" && isM5AudioMessage(message) {
 			continue
 		}
+		if client.clientKind == "web-observer" && !shouldDeliverObserverTelemetry(client, message, now) {
+			client.telemetryDropped.Add(1)
+			continue
+		}
 		if message.IsString && client.telemetryWS != nil {
-			enqueueLatestTelemetry(client.telemetryWS, string(message.Data))
+			payload := string(message.Data)
+			if isVehicleGameplayTelemetry(message) && client.gameplayWS != nil {
+				if !enqueueGameplayTelemetry(client.gameplayWS, payload) {
+					client.telemetryDropped.Add(1)
+					if shouldLogTelemetryDelivery(client, now) {
+						log.Printf("source %q: gameplay delivery viewer=%d role=%s remote=%s transport=websocket action=drop queue=%d dropped=%d",
+							r.name, client.id, client.role, client.remoteAddr, len(client.gameplayWS), client.telemetryDropped.Load())
+					}
+				}
+			} else {
+				enqueueLatestTelemetry(client.telemetryWS, payload)
+			}
 			client.telemetryMessages.Add(1)
 			client.telemetryBytes.Add(uint64(len(message.Data)))
-			if shouldLogTelemetryDelivery(client, time.Now()) {
+			if shouldLogTelemetryDelivery(client, now) {
 				log.Printf("source %q: telemetry delivery viewer=%d role=%s remote=%s transport=websocket messages=%d bytes=%d errors=%d",
 					r.name, client.id, client.role, client.remoteAddr,
 					client.telemetryMessages.Load(), client.telemetryBytes.Load(), client.telemetrySendErrors.Load())
@@ -1281,8 +1392,36 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	}
 }
 
+func shouldDeliverObserverTelemetry(client *viewer, message webrtc.DataChannelMessage, now time.Time) bool {
+	if client == nil || !message.IsString || !bytes.HasPrefix(message.Data, []byte("TEL:")) {
+		return true
+	}
+	if bytes.Contains(message.Data, []byte(`"k":"e"`)) || bytes.Contains(message.Data, []byte(`"evt"`)) {
+		return true
+	}
+	nowUnixNano := now.UnixNano()
+	for {
+		previous := client.lastObserverStateAt.Load()
+		if previous != 0 && nowUnixNano-previous < observerTelemetryInterval.Nanoseconds() {
+			return false
+		}
+		if client.lastObserverStateAt.CompareAndSwap(previous, nowUnixNano) {
+			return true
+		}
+	}
+}
+
 func isM5AudioMessage(message webrtc.DataChannelMessage) bool {
 	return bytes.HasPrefix(message.Data, []byte("AUD:"))
+}
+
+func isVehicleGameplayTelemetry(message webrtc.DataChannelMessage) bool {
+	if !message.IsString {
+		return false
+	}
+	return bytes.HasPrefix(message.Data, []byte("VHS:")) ||
+		bytes.HasPrefix(message.Data, []byte("VGS:")) ||
+		bytes.HasPrefix(message.Data, []byte("PIT:"))
 }
 
 func telemetryDataChannelSaturated(buffered uint64) bool {
@@ -1302,6 +1441,15 @@ func enqueueLatestTelemetry(queue chan string, payload string) {
 	select {
 	case queue <- payload:
 	default:
+	}
+}
+
+func enqueueGameplayTelemetry(queue chan string, payload string) bool {
+	select {
+	case queue <- payload:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2080,6 +2228,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	defer close(viewerDataDone)
 	if role == "pilot" || clientKind == "web-observer" {
 		client.telemetryWS = make(chan string, 1)
+		client.gameplayWS = make(chan string, gameplayWebSocketQueueSize)
 		client.eventsWS = make(chan string, 64)
 	}
 	if clientKind == "web-pilot" {
@@ -2113,9 +2262,23 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				default:
 				}
 				select {
+				case payload := <-client.gameplayWS:
+					if err := sendSignal(signalMessage{Type: "telemetry", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket gameplay to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+					continue
+				default:
+				}
+				select {
 				case payload := <-client.eventsWS:
 					if err := sendSignal(signalMessage{Type: "vehicle-event", Data: payload}); err != nil {
 						log.Printf("source %q: send WebSocket vehicle event to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case payload := <-client.gameplayWS:
+					if err := sendSignal(signalMessage{Type: "telemetry", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket gameplay to viewer %d: %v", r.name, client.id, err)
 						return
 					}
 				case payload := <-client.telemetryWS:

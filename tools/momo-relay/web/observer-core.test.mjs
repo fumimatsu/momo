@@ -4,8 +4,17 @@ import test from 'node:test';
 
 const source = await readFile(new URL('./observer-core.js', import.meta.url), 'utf8');
 const observerSource = await readFile(new URL('./observer.js', import.meta.url), 'utf8');
+const raceFixture = JSON.parse(await readFile(new URL('../contracts/sector-progress.race-state-v2.json', import.meta.url), 'utf8'));
 const observerCore = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
-const { classifyCompletedSectorTime } = observerCore;
+const { classifyCompletedSectorTime, parseRaceState } = observerCore;
+
+test('web observer parses the canonical in-progress sector fixture', () => {
+  const parsed = parseRaceState(raceFixture);
+  assert.ok(parsed);
+  const sector2 = parsed.standings[0].sectorTimes.find((entry) => entry.sector === 2);
+  assert.equal(sector2.lastMs, 4700);
+  assert.equal(sector2.bestMs, undefined);
+});
 
 test('completed sector classifies an in-progress overall best before bestMs is published', () => {
   assert.equal(classifyCompletedSectorTime(4900, 5200, 5000), 'overall-best');
@@ -37,9 +46,18 @@ test('web observer keeps per-car WebRTC video-only and uses one global Race WebS
   assert.doesNotMatch(observerSource, /RACE DC/);
 });
 
-test('explicit HTTP Race fallback polls only while the Race WebSocket is down', () => {
-  assert.match(observerSource, /raceFallbackEnabled = params\.get\('raceFallback'\) === 'http'/);
+test('automatic HTTP Race fallback polls only while the Race WebSocket is unhealthy', () => {
+  assert.match(observerSource, /raceFallbackEnabled = params\.get\('raceFallback'\) !== 'off'/);
+  assert.match(observerSource, /RACE_STREAM_STALE_MS = 15_000/);
+  assert.match(observerSource, /message\.type === 'race-heartbeat'/);
+  assert.match(observerSource, /this\.activityTimer = window\.setTimeout\(\(\) => this\.scheduleReconnect\(generation\), RACE_STREAM_STALE_MS\)/);
   assert.match(observerSource, /if \(!raceFallbackEnabled \|\| raceStreamOpen\) \{\s*stopRaceStatePolling\(\)/);
   assert.match(observerSource, /syncRaceStateFallback\(relayHost\)/);
-  assert.doesNotMatch(observerSource, /if \(params\.get\('raceFallback'\) === 'http'\) startRaceStatePolling/);
+  assert.doesNotMatch(observerSource, /params\.get\('raceFallback'\) === 'http'/);
+});
+
+test('race rendering skips unchanged leaderboard, sector, and timing DOM trees', () => {
+  assert.match(observerSource, /if \(signature === leaderboardSignature\) return/);
+  assert.match(observerSource, /if \(signature === sectorRowsSignature\) return/);
+  assert.match(observerSource, /if \(signature === timingRowsSignature\) return/);
 });
