@@ -39,7 +39,8 @@ Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全�
 1本のNDJSONへ記録できる。Relay Pilotが信頼性ありの`momo-drive` channelで`DRIVE:1`を送った
 sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断で直ちに止める。Viewerの
 接続有無に依存しないため、車体座標、重力除去、軸符号を走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
-`race_state`、`raceRunId`、phase、flag、sequenceも記録する。
+`race_state`、`raceRunId`、phase、flag、sequenceに加え、Relayが確定した`vehicle_event`も記録する。
+`vehicle_event`には衝撃クラス、強度、jerk、軸、ダメージ適用結果、抑制理由、適用前後HPを含む。
 
 記録は明示指定時だけ有効にする。既定では無効で、容量を消費しない。
 
@@ -49,9 +50,10 @@ sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断
 ```
 
 環境変数`MOMO_RELAY_TELEMETRY_LOG_DIR`でも同じ保存先を指定できる。Relay単体では
-`-telemetry-log-dir <directory>`を使う。
+`-telemetry-log-dir <directory>`を使う。既定では起動時に24時間より古い`telemetry-*.ndjson`だけを
+削除する。保持期間は`-telemetry-log-retention 48h`のように変更でき、`0`で自動削除を無効にできる。
 
-出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`と`telemetry`、
+出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`telemetry`、`vehicle_event`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
 `telemetry`にはRelay受信UTC時刻、Relay開始からの単調経過時間、`sourceId`、`carId`、
 上流接続generation、`TEL:`全文を含める。DataChannelはunreliableなため、ログはRelayへ届いた

@@ -1567,6 +1567,7 @@ func (r *relay) publishVehicleEvent(event vehicleImpactEvent) {
 	if r.vehicleEvents == nil || !r.vehicleEvents.add(event) {
 		return
 	}
+	r.recorder.RecordVehicleEvent(r.name, r.raceCarID, event)
 	message, err := marshalVehicleEvent(event)
 	if err != nil {
 		log.Printf("source %q: encode vehicle event %q: %v", r.name, event.EventID, err)
@@ -2589,6 +2590,7 @@ func main() {
 	var ayameSignalingKey string
 	var ayamePilotRooms sourceFlag
 	var telemetryLogDir string
+	var telemetryLogRetention time.Duration
 	var healthRecoveryModeValue string
 	var fuelDriveDuration time.Duration
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
@@ -2605,14 +2607,15 @@ func main() {
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
+	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "delete telemetry NDJSON logs older than this at startup (0 disables cleanup)")
 	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
 	flag.DurationVar(&fuelDriveDuration, "fuel-drive-duration", vehicleFuelDefaultDriveDuration, "active forward-driving time required to consume a full fuel tank")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
 	flag.Parse()
-	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 || fuelDriveDuration <= 0 {
-		log.Fatal("-rtp-stall-timeout, -upstream-start-timeout, and -fuel-drive-duration must be positive")
+	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 || fuelDriveDuration <= 0 || telemetryLogRetention < 0 {
+		log.Fatal("-rtp-stall-timeout, -upstream-start-timeout, and -fuel-drive-duration must be positive; -telemetry-log-retention must not be negative")
 	}
 	if strings.TrimSpace(healthRecoveryModeValue) == "" {
 		healthRecoveryModeValue = string(vehicleHealthRecoveryDefault)
@@ -2682,7 +2685,7 @@ func main() {
 	}
 	var recorder *telemetryRecorder
 	if strings.TrimSpace(telemetryLogDir) != "" {
-		recorder, err = newTelemetryRecorder(strings.TrimSpace(telemetryLogDir))
+		recorder, err = newTelemetryRecorder(strings.TrimSpace(telemetryLogDir), telemetryLogRetention)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -2691,8 +2694,8 @@ func main() {
 				log.Printf("close telemetry recorder: %v", err)
 			}
 			stats := recorder.Stats()
-			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d queueDrops=%d writeErrors=%d",
-				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.QueueDrops, stats.WriteErrors)
+			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d driveState=%d vehicleEvents=%d queueDrops=%d writeErrors=%d",
+				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.DriveStateRecords, stats.VehicleEventRecords, stats.QueueDrops, stats.WriteErrors)
 		}()
 		log.Printf("telemetry recorder started: path=%s", recorder.Path())
 	}

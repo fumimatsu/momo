@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -25,13 +26,29 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		Present:   true,
 	})
 	recorder.RecordTelemetry("11.3", "CP-1", 7, `TEL:{"v":1,"src":"imu0","seq":4}`)
+	recorder.RecordVehicleEvent("11.3", "CP-1", vehicleImpactEvent{
+		Type:              "vehicle_event",
+		Version:           1,
+		EventID:           "impact-1",
+		RaceRunID:         "rr_123",
+		CarID:             "CP-1",
+		ImpactClass:       "strong",
+		MagnitudeMPS2:     18.5,
+		JerkMPS3:          92,
+		Axis:              [3]float64{1, -2, 3},
+		DamageApplied:     false,
+		SuppressionReason: "boost_active",
+		HPBefore:          82,
+		HPAfter:           82,
+		ServerTimeMS:      123456,
+	})
 	if err := recorder.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
 	records := readTelemetryLogRecords(t, recorder.Path())
-	if len(records) != 4 {
-		t.Fatalf("record count = %d, want 4", len(records))
+	if len(records) != 5 {
+		t.Fatalf("record count = %d, want 5", len(records))
 	}
 	if records[0].Type != "relay_session" || records[0].RelayStartedAt == nil {
 		t.Fatalf("header = %#v, want relay_session with start time", records[0])
@@ -48,8 +65,72 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[2].RaceRunID != "rr_123" || records[2].RacePhase != "countdown" {
 		t.Fatalf("telemetry race context = %#v", records[2])
 	}
-	if records[3].Type != "relay_session_end" || records[3].Stats == nil || records[3].Stats.TelemetryRecords != 1 || records[3].Stats.RaceStateRecords != 1 {
-		t.Fatalf("footer = %#v, want final stats", records[3])
+	if records[3].Type != "vehicle_event" || records[3].VehicleEvent == nil || records[3].VehicleEvent.EventID != "impact-1" || records[3].VehicleEvent.SuppressionReason != "boost_active" {
+		t.Fatalf("vehicle event = %#v", records[3])
+	}
+	if records[3].SourceID != "11.3" || records[3].CarID != "CP-1" || records[3].RaceRunID != "rr_123" {
+		t.Fatalf("vehicle event context = %#v", records[3])
+	}
+	if records[4].Type != "relay_session_end" || records[4].Stats == nil || records[4].Stats.TelemetryRecords != 1 || records[4].Stats.RaceStateRecords != 1 || records[4].Stats.VehicleEventRecords != 1 {
+		t.Fatalf("footer = %#v, want final stats", records[4])
+	}
+}
+
+func TestRelayRecordsAcceptedVehicleEventOnce(t *testing.T) {
+	recorder, err := newTelemetryRecorderWithQueue(t.TempDir(), 16)
+	if err != nil {
+		t.Fatalf("newTelemetryRecorderWithQueue() error = %v", err)
+	}
+	source := newStatusTestRelay("11.4", "CP-2")
+	source.recorder = recorder
+	source.vehicleEvents = newVehicleEventStore()
+	event := vehicleImpactEvent{Type: "vehicle_event", Version: 1, EventID: "impact-2", RaceRunID: "rr_456", CarID: "CP-2"}
+
+	source.publishVehicleEvent(event)
+	source.publishVehicleEvent(event)
+	if err := recorder.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var events []telemetryLogRecord
+	for _, record := range readTelemetryLogRecords(t, recorder.Path()) {
+		if record.Type == "vehicle_event" {
+			events = append(events, record)
+		}
+	}
+	if len(events) != 1 || events[0].VehicleEvent == nil || events[0].VehicleEvent.EventID != "impact-2" {
+		t.Fatalf("vehicle event records = %#v, want one accepted event", events)
+	}
+}
+
+func TestRemoveExpiredTelemetryLogsOnlyDeletesMatchingOldFiles(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	oldTelemetry := filepath.Join(directory, "telemetry-old.ndjson")
+	recentTelemetry := filepath.Join(directory, "telemetry-recent.ndjson")
+	oldOther := filepath.Join(directory, "keep-old.txt")
+	for _, path := range []string{oldTelemetry, recentTelemetry, oldOther} {
+		if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", path, err)
+		}
+	}
+	oldTime := now.Add(-25 * time.Hour)
+	for _, path := range []string{oldTelemetry, oldOther} {
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatalf("Chtimes(%q) error = %v", path, err)
+		}
+	}
+
+	if err := removeExpiredTelemetryLogs(directory, 24*time.Hour, now); err != nil {
+		t.Fatalf("removeExpiredTelemetryLogs() error = %v", err)
+	}
+	if _, err := os.Stat(oldTelemetry); !os.IsNotExist(err) {
+		t.Fatalf("old telemetry stat error = %v, want not exist", err)
+	}
+	for _, path := range []string{recentTelemetry, oldOther} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preserved file %q stat error = %v", path, err)
+		}
 	}
 }
 

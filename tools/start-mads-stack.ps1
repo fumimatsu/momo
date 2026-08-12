@@ -6,6 +6,8 @@ param(
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
+    [ValidateRange(0, 8760)]
+    [int]$TelemetryLogRetentionHours = 24,
     [switch]$OpenAdmin,
     [switch]$KeepOpenOnError
 )
@@ -132,6 +134,7 @@ try {
         HealthRecoveryMode = $HealthRecoveryMode
         FuelDriveDurationSeconds = $FuelDriveDurationSeconds
         TelemetryLogDirectory = $TelemetryLogDirectory
+        TelemetryLogRetentionHours = $TelemetryLogRetentionHours
     }
     if ($rebuildRelay) {
         $launchParameters.RebuildRelay = $true

@@ -17,6 +17,8 @@ param(
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
+    [ValidateRange(0, 8760)]
+    [int]$TelemetryLogRetentionHours = 24,
     [string]$ObserverAudioSource = 'all',
     [string]$ObserverCrashDumpDirectory = '',
     [string]$GoExecutable = $env:MOMO_GO_EXE,
@@ -143,6 +145,7 @@ if ($relayRunning.Count -eq 0) {
     }
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()
+        $relayArgs += '-telemetry-log-retention', "$($TelemetryLogRetentionHours)h"
     }
     $ayamePilotRooms = @()
     if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) {
@@ -167,7 +170,7 @@ if ($relayRunning.Count -eq 0) {
         -WindowStyle Hidden | Out-Null
     Write-Host 'Relay started: http://127.0.0.1:8090/'
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
-        Write-Host "Telemetry log directory: $($TelemetryLogDirectory.Trim())"
+        Write-Host "Telemetry log directory: $($TelemetryLogDirectory.Trim()) (retention: $TelemetryLogRetentionHours h)"
     }
 }
 else {

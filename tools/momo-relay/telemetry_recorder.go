@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	telemetryLogSchemaVersion = 1
-	defaultTelemetryLogQueue  = 8192
-	telemetryLogFlushInterval = time.Second
+	telemetryLogSchemaVersion    = 1
+	defaultTelemetryLogQueue     = 8192
+	telemetryLogFlushInterval    = time.Second
+	defaultTelemetryLogRetention = 24 * time.Hour
 )
 
 // telemetryRaceContext is the latest Race Control state observed by the Relay.
@@ -31,11 +32,12 @@ type telemetryRaceContext struct {
 }
 
 type telemetryRecorderStats struct {
-	TelemetryRecords  uint64 `json:"telemetryRecords"`
-	RaceStateRecords  uint64 `json:"raceStateRecords"`
-	DriveStateRecords uint64 `json:"driveStateRecords"`
-	QueueDrops        uint64 `json:"queueDrops"`
-	WriteErrors       uint64 `json:"writeErrors"`
+	TelemetryRecords    uint64 `json:"telemetryRecords"`
+	RaceStateRecords    uint64 `json:"raceStateRecords"`
+	DriveStateRecords   uint64 `json:"driveStateRecords"`
+	VehicleEventRecords uint64 `json:"vehicleEventRecords"`
+	QueueDrops          uint64 `json:"queueDrops"`
+	WriteErrors         uint64 `json:"writeErrors"`
 }
 
 type telemetryLogRecord struct {
@@ -57,6 +59,7 @@ type telemetryLogRecord struct {
 	DriveEnabled    *bool                   `json:"driveEnabled,omitempty"`
 	DriveReason     string                  `json:"driveReason,omitempty"`
 	PilotID         uint64                  `json:"pilotId,omitempty"`
+	VehicleEvent    *vehicleImpactEvent     `json:"vehicleEvent,omitempty"`
 	Stats           *telemetryRecorderStats `json:"stats,omitempty"`
 }
 
@@ -77,18 +80,57 @@ type telemetryRecorder struct {
 
 	raceContext atomic.Value // telemetryRaceContext
 
-	telemetryRecords  atomic.Uint64
-	raceStateRecords  atomic.Uint64
-	driveStateRecords atomic.Uint64
-	queueDrops        atomic.Uint64
-	writeErrors       atomic.Uint64
+	telemetryRecords    atomic.Uint64
+	raceStateRecords    atomic.Uint64
+	driveStateRecords   atomic.Uint64
+	vehicleEventRecords atomic.Uint64
+	queueDrops          atomic.Uint64
+	writeErrors         atomic.Uint64
 
 	errorMu      sync.Mutex
 	lastWriteErr error
 }
 
-func newTelemetryRecorder(directory string) (*telemetryRecorder, error) {
+func newTelemetryRecorder(directory string, retention time.Duration) (*telemetryRecorder, error) {
+	if err := removeExpiredTelemetryLogs(directory, retention, time.Now()); err != nil {
+		return nil, err
+	}
 	return newTelemetryRecorderWithQueue(directory, defaultTelemetryLogQueue)
+}
+
+func removeExpiredTelemetryLogs(directory string, retention time.Duration, now time.Time) error {
+	if retention <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read telemetry log directory: %w", err)
+	}
+	cutoff := now.Add(-retention)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		matched, err := filepath.Match("telemetry-*.ndjson", entry.Name())
+		if err != nil || !matched {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat telemetry log %q: %w", entry.Name(), err)
+		}
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove expired telemetry log %q: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func newTelemetryRecorderWithQueue(directory string, queueCapacity int) (*telemetryRecorder, error) {
@@ -225,6 +267,30 @@ func (r *telemetryRecorder) RecordDriveState(sourceID string, carID string, pilo
 	}
 }
 
+func (r *telemetryRecorder) RecordVehicleEvent(sourceID string, carID string, event vehicleImpactEvent) {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	nowUTC := now.UTC()
+	elapsedUs := time.Since(r.startedAt).Microseconds()
+	eventCopy := event
+	record := telemetryLogRecord{
+		Type:            "vehicle_event",
+		SchemaVersion:   telemetryLogSchemaVersion,
+		RelaySessionID:  r.sessionID,
+		RelayReceivedAt: &nowUTC,
+		RelayElapsedUs:  &elapsedUs,
+		SourceID:        sourceID,
+		CarID:           carID,
+		VehicleEvent:    &eventCopy,
+	}
+	r.appendRaceContext(&record, r.currentRaceContext())
+	if r.enqueue(record) {
+		r.vehicleEventRecords.Add(1)
+	}
+}
+
 func (r *telemetryRecorder) currentRaceContext() telemetryRaceContext {
 	return r.raceContext.Load().(telemetryRaceContext)
 }
@@ -258,11 +324,12 @@ func (r *telemetryRecorder) enqueue(record telemetryLogRecord) bool {
 
 func (r *telemetryRecorder) Stats() telemetryRecorderStats {
 	return telemetryRecorderStats{
-		TelemetryRecords:  r.telemetryRecords.Load(),
-		RaceStateRecords:  r.raceStateRecords.Load(),
-		DriveStateRecords: r.driveStateRecords.Load(),
-		QueueDrops:        r.queueDrops.Load(),
-		WriteErrors:       r.writeErrors.Load(),
+		TelemetryRecords:    r.telemetryRecords.Load(),
+		RaceStateRecords:    r.raceStateRecords.Load(),
+		DriveStateRecords:   r.driveStateRecords.Load(),
+		VehicleEventRecords: r.vehicleEventRecords.Load(),
+		QueueDrops:          r.queueDrops.Load(),
+		WriteErrors:         r.writeErrors.Load(),
 	}
 }
 
