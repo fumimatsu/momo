@@ -49,6 +49,7 @@ test('web observer keeps per-car WebRTC video-only and uses one global Race WebS
   assert.doesNotMatch(observerSource, /\.createDataChannel\(/);
   assert.match(observerSource, /class RaceStateStream/);
   assert.match(observerSource, /new WebSocket\(createRaceStateWebSocketUrl\(this\.relayHost\)\)/);
+  assert.match(observerSource, /url\.searchParams\.set\('client', 'web-observer'\)/);
   assert.match(observerSource, /raceClient = new RaceStateStream\(relayHost, handleRaceState/);
   assert.match(observerSource, /message\.type === 'telemetry'/);
   assert.match(observerSource, /message\.type === 'command'/);

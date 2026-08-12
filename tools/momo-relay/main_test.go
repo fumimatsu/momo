@@ -191,6 +191,9 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode status response: %v", err)
 	}
+	if response.Version != 2 {
+		t.Fatalf("status version = %d, want 2", response.Version)
+	}
 	if len(response.Sources) != 1 || response.Sources[0].State != "WAITING" {
 		t.Fatalf("status sources = %#v, want one waiting source", response.Sources)
 	}

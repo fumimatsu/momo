@@ -23,7 +23,7 @@ import {
   projectCourseProgress,
   raceClockValue,
   reconstructRaceElapsedMs,
-	selectVideoDevices,
+  selectVideoDevices,
   standingsByConfiguredCar,
 } from './observer-core.js';
 
