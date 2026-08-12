@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260812-local-ws-downlink-v1';
+  const PILOT_BUILD_ID = '20260812-rear-pressure-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -215,9 +215,12 @@
     RACE_REAR_WARNING_GAP_MS,
     Math.max(0, getNumberParam('rearCriticalGapMs', 1000)),
   );
+  const RACE_REAR_RELEASE_GAP_MS = Math.max(
+    RACE_REAR_WARNING_GAP_MS,
+    getNumberParam('rearReleaseGapMs', 3000),
+  );
   const RACE_REAR_WARNING_CLOSING_MS = Math.max(0, getNumberParam('rearWarningClosingMs', 300));
   const RACE_REAR_CRITICAL_CLOSING_MS = Math.max(0, getNumberParam('rearCriticalClosingMs', 100));
-  const RACE_REAR_ATTENTION_MS = Math.max(800, getNumberParam('rearAttentionMs', 2800));
   const G_METER_ENABLED = getBooleanParam('gMeter', true);
   const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
   const G_METER_FULL_SCALE_G = Math.max(0.5, Math.min(3.0, getNumberParam('gMeterScaleG', 1.5)));
@@ -521,10 +524,10 @@
   const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
     warningGapMs: RACE_REAR_WARNING_GAP_MS,
     criticalGapMs: RACE_REAR_CRITICAL_GAP_MS,
+    releaseGapMs: RACE_REAR_RELEASE_GAP_MS,
     warningClosingMs: RACE_REAR_WARNING_CLOSING_MS,
     criticalClosingMs: RACE_REAR_CRITICAL_CLOSING_MS,
   }) || null;
-  let rearAttentionTimer = null;
   const raceState = {
     phase: 'STANDBY',
     phaseCode: 'idle',
@@ -1385,10 +1388,6 @@
   }
 
   function hideRearAttention(resetTracker = false) {
-    if (rearAttentionTimer !== null) {
-      window.clearTimeout(rearAttentionTimer);
-      rearAttentionTimer = null;
-    }
     if (rearAttention) {
       rearAttention.hidden = true;
       rearAttention.classList.remove('is-active');
@@ -1398,28 +1397,35 @@
     }
   }
 
-  function showRearAttention(alert) {
-    if (!rearAttention || !alert) {
+  function showRearAttention(state) {
+    if (!rearAttention || !state?.active) {
       return;
     }
-    const critical = alert.severity === 'critical';
-    const rivalName = alert.driver || alert.carId;
-    const markerLabel = alert.markerIndex === 0 ? 'LAP LINE' : `CP ${alert.markerIndex}`;
-    rearAttention.dataset.severity = critical ? 'critical' : 'warning';
-    setText(rearAttentionLabel, critical ? 'REAR ATTACK' : 'REAR CLOSING');
-    setText(rearAttentionGap, formatRaceInterval(alert.gapMs, null));
+    const critical = state.severity === 'critical';
+    const rivalName = state.driver || state.carId;
+    const markerLabel = state.markerIndex === 0 ? 'LAP LINE' : `CP ${state.markerIndex}`;
+    const trendLabel = state.trend === 'closing' && state.closingMs !== null
+      ? `${(state.closingMs / 1000).toFixed(1)}s CLOSER`
+      : state.trend === 'opening' && state.closingMs !== null
+        ? `${(Math.abs(state.closingMs) / 1000).toFixed(1)}s OPENING`
+        : state.trend === 'holding' ? 'GAP HOLDING' : 'LATEST GAP';
+    const severity = critical ? 'critical' : 'warning';
+    if (!state.shouldPulse && rearAttention.dataset.severity !== severity) {
+      rearAttention.classList.remove('is-active');
+    }
+    rearAttention.dataset.severity = severity;
+    setText(rearAttentionLabel, critical ? 'REAR ATTACK' : 'REAR PRESSURE');
+    setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
     setText(
       rearAttentionDetail,
-      `${(alert.closingMs / 1000).toFixed(1)}s CLOSER  /  ${rivalName}  /  ${markerLabel}`,
+      `${trendLabel}  /  ${rivalName}  /  ${markerLabel}`,
     );
     rearAttention.hidden = false;
-    rearAttention.classList.remove('is-active');
-    void rearAttention.offsetWidth;
-    rearAttention.classList.add('is-active');
-    if (rearAttentionTimer !== null) {
-      window.clearTimeout(rearAttentionTimer);
+    if (state.shouldPulse) {
+      rearAttention.classList.remove('is-active');
+      void rearAttention.offsetWidth;
+      rearAttention.classList.add('is-active');
     }
-    rearAttentionTimer = window.setTimeout(() => hideRearAttention(false), RACE_REAR_ATTENTION_MS);
   }
 
   function evaluateRearAttention() {
@@ -1428,19 +1434,17 @@
       return;
     }
     const battle = getRaceBattle();
-    const alert = rearAttentionTracker.evaluate({
+    const state = rearAttentionTracker.evaluate({
       raceRunId: activeRaceRunId,
       phaseCode: raceState.phaseCode,
       self: battle.self,
       behind: battle.behind,
     });
-    if (raceState.phaseCode !== 'green') {
+    if (raceState.phaseCode !== 'green' || !state?.active) {
       hideRearAttention(false);
       return;
     }
-    if (alert) {
-      showRearAttention(alert);
-    }
+    showRearAttention(state);
   }
 
   function normalizeRacePhaseCode(phase) {
