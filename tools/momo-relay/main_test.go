@@ -448,15 +448,26 @@ func TestRaceStateWebSocketSendsLatestStateAndUnsubscribes(t *testing.T) {
 	if message.Type != "race-state" || message.Data != `RACE:{"sequence":9}` {
 		t.Fatalf("race stream message = %#v", message)
 	}
-	status := server.raceStreamStatusSnapshot()
-	if status.DeliveredMessages != 1 || status.DeliveredBytes != uint64(len(message.Data)) || status.LastDeliveredAt == nil || status.WriteErrors != 0 {
-		t.Fatalf("race delivery diagnostics = %#v", status)
+	deadline := time.Now().Add(time.Second)
+	var status raceStreamOperationsState
+	for {
+		status = server.raceStreamStatusSnapshot()
+		if status.DeliveredMessages == 1 && status.DeliveredBytes == uint64(len(message.Data)) && status.LastDeliveredAt != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("race delivery diagnostics = %#v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if status.WriteErrors != 0 {
+		t.Fatalf("race delivery write errors = %#v", status)
 	}
 	if err := connection.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(time.Second)
+	deadline = time.Now().Add(time.Second)
 	for {
 		server.raceStreamMu.RLock()
 		remaining := len(server.raceSubscribers)
