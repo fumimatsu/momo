@@ -24,6 +24,7 @@ const (
 	vehicleFuelDefaultDriveDuration  = 120 * time.Second
 	vehicleGearOneForwardMaximum     = 1600
 	vehicleFuelEmptyForwardPWM       = vehicleGearOneForwardMaximum - 10
+	vehicleFuelEmptyReversePWM       = 1500 - (vehicleFuelEmptyForwardPWM - 1500)
 	vehicleBoostMaximum              = 100.0
 	vehicleBoostDuration             = 2500 * time.Millisecond
 	vehicleBoostFallbackCharge       = 30 * time.Second
@@ -516,6 +517,10 @@ func (health *vehicleHealth) limitCommand(message string, now time.Time) string 
 			if health.fuel <= 0 {
 				limited = minInt(limited, vehicleFuelEmptyForwardPWM)
 			}
+		} else if throttle < 1500 && health.fuel <= 0 {
+			// Damage may require full reverse to escape an obstacle. Empty fuel alone
+			// receives a symmetric limp limit so reverse cannot bypass fuel gameplay.
+			limited = maxInt(throttle, vehicleFuelEmptyReversePWM)
 		}
 		health.effectiveThrottle = normalizeForwardThrottle(limited, gear)
 		if limited > 1500 {

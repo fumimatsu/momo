@@ -26,8 +26,8 @@ func TestVehicleHealthAppliesDamageAndClampsForwardThrottle(t *testing.T) {
 	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1596\n" {
 		t.Fatalf("limited command = %q, want gear-1 and health limit 1596", got)
 	}
-	if got := health.limitCommand("S:1500,T:1300\n", base.Add(1200*time.Millisecond)); got != "S:1500,T:1300\n" {
-		t.Fatalf("brake command must not be limited: %q", got)
+	if got := health.limitCommand("S:1500,T:1000\n", base.Add(1200*time.Millisecond)); got != "S:1500,T:1000\n" {
+		t.Fatalf("damage must not limit reverse escape command: %q", got)
 	}
 }
 

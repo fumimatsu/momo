@@ -49,6 +49,12 @@ func TestVehicleGameplayFuelDrainAndEmptyLimit(t *testing.T) {
 	if got := health.limitCommand("S:1500,T:2000", base.Add(10*time.Second)); got != "S:1500,T:1590" {
 		t.Fatalf("empty-fuel command = %q, want limp PWM 1590", got)
 	}
+	if got := health.limitCommand("S:1500,T:1000", base.Add(10*time.Second)); got != "S:1500,T:1410" {
+		t.Fatalf("empty-fuel reverse command = %q, want symmetric limp PWM 1410", got)
+	}
+	if got := health.limitCommand("S:1500,T:1500", base.Add(10*time.Second)); got != "S:1500,T:1500" {
+		t.Fatalf("empty-fuel neutral command changed: %q", got)
+	}
 }
 
 func TestVehicleGameplayPracticeDoesNotConsumeFuel(t *testing.T) {
