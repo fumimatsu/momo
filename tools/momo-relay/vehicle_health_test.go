@@ -55,7 +55,7 @@ func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T)
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.observeRaceState(true, "rr_123", "green", 1, 4, base)
-	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base)
 	if got := health.snapshot(base).HP; got != 80 {
 		t.Fatalf("severe impact HP = %.1f, want 80", got)
 	}
@@ -78,7 +78,7 @@ func TestVehicleHealthReadyTransitionResetsOnlyOnce(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.observeRaceState(true, "rr_ready", "green", 1, 4, base)
-	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base)
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base)
 	if _, reset := health.observeRacePhase("green", base.Add(time.Second)); reset {
 		t.Fatal("green must not reset health")
 	}
@@ -92,10 +92,13 @@ func TestVehicleHealthReadyTransitionResetsOnlyOnce(t *testing.T) {
 }
 
 func TestVehicleHealthClassifiesOnlyImpactEvents(t *testing.T) {
-	if got := classifyRelayImpact(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":18.0,"a":[1,0,0],"j":250}}`); got != "severe" {
+	if got := classifyRelayImpact(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":15.0,"a":[1,0,0],"j":750}}`); got != "severe" {
 		t.Fatalf("V2 severe = %q", got)
 	}
-	if got := classifyRelayImpact(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":120}}`); got != "weak" {
+	if got := classifyRelayImpact(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":15.0,"a":[1,0,0],"j":749}}`); got != "strong" {
+		t.Fatalf("lower-jerk V2 impact = %q, want strong", got)
+	}
+	if got := classifyRelayImpact(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":3,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":120}}`); got != "weak" {
 		t.Fatalf("low-jerk V2 impact = %q, want weak", got)
 	}
 	if got := classifyRelayImpact(`TEL:{"v":1,"k":"e","boot":"boot-a","seq":3,"evt":{"name":"impact","data":{"mag_mps2":20.0,"jerk_mps3":300}}}`); got != "" {
@@ -150,7 +153,7 @@ func TestVehicleHealthEpisodeEscalationAppliesOnlyDamageDifference(t *testing.T)
 	if strong == nil || strong.Damage != 12 || strong.HPAfter != 88 {
 		t.Fatalf("strong event = %#v", strong)
 	}
-	_, _, severe := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base.Add(600*time.Millisecond))
+	_, _, severe := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base.Add(600*time.Millisecond))
 	if severe == nil || !severe.DamageApplied || severe.Damage != 8 || severe.HPAfter != 80 {
 		t.Fatalf("escalated event = %#v", severe)
 	}
@@ -173,16 +176,13 @@ func TestVehicleHealthSuppressesDamageOutsideActiveRace(t *testing.T) {
 		{name: "disconnected", setup: func(health *vehicleHealth) {
 			health.observeRaceState(false, "rr_disconnected", "green", 1, 4, base)
 		}, now: base.Add(time.Second)},
-		{name: "stale", setup: func(health *vehicleHealth) {
-			health.observeRaceState(true, "rr_stale", "green", 1, 4, base)
-		}, now: base.Add(vehicleRaceStateFreshness + time.Millisecond)},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			health := newVehicleHealth(base)
 			test.setup(health)
-			_, _, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", test.now)
+			_, _, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", test.now)
 			if event == nil || event.DamageApplied || event.Damage != 0 || event.SuppressionReason != "race_inactive" {
 				t.Fatalf("inactive race event = %#v", event)
 			}
@@ -193,12 +193,27 @@ func TestVehicleHealthSuppressesDamageOutsideActiveRace(t *testing.T) {
 	}
 }
 
+func TestVehicleHealthKeepsSparseConnectedGreenRaceActive(t *testing.T) {
+	base := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_sparse", "green", 1, 4, base)
+
+	_, _, event := health.ingestTelemetry(
+		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":800}}`,
+		"CP-1",
+		base.Add(20*time.Second),
+	)
+	if event == nil || !event.DamageApplied || event.SuppressionReason != "" || event.HPAfter != 88 {
+		t.Fatalf("sparse connected green race event = %#v", event)
+	}
+}
+
 func TestVehicleHealthAppliesDamageDuringPractice(t *testing.T) {
 	base := time.Date(2026, 8, 12, 13, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.observeRaceState(true, "rr_practice", "green", 1, 4, base, "practice")
 
-	_, _, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base.Add(time.Second))
+	_, _, event := health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base.Add(time.Second))
 	if event == nil || !event.DamageApplied || event.Damage != vehicleHealthSevereDamage || event.HPAfter != 80 {
 		t.Fatalf("practice impact event = %#v", event)
 	}
@@ -217,7 +232,7 @@ func TestVehicleHealthSuppressesDamageOnlyWhileBoostIsActive(t *testing.T) {
 	}
 
 	_, _, protected := health.ingestTelemetry(
-		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`,
+		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`,
 		"CP-1",
 		base.Add(time.Second),
 	)
@@ -226,7 +241,7 @@ func TestVehicleHealthSuppressesDamageOnlyWhileBoostIsActive(t *testing.T) {
 	}
 
 	_, _, afterBoost := health.ingestTelemetry(
-		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`,
+		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":2,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`,
 		"CP-1",
 		base.Add(vehicleBoostDuration),
 	)

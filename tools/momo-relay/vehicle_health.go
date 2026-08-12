@@ -18,7 +18,6 @@ const (
 	vehicleHealthRecoveryDelay       = 4 * time.Second
 	vehicleHealthForwardCommandGrace = 350 * time.Millisecond
 	vehicleHealthPublishInterval     = 100 * time.Millisecond
-	vehicleRaceStateFreshness        = 5 * time.Second
 	vehicleFuelMaximum               = 100.0
 	vehicleFuelRecoveryAmount        = 10.0
 	vehicleFuelDefaultDriveDuration  = 120 * time.Second
@@ -30,6 +29,11 @@ const (
 	vehicleBoostFallbackCharge       = 30 * time.Second
 	vehicleNormalGearMaximum         = 3
 	vehicleBoostGear                 = 4
+	relayImpactWeakMagnitudeMPS2     = 10.0
+	relayImpactStrongMagnitudeMPS2   = 12.0
+	relayImpactStrongJerkMPS3        = 250.0
+	relayImpactSevereMagnitudeMPS2   = 15.0
+	relayImpactSevereJerkMPS3        = 750.0
 )
 
 type vehicleHealthSnapshot struct {
@@ -570,8 +574,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 
 	if !health.boostActiveUntil.IsZero() {
 		remaining := health.boostActiveUntil.Sub(now)
-		if remaining <= 0 || health.fuel <= 0 || !health.raceConnected || health.lastRacePhase != "green" ||
-			now.Sub(health.lastRaceStateAt) > vehicleRaceStateFreshness {
+		if remaining <= 0 || health.fuel <= 0 || !health.raceConnected || health.lastRacePhase != "green" {
 			health.cancelBoostLocked()
 			changed = true
 		} else {
@@ -707,12 +710,10 @@ func (health *vehicleHealth) isActivelyDrivingLocked(now time.Time) bool {
 		!health.lastForwardAt.IsZero() && now.Sub(health.lastForwardAt) <= vehicleHealthForwardCommandGrace
 }
 
-func (health *vehicleHealth) raceGameplayActiveLocked(now time.Time) bool {
-	if !health.raceConnected || health.activeRaceRunID == "" || health.lastRacePhase != "green" || health.lastRaceStateAt.IsZero() {
-		return false
-	}
-	age := now.Sub(health.lastRaceStateAt)
-	return age >= 0 && age <= vehicleRaceStateFreshness
+func (health *vehicleHealth) raceGameplayActiveLocked(_ time.Time) bool {
+	// Race Control state is checkpoint-driven and can be quiet for several seconds.
+	// WebSocket disconnect handling owns liveness; message age must not stop gameplay.
+	return health.raceConnected && health.activeRaceRunID != "" && health.lastRacePhase == "green"
 }
 
 func (health *vehicleHealth) fuelRateLocked() float64 {
@@ -921,13 +922,13 @@ func parseRelayImpactCandidate(raw string) (relayImpactCandidate, bool) {
 }
 
 func classifyRelayImpactCandidate(candidate relayImpactCandidate) string {
-	if candidate.Magnitude < 10 {
+	if candidate.Magnitude < relayImpactWeakMagnitudeMPS2 {
 		return ""
 	}
-	if candidate.Magnitude >= 18 && candidate.Jerk >= 250 {
+	if candidate.Magnitude >= relayImpactSevereMagnitudeMPS2 && candidate.Jerk >= relayImpactSevereJerkMPS3 {
 		return "severe"
 	}
-	if candidate.Magnitude >= 12 && candidate.Jerk >= 250 {
+	if candidate.Magnitude >= relayImpactStrongMagnitudeMPS2 && candidate.Jerk >= relayImpactStrongJerkMPS3 {
 		return "strong"
 	}
 	return "weak"

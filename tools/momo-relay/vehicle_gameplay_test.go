@@ -161,7 +161,7 @@ func TestVehicleGameplayPitTickRecoversFuelAndHealthAtomically(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := prepareGameplayHealth(base, 50*time.Second, 2, 4)
 	advanceGameplayDriving(health, base, 20, 2, 4)
-	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":300}}`, "CP-1", base.Add(20*time.Second))
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base.Add(20*time.Second))
 	health.setPitPresent(true, base.Add(20*time.Second))
 
 	command := pitRecoveryCommand{CommandID: "cmd-1", RaceRunID: "rr_gameplay", CarID: "CP-1", EntryID: "entry-1", Tick: 1}

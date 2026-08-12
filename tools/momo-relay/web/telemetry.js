@@ -25,8 +25,8 @@
     cornerReleaseSeconds: 0.16,
     surfaceBaselineSeconds: 0.35,
     surfaceForwardWeight: 0.25,
-    surfaceRoughnessStartMps2: 0.12,
-    surfaceRoughnessFullMps2: 1.40,
+    surfaceRoughnessStartMps2: 0.25,
+    surfaceRoughnessFullMps2: 1.80,
     surfaceAttackSeconds: 0.06,
     surfaceReleaseSeconds: 0.22,
     impactForwardMps2: 8.5,
@@ -39,9 +39,9 @@
     impactWeakMagnitudeMps2: 10.0,
     impactStrongMagnitudeMps2: 12.0,
     impactStrongJerkMps3: 250.0,
-    impactSevereMagnitudeMps2: 18.0,
+    impactSevereMagnitudeMps2: 15.0,
     // 大きな加速度ピークだけでは軽い壁接触も重衝撃に見えるため、HEAVY は急峻さも要求する。
-    impactSevereJerkMps3: 250.0,
+    impactSevereJerkMps3: 750.0,
     impactRearmMagnitudeMps2: 5.0,
     impactRearmHoldMs: 500,
     // weak はグラベルや縁石の連続入力を表せるよう、完全な静止待ちをせず短い間隔で再通知する。
