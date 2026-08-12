@@ -8,7 +8,7 @@
 | `momo` | Momo 本体、Relay、Observer | Relay Pilot と Web Observer の配布先を持つ |
 | `momo-fpv` | Pi 設定、ファームウェア、直結 Viewer の運用配布 | Relay Pilot の正本を持たない |
 
-Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` の `pilot.html`、`pilot.js`、`garage.html`、`ffb-bridge.js` である。入力・FFB設定画面は root の `gamepad.html`、`gamepad.js`、`gamepad-profile.js` を正本として使う。`momo/tools/momo-relay/web/` は Relay binary に埋め込む配布コピーであり、直接編集しない。
+Relay Pilot の正本は `momo-fpv-viewer/variants/relay/` の `pilot.html`、`pilot.js`、`race-battle.js`、`garage.html`、`ffb-bridge.js` である。入力・FFB設定画面は root の `gamepad.html`、`gamepad.js`、`gamepad-profile.js` を正本として使う。`momo/tools/momo-relay/web/` は Relay binary に埋め込む配布コピーであり、直接編集しない。
 
 Web Observer の正本は `momo-fpv-viewer/variants/observer/` の `observer.html`、
 `observer.css`、`observer.js`、`observer-core.js`、`observer-config.json` である。

@@ -13,6 +13,7 @@ $destinationDirectory = Join-Path $repoRoot 'tools\momo-relay\web'
 $sourceFiles = @(
     [ordered]@{ Source = 'variants\relay\pilot.html'; Destination = 'pilot.html' },
     [ordered]@{ Source = 'variants\relay\pilot.js'; Destination = 'pilot.js' },
+    [ordered]@{ Source = 'variants\relay\race-battle.js'; Destination = 'race-battle.js' },
     [ordered]@{ Source = 'variants\relay\garage.html'; Destination = 'garage.html' },
     [ordered]@{ Source = 'variants\relay\ffb-bridge.js'; Destination = 'ffb-bridge.js' },
     [ordered]@{ Source = 'telemetry.js'; Destination = 'telemetry.js' },

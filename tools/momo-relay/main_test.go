@@ -650,6 +650,36 @@ func TestEmbeddedWebObserverAssetsAreComplete(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWebPilotAssetsAreComplete(t *testing.T) {
+	paths := []string{
+		"web/pilot.html",
+		"web/pilot.js",
+		"web/race-battle.js",
+		"web/telemetry.js",
+		"web/m5-audio.js",
+		"web/ffb-bridge.js",
+	}
+	for _, path := range paths {
+		contents, err := webAssets.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read embedded asset %s: %v", path, err)
+		}
+		if len(contents) == 0 {
+			t.Fatalf("embedded asset %s is empty", path)
+		}
+	}
+
+	html, err := webAssets.ReadFile("web/pilot.html")
+	if err != nil {
+		t.Fatalf("read embedded Pilot HTML: %v", err)
+	}
+	for _, reference := range []string{"telemetry.js", "m5-audio.js", "ffb-bridge.js", "race-battle.js", "pilot.js"} {
+		if !strings.Contains(string(html), reference) {
+			t.Fatalf("Pilot HTML does not reference %q", reference)
+		}
+	}
+}
+
 func newStatusTestRelay(name string, carID string) *relay {
 	source := &relay{name: name, raceCarID: carID, rtpStallTimeout: 5 * time.Second, upstreamStartTimeout: 20 * time.Second}
 	source.lifecycle.Store(int32(sourceWaiting))
