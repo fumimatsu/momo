@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260812-rear-pressure-v1';
+  const PILOT_BUILD_ID = '20260812-pit-stopwatch-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -301,6 +301,9 @@
   const rearAttentionLabel = document.getElementById('rearAttentionLabel');
   const rearAttentionGap = document.getElementById('rearAttentionGap');
   const rearAttentionDetail = document.getElementById('rearAttentionDetail');
+  const pitStopwatch = document.getElementById('pitStopwatch');
+  const pitStopwatchLabel = document.getElementById('pitStopwatchLabel');
+  const pitStopwatchTime = document.getElementById('pitStopwatchTime');
   const raceLapHistory = document.getElementById('raceLapHistory');
   const btnReconnect = document.getElementById('btnReconnect');
   const btnFullscreen = document.getElementById('btnFullscreen');
@@ -463,6 +466,7 @@
   let vehicleHealth = null;
 	let vehicleGameplay = null;
 	let vehiclePitPresence = null;
+	let pitStopwatchState = null;
 	let vehicleResourceAnimation = null;
 	let vehicleResourceAnimationFrame = 0;
 	const vehicleResourceDisplay = { hp: null, fuel: null };
@@ -622,10 +626,19 @@
           document.documentElement.style.setProperty('--race-battle-top', `${Math.ceil(bottom + 14)}px`);
         }
       }
-      if (raceTotalCard && rearAttention) {
+      if (raceTotalCard && (rearAttention || pitStopwatch)) {
         const bottom = raceTotalCard.getBoundingClientRect().bottom;
         if (Number.isFinite(bottom) && bottom > 0) {
-          document.documentElement.style.setProperty('--rear-attention-top', `${Math.ceil(bottom + 14)}px`);
+          const attentionTop = Math.ceil(bottom + 14);
+          document.documentElement.style.setProperty('--rear-attention-top', `${attentionTop}px`);
+          let pitTop = attentionTop;
+          if (rearAttention && !rearAttention.hidden) {
+            const rearBottom = rearAttention.getBoundingClientRect().bottom;
+            if (Number.isFinite(rearBottom) && rearBottom > attentionTop) {
+              pitTop = Math.ceil(rearBottom + 10);
+            }
+          }
+          document.documentElement.style.setProperty('--pit-stopwatch-top', `${pitTop}px`);
         }
       }
     });
@@ -1388,6 +1401,7 @@
   }
 
   function hideRearAttention(resetTracker = false) {
+    const wasVisible = Boolean(rearAttention && !rearAttention.hidden);
     if (rearAttention) {
       rearAttention.hidden = true;
       rearAttention.classList.remove('is-active');
@@ -1395,6 +1409,7 @@
     if (resetTracker) {
       rearAttentionTracker?.reset();
     }
+    if (wasVisible) scheduleRaceBattleLayout();
   }
 
   function showRearAttention(state) {
@@ -1421,6 +1436,7 @@
       `${trendLabel}  /  ${rivalName}  /  ${markerLabel}`,
     );
     rearAttention.hidden = false;
+    scheduleRaceBattleLayout();
     if (state.shouldPulse) {
       rearAttention.classList.remove('is-active');
       void rearAttention.offsetWidth;
@@ -3113,6 +3129,66 @@
 		vehicleResourceAnimationFrame = requestAnimationFrame(animate);
 	}
 
+	function formatPitStopwatchElapsed(elapsedMs) {
+		const tenths = Math.max(0, Math.floor(elapsedMs / 100));
+		const minutes = Math.floor(tenths / 600);
+		const seconds = Math.floor(tenths / 10) % 60;
+		return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths % 10}`;
+	}
+
+	function currentPitStopwatchElapsed(now = performance.now()) {
+		if (!pitStopwatchState) return 0;
+		return pitStopwatchState.baseElapsedMs + Math.max(0, now - pitStopwatchState.sampledAt);
+	}
+
+	function hidePitStopwatch() {
+		pitStopwatchState = null;
+		if (!pitStopwatch || pitStopwatch.hidden) return;
+		pitStopwatch.hidden = true;
+		scheduleRaceBattleLayout();
+	}
+
+	function renderPitStopwatch(now = performance.now()) {
+		if (!pitStopwatchState || !vehiclePitPresence?.present || !pitStopwatch || !pitStopwatchTime) {
+			return;
+		}
+		pitStopwatch.dataset.state = vehiclePitPresence.serviceState === 'complete' ? 'complete' : 'servicing';
+		setText(pitStopwatchLabel,
+			vehiclePitPresence.serviceState === 'complete' ? 'PIT COMPLETE' : 'PIT IN');
+		pitStopwatchTime.value = formatPitStopwatchElapsed(currentPitStopwatchElapsed(now));
+		const wasHidden = pitStopwatch.hidden;
+		pitStopwatch.hidden = false;
+		if (wasHidden) scheduleRaceBattleLayout();
+	}
+
+	function syncPitStopwatch(payload) {
+		if (!payload.present) {
+			hidePitStopwatch();
+			return;
+		}
+		const entryId = typeof payload.entryId === 'string' ? payload.entryId.trim() : '';
+		const enteredAtUnixMs = Number(payload.enteredAtUnixMs);
+		if (!entryId || !Number.isInteger(enteredAtUnixMs) || enteredAtUnixMs <= 0) {
+			hidePitStopwatch();
+			return;
+		}
+		const now = performance.now();
+		const relayServerTimeMs = Number(payload.serverTimeMs);
+		const elapsedAtReceipt = Number.isInteger(relayServerTimeMs) && relayServerTimeMs >= enteredAtUnixMs
+			? relayServerTimeMs - enteredAtUnixMs
+			: Math.max(0, Date.now() - enteredAtUnixMs);
+		if (pitStopwatchState?.entryId === entryId) {
+			pitStopwatchState.baseElapsedMs = Math.max(
+				currentPitStopwatchElapsed(now),
+				elapsedAtReceipt,
+			);
+			pitStopwatchState.sampledAt = now;
+		} else {
+			pitStopwatchState = { entryId, baseElapsedMs: elapsedAtReceipt, sampledAt: now };
+		}
+		renderPitStopwatch(now);
+	}
+
 	function applyPitPresence(message) {
 		if (typeof message !== 'string' || !message.startsWith('PIT:1,')) return;
 		let payload;
@@ -3128,6 +3204,7 @@
 		const expectedCarId = RACE_CAR_ID || raceState.carId || '';
 		if (expectedCarId && payload.carId && payload.carId !== expectedCarId) return;
 		vehiclePitPresence = payload;
+		syncPitStopwatch(payload);
 		if (vehicleResourceHud) {
 			vehicleResourceHud.dataset.pitState = payload.present ? payload.serviceState : 'outside';
 		}
@@ -6289,6 +6366,7 @@
   renderRaceHud();
   startRaceBattleDemo();
   window.setInterval(() => {
+    renderPitStopwatch();
     if (
       raceState.clockRunning
       || raceState.phaseCode === 'countdown'
@@ -6355,9 +6433,13 @@
 			normalGearMax: 3,
 		})}`);
 		if (DRIVE_UI_TEST_PIT) {
+			const serverTimeMs = Date.now();
 			applyPitPresence(`PIT:1,${JSON.stringify({
 				carId: RACE_CAR_ID || 'CP-1',
 				present: true,
+				entryId: 'ui-test-pit-entry',
+				enteredAtUnixMs: serverTimeMs - 3200,
+				serverTimeMs,
 				serviceState: hp >= 100 && fuel >= 100 ? 'complete' : 'servicing',
 				lastAcceptedTick: 0,
 			})}`);

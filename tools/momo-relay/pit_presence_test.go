@@ -139,6 +139,22 @@ func TestPitPresenceRequiresHealthAndFuelForServiceComplete(t *testing.T) {
 	}
 }
 
+func TestPitPresenceTelemetryIncludesRelayServerTime(t *testing.T) {
+	before := time.Now().UnixMilli()
+	formatted := formatPitPresenceTelemetry(pitPresenceSnapshot{
+		CarID: "CP-1", Present: true, EntryID: "entry-1",
+		EnteredAtUnixMs: before - 1500, ServiceState: "servicing", HP: 80, Fuel: 70,
+	})
+	var payload pitPresenceSnapshot
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(formatted, "PIT:1,")), &payload); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UnixMilli()
+	if payload.ServerTimeMs < before || payload.ServerTimeMs > after {
+		t.Fatalf("serverTimeMs = %d, want %d..%d", payload.ServerTimeMs, before, after)
+	}
+}
+
 func TestPitPresenceResetsOnPhaseRunAndDisconnect(t *testing.T) {
 	server, source := newPitPresenceTestServer(t)
 	base := time.Now()

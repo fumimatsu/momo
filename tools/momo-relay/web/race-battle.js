@@ -142,6 +142,12 @@
       const identity = `${String(input.raceRunId || '').trim()}:${behindCarId}`;
       const markerKey = `${behindLap ?? 'lap'}:${markerIndex}:${markerRaceMs}`;
       const gapMs = finiteNonNegative(behind.intervalToAheadMs);
+      // Race start immediately after standings initialization can briefly report 0 ms
+      // for every car. Treat it as an uninitialized interval, not a real proximity alert.
+      if (gapMs === 0) {
+        reset();
+        return inactiveState();
+      }
       if (gapMs === null) {
         activeIdentity = identity;
         lastMarkerKey = markerKey;

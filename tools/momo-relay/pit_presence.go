@@ -121,6 +121,7 @@ type pitPresenceSnapshot struct {
 	ServiceState     string  `json:"serviceState"`
 	HP               float64 `json:"hp"`
 	Fuel             float64 `json:"fuel"`
+	ServerTimeMs     int64   `json:"serverTimeMs,omitempty"`
 }
 
 type pitPresenceState struct {
@@ -315,6 +316,7 @@ func (state *pitPresenceState) serviceStateLocked() string {
 }
 
 func formatPitPresenceTelemetry(snapshot pitPresenceSnapshot) string {
+	snapshot.ServerTimeMs = time.Now().UnixMilli()
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
 		return ""
