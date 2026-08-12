@@ -352,6 +352,36 @@ func TestRaceStateUsesViewerWebSocketQueue(t *testing.T) {
 	}
 }
 
+func TestInitialWebObserverStateUsesSignalingMessages(t *testing.T) {
+	now := time.Now()
+	health := newVehicleHealth(now)
+	relay := &relay{
+		name:          "11.4",
+		raceCarID:     "CP-2",
+		vehicleHealth: health,
+		pitPresence:   newPitPresenceState("CP-2", health.snapshot(now).HP),
+		vehicleEvents: newVehicleEventStore(),
+	}
+	var messages []signalMessage
+	if err := relay.sendInitialWebObserverState(func(message signalMessage) error {
+		messages = append(messages, message)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("initial messages = %d, want 4", len(messages))
+	}
+	for index := 0; index < 3; index++ {
+		if messages[index].Type != "telemetry" || messages[index].Data == "" {
+			t.Fatalf("initial gameplay message %d = %#v", index, messages[index])
+		}
+	}
+	if messages[3].Type != "vehicle-event" || messages[3].Data == "" {
+		t.Fatalf("initial event message = %#v", messages[3])
+	}
+}
+
 func TestBinaryTELIsNormalizedForViewerDelivery(t *testing.T) {
 	normalized, raw, isTEL, wasBinaryTEL := normalizeTelemetryMessage(
 		webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}")},

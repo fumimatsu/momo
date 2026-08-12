@@ -330,13 +330,17 @@ func (r *relay) broadcastPitPresence(snapshot pitPresenceSnapshot) {
 	r.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(message), IsString: true})
 }
 
-func (r *relay) sendCurrentGameplayState(client *viewer, channel *webrtc.DataChannel) {
-	health := r.vehicleHealth.snapshot(time.Now())
+func (r *relay) currentGameplayMessages(now time.Time) []string {
+	health := r.vehicleHealth.snapshot(now)
 	messages := []string{formatVehicleHealthTelemetry(health), formatVehicleGameplayTelemetry(health)}
 	if r.pitPresence != nil {
 		messages = append(messages, formatPitPresenceTelemetry(r.pitPresence.snapshot(health)))
 	}
-	for _, message := range messages {
+	return messages
+}
+
+func (r *relay) sendCurrentGameplayState(client *viewer, channel *webrtc.DataChannel) {
+	for _, message := range r.currentGameplayMessages(time.Now()) {
 		if message == "" {
 			continue
 		}

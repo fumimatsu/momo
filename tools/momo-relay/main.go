@@ -1024,6 +1024,21 @@ func (server *relayServer) serveRaceState(w http.ResponseWriter, req *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (r *relay) sendInitialWebObserverState(send func(signalMessage) error) error {
+	for _, payload := range r.currentGameplayMessages(time.Now()) {
+		if payload != "" {
+			if err := send(signalMessage{Type: "telemetry", Data: payload}); err != nil {
+				return err
+			}
+		}
+	}
+	payload, err := marshalVehicleEvent(r.vehicleEvents.snapshot())
+	if err != nil {
+		return fmt.Errorf("encode initial Web Observer vehicle event snapshot: %w", err)
+	}
+	return send(signalMessage{Type: "vehicle-event", Data: payload})
+}
+
 func (server *relayServer) pilotDevicesSnapshot(now time.Time) pilotDevicesStatus {
 	devices := make([]pilotDeviceStatus, 0, len(server.sourceOrder))
 	for _, sourceID := range server.sourceOrder {
@@ -2218,6 +2233,12 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 			r.addViewer(client)
+			if clientKind == "web-observer" {
+				if err := r.sendInitialWebObserverState(sendSignal); err != nil {
+					log.Printf("source %q: send initial Web Observer state: %v", r.name, err)
+					return
+				}
+			}
 			if client.raceWS != nil {
 				if state := r.currentRaceState(); state != "" {
 					enqueueLatestTelemetry(client.raceWS, state)

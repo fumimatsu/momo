@@ -35,7 +35,6 @@ const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
-const RACE_FRESHNESS_STALE_MS = 12000;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-16, -16], [16, -16], [-16, 16], [16, 16]];
 const CAR_EFFECTS = Object.freeze({
@@ -216,9 +215,7 @@ class ObserverPeer {
     this.frameWindowStartedAt = performance.now();
     this.fps = 0;
     this.videoActive = false;
-    this.raceOpen = false;
-    this.telemetryOpen = false;
-    this.eventsOpen = false;
+    this.dataOpen = false;
     this.telemetryTracker = window.FpvTelemetry
       ? new window.FpvTelemetry.TelemetryTracker()
       : null;
@@ -237,7 +234,12 @@ class ObserverPeer {
     this.setState('CONNECTING', 'SIGNALING');
     const ws = new WebSocket(createWebSocketUrl(this.relayHost, this.car.device));
     this.ws = ws;
-    ws.onopen = () => this.makeOffer(generation);
+    ws.onopen = () => {
+      if (generation !== this.generation) return;
+      this.dataOpen = true;
+      this.setState('CONNECTING', 'DATA WS OPEN');
+      this.makeOffer(generation);
+    };
     ws.onmessage = (event) => this.handleSignal(generation, event.data);
     ws.onerror = () => this.setState('CONNECTING', 'SIGNALING ERROR');
     ws.onclose = () => this.scheduleReconnect(generation, 'SIGNALING CLOSED');
@@ -285,71 +287,6 @@ class ObserverPeer {
     this.pc = pc;
     this.pendingCandidates = [];
     this.remoteDescriptionSet = false;
-
-    const telemetry = pc.createDataChannel('momo-telemetry', {
-      ordered: false,
-      maxRetransmits: 0,
-    });
-    telemetry.onopen = () => {
-      if (generation !== this.generation) return;
-      this.telemetryOpen = true;
-      this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'TELEMETRY OPEN');
-    };
-    telemetry.onmessage = (event) => {
-      if (generation !== this.generation) return;
-      this.handleTelemetryMessage(event.data);
-    };
-    telemetry.onclose = () => {
-      if (generation !== this.generation) return;
-      this.telemetryOpen = false;
-      this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'TELEMETRY CLOSED');
-    };
-
-    const command = pc.createDataChannel('momo-command', {
-      ordered: false,
-      maxRetransmits: 0,
-    });
-    command.onmessage = (event) => {
-      if (generation !== this.generation) return;
-      this.handleCommandMessage(event.data);
-    };
-
-    const race = pc.createDataChannel('momo-race', { ordered: true });
-    race.onopen = () => {
-      if (generation !== this.generation) return;
-      this.raceOpen = true;
-      this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'RACE OPEN');
-    };
-    race.onmessage = (event) => {
-      if (generation !== this.generation || typeof event.data !== 'string') return;
-      const state = parseRaceState(event.data);
-      if (state) this.onRace(this.car, state);
-    };
-    race.onclose = () => {
-      if (generation !== this.generation) return;
-      this.raceOpen = false;
-      this.scheduleReconnect(generation, 'RACE CHANNEL CLOSED');
-    };
-    race.onerror = () => {
-      if (generation !== this.generation) return;
-      this.setState('RECONNECTING', 'RACE CHANNEL ERROR');
-    };
-
-    const events = pc.createDataChannel('momo-events', { ordered: true });
-    events.onopen = () => {
-      if (generation !== this.generation) return;
-      this.eventsOpen = true;
-      this.setState(this.videoActive ? 'STREAMING' : 'CONNECTED', 'EVENTS OPEN');
-    };
-    events.onmessage = (event) => {
-      if (generation !== this.generation) return;
-      this.handleVehicleEventMessage(event.data);
-    };
-    events.onclose = () => {
-      if (generation !== this.generation) return;
-      this.eventsOpen = false;
-      this.scheduleReconnect(generation, 'EVENTS CHANNEL CLOSED');
-    };
 
     const stream = new MediaStream();
     this.video.srcObject = stream;
@@ -481,9 +418,7 @@ class ObserverPeer {
       detail,
       fps: this.fps,
       videoActive: this.videoActive,
-      raceOpen: this.raceOpen,
-      telemetryOpen: this.telemetryOpen,
-      eventsOpen: this.eventsOpen,
+      dataOpen: this.dataOpen,
     });
   }
 
@@ -503,9 +438,7 @@ class ObserverPeer {
     if (this.disconnectedTimer) window.clearTimeout(this.disconnectedTimer);
     this.disconnectedTimer = 0;
     this.videoActive = false;
-    this.raceOpen = false;
-    this.telemetryOpen = false;
-    this.eventsOpen = false;
+    this.dataOpen = false;
     this.fps = 0;
     this.video.onplaying = null;
     if (this.ws) {
@@ -1284,12 +1217,9 @@ function renderCameraTransportState(car, now) {
   const videoState = document.getElementById(`video-state-${car.carId}`);
   if (!state || !videoState) return;
   const raceAge = raceTransport ? Math.max(0, now - raceTransport.receivedAt) : null;
-  const raceText = !state.raceOpen
-    ? 'RACE CLOSED'
-    : raceAge === null
-      ? 'RACE DC WAIT'
-      : `RACE DC ${(raceAge / 1000).toFixed(1)}s`;
-  setTextIfChanged(videoState, `${state.state} / ${raceText} / TEL ${state.telemetryOpen ? 'OPEN' : 'CLOSED'} / EVT ${state.eventsOpen ? 'OPEN' : 'CLOSED'}`);
+  const dataText = `DATA WS ${state.dataOpen ? 'OPEN' : 'CLOSED'}`;
+  const raceText = raceAge === null ? 'RACE WAIT' : `RACE ${(raceAge / 1000).toFixed(1)}s`;
+  setTextIfChanged(videoState, `${state.state} / ${dataText} / ${raceText}`);
   const stateName = String(state.state || 'waiting').toLowerCase();
   const standing = standingByCar.get(car.carId);
   const activelyRacing = raceState?.phase === 'green' && standing?.status === 'racing';
@@ -1297,7 +1227,7 @@ function renderCameraTransportState(car, now) {
     ? 'waiting'
     : !activelyRacing
       ? 'settled'
-      : raceAge < RACE_FRESHNESS_STALE_MS ? 'live' : 'stale';
+      : state.dataOpen ? 'live' : 'stale';
   if (videoState.dataset.state !== stateName) videoState.dataset.state = stateName;
   if (videoState.dataset.raceFreshness !== freshness) videoState.dataset.raceFreshness = freshness;
 }
@@ -1594,7 +1524,7 @@ async function initialize() {
     createCameraTiles();
     for (const car of observerConfig.cars) connectionByCar.set(car.carId, {
       state: 'WAITING', detail: 'NOT CONNECTED', fps: 0, videoActive: false,
-      raceOpen: false, telemetryOpen: false, eventsOpen: false,
+      dataOpen: false,
     });
 		const params = new URLSearchParams(location.search);
 		if (params.get('uiTest') === '1') {
