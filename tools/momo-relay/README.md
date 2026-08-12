@@ -140,19 +140,23 @@ CPU/メモリは取得できないため、`-ProcessId`はRelayと同じPCで実
 ## ArUco capacity測定
 
 実走録画を複数sourceとして実時間再生し、描画なしでH.264復号とArUco検出の上限を測る。
+標準検出周期は25 Hzで、50 FPS入力の2フレームに1回を処理する。
 
 ```powershell
 ../Initialize-ArucoCapacity.ps1
-../Measure-ArucoCapacity.ps1 `
-  -InputPath D:\recordings\upright-h264.mp4 `
-  -SourceCounts 1,2,4,8,12,16,20,24,32 `
-  -DurationSeconds 60 -Decoder qsv `
-  -FfmpegExecutable C:\tools\ffmpeg.exe
+../Prepare-ArucoCapacityInput.ps1 `
+  -InputPath D:\recordings\cpu-shadow.webm -RotateDegrees 180
+../Invoke-ArucoCapacitySuite.ps1 `
+  -InputPath ..\.artifacts\aruco-input\cpu-shadow-upright-h264.mp4 `
+  -SourceCounts 1,2,4,6,8,10,12,16 -DurationSeconds 60
 ```
 
-`Decoder`は`opencv`、`qsv`、`cuda`を指定できる。hardware経路では対応FFmpegが必要である。
+suiteは`opencv`、`qsv`、`cuda`を順に測定し、PC構成とdriverも同じ成果物へ保存する。
+個別測定の`Decoder`にも同じ3種類を指定できる。hardware経路では対応FFmpegが必要である。
 合否は各sourceの出力FPS、検出FPS、検出latency p95、process tree CPU p95で判定する。
-本番上限の決定には60秒以上を使い、結果の読み方と現在の推奨値は設計書を参照する。
+本番上限の決定には10分以上、最終確認には1時間を使う。別PCでの完全な手順は
+[Scale Validation Runbook](../../doc/SCALE_VALIDATION_RUNBOOK.md)、結果の読み方と推奨配置は
+[Scalable Marker Observer and Program Observer Design](../../doc/SCALABLE_MARKER_AND_PROGRAM_OBSERVER_DESIGN.md)を参照する。
 
 ## LAN Pilot 車両選択
 

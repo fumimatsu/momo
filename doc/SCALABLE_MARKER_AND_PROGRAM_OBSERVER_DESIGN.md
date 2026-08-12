@@ -96,22 +96,24 @@ command RTTそのものは未測定であり、実車の適用時刻を返す診
 ArUco試験には上下反転していた実走録画を180度回転し、H.264へ変換した入力を使用した。元映像は
 960x528、50 FPS、VP9、SHA-256
 `91A843493429A61C40E65474C829B60A83079C7DD0D63BCF8ABD7712D9E20E5D`で、marker ID 1、2、3を確認した。
-検出はOpenCV 4.10、`DICT_4X4_50`、MADSYSTEMと同じ認識parameter、quality 0.6、15 Hzである。
+検出はOpenCV 4.10、`DICT_4X4_50`、MADSYSTEMと同じ認識parameter、quality 0.6、25 Hzである。
+50 FPS入力の2フレームに1回を処理し、検出時刻の量子化幅を最大40ms、平均約20msに抑える。
 主要ID 1、2、3のほか、少数の17、30、37なども検出された。capacity計測では全IDを数えるが、
 Marker Observer本体はactive courseのmarker allowlistと通過順、連続認識条件を満たすIDだけを
 event化し、未知IDは診断カウンタへ残してrace eventには変換しない。
 
-| 復号経路 | 60秒で維持できた最大 | 境界 | 運用推奨 |
+| 復号経路 | 25 Hzで合格した最大 | 最初の不合格 | 運用推奨 |
 | --- | ---: | --- | ---: |
-| OpenCV software | 16 source（短時間） | 24 sourceで13.70 Hz、CPU p95 85.80% | 6から8 source/node |
-| Intel QSV / VPL | 18 source | 20 sourceで14.24 Hz、latency p95 80.27ms | 12から16 source/node |
-| NVIDIA NVDEC / CUDA | 26 source | 28 sourceで13.28 Hz | 12から16 source/node |
+| OpenCV software | 6 source | 8 sourceでCPU p95 61.83% | 6 source/node |
+| Intel QSV / VPL | 8 source | 10 sourceでCPU p95 66.12% | 8 source/node |
+| NVIDIA NVDEC / CUDA | 8 source | 12 sourceでCPU p95 72.57% | 8 source/node |
 
 物理限界と運用上限を分ける。CPU、温度、OS、Relay、ネットワークの余力を残すため、現PCでは
-`maxSourcesPerNode=12`を既定、16をhard capとする。20台は10台×2 node、32台は8台×4 nodeを推奨する。
-QSV 12 sourceは10分soak testでも最低復号・検出14.97 Hz、検出latency p95 20.80ms、CPU p95
-48.70%で合格した。Relay 32台とQSV 12台は別々に測定しており、同一PCへ同居させる場合は
-end-to-end試験を別途行う。
+hardware decode時の`maxSourcesPerNode=8`、software fallback時は6とする。20台は8+6+6の3 node、
+32台は8台×4 nodeを推奨する。QSV 8 sourceの10分soak testは最低復号・検出24.97 Hz、
+検出latency p95 18.64ms、CPU p95 47.53%で合格した。別PCでは
+[Scale Validation Runbook](SCALE_VALIDATION_RUNBOOK.md)に従って同じ入力と閾値で再測定する。
+Relay 32台とArUco nodeは別々に測定しており、同一PCへ同居させる場合はend-to-end試験を別途行う。
 現在のMomo Windows buildが公開するH.264 hardware decoderはIntel VPLであり、CUDA結果は将来の
 Marker ObserverがFFmpeg/NVDEC経路を採用した場合の比較値である。現段階の試験は録画を独立processへ
 入力したcapacity試験で、WebRTC受信からArUco eventまでのend-to-end保証ではない。
@@ -155,6 +157,72 @@ flowchart LR
 | Race Data Plane | 全車 | 周回、順位、セクター、HP、PIT状態 |
 | Program Video Plane | 選択した2から4台 | 観客向け映像 |
 
+## 推奨配置
+
+### 基本方針
+
+Relayの中継とArUco検出を同じ上限で考えない。RelayはこのPCで32 source、Observer 32台、Pilot 1台を
+10分処理できたが、25 Hz ArUco検出はhardware decodeでも8 source/nodeが運用上限だった。
+
+```mermaid
+flowchart LR
+  Cars["Vehicle Momo 1..32"] --> Gateway["Relay Gateway"]
+  Gateway --> DetectA["Marker Node A / max 8"]
+  Gateway --> DetectB["Marker Node B / max 8"]
+  Gateway --> DetectC["Marker Node C / max 8"]
+  Gateway --> DetectD["Marker Node D / max 8"]
+  DetectA --> Timing["Timing / Event Ingest"]
+  DetectB --> Timing
+  DetectC --> Timing
+  DetectD --> Timing
+  Timing --> Control["Race Control"]
+  Gateway --> Program["Program Observer / active + warm max 4"]
+  Control --> Program
+  Control --> Web["Web Observer"]
+```
+
+- Relay Gatewayは映像を再encodeせず、接続・fan-out・Telemetry/Event中継と診断に限定する。
+- Marker Nodeは1 node最大8 source、software fallbackでは6 sourceとし、担当を静的設定する。
+- Race Control / Timingは映像を復号せず、確定eventとrace stateだけを扱う。
+- Program Observerはactive + warmの最大4映像だけを復号し、全車を常時接続しない。
+- MADSYSTEMをTiming Engineとして使う移行期間は、検出nodeと別PCに置く。
+- 自動failoverは同一markerの二重確定対策が完成するまで行わず、standby nodeへ手動で再割当する。
+
+### 台数別
+
+| 車両数 | 推奨構成 | 備考 |
+| ---: | --- | --- |
+| 1から4 | 1 PCへRelay + 検出 + Race Controlを同居可能 | 開発・小規模向け。本番ではProgram出力を分離すると安定する |
+| 5から8 | Relay/Race Control PC + Marker Node 1台 | 検出8台を上限とし、ProgramはRelay側または別PC |
+| 9から16 | Relay Gateway 1台 + Marker Node 2台 + Control 1台 | nodeごとに最大8台。MADSYSTEMとProgramは負荷を見て分離 |
+| 17から24 | Relay Gateway 1台 + Marker Node 3台 + Control 1台 + Program 1台 | 8台×3。運営表示と配信encodeを検出nodeへ置かない |
+| 25から32 | Relay Gateway 1台 + Marker Node 4台 + Control 1台 + Program 1台 | 8台×4。検出node 1台停止時は担当8台だけinvalid化 |
+
+20台なら8+6+6の3 Marker Node、32台なら8台×4 nodeを初期配置とする。CPU/GPUが新しいPCでも
+測定なしにnode上限を増やさず、25 Hz suiteの最大合格台数から最低20%の余力を残して採用する。
+
+### 集中サーバ形式
+
+高性能な1台へRelay、複数Marker worker、Race Controlを集約する構成も可能だが、次の条件を全て満たす
+場合だけ採用する。
+
+- decoderごとに6から8 sourceのworker groupへ分け、1 process障害を全車障害にしない。
+- 25 Hzのend-to-end試験でCPU p95 50%以下、GPU decoder使用率、温度、memory帯域を1時間維持する。
+- OS更新、GPU driver停止、電源障害で全機能が止まるリスクを運用上許容できる。
+- Program encode、録画、MADSYSTEM Unityのピークを含めて測る。
+- NICは2.5GbE以上、NVMe、32台なら64GB以上のRAMを初期候補とする。
+
+集中サーバは設置と管理が簡単だが、現行i7-8700 PCでは25 Hz検出が8台でCPU p95約40から49%に
+達するため、20台以上の集中検出には採用しない。Relayだけを中央集約し、Marker Nodeを水平分割する
+hybrid構成を標準とする。
+
+### ネットワーク容量
+
+今回の負荷条件は約2.304 Mbps/sourceで、32台のRelay上りは約73.7 Mbpsである。全32台を1組の
+Marker Node群へfan-outするとRelay下りも約73.7 Mbps、同じ全車映像を2組へ出すと約147 Mbpsになる。
+WebRTC、RTCP、音声、Telemetry、再送、Program映像の余裕を含め、1GbEを最低条件、20台以上は
+2.5GbEを推奨する。車載Wi-Fi区間とRelay有線区間を同じ帯域評価に混ぜない。
+
 ## Marker Observer
 
 ### 責務
@@ -187,13 +255,13 @@ Marker ObserverはSDL合成やBGRA共有フレームを経由せず、WebRTCのV
 初期値の候補は次のとおりとし、録画映像と実走で決定する。
 
 - 映像受信: 現行sourceのフレームレートを変更しない
-- marker検出: 10から15Hzを初期候補とする
+- marker検出: 25 Hzを標準とする。50 FPS入力では2フレームに1回を処理する
 - 診断描画: 通常OFF、必要時のみ有効化する
 - 姿勢推定: marker ID判定だけの場合はOFF
 - corner refinement: 正確なcorner座標を使わない場合はOFF
 
-checkpointを見られる最短時間が検出周期より短い場合は検出FPSを上げる。固定値だけで判断せず、
-実走録画からmarker visible durationの分布を取得して決める。
+checkpointを見られる最短時間が40ms未満の場合は50 Hz検出も比較する。固定値だけで判断せず、
+実走録画からmarker visible durationの分布を取得し、25 Hzで連続認識条件を満たすことを確認する。
 
 ### プロセスとsource管理
 

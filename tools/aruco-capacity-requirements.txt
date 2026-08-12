@@ -1,2 +1,4 @@
 opencv-contrib-python-headless==4.10.0.84
+numpy==2.5.2
 psutil==7.2.2
+imageio-ffmpeg==0.6.0

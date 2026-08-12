@@ -17,6 +17,9 @@ import cv2
 import psutil
 
 
+DEFAULT_DETECTION_HZ = 25.0
+
+
 @dataclass
 class WorkerResult:
     source_id: int
@@ -381,7 +384,7 @@ def main() -> int:
     parser.add_argument("--input", required=True, help="upright H.264 recording")
     parser.add_argument("--source-counts", type=parse_counts, default=parse_counts("1,2,4,6,8,12,16,24,32"))
     parser.add_argument("--duration", type=float, default=30.0)
-    parser.add_argument("--detection-hz", type=float, default=15.0)
+    parser.add_argument("--detection-hz", type=float, default=DEFAULT_DETECTION_HZ)
     parser.add_argument("--quality", type=float, default=0.6)
     parser.add_argument("--decoder", choices=("opencv", "qsv", "cuda"), default="opencv")
     parser.add_argument("--ffmpeg", help="FFmpeg executable with QSV/CUDA support")

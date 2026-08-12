@@ -3,10 +3,11 @@ param(
     [Parameter(Mandatory)][string]$InputPath,
     [int[]]$SourceCounts = @(1, 2, 4, 6, 8, 12, 16, 24, 32),
     [ValidateRange(5, 3600)][int]$DurationSeconds = 30,
-    [ValidateRange(1, 50)][double]$DetectionHz = 15,
+    [ValidateRange(1, 50)][double]$DetectionHz = 25,
     [ValidateRange(0.1, 1.0)][double]$RecognitionQuality = 0.6,
     [ValidateSet('opencv', 'qsv', 'cuda')][string]$Decoder = 'opencv',
     [ValidateRange(1, 100)][double]$MaxCpuPercent = 60,
+    [switch]$AllowCapacityFailure,
     [string]$PythonExecutable = "",
     [string]$FfmpegExecutable = "",
     [string]$OutputPath = ""
@@ -30,6 +31,9 @@ if ([string]::IsNullOrWhiteSpace($PythonExecutable) -or -not (Test-Path -Literal
 }
 if ($Decoder -in @('qsv', 'cuda')) {
     if ([string]::IsNullOrWhiteSpace($FfmpegExecutable)) { $FfmpegExecutable = $env:MOMO_FFMPEG_EXE }
+    if ([string]::IsNullOrWhiteSpace($FfmpegExecutable)) {
+        $FfmpegExecutable = (& $PythonExecutable -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())" 2>$null)
+    }
     if ([string]::IsNullOrWhiteSpace($FfmpegExecutable) -or -not (Test-Path -LiteralPath $FfmpegExecutable)) {
         throw "Hardware decoder test requires -FfmpegExecutable or MOMO_FFMPEG_EXE."
     }
@@ -54,4 +58,5 @@ $arguments = @(
 )
 if ($Decoder -in @('qsv', 'cuda')) { $arguments += @('--ffmpeg', $FfmpegExecutable) }
 & $PythonExecutable @arguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$measurementExitCode = $LASTEXITCODE
+if ($measurementExitCode -ne 0 -and -not $AllowCapacityFailure) { exit $measurementExitCode }
