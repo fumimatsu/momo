@@ -399,7 +399,7 @@ func TestRaceStateUsesViewerWebSocketQueue(t *testing.T) {
 
 func TestGlobalRaceStateStreamKeepsLatestStateForOneObserverSubscription(t *testing.T) {
 	server := &relayServer{}
-	id, queue, current := server.subscribeRaceState()
+	subscriber, current := server.subscribeRaceState("192.168.11.25:50000", "web-observer")
 	if current != "" {
 		t.Fatalf("initial race state = %q, want empty", current)
 	}
@@ -409,7 +409,7 @@ func TestGlobalRaceStateStreamKeepsLatestStateForOneObserverSubscription(t *test
 
 	server.publishGlobalRaceState(`RACE:{"sequence":7}`)
 	server.publishGlobalRaceState(`RACE:{"sequence":8}`)
-	if got := <-queue; got != `RACE:{"sequence":8}` {
+	if got := <-subscriber.queue; got != `RACE:{"sequence":8}` {
 		t.Fatalf("queued race state = %q, want latest sequence", got)
 	}
 	if got := server.currentGlobalRaceState(); got != `RACE:{"sequence":8}` {
@@ -422,8 +422,11 @@ func TestGlobalRaceStateStreamKeepsLatestStateForOneObserverSubscription(t *test
 	if status.LastPublishedAt == nil || status.DeliveredMessages != 0 || status.LastDeliveredAt != nil {
 		t.Fatalf("race publish timestamps = %#v", status)
 	}
+	if len(status.Clients) != 1 || status.Clients[0].RemoteHost != "192.168.11.25" || status.Clients[0].ClientKind != "web-observer" || status.Clients[0].QueueReplacements != 1 {
+		t.Fatalf("race client diagnostics = %#v", status.Clients)
+	}
 
-	server.unsubscribeRaceState(id)
+	server.unsubscribeRaceState(subscriber.id)
 	if got := server.raceStreamStatusSnapshot().Subscribers; got != 0 {
 		t.Fatalf("race subscribers = %d, want 0", got)
 	}
@@ -462,6 +465,9 @@ func TestRaceStateWebSocketSendsLatestStateAndUnsubscribes(t *testing.T) {
 	}
 	if status.WriteErrors != 0 {
 		t.Fatalf("race delivery write errors = %#v", status)
+	}
+	if len(status.Clients) != 1 || status.Clients[0].DeliveredMessages != 1 || status.Clients[0].LastDeliveredAgeMs == nil {
+		t.Fatalf("race client delivery diagnostics = %#v", status.Clients)
 	}
 	if err := connection.Close(); err != nil {
 		t.Fatal(err)
@@ -535,18 +541,29 @@ func TestDownstreamStatusSeparatesLeaseNegotiationConnectionAndChannels(t *testi
 	source.viewers = map[uint64]*viewer{pilot.id: pilot, observer.id: observer, negotiating.id: negotiating}
 	source.pilotID = pilot.id
 
-	status := source.downstreamStatusSnapshot()
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	pilot.clientKind = "web-pilot"
+	pilot.remoteAddr = "192.168.11.25:54321"
+	pilot.telemetryWS = make(chan string, 1)
+	pilot.lastTelemetrySentAt.Store(now.Add(-250 * time.Millisecond).UnixNano())
+	status := source.downstreamStatusSnapshot(now)
 	if !status.PilotLeaseReserved || status.ConnectedPilots != 1 || status.ConnectedObservers != 1 || status.NegotiatingPeers != 1 {
 		t.Fatalf("unexpected downstream state: %#v", status)
 	}
 	if status.TelemetryOpen != 1 || status.RaceOpen != 1 || status.EventsOpen != 1 {
 		t.Fatalf("unexpected channel state: %#v", status)
 	}
+	if len(status.Clients) != 3 || status.Clients[0].ID != 1 {
+		t.Fatalf("unexpected client diagnostics: %#v", status.Clients)
+	}
+	if client := status.Clients[0]; client.ClientKind != "web-pilot" || client.RemoteHost != "192.168.11.25" || client.DownlinkTransport != "websocket" || client.LastTelemetryDeliveryAgeMs == nil || *client.LastTelemetryDeliveryAgeMs != 250 {
+		t.Fatalf("unexpected pilot diagnostics: %#v", client)
+	}
 
 	pilot.telemetry.Store(nil)
 	pilot.race.Store(nil)
 	pilot.events.Store(nil)
-	status = source.downstreamStatusSnapshot()
+	status = source.downstreamStatusSnapshot(now)
 	if status.TelemetryOpen != 0 || status.RaceOpen != 0 || status.EventsOpen != 0 {
 		t.Fatalf("closed channels still counted: %#v", status)
 	}

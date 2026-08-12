@@ -23,6 +23,7 @@ import {
   projectCourseProgress,
   raceClockValue,
   reconstructRaceElapsedMs,
+	selectVideoDevices,
   standingsByConfiguredCar,
 } from './observer-core.js';
 
@@ -185,7 +186,9 @@ function createRaceStateUrl(relayHost) {
 
 function createRaceStateWebSocketUrl(relayHost) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${relayHost}/ws/race-state`;
+  const url = new URL(`${protocol}//${relayHost}/ws/race-state`);
+  url.searchParams.set('client', 'web-observer');
+  return url.toString();
 }
 
 function preferH264(transceiver) {
@@ -1345,11 +1348,13 @@ function renderCameraTransportState(car, now) {
   const videoState = document.getElementById(`video-state-${car.carId}`);
   if (!state || !videoState) return;
   const raceAge = raceTransport ? Math.max(0, now - raceTransport.receivedAt) : null;
-  const dataText = `DATA WS ${state.dataOpen ? 'OPEN' : 'CLOSED'}`;
+  const dataText = state.subscriptionDisabled
+    ? 'NOT SUBSCRIBED'
+    : `DATA WS ${state.dataOpen ? 'OPEN' : 'CLOSED'}`;
   const raceText = raceAge === null
     ? `RACE WS ${raceStreamOpen ? 'OPEN' : 'WAIT'}`
     : `RACE ${raceTransport.source === 'http' ? 'HTTP' : 'WS'} ${(raceAge / 1000).toFixed(1)}s`;
-  setTextIfChanged(videoState, `${state.state} / ${dataText} / ${raceText}`);
+  setTextIfChanged(videoState, `${state.subscriptionDisabled ? 'VIDEO OFF' : state.state} / ${dataText} / ${raceText}`);
   const stateName = String(state.state || 'waiting').toLowerCase();
   const standing = standingByCar.get(car.carId);
   const activelyRacing = raceState?.phase === 'green' && standing?.status === 'racing';
@@ -1688,6 +1693,7 @@ async function initialize() {
 		}
     renderAll();
     const relayHost = params.get('relayHost') || location.host;
+    const videoDevices = selectVideoDevices(observerConfig.cars, params.get('videoDevices'));
     raceFallbackEnabled = params.get('raceFallback') !== 'off';
     raceClient = new RaceStateStream(relayHost, handleRaceState, (open) => {
       raceStreamOpen = open;
@@ -1697,6 +1703,13 @@ async function initialize() {
     raceClient.connect();
     syncRaceStateFallback(relayHost);
     for (const car of observerConfig.cars) {
+      if (!videoDevices.has(car.device)) {
+        updateCameraState(car, {
+          state: 'DISABLED', detail: 'VIDEO NOT SUBSCRIBED', fps: 0, videoActive: false,
+          dataOpen: false, subscriptionDisabled: true,
+        });
+        continue;
+      }
       const client = new ObserverPeer(
         car,
         relayHost,

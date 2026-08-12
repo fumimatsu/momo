@@ -3,6 +3,7 @@ param(
     [string]$Device114 = '192.168.11.4',
     [string]$Device115 = '192.168.11.5',
     [string]$Device116 = '192.168.11.6',
+    [string]$RelayConfigPath = '',
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
@@ -45,6 +46,14 @@ $relayExe = Join-Path $relayDirectory 'momo-local-relay-device-input-v15.exe'
 $bundledGoExe = Join-Path $relayDirectory '.toolchain\go\bin\go.exe'
 $observerExe = Join-Path $repoRoot '_build\windows_x86_64\release\momo\Release\momo.exe'
 $relayLogDirectory = $relayDirectory
+$resolvedRelayConfigPath = if ([string]::IsNullOrWhiteSpace($RelayConfigPath)) {
+    ''
+} else {
+    [System.IO.Path]::GetFullPath($RelayConfigPath.Trim())
+}
+if (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not (Test-Path -LiteralPath $resolvedRelayConfigPath -PathType Leaf)) {
+    throw "Relay config was not found: $resolvedRelayConfigPath"
+}
 $resolvedObserverCrashDumpDirectory = if ([string]::IsNullOrWhiteSpace($ObserverCrashDumpDirectory)) {
     Join-Path $relayDirectory 'crash_dumps'
 } else {
@@ -122,14 +131,6 @@ if (-not (Test-Path -LiteralPath $relayExe)) {
 if ($relayRunning.Count -eq 0) {
     $relayArgs = @(
         '-listen', ':8090',
-        '-source', "11.3=ws://$Device113`:8080/ws",
-        '-source', "11.4=ws://$Device114`:8080/ws",
-        '-source', "11.5=ws://$Device115`:8080/ws",
-        '-source', "11.6=ws://$Device116`:8080/ws",
-        '-race-car', '11.3=CP-1',
-        '-race-car', '11.4=CP-2',
-        '-race-car', '11.5=CP-3',
-        '-race-car', '11.6=CP-4',
         '-operations-allow-cidr', $OperationsAllowCidr,
         '-gameplay-allow-cidr', $GameplayAllowCidr,
         '-health-recovery-mode', $HealthRecoveryMode,
@@ -137,6 +138,20 @@ if ($relayRunning.Count -eq 0) {
         '-garage-allow-cidr', '127.0.0.1/32',
         '-garage-allow-cidr', $GarageAllowCidr
     )
+    if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
+        $relayArgs += @(
+            '-source', "11.3=ws://$Device113`:8080/ws",
+            '-source', "11.4=ws://$Device114`:8080/ws",
+            '-source', "11.5=ws://$Device115`:8080/ws",
+            '-source', "11.6=ws://$Device116`:8080/ws",
+            '-race-car', '11.3=CP-1',
+            '-race-car', '11.4=CP-2',
+            '-race-car', '11.5=CP-3',
+            '-race-car', '11.6=CP-4'
+        )
+    } else {
+        $relayArgs += '-config', $resolvedRelayConfigPath
+    }
     if (-not [string]::IsNullOrWhiteSpace($RaceControlUrl)) {
         $relayArgs += '-race-url', $RaceControlUrl.Trim()
         if (-not [string]::IsNullOrWhiteSpace($RaceControlViewerToken)) {
@@ -147,12 +162,15 @@ if ($relayRunning.Count -eq 0) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()
         $relayArgs += '-telemetry-log-retention', "$($TelemetryLogRetentionHours)h"
     }
-    $ayamePilotRooms = @()
-    if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) {
-        $ayamePilotRooms += "11.3=$($AyamePilotRoom113.Trim())"
-    }
-    if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom116)) {
-        $ayamePilotRooms += "11.6=$($AyamePilotRoom116.Trim())"
+    $ayamePilotRooms = if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
+        @(
+            if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) { "11.3=$($AyamePilotRoom113.Trim())" }
+            if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom116)) { "11.6=$($AyamePilotRoom116.Trim())" }
+        )
+    } else { @() }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not [string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
+        $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
+        $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
     }
     if ($ayamePilotRooms.Count -gt 0) {
         if ([string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {

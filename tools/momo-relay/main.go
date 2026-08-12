@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,6 +89,7 @@ type viewer struct {
 	lastCommandUnixNano atomic.Int64
 	lastCommandDropLog  atomic.Int64
 	lastTelemetryLog    atomic.Int64
+	lastTelemetrySentAt atomic.Int64
 	lastObserverStateAt atomic.Int64
 	telemetryMessages   atomic.Uint64
 	telemetryBytes      atomic.Uint64
@@ -157,6 +159,13 @@ const (
 	viewerNegotiating viewerConnectionState = iota
 	viewerConnected
 )
+
+func (state viewerConnectionState) String() string {
+	if state == viewerConnected {
+		return "connected"
+	}
+	return "negotiating"
+}
 
 type frameRateWindow struct {
 	mu          sync.Mutex
@@ -266,7 +275,7 @@ type relayServer struct {
 	raceContext           relayRaceContext
 	raceStreamMu          sync.RWMutex
 	raceState             string
-	raceSubscribers       map[uint64]chan string
+	raceSubscribers       map[uint64]*raceSubscriber
 	nextRaceSubscriberID  atomic.Uint64
 	racePublishedMessages atomic.Uint64
 	racePublishedBytes    atomic.Uint64
@@ -364,16 +373,43 @@ type operationsStatus struct {
 }
 
 type raceStreamOperationsState struct {
-	Subscribers       int        `json:"subscribers"`
-	HasState          bool       `json:"hasState"`
-	PublishedMessages uint64     `json:"publishedMessages"`
-	PublishedBytes    uint64     `json:"publishedBytes"`
-	DeliveredMessages uint64     `json:"deliveredMessages"`
-	DeliveredBytes    uint64     `json:"deliveredBytes"`
-	QueueReplacements uint64     `json:"queueReplacements"`
-	WriteErrors       uint64     `json:"writeErrors"`
-	LastPublishedAt   *time.Time `json:"lastPublishedAt"`
-	LastDeliveredAt   *time.Time `json:"lastDeliveredAt"`
+	Subscribers       int                               `json:"subscribers"`
+	HasState          bool                              `json:"hasState"`
+	PublishedMessages uint64                            `json:"publishedMessages"`
+	PublishedBytes    uint64                            `json:"publishedBytes"`
+	DeliveredMessages uint64                            `json:"deliveredMessages"`
+	DeliveredBytes    uint64                            `json:"deliveredBytes"`
+	QueueReplacements uint64                            `json:"queueReplacements"`
+	WriteErrors       uint64                            `json:"writeErrors"`
+	LastPublishedAt   *time.Time                        `json:"lastPublishedAt"`
+	LastDeliveredAt   *time.Time                        `json:"lastDeliveredAt"`
+	Clients           []raceStreamClientOperationsState `json:"clients"`
+}
+
+type raceStreamClientOperationsState struct {
+	ID                 uint64 `json:"id"`
+	RemoteHost         string `json:"remoteHost"`
+	ClientKind         string `json:"clientKind"`
+	ConnectedAgeMs     int64  `json:"connectedAgeMs"`
+	LastDeliveredAgeMs *int64 `json:"lastDeliveredAgeMs"`
+	DeliveredMessages  uint64 `json:"deliveredMessages"`
+	DeliveredBytes     uint64 `json:"deliveredBytes"`
+	QueueReplacements  uint64 `json:"queueReplacements"`
+	WriteErrors        uint64 `json:"writeErrors"`
+	QueueDepth         int    `json:"queueDepth"`
+}
+
+type raceSubscriber struct {
+	id                uint64
+	remoteHost        string
+	clientKind        string
+	connectedAt       time.Time
+	queue             chan string
+	lastDeliveredAt   atomic.Int64
+	deliveredMessages atomic.Uint64
+	deliveredBytes    atomic.Uint64
+	queueReplacements atomic.Uint64
+	writeErrors       atomic.Uint64
 }
 
 // pilotDevicesStatus は Pilot 用の車両選択画面だけに渡す縮約状態です。
@@ -443,13 +479,36 @@ type vehicleHealthOperationsState struct {
 }
 
 type downstreamOperationsState struct {
-	PilotLeaseReserved bool `json:"pilotLeaseReserved"`
-	NegotiatingPeers   int  `json:"negotiatingPeers"`
-	ConnectedPilots    int  `json:"connectedPilots"`
-	ConnectedObservers int  `json:"connectedObservers"`
-	TelemetryOpen      int  `json:"telemetryChannelsOpen"`
-	RaceOpen           int  `json:"raceChannelsOpen"`
-	EventsOpen         int  `json:"eventsChannelsOpen"`
+	PilotLeaseReserved bool                    `json:"pilotLeaseReserved"`
+	NegotiatingPeers   int                     `json:"negotiatingPeers"`
+	ConnectedPilots    int                     `json:"connectedPilots"`
+	ConnectedObservers int                     `json:"connectedObservers"`
+	TelemetryOpen      int                     `json:"telemetryChannelsOpen"`
+	RaceOpen           int                     `json:"raceChannelsOpen"`
+	EventsOpen         int                     `json:"eventsChannelsOpen"`
+	Clients            []viewerOperationsState `json:"clients"`
+}
+
+type viewerOperationsState struct {
+	ID                         uint64 `json:"id"`
+	Role                       string `json:"role"`
+	ClientKind                 string `json:"clientKind"`
+	RemoteHost                 string `json:"remoteHost"`
+	State                      string `json:"state"`
+	DownlinkTransport          string `json:"downlinkTransport"`
+	TelemetryDataChannelState  string `json:"telemetryDataChannelState"`
+	CommandDataChannelState    string `json:"commandDataChannelState"`
+	RaceDataChannelState       string `json:"raceDataChannelState"`
+	EventsDataChannelState     string `json:"eventsDataChannelState"`
+	TelemetryWebSocket         bool   `json:"telemetryWebSocket"`
+	RaceWebSocket              bool   `json:"raceWebSocket"`
+	EventsWebSocket            bool   `json:"eventsWebSocket"`
+	LastTelemetryDeliveryAgeMs *int64 `json:"lastTelemetryDeliveryAgeMs"`
+	LastCommandAgeMs           *int64 `json:"lastCommandAgeMs"`
+	TelemetryMessages          uint64 `json:"telemetryMessages"`
+	TelemetryBytes             uint64 `json:"telemetryBytes"`
+	TelemetrySendErrors        uint64 `json:"telemetrySendErrors"`
+	TelemetryDropped           uint64 `json:"telemetryDropped"`
 }
 
 type pliRequestCounts struct {
@@ -946,7 +1005,7 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 			BinaryAudio: r.telemetryBinaryAudio.Load(),
 			Other:       r.telemetryOther.Load(),
 		},
-		Downstream: r.downstreamStatusSnapshot(),
+		Downstream: r.downstreamStatusSnapshot(now),
 		Recovery: recoveryOperationsState{
 			PLIRequests: pliRequestCounts{
 				NewTrack:      r.pliNewTrack.Load(),
@@ -960,10 +1019,13 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 	}
 }
 
-func (r *relay) downstreamStatusSnapshot() downstreamOperationsState {
+func (r *relay) downstreamStatusSnapshot(now time.Time) downstreamOperationsState {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
-	state := downstreamOperationsState{PilotLeaseReserved: r.pilotID != 0}
+	state := downstreamOperationsState{
+		PilotLeaseReserved: r.pilotID != 0,
+		Clients:            make([]viewerOperationsState, 0, len(r.viewers)),
+	}
 	for _, client := range r.viewers {
 		if viewerConnectionState(client.state.Load()) == viewerConnected {
 			if client.role == "pilot" {
@@ -983,8 +1045,74 @@ func (r *relay) downstreamStatusSnapshot() downstreamOperationsState {
 		if client.events.Load() != nil {
 			state.EventsOpen++
 		}
+		state.Clients = append(state.Clients, viewerStatusSnapshot(client, now))
 	}
+	sort.Slice(state.Clients, func(left, right int) bool { return state.Clients[left].ID < state.Clients[right].ID })
 	return state
+}
+
+func viewerStatusSnapshot(client *viewer, now time.Time) viewerOperationsState {
+	clientKind := client.clientKind
+	if clientKind == "" {
+		clientKind = "native"
+	}
+	return viewerOperationsState{
+		ID:                         client.id,
+		Role:                       client.role,
+		ClientKind:                 clientKind,
+		RemoteHost:                 remoteHost(client.remoteAddr),
+		State:                      viewerConnectionState(client.state.Load()).String(),
+		DownlinkTransport:          viewerDownlinkTransport(client),
+		TelemetryDataChannelState:  dataChannelState(client.telemetry.Load()),
+		CommandDataChannelState:    dataChannelState(client.command.Load()),
+		RaceDataChannelState:       dataChannelState(client.race.Load()),
+		EventsDataChannelState:     dataChannelState(client.events.Load()),
+		TelemetryWebSocket:         client.telemetryWS != nil,
+		RaceWebSocket:              client.raceWS != nil,
+		EventsWebSocket:            client.eventsWS != nil,
+		LastTelemetryDeliveryAgeMs: ageSinceUnixNano(client.lastTelemetrySentAt.Load(), now),
+		LastCommandAgeMs:           ageSinceUnixNano(client.lastCommandUnixNano.Load(), now),
+		TelemetryMessages:          client.telemetryMessages.Load(),
+		TelemetryBytes:             client.telemetryBytes.Load(),
+		TelemetrySendErrors:        client.telemetrySendErrors.Load(),
+		TelemetryDropped:           client.telemetryDropped.Load(),
+	}
+}
+
+func viewerDownlinkTransport(client *viewer) string {
+	if client.telemetryWS != nil {
+		return "websocket"
+	}
+	if client.telemetry.Load() != nil {
+		return "datachannel"
+	}
+	return "pending"
+}
+
+func dataChannelState(channel *webrtc.DataChannel) string {
+	if channel == nil {
+		return "absent"
+	}
+	return channel.ReadyState().String()
+}
+
+func remoteHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
+func ageSinceUnixNano(value int64, now time.Time) *int64 {
+	if value == 0 {
+		return nil
+	}
+	age := now.Sub(time.Unix(0, value)).Milliseconds()
+	if age < 0 {
+		age = 0
+	}
+	return &age
 }
 
 func displaySourceState(lifecycle sourceLifecycle, videoHealth sourceVideoHealth) string {
@@ -1019,7 +1147,7 @@ func (server *relayServer) operationsStatusSnapshot(now time.Time) operationsSta
 		sources = append(sources, source.statusSnapshot(now))
 	}
 	return operationsStatus{
-		Version:    1,
+		Version:    2,
 		ServerTime: now.UTC(),
 		RaceStream: server.raceStreamStatusSnapshot(),
 		Sources:    sources,
@@ -1029,6 +1157,23 @@ func (server *relayServer) operationsStatusSnapshot(now time.Time) operationsSta
 func (server *relayServer) raceStreamStatusSnapshot() raceStreamOperationsState {
 	server.raceStreamMu.RLock()
 	defer server.raceStreamMu.RUnlock()
+	now := time.Now()
+	clients := make([]raceStreamClientOperationsState, 0, len(server.raceSubscribers))
+	for _, subscriber := range server.raceSubscribers {
+		clients = append(clients, raceStreamClientOperationsState{
+			ID:                 subscriber.id,
+			RemoteHost:         subscriber.remoteHost,
+			ClientKind:         subscriber.clientKind,
+			ConnectedAgeMs:     now.Sub(subscriber.connectedAt).Milliseconds(),
+			LastDeliveredAgeMs: ageSinceUnixMilliseconds(subscriber.lastDeliveredAt.Load(), now),
+			DeliveredMessages:  subscriber.deliveredMessages.Load(),
+			DeliveredBytes:     subscriber.deliveredBytes.Load(),
+			QueueReplacements:  subscriber.queueReplacements.Load(),
+			WriteErrors:        subscriber.writeErrors.Load(),
+			QueueDepth:         len(subscriber.queue),
+		})
+	}
+	sort.Slice(clients, func(left, right int) bool { return clients[left].ID < clients[right].ID })
 	return raceStreamOperationsState{
 		Subscribers:       len(server.raceSubscribers),
 		HasState:          strings.TrimSpace(server.raceState) != "",
@@ -1040,7 +1185,19 @@ func (server *relayServer) raceStreamStatusSnapshot() raceStreamOperationsState 
 		WriteErrors:       server.raceWriteErrors.Load(),
 		LastPublishedAt:   timeFromUnixMilliseconds(server.raceLastPublishedAt.Load()),
 		LastDeliveredAt:   timeFromUnixMilliseconds(server.raceLastDeliveredAt.Load()),
+		Clients:           clients,
 	}
+}
+
+func ageSinceUnixMilliseconds(value int64, now time.Time) *int64 {
+	if value == 0 {
+		return nil
+	}
+	age := now.Sub(time.UnixMilli(value)).Milliseconds()
+	if age < 0 {
+		age = 0
+	}
+	return &age
 }
 
 func timeFromUnixMilliseconds(value int64) *time.Time {
@@ -1090,9 +1247,10 @@ func (server *relayServer) publishGlobalRaceState(message string) {
 	server.raceLastPublishedAt.Store(now.UnixMilli())
 	server.raceStreamMu.Lock()
 	server.raceState = message
-	for _, queue := range server.raceSubscribers {
-		if enqueueLatestRaceState(queue, message) {
+	for _, subscriber := range server.raceSubscribers {
+		if enqueueLatestRaceState(subscriber.queue, message) {
 			server.raceQueueReplacements.Add(1)
+			subscriber.queueReplacements.Add(1)
 		}
 	}
 	server.raceStreamMu.Unlock()
@@ -1123,17 +1281,27 @@ func (server *relayServer) currentGlobalRaceState() string {
 	return server.raceState
 }
 
-func (server *relayServer) subscribeRaceState() (uint64, chan string, string) {
+func (server *relayServer) subscribeRaceState(remoteAddr string, clientKind string) (*raceSubscriber, string) {
 	id := server.nextRaceSubscriberID.Add(1)
-	queue := make(chan string, 1)
+	clientKind = strings.TrimSpace(clientKind)
+	if clientKind == "" {
+		clientKind = "web"
+	}
+	subscriber := &raceSubscriber{
+		id:          id,
+		remoteHost:  remoteHost(remoteAddr),
+		clientKind:  clientKind,
+		connectedAt: time.Now(),
+		queue:       make(chan string, 1),
+	}
 	server.raceStreamMu.Lock()
 	if server.raceSubscribers == nil {
-		server.raceSubscribers = make(map[uint64]chan string)
+		server.raceSubscribers = make(map[uint64]*raceSubscriber)
 	}
-	server.raceSubscribers[id] = queue
+	server.raceSubscribers[id] = subscriber
 	current := server.raceState
 	server.raceStreamMu.Unlock()
-	return id, queue, current
+	return subscriber, current
 }
 
 func (server *relayServer) unsubscribeRaceState(id uint64) {
@@ -1159,8 +1327,8 @@ func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Req
 	ws.SetPongHandler(func(string) error {
 		return ws.SetReadDeadline(time.Now().Add(raceStreamPongWait))
 	})
-	id, queue, current := server.subscribeRaceState()
-	defer server.unsubscribeRaceState(id)
+	subscriber, current := server.subscribeRaceState(req.RemoteAddr, req.URL.Query().Get("client"))
+	defer server.unsubscribeRaceState(subscriber.id)
 
 	done := make(chan struct{})
 	go func() {
@@ -1175,11 +1343,16 @@ func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Req
 		_ = ws.SetWriteDeadline(time.Now().Add(raceStreamWriteTimeout))
 		if err := ws.WriteJSON(signalMessage{Type: "race-state", Data: payload}); err != nil {
 			server.raceWriteErrors.Add(1)
+			subscriber.writeErrors.Add(1)
 			return err
 		}
 		server.raceDeliveredMessages.Add(1)
 		server.raceDeliveredBytes.Add(uint64(len(payload)))
-		server.raceLastDeliveredAt.Store(time.Now().UnixMilli())
+		deliveredAt := time.Now().UnixMilli()
+		server.raceLastDeliveredAt.Store(deliveredAt)
+		subscriber.lastDeliveredAt.Store(deliveredAt)
+		subscriber.deliveredMessages.Add(1)
+		subscriber.deliveredBytes.Add(uint64(len(payload)))
 		return nil
 	}
 	sendHeartbeat := func() error {
@@ -1187,10 +1360,12 @@ func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Req
 		_ = ws.SetWriteDeadline(deadline)
 		if err := ws.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 			server.raceWriteErrors.Add(1)
+			subscriber.writeErrors.Add(1)
 			return err
 		}
 		if err := ws.WriteJSON(signalMessage{Type: "race-heartbeat"}); err != nil {
 			server.raceWriteErrors.Add(1)
+			subscriber.writeErrors.Add(1)
 			return err
 		}
 		return nil
@@ -1204,7 +1379,7 @@ func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Req
 	defer heartbeat.Stop()
 	for {
 		select {
-		case payload := <-queue:
+		case payload := <-subscriber.queue:
 			if err := send(payload); err != nil {
 				return
 			}
@@ -1358,6 +1533,7 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 			}
 			client.telemetryMessages.Add(1)
 			client.telemetryBytes.Add(uint64(len(message.Data)))
+			client.lastTelemetrySentAt.Store(now.UnixNano())
 			if shouldLogTelemetryDelivery(client, now) {
 				log.Printf("source %q: telemetry delivery viewer=%d role=%s remote=%s transport=websocket messages=%d bytes=%d errors=%d",
 					r.name, client.id, client.role, client.remoteAddr,
@@ -1381,6 +1557,7 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 			} else {
 				client.telemetryMessages.Add(1)
 				client.telemetryBytes.Add(uint64(len(message.Data)))
+				client.lastTelemetrySentAt.Store(now.UnixNano())
 				if client.role == "pilot" && shouldLogTelemetryDelivery(client, time.Now()) {
 					log.Printf("source %q: telemetry delivery viewer=%d role=%s remote=%s messages=%d bytes=%d state=%s buffered=%d errors=%d",
 						r.name, client.id, client.role, client.remoteAddr,
@@ -2573,6 +2750,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 }
 
 func main() {
+	var configPath string
 	var upstream string
 	var listen string
 	var allowObserverCommand bool
@@ -2593,6 +2771,7 @@ func main() {
 	var telemetryLogRetention time.Duration
 	var healthRecoveryModeValue string
 	var fuelDriveDuration time.Duration
+	flag.StringVar(&configPath, "config", "", "JSON source configuration file; cannot be combined with -upstream, -source, -race-car, or -ayame-pilot-room")
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
@@ -2614,6 +2793,18 @@ func main() {
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
 	flag.Parse()
+	if strings.TrimSpace(configPath) != "" {
+		if strings.TrimSpace(upstream) != "" || len(sources) > 0 || len(raceCars) > 0 || len(ayamePilotRooms) > 0 {
+			log.Fatal("-config cannot be combined with -upstream, -source, -race-car, or -ayame-pilot-room")
+		}
+		mappings, err := loadRelayConfig(strings.TrimSpace(configPath))
+		if err != nil {
+			log.Fatal(err)
+		}
+		sources = mappings.Sources
+		raceCars = mappings.RaceCars
+		ayamePilotRooms = mappings.AyamePilotRooms
+	}
 	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 || fuelDriveDuration <= 0 || telemetryLogRetention < 0 {
 		log.Fatal("-rtp-stall-timeout, -upstream-start-timeout, and -fuel-drive-duration must be positive; -telemetry-log-retention must not be negative")
 	}

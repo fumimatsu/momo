@@ -3,7 +3,7 @@
 ## 状態
 
 `implemented-runtime-validation-pending`。設計レビューを通過し、Relay の status API と Operations
-画面を実装済みである。実機 source を使った負荷・watchdog・運用表示の確認は未完了である。
+画面と接続単位の診断を実装済みである。実機 source を使った8台以上の負荷・watchdog・運用表示の確認は未完了である。
 
 ## 目的
 
@@ -48,6 +48,7 @@ http://<relay-host>:8090/operations.html
 | Relay 転送 | relay-write access-unit FPS、直近転送エラーコード | marker bit の RTP を `TrackLocalStaticRTP.WriteRTP` が受理した数 | 下流 peer の送信成功やブラウザの復号完了を保証しない。 |
 | 下流 | Pilot lease、negotiating / connected Pilot・Observer 数 | Pilot 予約、Viewer role、各 viewer の明示的な PeerConnection state | SDP answer 後と WebRTC connected 後を区別する。 |
 | Channel | telemetry / race の open 数 | Viewer の DataChannel open 状態 | 映像受信成功や telemetry payload freshness を意味しない。 |
+| Client | remote host、role、client kind、transport、最終Telemetry送出age、drop/error | Viewerごとの接続状態と軽量カウンタ | port、token、payloadは表示しない。送信先の取り違えと特定clientの停滞を切り分ける。 |
 | 復旧 | PLI reason 別回数、RTP stall 回数、retry attempt 数、固定 error code | watchdog、source 接続ループ、明示カウンタ | connection generation と retry attempt は別値として出す。 |
 
 `ingressAccessUnitFps` と `relayWriteAccessUnitFps` は、1 秒の rolling window で access unit 数を数える。
@@ -92,8 +93,21 @@ Cache-Control: no-store
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "serverTime": "2026-07-22T12:00:00Z",
+  "raceStream": {
+    "subscribers": 1,
+    "clients": [
+      {
+        "id": 3,
+        "remoteHost": "192.168.11.30",
+        "clientKind": "web-observer",
+        "lastDeliveredAgeMs": 38,
+        "queueReplacements": 0,
+        "writeErrors": 0
+      }
+    ]
+  },
   "sources": [
     {
       "id": "11.3",
@@ -115,7 +129,21 @@ Cache-Control: no-store
         "connectedPilots": 1,
         "connectedObservers": 1,
         "telemetryChannelsOpen": 2,
-        "raceChannelsOpen": 2
+        "raceChannelsOpen": 2,
+        "clients": [
+          {
+            "id": 7,
+            "role": "observer",
+            "clientKind": "web-observer",
+            "remoteHost": "192.168.11.25",
+            "state": "connected",
+            "downlinkTransport": "websocket",
+            "lastTelemetryDeliveryAgeMs": 42,
+            "telemetryMessages": 1204,
+            "telemetryDropped": 0,
+            "telemetrySendErrors": 0
+          }
+        ]
       },
       "recovery": {
         "pliRequests": { "newTrack": 1, "viewerConnect": 1, "watchdog": 1 },
@@ -128,7 +156,8 @@ Cache-Control: no-store
 }
 ```
 
-API に Viewer の氏名、remote IP、認証情報、DataChannel 本文、Race token を含めない。
+API に Viewer の氏名、remote port、認証情報、DataChannel 本文、Race token を含めない。
+送信先の識別に必要なremote hostだけを含める。このためOperations endpointは引き続き管理CIDR内に限定する。
 `lastErrorCode` は `upstream_signaling_failed`、`upstream_peer_failed`、`upstream_rtp_stalled` のような固定値だけにし、
 URL・IP・token を含み得る生の `err.Error()` を返さない。
 
@@ -171,11 +200,14 @@ Relay へ heartbeat する別 API を追加する。その時も映像フレー�
    status API と Relay log で一致確認する。
 4. Pilot lease、negotiating peer、connected Pilot / Observer、telemetry / race DataChannel の open 数が
    実接続段階と一致する。
-5. status を 1 秒 poll しても、4 source の Relay CPU、ingress FPS、forward FPS、RTP age に
+5. source clientと全車共通Race WebSocket subscriberごとのremote host、role、client kind、
+   WebSocket/DataChannel、最終送出age、queue置換、drop/errorが実際の接続先と一致し、
+   remote port、token、payloadを返さない。
+6. status を 1 秒 poll しても、4 source の Relay CPU、ingress FPS、forward FPS、RTP age に
    有意な悪化がないことを実測する。
-6. 状態遷移、marker bit の FPS window、Viewer state と DataChannel open / close、source order、HTTP method、
+7. 状態遷移、marker bit の FPS window、Viewer state と DataChannel open / close、source order、HTTP method、
    `Cache-Control`、機密値非露出、CIDR access deny / allow を table-driven test で確認する。
-7. `go test ./...` と `go test -race ./...`、status snapshot の単体テスト、ブラウザで Grid/List の
+8. `go test ./...` と `go test -race ./...`、status snapshot の単体テスト、ブラウザで Grid/List の
    静的・縮小幅表示を確認する。
 
 ## 実装順

@@ -6,7 +6,19 @@ const source = await readFile(new URL('./observer-core.js', import.meta.url), 'u
 const observerSource = await readFile(new URL('./observer.js', import.meta.url), 'utf8');
 const raceFixture = JSON.parse(await readFile(new URL('../contracts/sector-progress.race-state-v2.json', import.meta.url), 'utf8'));
 const observerCore = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
-const { classifyCompletedSectorTime, parseRaceState } = observerCore;
+const { classifyCompletedSectorTime, parseRaceState, selectVideoDevices } = observerCore;
+
+test('video device selection defaults to all and accepts device or car ID', () => {
+  const cars = [
+    { device: '11.3', carId: 'CP-1' },
+    { device: '11.4', carId: 'CP-2' },
+    { device: '11.5', carId: 'CP-3' },
+  ];
+  assert.deepEqual([...selectVideoDevices(cars)], ['11.3', '11.4', '11.5']);
+  assert.deepEqual([...selectVideoDevices(cars, '11.3,CP-3')], ['11.3', '11.5']);
+  assert.deepEqual([...selectVideoDevices(cars, 'none')], []);
+  assert.throws(() => selectVideoDevices(cars, '11.9'), /unknown video device/);
+});
 
 test('web observer parses the canonical in-progress sector fixture', () => {
   const parsed = parseRaceState(raceFixture);
@@ -44,6 +56,8 @@ test('web observer keeps per-car WebRTC video-only and uses one global Race WebS
   assert.match(observerSource, /DATA WS/);
   assert.match(observerSource, /RACE WS/);
   assert.doesNotMatch(observerSource, /RACE DC/);
+  assert.match(observerSource, /params\.get\('videoDevices'\)/);
+  assert.match(observerSource, /if \(!videoDevices\.has\(car\.device\)\)/);
 });
 
 test('automatic HTTP Race fallback polls only while the Race WebSocket is unhealthy', () => {

@@ -2,12 +2,13 @@
 
 ## Status
 
-- 状態: future plan
-- 実装: 未着手
+- 状態: foundation-in-progress
+- 実装: Relayの設定、診断、負荷計測、Web Observer選択購読の初期基盤を実装。Marker ObserverとAuto Directorは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
 
-この文書は将来の実装計画であり、現行の最大4台、2x2合成、共有メモリ、MADSYSTEM計測を変更しない。
+この文書を10台、20台運用へ向けた将来計画の正本とする。現行の最大4台、2x2合成、共有メモリ、
+MADSYSTEM計測は維持しつつ、Relay側から段階的に固定台数前提を外す。
 現行構成は [複数 Momo 合成 Observer 設計](MULTI_MOMO_OBSERVER_DESIGN.md) と
 [MADSYSTEM Unity 連携実装ガイド](MADSYSTEM_UNITY_SHARED_MEMORY_GUIDE.md) を正とする。
 
@@ -39,9 +40,40 @@
 5. MADSYSTEMから段階的に画像認識と計時責務を移し、現行運用を一度に置換しない。
 6. Marker Observer、Program Observerのどちらも操縦用DataChannelを作成しない。
 
+## スケール基盤の実装状況
+
+2026-08-13時点で、次の5項目を既存計画へ統合した。初期実装は現行4台の既定動作を変えず、
+台数を増やす前に測定と切り分けができる状態を作る。
+
+| 項目 | 状態 | 現在の内容 | 次段階 |
+| --- | --- | --- | --- |
+| 1. 4/8/12/16台負荷試験 | 初期実装 | `tools/Measure-RelayScale.ps1`で実Relayを採取し、Go benchmarkでstatus生成コストを比較する | 録画または実機sourceを8台以上用意して長時間測定する |
+| 2. 合格基準 | 暫定定義 | CPU、メモリ増加、source/streaming数、RTP age、ingress FPS、Race WS error、Telemetry dropを機械判定する | Pilot RTTとMarker検出遅延を測定項目へ追加する |
+| 3. 接続単位の運用診断 | 実装 | Operations API v2に送信先host、role、client種別、transport、最終送出時刻、drop/errorを追加する | 接続履歴とアラート保持が必要か実運用で判断する |
+| 4. Relay設定ファイル | 実装 | `-config relay-config.json`、`1..32`の安全上限、重複・未知項目・URLの厳格検証を追加する | active rosterとの照合と無停止reloadを別設計する |
+| 5. 映像選択購読 | 初期実装 | Web Observerの`videoDevices`指定時だけ対象WebRTCを作る。未指定は従来どおり全台 | Race/Telemetryを映像接続から分離し、active + warm poolとDirector APIを実装する |
+
+### 暫定合格基準
+
+4、8、12、16 sourceをそれぞれ最低10分測定する。次の値は会場PCで最初の基準値を作るための暫定値で、
+実測結果を保存した上で更新する。
+
+| 指標 | 暫定合格値 |
+| --- | --- |
+| source / streaming数 | warmup後に対象台数を一度も下回らない |
+| Relay CPU | 全論理CPU正規化のp95が60%以下 |
+| Relay working set | warmup後の最大値と最小値の差が128MB以下 |
+| streaming sourceのRTP age | 最大1000ms以下 |
+| streaming sourceのingress FPS | 最小20 FPS以上 |
+| Race WebSocket write error | 測定中の増加0 |
+| Viewer Telemetry drop | 測定中の増加0 |
+
+16台で不合格になってもsource上限をコードだけで緩和しない。8台、12台の最後に合格した構成を
+暫定node capacityとし、別Relayまたは将来のMarker Observer Nodeへ分割する。
+
 ## 非目標
 
-- 現段階での実装開始
+- Marker Observer、Timing Engine、Auto Directorの本実装を今回の基盤変更だけで開始すること
 - 20台を1台のPCで処理できるという性能保証
 - マーカー検出と同時にHP、順位、ラップを計算すること
 - Relay本体へ画像復号やOpenCV処理を組み込むこと
@@ -232,6 +264,12 @@ Program Observerは既存Multi Observerの2x2固定レイアウトを拡張す�
 初期候補は合計4接続とするが、切り替え遅延とPC負荷を実測して変更する。20台すべてをwarmにしない。
 source切り替え時はRelayへkeyframe要求が届くこと、切断済みsourceがrendererに残らないことを確認する。
 
+初期基盤としてWeb Observerに`videoDevices=11.3,11.5`を追加した。これは指定sourceだけの
+WebRTC/signaling接続を作る静的な選択であり、active + warm poolや自動切替ではない。現在は
+Telemetry、vehicle eventもsourceごとのsignaling WebSocketに同居するため、選択外sourceの
+個別Telemetryは受信しない。全車Race stateは専用Race WebSocketから引き続き受信する。
+次段階では個別データ購読を映像PeerConnectionから分離してから、動的なwarm切替を実装する。
+
 ## Auto Director
 
 Auto Directorはrace_state、PIT状態、確定イベントを入力にしてProgram Observerへ表示候補を送る。
@@ -357,6 +395,10 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 - 現行4台運用の録画とArUco判定結果を保存する
 - sourceごとの復号FPS、検出FPS、CPU、メモリ、marker visible durationを測定する
 - 現行MADSYSTEM判定を比較対象として固定する
+- Relay設定を`relay-config.json`へ移し、source/car対応を起動時に厳格検証する
+- Operations API v2でsourceごとの下流clientとtransportを記録する
+- `Measure-RelayScale.ps1`で4、8、12、16台を同じ閾値で測定し、CSVとJSONを保存する
+- Web Observerの静的選択購読で、全台接続時と2台選択時のCPU、メモリ、帯域差を測定する
 
 ### Phase 1: Headless Marker PoC
 
@@ -415,6 +457,7 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 ### Scale
 
 - source追加が再コンパイルや固定配列変更を要求しない
+- 4、8、12、16 sourceの各試験で暫定合格基準を機械判定し、`samples.csv`と`summary.json`を保存する
 - 1source切断が他sourceの検出FPSへ影響しない
 - 各nodeのCPU、decoder、drop、p95 detection latencyを記録できる
 - 8、10、20台でRelayのPilot DataChannel RTTに回帰がない

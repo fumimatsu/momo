@@ -13,6 +13,23 @@ export function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+export function selectVideoDevices(cars, value) {
+  const available = Array.isArray(cars) ? cars : [];
+  const raw = String(value ?? '').trim();
+  if (!raw || raw.toLowerCase() === 'all') {
+    return new Set(available.map((car) => car.device));
+  }
+  if (raw.toLowerCase() === 'none') return new Set();
+  const requested = raw.split(',').map((item) => item.trim()).filter(Boolean);
+  const selected = new Set();
+  for (const token of requested) {
+    const car = available.find((candidate) => candidate.device === token || candidate.carId === token);
+    if (!car) throw new Error(`unknown video device: ${token}`);
+    selected.add(car.device);
+  }
+  return selected;
+}
+
 export function parseControlCommand(message) {
   const text = String(message || '').trim();
   if (!text || text.length > 128) return null;

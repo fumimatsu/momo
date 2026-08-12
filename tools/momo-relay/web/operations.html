@@ -123,6 +123,10 @@
     .channel b { display: block; margin-top: 4px; color: var(--text); font-size: 13px; }
     .channel b.yes { color: var(--green); }
     .channel b.no { color: var(--muted); }
+    .client-list { display: grid; gap: 5px; padding: 9px 0; border-top: 1px solid var(--line); }
+    .client-line { display: grid; grid-template-columns: minmax(86px, 1fr) minmax(84px, auto) minmax(86px, auto); gap: 8px; color: var(--muted); font-size: 10px; }
+    .client-line strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+    .client-line .fault { color: var(--red); }
     .recovery { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
     .recovery strong { color: var(--text); }
     .recovery .fault { color: var(--red); text-align: right; overflow-wrap: anywhere; }
@@ -193,6 +197,37 @@
         return (counts.newTrack || 0) + (counts.viewerConnect || 0) + (counts.watchdog || 0);
       }
 
+      function clientLabel(client) {
+        const role = String(client?.role || 'observer').toUpperCase();
+        return `${role} ${client?.remoteHost || '--'}`;
+      }
+
+      function clientTransport(client) {
+        const kind = client?.clientKind || 'native';
+        const transport = client?.downlinkTransport || 'pending';
+        return `${kind} / ${transport}`;
+      }
+
+      function clientHealth(client) {
+        const ageText = Number.isFinite(client?.lastTelemetryDeliveryAgeMs) ? `${client.lastTelemetryDeliveryAgeMs}ms` : '--';
+        return `TX ${ageText} D${client?.telemetryDropped || 0} E${client?.telemetrySendErrors || 0}`;
+      }
+
+      function clientsPanel(clients) {
+        const root = element('div', 'client-list');
+        if (!Array.isArray(clients) || clients.length === 0) {
+          root.append(element('div', 'muted', 'NO DOWNSTREAM CLIENTS'));
+          return root;
+        }
+        clients.forEach((client) => {
+          const row = element('div', 'client-line');
+          const health = element('strong', (client.telemetryDropped || client.telemetrySendErrors) ? 'fault' : '', clientHealth(client));
+          row.append(element('strong', '', clientLabel(client)), element('span', '', clientTransport(client)), health);
+          root.append(row);
+        });
+        return root;
+      }
+
       function metric(label, value, compact) {
         const node = element('div', 'metric');
         node.append(element('span', 'metric-label', label), element('strong', `metric-value${compact ? ' compact' : ''}`, value));
@@ -235,6 +270,7 @@
           channel('TELEMETRY / RACE', `${source.downstream?.telemetryChannelsOpen || 0} / ${source.downstream?.raceChannelsOpen || 0}`, Boolean(source.downstream?.telemetryChannelsOpen || source.downstream?.raceChannelsOpen))
         );
         root.append(channels);
+        root.append(clientsPanel(source.downstream?.clients));
 
         const recovery = element('div', 'recovery');
         recovery.append(
@@ -252,7 +288,7 @@
         const table = element('table');
         const header = element('thead');
         const headerRow = element('tr');
-        ['SOURCE', 'STATE', 'UPSTREAM', 'LAST RTP', 'RX FPS', 'WRITE FPS', 'PILOT', 'OBSERVER / CONNECTING', 'TLM / RACE', 'RECOVERY'].forEach((label) => headerRow.append(cell(label)));
+        ['SOURCE', 'STATE', 'UPSTREAM', 'LAST RTP', 'RX FPS', 'WRITE FPS', 'PILOT', 'OBSERVER / CONNECTING', 'TLM / RACE', 'CLIENTS', 'RECOVERY'].forEach((label) => headerRow.append(cell(label)));
         header.append(headerRow);
         const body = element('tbody');
         sources.forEach((source) => {
@@ -272,6 +308,7 @@
             cell(source.downstream?.connectedPilots ? 'CONNECTED' : source.downstream?.pilotLeaseReserved ? 'CONNECTING' : '--'),
             cell(`${source.downstream?.connectedObservers || 0} / ${source.downstream?.negotiatingPeers || 0}`),
             cell(`${source.downstream?.telemetryChannelsOpen || 0} / ${source.downstream?.raceChannelsOpen || 0}`),
+            cell((source.downstream?.clients || []).map((client) => `${clientLabel(client)} ${clientTransport(client)} ${clientHealth(client)}`).join(' | ') || '--'),
             cell(source.recovery?.lastErrorCode || `PLI ${totalPli(source.recovery)} / R${source.recovery?.retryAttempts || 0}`)
           );
           body.append(row);
@@ -280,11 +317,14 @@
         return table;
       }
 
-      function renderSummary(sources) {
+      function renderSummary(sources, race) {
         const totals = { STREAMING: 0, WAITING: 0, CONNECTING: 0, STALE: 0, RECOVERING: 0, DISCONNECTED: 0 };
         sources.forEach((source) => { totals[String(source.state || 'WAITING')] = (totals[String(source.state || 'WAITING')] || 0) + 1; });
+        const clients = sources.reduce((count, source) => count + (source.downstream?.clients?.length || 0), 0);
         summary.replaceChildren(
           summaryItem('SOURCES', String(sources.length), ''),
+          summaryItem('CLIENTS', String(clients), ''),
+          summaryItem('RACE CLIENTS', String(race?.clients?.length || 0), ''),
           summaryItem('STREAMING', String(totals.STREAMING || 0), 'good'),
           summaryItem('WARNING', String((totals.STALE || 0) + (totals.CONNECTING || 0) + (totals.WAITING || 0)), 'warn'),
           summaryItem('FAULT', String((totals.RECOVERING || 0) + (totals.DISCONNECTED || 0)), 'bad')
@@ -302,12 +342,16 @@
         const race = snapshot?.raceStream || {};
         grid.replaceChildren(...sources.map(card));
         list.replaceChildren(listTable(sources));
-        renderSummary(sources);
+        renderSummary(sources, race);
         const time = snapshot?.serverTime ? new Date(snapshot.serverTime).toLocaleTimeString() : '--:--:--';
         statusLine.classList.remove('error');
         const raceErrors = (race.queueReplacements || 0) + (race.writeErrors || 0);
+        const raceClients = (race.clients || []).map((client) => {
+          const ageText = Number.isFinite(client.lastDeliveredAgeMs) ? `${client.lastDeliveredAgeMs}ms` : '--';
+          return `${client.remoteHost || '--'} TX ${ageText} Q${client.queueReplacements || 0} E${client.writeErrors || 0}`;
+        }).join(' | ') || 'NONE';
         statusLine.replaceChildren(
-          element('span', '', `STATUS API / ${sources.length} SOURCES / RACE WS ${race.subscribers || 0} / TX ${race.deliveredMessages || 0} / DROP+ERR ${raceErrors}`),
+          element('span', '', `STATUS API / ${sources.length} SOURCES / RACE WS ${race.subscribers || 0} [${raceClients}] / TX ${race.deliveredMessages || 0} / DROP+ERR ${raceErrors}`),
           element('strong', '', time),
         );
         applyView();

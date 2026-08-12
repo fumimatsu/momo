@@ -82,6 +82,43 @@ Relay 起動時に管理 LAN の CIDR を明示する。
 Windows Firewall も同じ管理用サブネットだけに制限する。Relay、Pi、Observer をインターネットへ
 公開するための機能ではない。
 
+API version 2ではsourceごとの集計に加え、接続clientごとのremote host、Pilot/Observer、
+web/native client、WebSocket/DataChannel、最終Telemetry送出age、drop/errorを表示する。
+送信先port、token、payloadは返さない。
+
+## Relay source設定ファイル
+
+台数が増えた運用では、繰り返しの`-source`、`-race-car`、`-ayame-pilot-room`を
+JSONへまとめられる。雛形は`relay-config.example.json`である。
+
+```powershell
+./momo-relay.exe -config ./relay-config.json `
+  -operations-allow-cidr 192.168.11.0/24
+
+../start-mads-observer.ps1 -RelayConfigPath ./momo-relay/relay-config.json -RebuildRelay
+```
+
+`version`は現在`1`、有効source数は`1..32`である。未知の項目、重複source ID、重複car ID、
+`ws://`/`wss://`以外のURLは起動時に拒否する。`enabled: false`で予備sourceを設定に残せる。
+`-config`は`-upstream`、`-source`、`-race-car`、`-ayame-pilot-room`と併用しない。
+
+## Relay負荷測定
+
+起動中RelayのStatus APIとRelayプロセスを1秒間隔で採取し、合否と原票を保存する。
+
+```powershell
+../Measure-RelayScale.ps1 -ExpectedSources 4 -DurationSeconds 600
+../Measure-RelayScale.ps1 -ExpectedSources 8 -DurationSeconds 600
+../Measure-RelayScale.ps1 -ExpectedSources 12 -DurationSeconds 600
+../Measure-RelayScale.ps1 -ExpectedSources 16 -DurationSeconds 600
+```
+
+結果は既定で`tools/.artifacts/relay-scale/<timestamp>-<count>-sources/`の`summary.json`と
+`samples.csv`へ保存する。別PCのRelayを測る場合は`-RelayUrl`を指定する。その場合、Relay PCの
+CPU/メモリは取得できないため、`-ProcessId`はRelayと同じPCで実行する時だけ有効である。
+暫定閾値と更新方針は
+[Scalable Marker Observer and Program Observer Design](../../doc/SCALABLE_MARKER_AND_PROGRAM_OBSERVER_DESIGN.md)を参照する。
+
 ## LAN Pilot 車両選択
 
 別 PC の Pilot は Relay が配信する `garage.html` を開き、映像が到着している未使用車体を
@@ -136,6 +173,17 @@ Observer WebRTC session を映像専用で開く。telemetry、command 監査、
 signaling WebSocket、全車共通の Race state は専用の `/ws/race-state` 1 本で受信する。
 ブラウザへ Race Control token は渡さない。Relay が Race Control へ 1 本だけ認証接続し、
 Web Observer へ Race state を重複させず配る。
+
+映像接続を静的に絞る場合は`videoDevices`へRelay deviceをカンマ区切りで指定する。省略時は
+従来どおり全台へ接続する。
+
+```text
+http://<relay-host>:8090/observer.html?videoDevices=11.3,11.5
+```
+
+これはProgram Observerへ向けた初期基盤であり、選択外sourceのWebRTCとsource別signalingを
+作らない。そのため選択外sourceの個別Telemetryとvehicle eventも現在は受信しない。Race stateは
+全車共通WebSocketから受信する。全車の運用監視が必要な画面では、現段階では指定なしを使う。
 
 `raceFallback=http` は障害診断用の明示設定として維持する。指定しても Race WebSocket が
 正常な間は HTTP polling を止め、WebSocket 切断中だけ 500 ms 間隔で最新状態を補完する。

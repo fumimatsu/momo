@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "11.3",
+      "url": "ws://192.168.11.3:8080/ws",
+      "raceCarId": "CP-1",
+      "enabled": true
+    },
+    {
+      "id": "11.4",
+      "url": "ws://192.168.11.4:8080/ws",
+      "raceCarId": "CP-2",
+      "enabled": true
+    }
+  ]
+}
