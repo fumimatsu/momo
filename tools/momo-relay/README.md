@@ -135,6 +135,9 @@ signaling WebSocket、全車共通の Race state は専用の `/ws/race-state` 1
 ブラウザへ Race Control token は渡さない。Relay が Race Control へ 1 本だけ認証接続し、
 Web Observer へ Race state を重複させず配る。
 
+`raceFallback=http` は障害診断用の明示設定として維持する。指定しても Race WebSocket が
+正常な間は HTTP polling を止め、WebSocket 切断中だけ 500 ms 間隔で最新状態を補完する。
+
 `observer-config.json` の `device` と `carId` は Relay 起動時の `-source`、`-race-car` と
 一致させる。設定または Viewer を変更した場合は `sync-relay-viewer.ps1`、Relay の再ビルド、
 再起動、ブラウザの強制再読み込みまで実施する。

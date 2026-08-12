@@ -36,3 +36,10 @@ test('web observer keeps per-car WebRTC video-only and uses one global Race WebS
   assert.match(observerSource, /RACE WS/);
   assert.doesNotMatch(observerSource, /RACE DC/);
 });
+
+test('explicit HTTP Race fallback polls only while the Race WebSocket is down', () => {
+  assert.match(observerSource, /raceFallbackEnabled = params\.get\('raceFallback'\) === 'http'/);
+  assert.match(observerSource, /if \(!raceFallbackEnabled \|\| raceStreamOpen\) \{\s*stopRaceStatePolling\(\)/);
+  assert.match(observerSource, /syncRaceStateFallback\(relayHost\)/);
+  assert.doesNotMatch(observerSource, /if \(params\.get\('raceFallback'\) === 'http'\) startRaceStatePolling/);
+});

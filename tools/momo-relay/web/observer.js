@@ -92,6 +92,7 @@ let raceClient = null;
 let animationFrame = 0;
 let racePollTimer = 0;
 let racePollInFlight = false;
+let raceFallbackEnabled = false;
 let raceStatusRenderedAt = 0;
 let clockRenderedAt = 0;
 let markerRenderedAt = 0;
@@ -1408,9 +1409,24 @@ async function pollRaceState(url) {
 }
 
 function startRaceStatePolling(relayHost) {
+  if (racePollTimer) return;
   const url = createRaceStateUrl(relayHost);
   void pollRaceState(url);
   racePollTimer = window.setInterval(() => void pollRaceState(url), RACE_STATE_POLL_MS);
+}
+
+function stopRaceStatePolling() {
+  if (!racePollTimer) return;
+  window.clearInterval(racePollTimer);
+  racePollTimer = 0;
+}
+
+function syncRaceStateFallback(relayHost) {
+  if (!raceFallbackEnabled || raceStreamOpen) {
+    stopRaceStatePolling();
+    return;
+  }
+  startRaceStatePolling(relayHost);
 }
 
 function handleHealth(car, health) {
@@ -1617,11 +1633,14 @@ async function initialize() {
 		}
     renderAll();
     const relayHost = params.get('relayHost') || location.host;
+    raceFallbackEnabled = params.get('raceFallback') === 'http';
     raceClient = new RaceStateStream(relayHost, handleRaceState, (open) => {
       raceStreamOpen = open;
+      syncRaceStateFallback(relayHost);
       for (const car of observerConfig.cars) renderCameraTransportState(car, performance.now());
     });
     raceClient.connect();
+    syncRaceStateFallback(relayHost);
     for (const car of observerConfig.cars) {
       const client = new ObserverPeer(
         car,
@@ -1637,7 +1656,6 @@ async function initialize() {
       clients.push(client);
       client.connect();
     }
-    if (params.get('raceFallback') === 'http') startRaceStatePolling(relayHost);
     animationFrame = requestAnimationFrame(updateAnimationFrame);
   } catch (error) {
     document.getElementById('liveStatus').textContent = 'CONFIG ERROR';
@@ -1647,8 +1665,9 @@ async function initialize() {
 
 window.addEventListener('pagehide', () => {
   if (animationFrame) cancelAnimationFrame(animationFrame);
-  if (racePollTimer) window.clearInterval(racePollTimer);
+  raceFallbackEnabled = false;
   raceClient?.close();
+  stopRaceStatePolling();
   for (const client of clients) client.close();
   for (const timer of vehicleEventTimers.values()) window.clearTimeout(timer);
   vehicleEventTimers.clear();
