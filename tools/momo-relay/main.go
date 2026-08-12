@@ -43,7 +43,6 @@ const (
 	commandDropLogInterval       = time.Second
 	telemetryDeliveryLogInterval = 5 * time.Second
 	telemetryDataHighWatermark   = uint64(64 * 1024)
-	raceSnapshotRefreshInterval  = 500 * time.Millisecond
 	keyframeRecoveryGrace        = 2 * time.Second
 	defaultVideoTimestampStep    = uint32(90000 / 50)
 	operationsPollWindow         = time.Second
@@ -1556,26 +1555,6 @@ func (r *relay) sendCurrentRaceState(client *viewer, channel *webrtc.DataChannel
 	r.sendRaceStateLocked(client, channel, message)
 }
 
-func shouldRefreshRaceState(role string) bool {
-	return role == "observer"
-}
-
-func (r *relay) refreshRaceState(client *viewer, channel *webrtc.DataChannel) {
-	if !shouldRefreshRaceState(client.role) {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(raceSnapshotRefreshInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			if client.race.Load() != channel {
-				return
-			}
-			r.sendCurrentRaceState(client, channel)
-		}
-	}()
-}
-
 func (r *relay) broadcastCommand(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
@@ -1919,7 +1898,6 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 				channel.OnOpen(func() {
 					client.race.Store(channel)
 					r.sendCurrentRaceState(client, channel)
-					r.refreshRaceState(client, channel)
 				})
 				channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
 			case eventsLabel:
@@ -2237,7 +2215,6 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				client.race.Store(channel)
 				log.Printf("viewer %d race channel opened", client.id)
 				r.sendCurrentRaceState(client, channel)
-				r.refreshRaceState(client, channel)
 			})
 			channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
 		case eventsLabel:

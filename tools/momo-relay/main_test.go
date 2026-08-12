@@ -226,15 +226,6 @@ func TestRaceStateAPIProvidesLatestStateWithoutCaching(t *testing.T) {
 	}
 }
 
-func TestRaceSnapshotRefreshIsObserverOnly(t *testing.T) {
-	if shouldRefreshRaceState("pilot") {
-		t.Fatal("pilot race channels must not receive periodic cached snapshots")
-	}
-	if !shouldRefreshRaceState("observer") {
-		t.Fatal("observer race channels must keep periodic cached snapshots")
-	}
-}
-
 func TestOperationsStatusFollowsConfiguredSourceOrder(t *testing.T) {
 	server := &relayServer{
 		sources: map[string]*relay{

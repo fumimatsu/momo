@@ -171,6 +171,7 @@ https://fumimatsu.github.io/momo-fpv-viewer/variants/relay/pilot.html?signaling=
 Relay は Race Control の WebSocket を 1 本だけ受信し、LAN Pilot へ signaling WebSocket、
 Ayame 外部 Pilot へ reliable な `momo-race` DataChannel で `race_state v2` を配る。Momo device の WebRTC/DataChannel
 へレース状態を送らないため、映像・操縦の経路は変わらない。
+Race DataChannel は接続時に最新スナップショットを送り、以後は状態更新時だけ送る。周期再送は行わない。
 
 固定 4 枠の対応は以下とする。未接続の枠を詰めてはならない。
 
