@@ -180,7 +180,7 @@
 		? getStringParam(['boostStateUiTest'], 'ready').toLowerCase()
 		: 'charging';
 	const DRIVE_UI_TEST_PIT = DRIVE_UI_TEST_MODE && getBooleanParam('pitUiTest', false);
-	const VEHICLE_RESOURCE_RECOVERY_ANIMATION_MS = 850;
+	const VEHICLE_RESOURCE_RECOVERY_ANIMATION_MS = 1000;
   const ICE_MODE = normalizeIceMode(getStringParam(['iceMode', 'ice'], 'auto'));
   const STUN_URLS = getStringListParam(['stunUrls', 'stunUrl'], ['stun:stun.l.google.com:19302']);
   const TURN_URLS = getStringListParam(['turnUrls', 'turnUrl'], []);
