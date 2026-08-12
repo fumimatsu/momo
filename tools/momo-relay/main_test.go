@@ -352,7 +352,7 @@ func TestRaceStateUsesViewerWebSocketQueue(t *testing.T) {
 	}
 }
 
-func TestInitialWebObserverStateUsesSignalingMessages(t *testing.T) {
+func TestInitialWebDownlinkStateUsesSignalingMessages(t *testing.T) {
 	now := time.Now()
 	health := newVehicleHealth(now)
 	relay := &relay{
@@ -363,7 +363,7 @@ func TestInitialWebObserverStateUsesSignalingMessages(t *testing.T) {
 		vehicleEvents: newVehicleEventStore(),
 	}
 	var messages []signalMessage
-	if err := relay.sendInitialWebObserverState(func(message signalMessage) error {
+	if err := relay.sendInitialWebDownlinkState(func(message signalMessage) error {
 		messages = append(messages, message)
 		return nil
 	}); err != nil {
@@ -521,19 +521,6 @@ func TestTelemetryDataChannelSaturationUsesHighWatermark(t *testing.T) {
 	}
 	if !telemetryDataChannelSaturated(telemetryDataHighWatermark) {
 		t.Fatal("buffer at the high watermark must drop telemetry")
-	}
-}
-
-func TestNormalizeDataChannelProbeToken(t *testing.T) {
-	for _, value := range []string{"1-labc-1", "viewer_11.6", "probe.3"} {
-		if got, ok := normalizeDataChannelProbeToken(value); !ok || got != value {
-			t.Fatalf("normalizeDataChannelProbeToken(%q) = %q, %t", value, got, ok)
-		}
-	}
-	for _, value := range []string{"", "has space", "bad:token", strings.Repeat("a", dataChannelProbeTokenMax+1)} {
-		if got, ok := normalizeDataChannelProbeToken(value); ok || got != "" {
-			t.Fatalf("normalizeDataChannelProbeToken(%q) accepted invalid token %q", value, got)
-		}
 	}
 }
 

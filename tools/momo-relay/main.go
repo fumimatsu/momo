@@ -43,8 +43,6 @@ const (
 	commandDropLogInterval       = time.Second
 	telemetryDeliveryLogInterval = 5 * time.Second
 	telemetryDataHighWatermark   = uint64(64 * 1024)
-	dataChannelProbePrefix       = "DIAG:DC_TEXT_BINARY:"
-	dataChannelProbeTokenMax     = 80
 	raceSnapshotRefreshInterval  = 500 * time.Millisecond
 	keyframeRecoveryGrace        = 2 * time.Second
 	defaultVideoTimestampStep    = uint32(90000 / 50)
@@ -1024,7 +1022,7 @@ func (server *relayServer) serveRaceState(w http.ResponseWriter, req *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (r *relay) sendInitialWebObserverState(send func(signalMessage) error) error {
+func (r *relay) sendInitialWebDownlinkState(send func(signalMessage) error) error {
 	for _, payload := range r.currentGameplayMessages(time.Now()) {
 		if payload != "" {
 			if err := send(signalMessage{Type: "telemetry", Data: payload}); err != nil {
@@ -1034,7 +1032,7 @@ func (r *relay) sendInitialWebObserverState(send func(signalMessage) error) erro
 	}
 	payload, err := marshalVehicleEvent(r.vehicleEvents.snapshot())
 	if err != nil {
-		return fmt.Errorf("encode initial Web Observer vehicle event snapshot: %w", err)
+		return fmt.Errorf("encode initial web downlink vehicle event snapshot: %w", err)
 	}
 	return send(signalMessage{Type: "vehicle-event", Data: payload})
 }
@@ -1284,9 +1282,9 @@ func (r *relay) broadcastVehicleGameplay(health vehicleHealthSnapshot) {
 	r.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(message), IsString: true})
 }
 
-// Race Control の状態は操縦テレメトリーと分離した reliable DataChannel で配る。
-// 順位やフラグは最新値を確実に渡す必要があり、低遅延・非信頼の telemetry channel
-// に混在させると再送されず、Viewer が古い状態のまま残るためである。
+// Race Control の状態は操縦テレメトリーと分離して配る。
+// LAN Web Viewer は signaling WebSocket、外部 Ayame Viewer は reliable DataChannel を使い、
+// 順位やフラグを低遅延・非信頼の telemetry channel に混在させない。
 func (r *relay) publishRaceState(message string) {
 	r.raceStateMu.Lock()
 	r.raceState = message
@@ -1524,44 +1522,6 @@ func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMess
 		return channel.SendText(string(message.Data))
 	}
 	return channel.Send(message.Data)
-}
-
-func normalizeDataChannelProbeToken(value string) (string, bool) {
-	token := strings.TrimSpace(value)
-	if token == "" || len(token) > dataChannelProbeTokenMax {
-		return "", false
-	}
-	for _, char := range token {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
-			continue
-		}
-		return "", false
-	}
-	return token, true
-}
-
-func (r *relay) sendDataChannelTextBinaryProbe(client *viewer, tokenValue string) {
-	if client == nil || client.role != "pilot" {
-		return
-	}
-	token, ok := normalizeDataChannelProbeToken(tokenValue)
-	if !ok {
-		log.Printf("source %q: reject invalid DataChannel probe token from viewer %d", r.name, client.id)
-		return
-	}
-	channel := client.telemetry.Load()
-	if channel == nil {
-		log.Printf("source %q: cannot send DataChannel probe to viewer %d because telemetry channel is unavailable", r.name, client.id)
-		return
-	}
-	payload := dataChannelProbePrefix + token
-	client.telemetrySendMu.Lock()
-	defer client.telemetrySendMu.Unlock()
-	textErr := channel.SendText(payload)
-	binaryErr := channel.Send([]byte(payload))
-	log.Printf("source %q: DataChannel probe viewer=%d remote=%s token=%s text=%v binary=%v buffered=%d",
-		r.name, client.id, client.remoteAddr, token, textErr, binaryErr, channel.BufferedAmount())
 }
 
 func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage) {
@@ -2233,9 +2193,9 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 			r.addViewer(client)
-			if clientKind == "web-observer" {
-				if err := r.sendInitialWebObserverState(sendSignal); err != nil {
-					log.Printf("source %q: send initial Web Observer state: %v", r.name, err)
+			if clientKind == "web-observer" || clientKind == "web-pilot" {
+				if err := r.sendInitialWebDownlinkState(sendSignal); err != nil {
+					log.Printf("source %q: send initial web downlink state: %v", r.name, err)
 					return
 				}
 			}
@@ -2258,8 +2218,6 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			if err := pc.AddICECandidate(*message.ICE); err != nil {
 				log.Printf("apply viewer %d ICE candidate: %v", client.id, err)
 			}
-		case "datachannel-probe":
-			r.sendDataChannelTextBinaryProbe(client, message.Data)
 		case "m5-audio-subscription":
 			if client.role == "pilot" {
 				enabled := message.Data == "1"

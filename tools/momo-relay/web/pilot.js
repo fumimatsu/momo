@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260812-ffb-strength-v2';
+  const PILOT_BUILD_ID = '20260812-local-ws-downlink-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -74,10 +74,6 @@
   const OSD_UPDATE_INTERVAL_MS = getNumberParam('osdMs', 100);
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
   const DC_PING_INTERVAL_MS = getNumberParam('dcPingMs', 1000);
-  const DC_TEXT_PROBE_ENABLED = getBooleanParam('dcTextProbe', false);
-  const DC_TEXT_PROBE_ATTEMPTS = Math.max(1, Math.min(10, getIntegerParam('dcTextProbeAttempts', 3)));
-  const DC_TEXT_PROBE_INTERVAL_MS = Math.max(250, Math.min(5000, getNumberParam('dcTextProbeMs', 1000)));
-  const DC_TEXT_PROBE_PREFIX = 'DIAG:DC_TEXT_BINARY:';
   // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
   const FFB_ENABLED = getBooleanParamWithProfile('ffbEnabled', 'ffbEnabled', getBooleanParam('ffbTest', false));
   const FFB_BRIDGE_URL = getStringParam('ffbUrl', GAMEPAD_PROFILE?.ffbBridgeUrl || 'ws://127.0.0.1:24725');
@@ -471,15 +467,6 @@
   let dcPingSeq = 0;
   let dcRttMs = null;
   let lastDcPongAt = 0;
-  let dcTextProbeTimer = 0;
-  const dcTextProbe = {
-    enabled: DC_TEXT_PROBE_ENABLED,
-    requestsSent: 0,
-    textReceived: 0,
-    binaryReceived: 0,
-    lastRequestToken: null,
-    samples: [],
-  };
   let lastDeviceHostHint = '';
   const pendingDcPings = new Map();
   let deviceClock = null;
@@ -838,6 +825,10 @@
 
   function usesRelayTransport() {
     return RELAY_TRANSPORT;
+  }
+
+  function usesWebSocketDownlink() {
+    return usesRelayTransport() && isRelaySignaling();
   }
 
   function getRelayDevice() {
@@ -2228,7 +2219,10 @@
     const iceStatus = peerConnection ? peerConnection.iceConnectionState : 'none';
     const pcStatus = peerConnection ? peerConnection.connectionState : 'none';
     const dcStatus = dataChannel ? dataChannel.readyState : 'none';
-    return `ws=${wsStatus} ice=${iceStatus} pc=${pcStatus} dc=${dcStatus} video=${getVideoAgeStatus()}`;
+    const downlinkStatus = usesWebSocketDownlink()
+      ? `ws:${wsStatus}`
+      : `dc:${telemetryChannel?.readyState || dataChannel?.readyState || 'none'}`;
+    return `ws=${wsStatus} ice=${iceStatus} pc=${pcStatus} control_dc=${dcStatus} downlink=${downlinkStatus} video=${getVideoAgeStatus()}`;
   }
 
   function recordEvent(type, detail = '') {
@@ -3207,53 +3201,7 @@
     setText(dcRttState, getDcRttStatus());
   }
 
-  function decodeDataChannelProbe(message) {
-    let payload = null;
-    let kind = null;
-    let byteLength = null;
-    if (typeof message === 'string') {
-      payload = message;
-      kind = 'text';
-      byteLength = new TextEncoder().encode(message).byteLength;
-    } else if (message instanceof ArrayBuffer) {
-      const bytes = new Uint8Array(message);
-      payload = new TextDecoder().decode(bytes);
-      kind = 'binary';
-      byteLength = bytes.byteLength;
-    } else if (ArrayBuffer.isView(message)) {
-      const bytes = new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
-      payload = new TextDecoder().decode(bytes);
-      kind = 'binary';
-      byteLength = bytes.byteLength;
-    }
-    if (!payload?.startsWith(DC_TEXT_PROBE_PREFIX)) {
-      return false;
-    }
-    const sample = {
-      kind,
-      token: payload.slice(DC_TEXT_PROBE_PREFIX.length),
-      byteLength,
-      receivedAt: new Date().toISOString(),
-      transportGeneration,
-      channel: snapshotDataChannelForCapture(telemetryChannel),
-    };
-    if (kind === 'text') {
-      dcTextProbe.textReceived += 1;
-    } else {
-      dcTextProbe.binaryReceived += 1;
-    }
-    dcTextProbe.samples.push(sample);
-    if (dcTextProbe.samples.length > 20) {
-      dcTextProbe.samples.shift();
-    }
-    recordEvent('dc text probe rx', `${kind} ${sample.token}`);
-    return true;
-  }
-
-  function handleDataChannelMessage(message) {
-    if (decodeDataChannelProbe(message)) {
-      return;
-    }
+  function handleDownlinkMessage(message, source = 'datachannel') {
     if (handleRaceStateMessage(message)) {
       return;
     }
@@ -3274,7 +3222,7 @@
 			return;
 		}
     if (typeof message === 'string' && message.startsWith('TEL:')) {
-      applyTelemetry(message);
+      applyTelemetry(message, source);
       return;
     }
     if (m5AudioPlayer?.handle(message)) {
@@ -3596,50 +3544,6 @@
 
   function startDcPingMonitor() {
     window.setInterval(sendDcPing, DC_PING_INTERVAL_MS);
-  }
-
-  function stopDcTextProbe() {
-    if (dcTextProbeTimer) {
-      window.clearInterval(dcTextProbeTimer);
-      dcTextProbeTimer = 0;
-    }
-  }
-
-  function sendDcTextProbeRequest() {
-    if (!DC_TEXT_PROBE_ENABLED || isAyameSignaling()
-      || !ws || ws.readyState !== WebSocket.OPEN) {
-      return false;
-    }
-    const token = `${transportGeneration}-${Date.now().toString(36)}-${dcTextProbe.requestsSent + 1}`;
-    try {
-      ws.send(JSON.stringify({ type: 'datachannel-probe', data: token }));
-    } catch (error) {
-      recordEvent('dc text probe request failed', error?.message || String(error));
-      return false;
-    }
-    dcTextProbe.requestsSent += 1;
-    dcTextProbe.lastRequestToken = token;
-    recordEvent('dc text probe request', token);
-    if (dcTextProbe.requestsSent >= DC_TEXT_PROBE_ATTEMPTS) {
-      stopDcTextProbe();
-    }
-    return true;
-  }
-
-  function startDcTextProbe() {
-    stopDcTextProbe();
-    if (!DC_TEXT_PROBE_ENABLED || isAyameSignaling()) {
-      return;
-    }
-    dcTextProbe.requestsSent = 0;
-    dcTextProbe.textReceived = 0;
-    dcTextProbe.binaryReceived = 0;
-    dcTextProbe.lastRequestToken = null;
-    dcTextProbe.samples = [];
-    sendDcTextProbeRequest();
-    if (dcTextProbe.requestsSent < DC_TEXT_PROBE_ATTEMPTS) {
-      dcTextProbeTimer = window.setInterval(sendDcTextProbeRequest, DC_TEXT_PROBE_INTERVAL_MS);
-    }
   }
 
   function startRcTx() {
@@ -4333,7 +4237,6 @@
   }
 
   function closeTransport(options = {}) {
-    stopDcTextProbe();
     const sendSignalingClose = options.sendSignalingClose === true;
     stopShadowCaptureForTransport(
       options.captureReason || 'transport_closed',
@@ -4842,7 +4745,7 @@
       switch (message.type) {
         case 'telemetry':
           if (typeof message.data === 'string') {
-            handleDataChannelMessage(message.data);
+            handleDownlinkMessage(message.data, 'websocket');
           }
           break;
         case 'race-state':
@@ -4852,7 +4755,7 @@
           break;
         case 'm5-audio':
           if (typeof message.data === 'string') {
-            handleDataChannelMessage(message.data);
+            handleDownlinkMessage(message.data, 'websocket');
           }
           break;
         case 'vehicle-event':
@@ -4920,7 +4823,7 @@
       };
       dataChannel.onmessage = usesRelayTransport()
         ? () => {}
-        : (event) => handleDataChannelMessage(event.data);
+        : (event) => handleDownlinkMessage(event.data);
       if (dataChannel.readyState === 'open') {
         connectedAt = performance.now();
         pendingDcPings.clear();
@@ -4943,16 +4846,14 @@
       telemetryChannel.binaryType = 'arraybuffer';
       telemetryChannel.onopen = () => {
         recordEvent('telemetry dc open');
-        startDcTextProbe();
         updateUiState();
       };
       telemetryChannel.onclose = () => {
-        stopDcTextProbe();
         recordEvent('telemetry dc close');
         scheduleReconnect('dc closed');
         updateUiState();
       };
-      telemetryChannel.onmessage = (event) => handleDataChannelMessage(event.data);
+      telemetryChannel.onmessage = (event) => handleDownlinkMessage(event.data);
       updateUiState();
     };
 
@@ -5030,19 +4931,21 @@
       maxRetransmits: 0,
     }));
     if (usesRelayTransport()) {
-      attachTelemetryChannel(peer.createDataChannel('momo-telemetry', {
-        ordered: false,
-        maxRetransmits: 0,
-      }));
-      attachRaceChannel(peer.createDataChannel('momo-race', {
-        ordered: true,
-      }));
       attachDriveChannel(peer.createDataChannel('momo-drive', {
         ordered: true,
       }));
-      attachEventsChannel(peer.createDataChannel('momo-events', {
-        ordered: true,
-      }));
+      if (!usesWebSocketDownlink()) {
+        attachTelemetryChannel(peer.createDataChannel('momo-telemetry', {
+          ordered: false,
+          maxRetransmits: 0,
+        }));
+        attachRaceChannel(peer.createDataChannel('momo-race', {
+          ordered: true,
+        }));
+        attachEventsChannel(peer.createDataChannel('momo-events', {
+          ordered: true,
+        }));
+      }
     }
 
     const mediaStream = new MediaStream();
@@ -6263,6 +6166,7 @@
       drive_channel: snapshotDataChannelForCapture(driveChannel),
       race_channel: snapshotDataChannelForCapture(raceChannel),
       events_channel: snapshotDataChannelForCapture(eventsChannel),
+      downlink_transport: usesWebSocketDownlink() ? 'websocket' : 'datachannel',
       endpoint: endpointInput.value,
       source_identity: {
         signaling_mode: SIGNALING_MODE,
@@ -6290,9 +6194,12 @@
         contextState: audioContext?.state || 'none',
       },
       m5Audio: m5AudioPlayer?.snapshot() || null,
-      dataChannelTextProbe: {
-        ...dcTextProbe,
-        samples: dcTextProbe.samples.slice(),
+      downlink: {
+        transport: usesWebSocketDownlink() ? 'websocket' : 'datachannel',
+        websocketState: ws ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] : 'none',
+        telemetryChannel: snapshotDataChannelForCapture(telemetryChannel),
+        raceChannel: snapshotDataChannelForCapture(raceChannel),
+        eventsChannel: snapshotDataChannelForCapture(eventsChannel),
       },
       motion: getMotionSnapshot(),
       gamepad: {

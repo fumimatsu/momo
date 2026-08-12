@@ -104,6 +104,8 @@ DataChannel 診断を Pilot PC へ公開しない。
 選択できない。これは表示と Relay の既存 Pilot lease の両方で二重に防ぐ。
 
 Relay の Pilot URL は query string を使う。Pi 直結 Momo の静的ファイル配信と違い、hash は使わない。
+LAN Pilot は `momo-command` と `momo-drive` DataChannel を操縦上り専用に使い、race state、
+telemetry、vehicle event、M5 音声は Relay signaling WebSocket で受信する。
 
 ```text
 http://<relay-host>:8090/pilot.html?device=11.4&audioControls=0
@@ -140,7 +142,8 @@ Race Control へ1本だけ認証接続し、各Web Observer sessionへ必要な�
 
 Pi は従来どおり Local Relay へ P2P 接続する。Relay が Ayame room のもう一方の peer となり、
 H.264 RTP を再エンコードせず外部 Viewer へ配信する。`11.3` の direct Ayame モードとは排他である。
-外部 Viewer は `momo-command`、`momo-telemetry`、`momo-race` を Relay と接続するため、
+外部 Viewer は `momo-command`、`momo-drive`、`momo-telemetry`、`momo-race`、`momo-events` を
+WebRTC DataChannel で Relay と接続する。Ayame signaling WebSocket は Relay の下りデータを運ばないため、
 ローカル Pilot、Observer、Unity 計測と同時に動作する。
 
 ```powershell
@@ -161,8 +164,8 @@ https://fumimatsu.github.io/momo-fpv-viewer/variants/relay/pilot.html?signaling=
 
 ## Race Control v2
 
-Relay は Race Control の WebSocket を 1 本だけ受信し、各 Pilot Viewer へ reliable な
-`momo-race` DataChannel で `race_state v2` を配る。Momo device の WebRTC/DataChannel
+Relay は Race Control の WebSocket を 1 本だけ受信し、LAN Pilot へ signaling WebSocket、
+Ayame 外部 Pilot へ reliable な `momo-race` DataChannel で `race_state v2` を配る。Momo device の WebRTC/DataChannel
 へレース状態を送らないため、映像・操縦の経路は変わらない。
 
 固定 4 枠の対応は以下とする。未接続の枠を詰めてはならない。
