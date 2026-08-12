@@ -6435,7 +6435,7 @@
 		if (DRIVE_UI_TEST_PIT) {
 			const serverTimeMs = Date.now();
 			applyPitPresence(`PIT:1,${JSON.stringify({
-				carId: RACE_CAR_ID || 'CP-1',
+				carId: RACE_CAR_ID || raceState.carId || 'CP-1',
 				present: true,
 				entryId: 'ui-test-pit-entry',
 				enteredAtUnixMs: serverTimeMs - 3200,
