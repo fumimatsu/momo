@@ -130,9 +130,10 @@ http://<relay-host>:8090/observer.html
 ```
 
 ページは query がなければ `location.host` を接続先 Relay として使い、4 台分の read-only
-Observer WebRTC session を映像専用で開く。Race state、telemetry、command監査、vehicle eventは
-各sourceのsignaling WebSocketで受信する。ブラウザへ Race Control token は渡さない。Relay が
-Race Control へ1本だけ認証接続し、各Web Observer sessionへ必要な下りデータを配る。
+Observer WebRTC session を映像専用で開く。telemetry、command 監査、vehicle event は各 source の
+signaling WebSocket、全車共通の Race state は専用の `/ws/race-state` 1 本で受信する。
+ブラウザへ Race Control token は渡さない。Relay が Race Control へ 1 本だけ認証接続し、
+Web Observer へ Race state を重複させず配る。
 
 `observer-config.json` の `device` と `carId` は Relay 起動時の `-source`、`-race-car` と
 一致させる。設定または Viewer を変更した場合は `sync-relay-viewer.ps1`、Relay の再ビルド、

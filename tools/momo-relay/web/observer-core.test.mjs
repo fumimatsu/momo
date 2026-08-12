@@ -24,12 +24,15 @@ test('completed sector keeps standard and first-record classifications', () => {
   assert.equal(classifyCompletedSectorTime(null, 5200, 4500), '');
 });
 
-test('web observer keeps WebRTC video-only and receives downstream data over signaling WebSocket', () => {
+test('web observer keeps per-car WebRTC video-only and uses one global Race WebSocket', () => {
   assert.doesNotMatch(observerSource, /\.createDataChannel\(/);
-  assert.match(observerSource, /message\.type === 'race-state'/);
+  assert.match(observerSource, /class RaceStateStream/);
+  assert.match(observerSource, /new WebSocket\(createRaceStateWebSocketUrl\(this\.relayHost\)\)/);
+  assert.match(observerSource, /raceClient = new RaceStateStream\(relayHost, handleRaceState/);
   assert.match(observerSource, /message\.type === 'telemetry'/);
   assert.match(observerSource, /message\.type === 'command'/);
   assert.match(observerSource, /message\.type === 'vehicle-event'/);
   assert.match(observerSource, /DATA WS/);
+  assert.match(observerSource, /RACE WS/);
   assert.doesNotMatch(observerSource, /RACE DC/);
 });

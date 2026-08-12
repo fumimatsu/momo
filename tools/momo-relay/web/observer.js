@@ -79,7 +79,6 @@ const telemetryNodesByCar = new Map();
 const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
 const pitMotionByCar = new Map();
-const raceTransportByCar = new Map();
 let observerConfig = null;
 let raceState = null;
 let standingByCar = new Map();
@@ -87,6 +86,9 @@ let lapPaceByCar = new Map();
 let normalizedLapHistory = [];
 let trackGeometry = null;
 let raceReceivedAt = 0;
+let raceTransport = null;
+let raceStreamOpen = false;
+let raceClient = null;
 let animationFrame = 0;
 let racePollTimer = 0;
 let racePollInFlight = false;
@@ -176,6 +178,11 @@ function createRaceStateUrl(relayHost) {
   return new URL(`/api/v1/race-state`, `${location.protocol}//${relayHost}`).toString();
 }
 
+function createRaceStateWebSocketUrl(relayHost) {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${relayHost}/ws/race-state`;
+}
+
 function preferH264(transceiver) {
   if (!transceiver || typeof transceiver.setCodecPreferences !== 'function'
       || typeof RTCRtpSender === 'undefined' || !RTCRtpSender.getCapabilities) return;
@@ -190,13 +197,82 @@ function preferH264(transceiver) {
   }
 }
 
+class RaceStateStream {
+  constructor(relayHost, onRace, onState) {
+    this.relayHost = relayHost;
+    this.onRace = onRace;
+    this.onState = onState;
+    this.ws = null;
+    this.reconnectTimer = 0;
+    this.reconnectAttempt = 0;
+    this.closed = false;
+    this.generation = 0;
+  }
+
+  connect() {
+    if (this.closed) return;
+    this.closeTransport();
+    const generation = ++this.generation;
+    const ws = new WebSocket(createRaceStateWebSocketUrl(this.relayHost));
+    this.ws = ws;
+    ws.onopen = () => {
+      if (generation !== this.generation) return;
+      this.reconnectAttempt = 0;
+      this.onState(true);
+    };
+    ws.onmessage = (event) => {
+      if (generation !== this.generation) return;
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch (_) {
+        return;
+      }
+      if (message.type !== 'race-state' || typeof message.data !== 'string') return;
+      const state = parseRaceState(message.data);
+      if (state) this.onRace(state, 'websocket');
+    };
+    ws.onerror = () => this.scheduleReconnect(generation);
+    ws.onclose = () => this.scheduleReconnect(generation);
+  }
+
+  scheduleReconnect(generation) {
+    if (generation !== this.generation || this.closed || this.reconnectTimer) return;
+    this.onState(false);
+    this.closeTransport();
+    const delay = Math.min(RECONNECT_BASE_MS * (2 ** Math.min(this.reconnectAttempt, 4)), RECONNECT_MAX_MS);
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = 0;
+      this.connect();
+    }, delay);
+  }
+
+  closeTransport() {
+    if (!this.ws) return;
+    this.ws.onopen = null;
+    this.ws.onmessage = null;
+    this.ws.onerror = null;
+    this.ws.onclose = null;
+    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) this.ws.close();
+    this.ws = null;
+  }
+
+  close() {
+    this.closed = true;
+    if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = 0;
+    this.onState(false);
+    this.closeTransport();
+  }
+}
+
 class ObserverPeer {
-  constructor(car, relayHost, video, onState, onRace, onHealth, onPit, onTelemetry, onControl, onVehicleEvent) {
+  constructor(car, relayHost, video, onState, onHealth, onPit, onTelemetry, onControl, onVehicleEvent) {
     this.car = car;
     this.relayHost = relayHost;
     this.video = video;
     this.onState = onState;
-    this.onRace = onRace;
     this.onHealth = onHealth;
     this.onPit = onPit;
     this.onTelemetry = onTelemetry;
@@ -360,9 +436,6 @@ class ObserverPeer {
         const candidate = new RTCIceCandidate(message.ice);
         if (this.remoteDescriptionSet) await this.pc.addIceCandidate(candidate);
         else this.pendingCandidates.push(candidate);
-      } else if (message.type === 'race-state' && typeof message.data === 'string') {
-        const state = parseRaceState(message.data);
-        if (state) this.onRace(this.car, state);
       } else if (message.type === 'telemetry') {
         this.handleTelemetryMessage(message.data);
       } else if (message.type === 'command') {
@@ -1213,33 +1286,36 @@ function updateCameraState(car, state) {
 
 function renderCameraTransportState(car, now) {
   const state = connectionByCar.get(car.carId);
-  const raceTransport = raceTransportByCar.get(car.carId);
   const videoState = document.getElementById(`video-state-${car.carId}`);
   if (!state || !videoState) return;
   const raceAge = raceTransport ? Math.max(0, now - raceTransport.receivedAt) : null;
   const dataText = `DATA WS ${state.dataOpen ? 'OPEN' : 'CLOSED'}`;
-  const raceText = raceAge === null ? 'RACE WAIT' : `RACE ${(raceAge / 1000).toFixed(1)}s`;
+  const raceText = raceAge === null
+    ? `RACE WS ${raceStreamOpen ? 'OPEN' : 'WAIT'}`
+    : `RACE ${raceTransport.source === 'http' ? 'HTTP' : 'WS'} ${(raceAge / 1000).toFixed(1)}s`;
   setTextIfChanged(videoState, `${state.state} / ${dataText} / ${raceText}`);
   const stateName = String(state.state || 'waiting').toLowerCase();
   const standing = standingByCar.get(car.carId);
   const activelyRacing = raceState?.phase === 'green' && standing?.status === 'racing';
+  const raceTransportLive = raceTransport?.source === 'http'
+    ? raceAge <= RACE_STATE_POLL_MS * 3
+    : raceStreamOpen;
   const freshness = raceAge === null
     ? 'waiting'
     : !activelyRacing
       ? 'settled'
-      : state.dataOpen ? 'live' : 'stale';
+      : raceTransportLive ? 'live' : 'stale';
   if (videoState.dataset.state !== stateName) videoState.dataset.state = stateName;
   if (videoState.dataset.raceFreshness !== freshness) videoState.dataset.raceFreshness = freshness;
 }
 
-function handleRaceState(car, state) {
-  if (car) {
-    raceTransportByCar.set(car.carId, {
-      receivedAt: performance.now(),
-      sequence: Number.isInteger(state.sequence) ? state.sequence : null,
-    });
-    renderCameraTransportState(car, performance.now());
-  }
+function handleRaceState(state, source = 'websocket') {
+  raceTransport = {
+    source,
+    receivedAt: performance.now(),
+    sequence: Number.isInteger(state.sequence) ? state.sequence : null,
+  };
+  for (const car of observerConfig?.cars || []) renderCameraTransportState(car, performance.now());
   if (!raceDeduplicator.accept(state)) return;
   const previousRunId = raceState?.raceRunId || '';
   const nextRunId = state.raceRunId || '';
@@ -1323,9 +1399,9 @@ async function pollRaceState(url) {
     const response = await fetch(url, { cache: 'no-store' });
     if (response.status === 204 || !response.ok) return;
     const state = parseRaceState(await response.json());
-    if (state) handleRaceState(null, state);
+    if (state) handleRaceState(state, 'http');
   } catch (_) {
-    // DataChannel remains the primary path; the next poll retries recovery.
+    // The dedicated Race WebSocket remains primary; the next poll retries explicit fallback recovery.
   } finally {
     racePollInFlight = false;
   }
@@ -1541,13 +1617,17 @@ async function initialize() {
 		}
     renderAll();
     const relayHost = params.get('relayHost') || location.host;
+    raceClient = new RaceStateStream(relayHost, handleRaceState, (open) => {
+      raceStreamOpen = open;
+      for (const car of observerConfig.cars) renderCameraTransportState(car, performance.now());
+    });
+    raceClient.connect();
     for (const car of observerConfig.cars) {
       const client = new ObserverPeer(
         car,
         relayHost,
         document.getElementById(`video-${car.carId}`),
         updateCameraState,
-        handleRaceState,
         handleHealth,
         handlePit,
         handleTelemetry,
@@ -1568,6 +1648,7 @@ async function initialize() {
 window.addEventListener('pagehide', () => {
   if (animationFrame) cancelAnimationFrame(animationFrame);
   if (racePollTimer) window.clearInterval(racePollTimer);
+  raceClient?.close();
   for (const client of clients) client.close();
   for (const timer of vehicleEventTimers.values()) window.clearTimeout(timer);
   vehicleEventTimers.clear();

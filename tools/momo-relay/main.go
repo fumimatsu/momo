@@ -253,14 +253,18 @@ type relay struct {
 }
 
 type relayServer struct {
-	sources     map[string]*relay
-	sourceOrder []string
-	recorder    *telemetryRecorder
-	raceMu      sync.RWMutex
-	raceContext relayRaceContext
-	pitEventsMu sync.Mutex
-	pitEvents   map[string]pitPresenceReceipt
-	pitEventIDs []string
+	sources              map[string]*relay
+	sourceOrder          []string
+	recorder             *telemetryRecorder
+	raceMu               sync.RWMutex
+	raceContext          relayRaceContext
+	raceStreamMu         sync.RWMutex
+	raceState            string
+	raceSubscribers      map[uint64]chan string
+	nextRaceSubscriberID atomic.Uint64
+	pitEventsMu          sync.Mutex
+	pitEvents            map[string]pitPresenceReceipt
+	pitEventIDs          []string
 }
 
 type raceStateEnvelope struct {
@@ -339,9 +343,15 @@ func (policy operationsAccessPolicy) wrap(next http.HandlerFunc) http.HandlerFun
 }
 
 type operationsStatus struct {
-	Version    int                     `json:"version"`
-	ServerTime time.Time               `json:"serverTime"`
-	Sources    []sourceOperationsState `json:"sources"`
+	Version    int                       `json:"version"`
+	ServerTime time.Time                 `json:"serverTime"`
+	RaceStream raceStreamOperationsState `json:"raceStream"`
+	Sources    []sourceOperationsState   `json:"sources"`
+}
+
+type raceStreamOperationsState struct {
+	Subscribers int  `json:"subscribers"`
+	HasState    bool `json:"hasState"`
 }
 
 // pilotDevicesStatus は Pilot 用の車両選択画面だけに渡す縮約状態です。
@@ -986,7 +996,21 @@ func (server *relayServer) operationsStatusSnapshot(now time.Time) operationsSta
 		}
 		sources = append(sources, source.statusSnapshot(now))
 	}
-	return operationsStatus{Version: 1, ServerTime: now.UTC(), Sources: sources}
+	return operationsStatus{
+		Version:    1,
+		ServerTime: now.UTC(),
+		RaceStream: server.raceStreamStatusSnapshot(),
+		Sources:    sources,
+	}
+}
+
+func (server *relayServer) raceStreamStatusSnapshot() raceStreamOperationsState {
+	server.raceStreamMu.RLock()
+	defer server.raceStreamMu.RUnlock()
+	return raceStreamOperationsState{
+		Subscribers: len(server.raceSubscribers),
+		HasState:    strings.TrimSpace(server.raceState) != "",
+	}
 }
 
 func (server *relayServer) serveOperationsStatus(w http.ResponseWriter, req *http.Request) {
@@ -1007,19 +1031,99 @@ func (server *relayServer) serveRaceState(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	for _, sourceID := range server.sourceOrder {
-		source, ok := server.sources[sourceID]
-		if !ok {
-			continue
+	state := strings.TrimSpace(server.currentGlobalRaceState())
+	if state != "" {
+		state = strings.TrimPrefix(state, "RACE:")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(state))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (server *relayServer) publishGlobalRaceState(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	server.raceStreamMu.Lock()
+	server.raceState = message
+	for _, queue := range server.raceSubscribers {
+		enqueueLatestTelemetry(queue, message)
+	}
+	server.raceStreamMu.Unlock()
+}
+
+func (server *relayServer) currentGlobalRaceState() string {
+	server.raceStreamMu.RLock()
+	defer server.raceStreamMu.RUnlock()
+	return server.raceState
+}
+
+func (server *relayServer) subscribeRaceState() (uint64, chan string, string) {
+	id := server.nextRaceSubscriberID.Add(1)
+	queue := make(chan string, 1)
+	server.raceStreamMu.Lock()
+	if server.raceSubscribers == nil {
+		server.raceSubscribers = make(map[uint64]chan string)
+	}
+	server.raceSubscribers[id] = queue
+	current := server.raceState
+	server.raceStreamMu.Unlock()
+	return id, queue, current
+}
+
+func (server *relayServer) unsubscribeRaceState(id uint64) {
+	server.raceStreamMu.Lock()
+	delete(server.raceSubscribers, id)
+	server.raceStreamMu.Unlock()
+}
+
+func (server *relayServer) serveRaceStateWS(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ws, err := wsUpgrader.Upgrade(w, req, nil)
+	if err != nil {
+		log.Printf("upgrade race state WebSocket: %v", err)
+		return
+	}
+	defer ws.Close()
+	id, queue, current := server.subscribeRaceState()
+	defer server.unsubscribeRaceState(id)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := ws.NextReader(); err != nil {
+				return
+			}
 		}
-		if state := strings.TrimSpace(source.currentRaceState()); state != "" {
-			state = strings.TrimPrefix(state, "RACE:")
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_, _ = w.Write([]byte(state))
+	}()
+	send := func(payload string) error {
+		_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		return ws.WriteJSON(signalMessage{Type: "race-state", Data: payload})
+	}
+	if strings.TrimSpace(current) != "" {
+		if err := send(current); err != nil {
 			return
 		}
 	}
-	w.WriteHeader(http.StatusNoContent)
+	for {
+		select {
+		case payload := <-queue:
+			if err := send(payload); err != nil {
+				return
+			}
+		case <-done:
+			return
+		case <-req.Context().Done():
+			return
+		}
+	}
 }
 
 func (r *relay) sendInitialWebDownlinkState(send func(signalMessage) error) error {
@@ -2000,7 +2104,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		client.telemetryWS = make(chan string, 1)
 		client.eventsWS = make(chan string, 64)
 	}
-	if clientKind == "web-pilot" || clientKind == "web-observer" {
+	if clientKind == "web-pilot" {
 		client.raceWS = make(chan string, 1)
 	}
 	if clientKind == "web-observer" {
@@ -2304,6 +2408,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			log.Printf("ignore unsupported Race Control message: type=%q version=%d", envelope.Type, envelope.Version)
 			continue
 		}
+		server.publishGlobalRaceState("RACE:" + string(data))
 		server.observeRaceContext(envelope, time.Now())
 		if server.recorder != nil {
 			server.recorder.RecordRaceState(string(data), telemetryRaceContext{
@@ -2505,6 +2610,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
 	mux.HandleFunc("/api/v1/race-state", serverRelay.serveRaceState)
+	mux.HandleFunc("/ws/race-state", serverRelay.serveRaceStateWS)
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
 	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
 	mux.HandleFunc("/api/v1/gameplay/pit-recovery-ticks",

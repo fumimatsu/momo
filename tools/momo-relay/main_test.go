@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -183,12 +184,8 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 }
 
 func TestRaceStateAPIProvidesLatestStateWithoutCaching(t *testing.T) {
-	source := newStatusTestRelay("11.3", "CP-1")
-	source.raceState = `RACE:{"type":"race_state","version":2,"raceId":"race-test","sequence":7,"standings":[]}`
-	server := &relayServer{
-		sources:     map[string]*relay{"11.3": source},
-		sourceOrder: []string{"11.3"},
-	}
+	server := &relayServer{}
+	server.publishGlobalRaceState(`RACE:{"type":"race_state","version":2,"raceId":"race-test","sequence":7,"standings":[]}`)
 
 	request := httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/race-state", nil)
 	recorder := httptest.NewRecorder()
@@ -349,6 +346,69 @@ func TestRaceStateUsesViewerWebSocketQueue(t *testing.T) {
 	relay.broadcastRaceState(`RACE:{"sequence":7}`)
 	if got := <-client.raceWS; got != `RACE:{"sequence":7}` {
 		t.Fatalf("queued race state = %q", got)
+	}
+}
+
+func TestGlobalRaceStateStreamKeepsLatestStateForOneObserverSubscription(t *testing.T) {
+	server := &relayServer{}
+	id, queue, current := server.subscribeRaceState()
+	if current != "" {
+		t.Fatalf("initial race state = %q, want empty", current)
+	}
+	if got := server.raceStreamStatusSnapshot().Subscribers; got != 1 {
+		t.Fatalf("race subscribers = %d, want 1", got)
+	}
+
+	server.publishGlobalRaceState(`RACE:{"sequence":7}`)
+	server.publishGlobalRaceState(`RACE:{"sequence":8}`)
+	if got := <-queue; got != `RACE:{"sequence":8}` {
+		t.Fatalf("queued race state = %q, want latest sequence", got)
+	}
+	if got := server.currentGlobalRaceState(); got != `RACE:{"sequence":8}` {
+		t.Fatalf("current race state = %q", got)
+	}
+
+	server.unsubscribeRaceState(id)
+	if got := server.raceStreamStatusSnapshot().Subscribers; got != 0 {
+		t.Fatalf("race subscribers = %d, want 0", got)
+	}
+}
+
+func TestRaceStateWebSocketSendsLatestStateAndUnsubscribes(t *testing.T) {
+	server := &relayServer{}
+	httpServer := httptest.NewServer(http.HandlerFunc(server.serveRaceStateWS))
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http")
+	connection, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.publishGlobalRaceState(`RACE:{"sequence":9}`)
+	_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+	var message signalMessage
+	if err := connection.ReadJSON(&message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Type != "race-state" || message.Data != `RACE:{"sequence":9}` {
+		t.Fatalf("race stream message = %#v", message)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.raceStreamMu.RLock()
+		remaining := len(server.raceSubscribers)
+		server.raceStreamMu.RUnlock()
+		if remaining == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("race subscribers after close = %d, want 0", remaining)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
