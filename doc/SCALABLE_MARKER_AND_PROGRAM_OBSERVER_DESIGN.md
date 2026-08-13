@@ -108,6 +108,19 @@ event化し、未知IDは診断カウンタへ残してrace eventには変換し
 | Intel QSV / VPL | 8 source | 10 sourceでCPU p95 66.12% | 8 source/node |
 | NVIDIA NVDEC / CUDA | 8 source | 12 sourceでCPU p95 72.57% | 8 source/node |
 
+同じ50 FPS入力を全フレーム認識する50 Hz比較試験も30秒で境界を確認した。合格条件は最低47.5 Hz、
+検出latency p95 20 ms以下、process tree CPU p95 60%以下である。
+
+| 復号経路 | 4 source | 5 source | 50 Hz候補上限 |
+| --- | --- | --- | ---: |
+| OpenCV software | 合格: 49.77 Hz、14.81 ms、CPU 53.38% | 未実施 | 4 source/node |
+| Intel QSV / VPL | 合格: 49.49 Hz、17.63 ms、CPU 47.94% | 不合格: CPU 62.08% | 4 source/node |
+| NVIDIA NVDEC / CUDA | 合格: 50.05 Hz、16.87 ms、CPU 48.80% | 不合格: 20.15 ms、CPU 68.01% | 4 source/node |
+
+QSV/CUDAの6 sourceも49 Hz以上は維持したが、latency p95が21 msを超え、CPU p95が70%を超えた。
+このPCでは50 Hzの短時間候補を4 source/nodeとし、本番上限へ採用する前に4 sourceの10分および
+1時間試験を行う。25 Hzの8 source/nodeと50 Hzの4 source/nodeは別profileとして管理する。
+
 物理限界と運用上限を分ける。CPU、温度、OS、Relay、ネットワークの余力を残すため、現PCでは
 hardware decode時の`maxSourcesPerNode=8`、software fallback時は6とする。20台は8+6+6の3 node、
 32台は8台×4 nodeを推奨する。QSV 8 sourceの10分soak testは最低復号・検出24.97 Hz、

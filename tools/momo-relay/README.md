@@ -157,6 +157,8 @@ suiteは`opencv`、`qsv`、`cuda`を順に測定し、PC構成とdriverも同じ
 本番上限の決定には10分以上、最終確認には1時間を使う。別PCでの完全な手順は
 [Scale Validation Runbook](../../doc/SCALE_VALIDATION_RUNBOOK.md)、結果の読み方と推奨配置は
 [Scalable Marker Observer and Program Observer Design](../../doc/SCALABLE_MARKER_AND_PROGRAM_OBSERVER_DESIGN.md)を参照する。
+50 FPS入力の全フレームを認識する比較試験は、suiteへ`-DetectionHz 50`を指定する。入力・検出47.5 FPS、
+検出latency p95 20 ms以下が自動的に合格条件となる。
 
 ## LAN Pilot 車両選択
 

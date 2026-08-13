@@ -18,6 +18,7 @@ import psutil
 
 
 DEFAULT_DETECTION_HZ = 25.0
+MINIMUM_RATE_FACTOR = 0.95
 
 
 @dataclass
@@ -337,14 +338,17 @@ def run_case(
         all_detection_ms.extend(result.detection_ms)
         if result.error:
             failures.append(f"source {result.source_id}: {result.error}")
-        minimum_required_decode_fps = detection_hz * 0.95 if decoder in ("qsv", "cuda") else 47.5
+        minimum_required_decode_fps = (
+            detection_hz * MINIMUM_RATE_FACTOR if decoder in ("qsv", "cuda") else 50.0 * MINIMUM_RATE_FACTOR
+        )
         if decode_fps < minimum_required_decode_fps:
             failures.append(
                 f"source {result.source_id}: output FPS {decode_fps:.2f} below {minimum_required_decode_fps:.2f}"
             )
-        if detection_fps < detection_hz * 0.95:
+        if detection_fps < detection_hz * MINIMUM_RATE_FACTOR:
             failures.append(
-                f"source {result.source_id}: detection FPS {detection_fps:.2f} below {detection_hz * 0.95:.2f}"
+                f"source {result.source_id}: detection FPS {detection_fps:.2f} "
+                f"below {detection_hz * MINIMUM_RATE_FACTOR:.2f}"
             )
         worker_summaries.append(
             {
@@ -413,6 +417,12 @@ def main() -> int:
         "codecFourCC": int(capture.get(cv2.CAP_PROP_FOURCC)),
     }
     capture.release()
+    minimum_input_fps = args.detection_hz * MINIMUM_RATE_FACTOR
+    if metadata["fps"] < minimum_input_fps:
+        parser.error(
+            f"input FPS {metadata['fps']:.3f} is below the required {minimum_input_fps:.3f} "
+            f"for a {args.detection_hz:g}Hz test"
+        )
     cases = []
     for count in args.source_counts:
         print(f"AruCo capacity: {count} sources", flush=True)
@@ -446,6 +456,12 @@ def main() -> int:
         "logicalCpuCount": psutil.cpu_count(logical=True),
         "input": str(input_path),
         "inputMetadata": metadata,
+        "acceptance": {
+            "minimumInputFps": minimum_input_fps,
+            "minimumDetectionFps": args.detection_hz * MINIMUM_RATE_FACTOR,
+            "maximumDetectionLatencyP95Ms": 1000.0 / args.detection_hz,
+            "maximumProcessTreeCpuP95Percent": args.max_cpu_percent,
+        },
         "detectionHz": args.detection_hz,
         "recognitionQuality": args.quality,
         "decoder": args.decoder,

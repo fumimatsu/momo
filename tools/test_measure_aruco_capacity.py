@@ -15,6 +15,7 @@ SPEC.loader.exec_module(MODULE)
 class MeasureArucoCapacityTest(unittest.TestCase):
     def test_default_detection_rate_is_25_hz(self):
         self.assertEqual(25.0, MODULE.DEFAULT_DETECTION_HZ)
+        self.assertEqual(47.5, 50.0 * MODULE.MINIMUM_RATE_FACTOR)
 
     def test_percentile_uses_ceiling_rank(self):
         self.assertEqual(4, MODULE.percentile([1, 2, 3, 4], 95))
