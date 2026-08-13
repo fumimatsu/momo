@@ -90,7 +90,14 @@ foreach ($registryPath in @(
     "HKCU:\SOFTWARE\GoProgrammingLanguage"
 )) {
     if (Test-Path -LiteralPath $registryPath) {
-        $installRoot = (Get-ItemProperty -LiteralPath $registryPath -ErrorAction SilentlyContinue).InstallRoot
+        $registryValues = Get-ItemProperty -LiteralPath $registryPath -ErrorAction SilentlyContinue
+        $installRootProperty = if ($null -ne $registryValues) {
+            $registryValues.PSObject.Properties['InstallRoot']
+        }
+        else {
+            $null
+        }
+        $installRoot = if ($null -ne $installRootProperty) { [string]$installRootProperty.Value } else { "" }
         if (-not [string]::IsNullOrWhiteSpace($installRoot)) {
             Add-GoCandidate (Join-Path $installRoot "bin\go.exe")
         }
