@@ -535,6 +535,21 @@
       color: #ff8a84;
     }
 
+    .rear-attention[data-mode="blue-flag"] {
+      border-color: #55a7ff;
+      background: rgba(5, 35, 91, 0.9);
+      box-shadow: 0 10px 34px rgba(0, 32, 94, 0.55);
+    }
+
+    .rear-attention[data-mode="blue-flag"] .rear-attention-kicker,
+    .rear-attention[data-mode="blue-flag"] .rear-attention-detail {
+      color: rgba(201, 227, 255, 0.94);
+    }
+
+    .rear-attention[data-mode="blue-flag"] output {
+      color: #8ec7ff;
+    }
+
     .rear-attention.is-active[data-severity="warning"] {
       animation: rear-attention-warning 460ms step-end 6;
     }
@@ -543,12 +558,20 @@
       animation: rear-attention-critical 280ms step-end 10;
     }
 
+    .rear-attention.is-active[data-mode="blue-flag"] {
+      animation: rear-attention-blue-flag 360ms step-end 8;
+    }
+
     @keyframes rear-attention-warning {
       50% { filter: brightness(1.55); }
     }
 
     @keyframes rear-attention-critical {
       50% { filter: brightness(1.7); }
+    }
+
+    @keyframes rear-attention-blue-flag {
+      50% { filter: brightness(1.65); }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -2544,9 +2567,9 @@
       <span id="motionEventDetail" class="motion-event-detail">--</span>
     </div>
 
-    <section id="rearAttention" class="rear-attention" data-severity="warning" aria-live="assertive" aria-atomic="true" hidden>
+    <section id="rearAttention" class="rear-attention" data-mode="rear" data-severity="warning" aria-live="assertive" aria-atomic="true" hidden>
       <div>
-        <span class="rear-attention-kicker">PROXIMITY ALERT</span>
+        <span id="rearAttentionKicker" class="rear-attention-kicker">PROXIMITY ALERT</span>
         <strong id="rearAttentionLabel">REAR PRESSURE</strong>
       </div>
       <output id="rearAttentionGap">+0.000s</output>
@@ -2867,15 +2890,15 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260813-telemetry-tuning-v1"></script>
+    <script src="../../telemetry.js?v=20260813-blue-flag-v1"></script>
     <script src="../../m5-audio.js?v=20260811-gear-audit-v3"></script>
     <script
-      src="./gamepad-profile.js?v=20260813-telemetry-tuning-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260813-telemetry-tuning-v1'"
+      src="./gamepad-profile.js?v=20260813-blue-flag-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260813-blue-flag-v1'"
     ></script>
     <script src="./ffb-bridge.js"></script>
-    <script src="./race-battle.js?v=20260813-telemetry-tuning-v1"></script>
-    <script src="./pilot.js?v=20260813-telemetry-tuning-v1"></script>
+    <script src="./race-battle.js?v=20260813-blue-flag-v1"></script>
+    <script src="./pilot.js?v=20260813-blue-flag-v1"></script>
     <script
       src="./cpu-shadow-capture.js?v=20260731-cpu-shadow-capture"
       onerror="this.onerror=null;this.src='../../cpu-shadow-capture.js?v=20260731-cpu-shadow-capture'"

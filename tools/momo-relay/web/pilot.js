@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260813-telemetry-tuning-v1';
+  const PILOT_BUILD_ID = '20260813-blue-flag-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -221,6 +221,13 @@
   );
   const RACE_REAR_WARNING_CLOSING_MS = Math.max(0, getNumberParam('rearWarningClosingMs', 300));
   const RACE_REAR_CRITICAL_CLOSING_MS = Math.max(0, getNumberParam('rearCriticalClosingMs', 100));
+  const RACE_BLUE_FLAG_ENABLED = getBooleanParam('blueFlag', true);
+  const RACE_BLUE_FLAG_DEMO = getBooleanParam('blueFlagDemo', false);
+  const RACE_BLUE_FLAG_WARNING_GAP_MS = Math.max(0, getNumberParam('blueFlagGapMs', 5000));
+  const RACE_BLUE_FLAG_RELEASE_GAP_MS = Math.max(
+    RACE_BLUE_FLAG_WARNING_GAP_MS,
+    getNumberParam('blueFlagReleaseGapMs', 6500),
+  );
   const G_METER_ENABLED = getBooleanParam('gMeter', true);
   const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
   const G_METER_FULL_SCALE_G = Math.max(0.5, Math.min(3.0, getNumberParam('gMeterScaleG', 1.5)));
@@ -298,6 +305,7 @@
   const raceBattleBehindName = document.getElementById('raceBattleBehindName');
   const raceBattleBehindGap = document.getElementById('raceBattleBehindGap');
   const rearAttention = document.getElementById('rearAttention');
+  const rearAttentionKicker = document.getElementById('rearAttentionKicker');
   const rearAttentionLabel = document.getElementById('rearAttentionLabel');
   const rearAttentionGap = document.getElementById('rearAttentionGap');
   const rearAttentionDetail = document.getElementById('rearAttentionDetail');
@@ -531,6 +539,10 @@
     releaseGapMs: RACE_REAR_RELEASE_GAP_MS,
     warningClosingMs: RACE_REAR_WARNING_CLOSING_MS,
     criticalClosingMs: RACE_REAR_CRITICAL_CLOSING_MS,
+  }) || null;
+  const blueFlagTracker = window.MomoRaceBattle?.createBlueFlagTracker({
+    warningGapMs: RACE_BLUE_FLAG_WARNING_GAP_MS,
+    releaseGapMs: RACE_BLUE_FLAG_RELEASE_GAP_MS,
   }) || null;
   const raceState = {
     phase: 'STANDBY',
@@ -1208,6 +1220,13 @@
     return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
   }
 
+  function normalizeOptionalRaceNumber(value) {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+      return null;
+    }
+    return normalizeRaceNumber(value);
+  }
+
   function formatRaceTime(milliseconds) {
     const value = normalizeRaceNumber(milliseconds);
     if (value === null) {
@@ -1278,11 +1297,16 @@
           carId,
           driver,
           position,
-          lap: normalizeRaceNumber(entry.lap),
-          intervalToAheadMs: normalizeRaceNumber(entry.intervalToAheadMs),
+          status: typeof entry.status === 'string' ? entry.status.trim().toLowerCase() : '',
+          lap: normalizeOptionalRaceNumber(entry.lap),
+          intervalToAheadMs: normalizeOptionalRaceNumber(entry.intervalToAheadMs),
           lapDeltaToAhead: normalizeRaceLapDelta(entry.lapDeltaToAhead),
-          lastMarkerIndex: normalizeRaceNumber(entry.lastMarkerIndex),
-          lastMarkerRaceMs: normalizeRaceNumber(entry.lastMarkerRaceMs),
+          lappingCarBehindId: typeof entry.lappingCarBehindId === 'string'
+            ? entry.lappingCarBehindId.trim()
+            : '',
+          lappingGapMs: normalizeOptionalRaceNumber(entry.lappingGapMs),
+          lastMarkerIndex: normalizeOptionalRaceNumber(entry.lastMarkerIndex),
+          lastMarkerRaceMs: normalizeOptionalRaceNumber(entry.lastMarkerRaceMs),
         };
       })
       .filter((entry) => entry !== null)
@@ -1408,6 +1432,7 @@
     }
     if (resetTracker) {
       rearAttentionTracker?.reset();
+      blueFlagTracker?.reset();
     }
     if (wasVisible) scheduleRaceBattleLayout();
   }
@@ -1429,6 +1454,8 @@
       rearAttention.classList.remove('is-active');
     }
     rearAttention.dataset.severity = severity;
+    rearAttention.dataset.mode = 'rear';
+    setText(rearAttentionKicker, 'PROXIMITY ALERT');
     setText(rearAttentionLabel, critical ? 'REAR ATTACK' : 'REAR PRESSURE');
     setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
     setText(
@@ -1444,12 +1471,55 @@
     }
   }
 
-  function evaluateRearAttention() {
-    if (!RACE_REAR_ATTENTION_ENABLED || !rearAttentionTracker) {
-      hideRearAttention(true);
+  function showBlueFlag(state) {
+    if (!rearAttention || !state?.active) {
       return;
     }
+    const rivalName = state.driver || state.carId;
+    const markerLabel = state.markerIndex === 0 ? 'LAP LINE' : `CP ${state.markerIndex}`;
+    if (!state.shouldPulse && rearAttention.dataset.mode !== 'blue-flag') {
+      rearAttention.classList.remove('is-active');
+    }
+    rearAttention.dataset.mode = 'blue-flag';
+    rearAttention.dataset.severity = 'blue-flag';
+    setText(rearAttentionKicker, 'RACE CONTROL');
+    setText(rearAttentionLabel, 'BLUE FLAG');
+    setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
+    setText(rearAttentionDetail, `LET FASTER CAR PASS  /  ${rivalName}  /  ${markerLabel}`);
+    rearAttention.hidden = false;
+    scheduleRaceBattleLayout();
+    if (state.shouldPulse) {
+      rearAttention.classList.remove('is-active');
+      void rearAttention.offsetWidth;
+      rearAttention.classList.add('is-active');
+    }
+  }
+
+  function evaluateRaceAttention() {
     const battle = getRaceBattle();
+    if (RACE_BLUE_FLAG_ENABLED && blueFlagTracker) {
+      const lapping = battle.self?.lappingCarBehindId
+        ? raceState.rivals.find((rival) => rival.carId === battle.self.lappingCarBehindId) || null
+        : null;
+      const blueFlagState = blueFlagTracker.evaluate({
+        raceRunId: activeRaceRunId,
+        phaseCode: raceState.phaseCode,
+        self: battle.self,
+        lapping,
+      });
+      if (raceState.phaseCode === 'green' && blueFlagState?.active) {
+        showBlueFlag(blueFlagState);
+        return;
+      }
+    } else {
+      blueFlagTracker?.reset();
+    }
+
+    if (!RACE_REAR_ATTENTION_ENABLED || !rearAttentionTracker) {
+      hideRearAttention(false);
+      rearAttentionTracker?.reset();
+      return;
+    }
     const state = rearAttentionTracker.evaluate({
       raceRunId: activeRaceRunId,
       phaseCode: raceState.phaseCode,
@@ -1985,44 +2055,68 @@
       }
     }
     raceState.sampledAt = performance.now();
-    evaluateRearAttention();
+    evaluateRaceAttention();
     renderRaceHud();
     syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
     announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     return true;
   }
 
-  function createRaceBattleDemoState(behindGapMs = 1250, markerIndex = 1, markerRaceMs = 24_000) {
+  function createRaceBattleDemoState(
+    behindGapMs = 1250,
+    markerIndex = 1,
+    markerRaceMs = 24_000,
+    blueFlag = false,
+  ) {
+    const rivals = blueFlag
+      ? [
+        {
+          carId: 'FPV-01', driver: 'AYA', position: 1, lap: 4, status: 'racing',
+          lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
+        { carId: 'FPV-03', driver: 'RIN', position: 2, lap: 3, status: 'racing', lapDeltaToAhead: 1 },
+        {
+          carId: 'FPV-02', driver: 'MOMO', position: 3, lap: 3, status: 'racing',
+          intervalToAheadMs: 840, lappingCarBehindId: 'FPV-01', lappingGapMs: 3200,
+        },
+        {
+          carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing',
+          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
+      ]
+      : [
+        { carId: 'FPV-01', driver: 'AYA', position: 1, lap: 3, status: 'racing' },
+        { carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, status: 'racing', intervalToAheadMs: 840 },
+        {
+          carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3, status: 'racing',
+          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
+        { carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing', intervalToAheadMs: 2810 },
+      ];
     return {
       phase: 'RUNNING',
       phaseCode: 'green',
       carId: 'FPV-02',
       lap: 3,
       lapCount: 5,
-      position: 2,
+      position: blueFlag ? 3 : 2,
       fieldSize: 4,
       totalTimeMs: 72430,
       currentLapMs: 9420,
       lastLapMs: 23860,
       bestLapMs: 23580,
       clockRunning: false,
-      rivals: [
-        { carId: 'FPV-01', driver: 'AYA', position: 1, lap: 3 },
-        { carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, intervalToAheadMs: 840 },
-        {
-          carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3,
-          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
-        },
-        { carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, intervalToAheadMs: 2810 },
-      ],
+      rivals,
     };
   }
 
   function startRaceBattleDemo() {
-    if (RACE_BATTLE_DEMO || RACE_REAR_ATTENTION_DEMO) {
-      setRaceState(createRaceBattleDemoState());
+    if (RACE_BATTLE_DEMO || RACE_REAR_ATTENTION_DEMO || RACE_BLUE_FLAG_DEMO) {
+      setRaceState(createRaceBattleDemoState(1250, 1, 24_000, RACE_BLUE_FLAG_DEMO));
       if (RACE_REAR_ATTENTION_DEMO) {
-        window.setTimeout(() => setRaceState(createRaceBattleDemoState(850, 2, 36_000)), 350);
+        window.setTimeout(() => setRaceState(
+          createRaceBattleDemoState(850, 2, 36_000, RACE_BLUE_FLAG_DEMO),
+        ), 350);
       }
     }
   }

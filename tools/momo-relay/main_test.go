@@ -35,7 +35,7 @@ func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
 }
 
 func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
-	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":4,"status":"racing","intervalToAheadMs":1200}]}`)
+	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200}]}`)
 	message, err := raceMessageForCar(state, "CP-2")
 	if err != nil {
 		t.Fatalf("raceMessageForCar returned an error: %v", err)
@@ -45,8 +45,9 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 		Sequence  int    `json:"sequence"`
 		ViewerID  string `json:"viewerCarId"`
 		Standings []struct {
-			CarID             string `json:"carId"`
-			IntervalToAheadMs *int   `json:"intervalToAheadMs"`
+			CarID              string `json:"carId"`
+			LappingCarBehindID string `json:"lappingCarBehindId"`
+			LappingGapMs       *int   `json:"lappingGapMs"`
 		} `json:"standings"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "RACE:")), &payload); err != nil {
@@ -55,7 +56,11 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 	if payload.RaceRunID != "rr_123" || payload.Sequence != 17 || payload.ViewerID != "CP-2" {
 		t.Fatalf("race identity = %#v, want run rr_123 sequence 17 viewer CP-2", payload)
 	}
-	if len(payload.Standings) != 2 || payload.Standings[0].CarID != "CP-1" || payload.Standings[1].IntervalToAheadMs == nil || *payload.Standings[1].IntervalToAheadMs != 1200 {
+	if len(payload.Standings) != 2 ||
+		payload.Standings[0].CarID != "CP-1" ||
+		payload.Standings[1].LappingCarBehindID != "CP-1" ||
+		payload.Standings[1].LappingGapMs == nil ||
+		*payload.Standings[1].LappingGapMs != 1200 {
 		t.Fatalf("standings = %#v, want preserved timing values", payload.Standings)
 	}
 }
