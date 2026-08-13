@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -33,9 +34,23 @@ class WorkerResult:
     detections: int = 0
     marker_frames: int = 0
     marker_ids: dict[int, int] = field(default_factory=dict)
+    marker_id_frames: dict[int, int] = field(default_factory=dict)
     detection_ms: list[float] = field(default_factory=list)
+    processing_ms: list[float] = field(default_factory=list)
+    active_elapsed_seconds: float = 0.0
     read_errors: int = 0
     error: str | None = None
+
+
+def record_marker_observation(result: WorkerResult, marker_ids) -> None:
+    values = [int(marker_id) for marker_id in marker_ids]
+    if not values:
+        return
+    result.marker_frames += 1
+    for value in values:
+        result.marker_ids[value] = result.marker_ids.get(value, 0) + 1
+    for value in set(values):
+        result.marker_id_frames[value] = result.marker_id_frames.get(value, 0) + 1
 
 
 def percentile(values: list[float], value: float) -> float | None:
@@ -72,11 +87,11 @@ def make_detector() -> cv2.aruco.ArucoDetector:
 
 def find_nvcodec_cuda_root(prefix: Path | None = None) -> Path | None:
     candidates: list[Path] = []
+    if prefix is not None:
+        candidates.append(prefix / "Lib" / "site-packages" / "nvidia" / "cuda_runtime")
     cuda_path = os.environ.get("CUDA_PATH")
     if cuda_path:
         candidates.append(Path(cuda_path))
-    if prefix is not None:
-        candidates.append(prefix / "Lib" / "site-packages" / "nvidia" / "cuda_runtime")
     candidates.append(Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cuda_runtime")
     for candidate in candidates:
         if (candidate / "bin" / "cudart64_12.dll").is_file():
@@ -177,10 +192,7 @@ def run_worker(
             result.detection_ms.append((time.perf_counter() - detection_started) * 1000)
             result.detections += 1
             if ids is not None:
-                result.marker_frames += 1
-                for marker_id in ids.flatten():
-                    value = int(marker_id)
-                    result.marker_ids[value] = result.marker_ids.get(value, 0) + 1
+                record_marker_observation(result, ids.flatten())
     except Exception as exc:  # pragma: no cover - diagnostic boundary
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -267,10 +279,7 @@ def run_hardware_worker(
             result.decoded_frames += 1
             result.detections += 1
             if ids is not None:
-                result.marker_frames += 1
-                for marker_id in ids.flatten():
-                    value = int(marker_id)
-                    result.marker_ids[value] = result.marker_ids.get(value, 0) + 1
+                record_marker_observation(result, ids.flatten())
     except Exception as exc:  # pragma: no cover - diagnostic boundary
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -293,6 +302,7 @@ def run_nvcodec_worker(
     source_width: int,
     source_height: int,
     start_event: threading.Event,
+    ready_event: threading.Event,
     result: WorkerResult,
 ) -> None:
     decoder = None
@@ -302,6 +312,7 @@ def run_nvcodec_worker(
         metadata = decoder.get_stream_metadata()
         source_fps = float(metadata.average_fps) if metadata.average_fps > 0 else 50.0
         detector = make_detector()
+        ready_event.set()
         start_event.wait()
         started_at = time.perf_counter()
         deadline = started_at + duration
@@ -316,25 +327,168 @@ def run_nvcodec_worker(
             if not frames:
                 decoder.reconfigure_decoder(video_path, 0)
                 continue
+            processing_started = time.perf_counter()
             nv12 = np.from_dlpack(frames[0])
             gray = prepare_nvcodec_luma(nv12, source_width, source_height, quality)
             detection_started = time.perf_counter()
             _, ids, _ = detector.detectMarkers(gray)
             result.detection_ms.append((time.perf_counter() - detection_started) * 1000)
+            result.processing_ms.append((time.perf_counter() - processing_started) * 1000)
             result.decoded_frames += 1
             result.detections += 1
             next_frame_at += frame_interval
             if next_frame_at < now - frame_interval:
                 next_frame_at = now
             if ids is not None:
-                result.marker_frames += 1
-                for marker_id in ids.flatten():
-                    value = int(marker_id)
-                    result.marker_ids[value] = result.marker_ids.get(value, 0) + 1
+                record_marker_observation(result, ids.flatten())
     except Exception as exc:  # pragma: no cover - diagnostic boundary
         result.error = f"{type(exc).__name__}: {exc}"
     finally:
+        ready_event.set()
         if decoder is not None:
+            decoder.end()
+
+
+def run_nvcodec_gpu_worker(
+    source_id: int,
+    video_path: str,
+    duration: float,
+    detection_hz: float,
+    quality: float,
+    source_width: int,
+    source_height: int,
+    start_event: threading.Event,
+    ready_event: threading.Event,
+    result: WorkerResult,
+) -> None:
+    decoder = None
+    try:
+        from GpuArucoDetector import GpuArucoDetector
+
+        nvc = load_nvcodec()
+        gpu_detector = GpuArucoDetector(allowed_marker_ids=range(50))
+        cp = gpu_detector.cp
+        decoder = nvc.ThreadedDecoder(video_path, 8, gpu_id=0, use_device_memory=True)
+        metadata = decoder.get_stream_metadata()
+        source_fps = float(metadata.average_fps) if metadata.average_fps > 0 else 50.0
+        ready_event.set()
+        start_event.wait()
+        started_at = time.perf_counter()
+        deadline = started_at + duration
+        next_frame_at = started_at
+        frame_interval = 1.0 / min(source_fps, detection_hz)
+        while time.perf_counter() < deadline:
+            now = time.perf_counter()
+            if now < next_frame_at:
+                time.sleep(min(next_frame_at - now, 0.002))
+                continue
+            frames = decoder.get_batch_frames(1)
+            if not frames:
+                decoder.reconfigure_decoder(video_path, 0)
+                continue
+            processing_started = time.perf_counter()
+            nv12_device = cp.from_dlpack(frames[0])
+            gray_device = gpu_detector.decoder.resize_nv12_luma(
+                nv12_device, source_width, source_height, quality
+            )
+            detection_started = time.perf_counter()
+            detection = gpu_detector.detect(gray_device)
+            result.detection_ms.append((time.perf_counter() - detection_started) * 1000)
+            result.processing_ms.append((time.perf_counter() - processing_started) * 1000)
+            result.decoded_frames += 1
+            result.detections += 1
+            next_frame_at += frame_interval
+            if next_frame_at < now - frame_interval:
+                next_frame_at = now
+            if detection.marker_ids:
+                record_marker_observation(result, detection.marker_ids)
+    except Exception as exc:  # pragma: no cover - diagnostic boundary
+        result.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        ready_event.set()
+        if decoder is not None:
+            decoder.end()
+
+
+def run_nvcodec_gpu_batch_worker(
+    video_path: str,
+    duration: float,
+    detection_hz: float,
+    quality: float,
+    source_width: int,
+    source_height: int,
+    start_event: threading.Event,
+    ready_events: list[threading.Event],
+    results: list[WorkerResult],
+) -> None:
+    decoders = []
+    try:
+        from GpuArucoDetector import GpuArucoDetector
+
+        nvc = load_nvcodec()
+        gpu_detector = GpuArucoDetector(allowed_marker_ids=range(50))
+        cp = gpu_detector.cp
+        for _ in results:
+            decoder = nvc.ThreadedDecoder(video_path, 8, gpu_id=0, use_device_memory=True)
+            decoders.append(decoder)
+        metadata = decoders[0].get_stream_metadata()
+        source_fps = float(metadata.average_fps) if metadata.average_fps > 0 else 50.0
+        for ready_event in ready_events:
+            ready_event.set()
+        start_event.wait()
+        started_at = time.perf_counter()
+        deadline = started_at + duration
+        next_frame_at = started_at
+        frame_interval = 1.0 / min(source_fps, detection_hz)
+        while time.perf_counter() < deadline:
+            now = time.perf_counter()
+            if now < next_frame_at:
+                time.sleep(min(next_frame_at - now, 0.002))
+                continue
+            frames = []
+            for decoder in decoders:
+                batch = decoder.get_batch_frames(1)
+                if not batch:
+                    decoder.reconfigure_decoder(video_path, 0)
+                    frames = []
+                    break
+                frames.append(batch[0])
+            if len(frames) != len(decoders):
+                continue
+
+            processing_started = time.perf_counter()
+            resized_frames = [
+                gpu_detector.decoder.resize_nv12_luma(
+                    cp.from_dlpack(frame), source_width, source_height, quality
+                )
+                for frame in frames
+            ]
+            gray_batch = cp.stack(resized_frames)
+            detection_started = time.perf_counter()
+            detections = gpu_detector.detect_batch(gray_batch)
+            detection_elapsed_ms = (time.perf_counter() - detection_started) * 1000
+            processing_elapsed_ms = (time.perf_counter() - processing_started) * 1000
+            for result, detection in zip(results, detections):
+                result.detection_ms.append(detection_elapsed_ms)
+                result.processing_ms.append(processing_elapsed_ms)
+                result.decoded_frames += 1
+                result.detections += 1
+                if detection.marker_ids:
+                    record_marker_observation(result, detection.marker_ids)
+            next_frame_at += frame_interval
+            if next_frame_at < now - frame_interval:
+                next_frame_at = now
+        active_elapsed = time.perf_counter() - started_at
+        for result in results:
+            result.active_elapsed_seconds = active_elapsed
+    except Exception as exc:  # pragma: no cover - diagnostic boundary
+        message = f"{type(exc).__name__}: {exc}"
+        for result in results:
+            result.error = message
+    finally:
+        for ready_event in ready_events:
+            ready_event.set()
+        for decoder in decoders:
             decoder.end()
 
 
@@ -371,6 +525,69 @@ def monitor_process(stop_event: threading.Event, samples: list[dict[str, float]]
         )
 
 
+def find_nvidia_smi() -> str | None:
+    command = shutil.which("nvidia-smi.exe") or shutil.which("nvidia-smi")
+    if command:
+        return command
+    windows_directory = os.environ.get("WINDIR")
+    if windows_directory:
+        candidate = Path(windows_directory) / "System32" / "nvidia-smi.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def parse_nvidia_smi_sample(line: str) -> dict[str, float] | None:
+    parts = [part.strip() for part in line.split(",")]
+    if len(parts) != 3:
+        return None
+    try:
+        return {
+            "gpuPercent": float(parts[0]),
+            "decoderPercent": float(parts[1]),
+            "memoryUsedMB": float(parts[2]),
+        }
+    except ValueError:
+        return None
+
+
+def monitor_nvidia_smi(
+    executable: str,
+    stop_event: threading.Event,
+    samples: list[dict[str, float]],
+) -> None:
+    command = [
+        executable,
+        "--id=0",
+        "--query-gpu=utilization.gpu,utilization.decoder,memory.used",
+        "--format=csv,noheader,nounits",
+        "--loop-ms=500",
+    ]
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        creationflags=creation_flags,
+    )
+    try:
+        assert process.stdout is not None
+        while not stop_event.is_set():
+            line = process.stdout.readline()
+            if not line:
+                break
+            sample = parse_nvidia_smi_sample(line)
+            if sample is not None:
+                samples.append(sample)
+    finally:
+        process.kill()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
 def run_case(
     video_path: str,
     count: int,
@@ -382,11 +599,14 @@ def run_case(
     source_width: int,
     source_height: int,
     max_cpu_percent: float,
+    nvidia_smi: str | None,
 ) -> dict:
     start_event = threading.Event()
     stop_monitor = threading.Event()
     monitor_samples: list[dict[str, float]] = []
+    gpu_monitor_samples: list[dict[str, float]] = []
     results = [WorkerResult(source_id=index + 1) for index in range(count)]
+    ready_events = [threading.Event() for _ in results]
     if decoder in ("qsv", "cuda"):
         assert ffmpeg_path is not None
         threads = [
@@ -422,11 +642,50 @@ def run_case(
                     source_width,
                     source_height,
                     start_event,
+                    ready_event,
                     result,
                 ),
                 name=f"aruco-source-{result.source_id:02d}",
             )
-            for result in results
+            for result, ready_event in zip(results, ready_events)
+        ]
+    elif decoder == "nvcodec-gpu":
+        threads = [
+            threading.Thread(
+                target=run_nvcodec_gpu_worker,
+                args=(
+                    result.source_id,
+                    video_path,
+                    duration,
+                    detection_hz,
+                    quality,
+                    source_width,
+                    source_height,
+                    start_event,
+                    ready_event,
+                    result,
+                ),
+                name=f"gpu-aruco-source-{result.source_id:02d}",
+            )
+            for result, ready_event in zip(results, ready_events)
+        ]
+    elif decoder == "nvcodec-gpu-batch":
+        threads = [
+            threading.Thread(
+                target=run_nvcodec_gpu_batch_worker,
+                args=(
+                    video_path,
+                    duration,
+                    detection_hz,
+                    quality,
+                    source_width,
+                    source_height,
+                    start_event,
+                    ready_events,
+                    results,
+                ),
+                name="gpu-aruco-batch-scheduler",
+            )
         ]
     else:
         threads = [
@@ -438,9 +697,27 @@ def run_case(
             for result in results
         ]
     monitor = threading.Thread(target=monitor_process, args=(stop_monitor, monitor_samples), name="process-monitor")
+    gpu_monitor = (
+        threading.Thread(
+            target=monitor_nvidia_smi,
+            args=(nvidia_smi, stop_monitor, gpu_monitor_samples),
+            name="nvidia-smi-monitor",
+        )
+        if nvidia_smi and decoder in ("nvcodec", "nvcodec-gpu", "nvcodec-gpu-batch")
+        else None
+    )
     for thread in threads:
         thread.start()
+    if decoder in ("nvcodec", "nvcodec-gpu", "nvcodec-gpu-batch"):
+        for ready_event in ready_events:
+            if not ready_event.wait(30):
+                start_event.set()
+                for thread in threads:
+                    thread.join()
+                raise RuntimeError("NVDEC worker initialization timed out")
     monitor.start()
+    if gpu_monitor is not None:
+        gpu_monitor.start()
     started_at = time.perf_counter()
     start_event.set()
     for thread in threads:
@@ -448,23 +725,28 @@ def run_case(
     elapsed = time.perf_counter() - started_at
     stop_monitor.set()
     monitor.join()
+    if gpu_monitor is not None:
+        gpu_monitor.join()
 
     worker_summaries = []
     failures = []
     minimum_decode_fps = math.inf
     minimum_detection_fps = math.inf
     all_detection_ms: list[float] = []
+    all_processing_ms: list[float] = []
     for result in results:
-        decode_fps = result.decoded_frames / elapsed
-        detection_fps = result.detections / elapsed
+        active_elapsed = result.active_elapsed_seconds or elapsed
+        decode_fps = result.decoded_frames / active_elapsed
+        detection_fps = result.detections / active_elapsed
         minimum_decode_fps = min(minimum_decode_fps, decode_fps)
         minimum_detection_fps = min(minimum_detection_fps, detection_fps)
         all_detection_ms.extend(result.detection_ms)
+        all_processing_ms.extend(result.processing_ms)
         if result.error:
             failures.append(f"source {result.source_id}: {result.error}")
         minimum_required_decode_fps = (
             detection_hz * MINIMUM_RATE_FACTOR
-            if decoder in ("qsv", "cuda", "nvcodec")
+            if decoder in ("qsv", "cuda", "nvcodec", "nvcodec-gpu", "nvcodec-gpu-batch")
             else 50.0 * MINIMUM_RATE_FACTOR
         )
         if decode_fps < minimum_required_decode_fps:
@@ -478,23 +760,37 @@ def run_case(
             )
         worker_summaries.append(
             {
-                **{key: value for key, value in asdict(result).items() if key != "detection_ms"},
+                **{
+                    key: value
+                    for key, value in asdict(result).items()
+                    if key not in ("detection_ms", "processing_ms")
+                },
                 "decodeFps": round(decode_fps, 3),
                 "detectionFps": round(detection_fps, 3),
                 "detectionMsP95": round(percentile(result.detection_ms, 95) or 0, 3),
+                "processingMsP95": round(
+                    percentile(result.processing_ms or result.detection_ms, 95) or 0, 3
+                ),
+                "processingMsMax": round(
+                    max(result.processing_ms or result.detection_ms, default=0), 3
+                ),
             }
         )
 
     cpu_values = [sample["cpuPercent"] for sample in monitor_samples]
     memory_values = [sample["workingSetMB"] for sample in monitor_samples]
     detection_p95 = percentile(all_detection_ms, 95)
-    if detection_p95 is not None and detection_p95 > 1000.0 / detection_hz:
+    processing_p95 = percentile(all_processing_ms or all_detection_ms, 95)
+    if processing_p95 is not None and processing_p95 > 1000.0 / detection_hz:
         failures.append(
-            f"detection latency p95 {detection_p95:.2f}ms exceeds one {detection_hz:g}Hz interval"
+            f"processing latency p95 {processing_p95:.2f}ms exceeds one {detection_hz:g}Hz interval"
         )
     cpu_p95 = percentile(cpu_values, 95) or 0
     if cpu_p95 > max_cpu_percent:
         failures.append(f"process tree CPU p95 {cpu_p95:.2f}% exceeds {max_cpu_percent:.2f}%")
+    gpu_values = [sample["gpuPercent"] for sample in gpu_monitor_samples]
+    decoder_values = [sample["decoderPercent"] for sample in gpu_monitor_samples]
+    gpu_memory_values = [sample["memoryUsedMB"] for sample in gpu_monitor_samples]
     return {
         "sourceCount": count,
         "passed": not failures,
@@ -502,8 +798,13 @@ def run_case(
         "minimumDecodeFps": round(minimum_decode_fps, 3),
         "minimumDetectionFps": round(minimum_detection_fps, 3),
         "detectionMsP95": round(detection_p95 or 0, 3),
+        "processingMsP95": round(processing_p95 or 0, 3),
         "cpuPercentP95": round(cpu_p95, 3),
         "workingSetMBMax": round(max(memory_values) if memory_values else 0, 3),
+        "gpuPercentP95": round(percentile(gpu_values, 95) or 0, 3),
+        "decoderPercentP95": round(percentile(decoder_values, 95) or 0, 3),
+        "gpuMemoryUsedMBMax": round(max(gpu_memory_values) if gpu_memory_values else 0, 3),
+        "gpuMonitorSamples": len(gpu_monitor_samples),
         "failures": failures,
         "workers": worker_summaries,
     }
@@ -516,22 +817,33 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--detection-hz", type=float, default=DEFAULT_DETECTION_HZ)
     parser.add_argument("--quality", type=float, default=0.6)
-    parser.add_argument("--decoder", choices=("opencv", "qsv", "cuda", "nvcodec"), default="opencv")
+    parser.add_argument(
+        "--decoder",
+        choices=(
+            "opencv",
+            "qsv",
+            "cuda",
+            "nvcodec",
+            "nvcodec-gpu",
+            "nvcodec-gpu-batch",
+        ),
+        default="opencv",
+    )
     parser.add_argument("--ffmpeg", help="FFmpeg executable with QSV/CUDA support")
     parser.add_argument("--max-cpu-percent", type=float, default=60.0)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.duration < 5:
         parser.error("--duration must be at least 5 seconds")
-    if args.detection_hz <= 0 or args.detection_hz > 50:
-        parser.error("--detection-hz must be in (0, 50]")
+    if args.detection_hz <= 0 or args.detection_hz > 60:
+        parser.error("--detection-hz must be in (0, 60]")
     if args.quality <= 0 or args.quality > 1:
         parser.error("--quality must be in (0, 1]")
     if args.max_cpu_percent <= 0 or args.max_cpu_percent > 100:
         parser.error("--max-cpu-percent must be in (0, 100]")
     if args.decoder in ("qsv", "cuda") and (not args.ffmpeg or not Path(args.ffmpeg).is_file()):
         parser.error("hardware decoder requires an existing --ffmpeg executable")
-    if args.decoder == "nvcodec":
+    if args.decoder in ("nvcodec", "nvcodec-gpu", "nvcodec-gpu-batch"):
         try:
             load_nvcodec()
         except RuntimeError as exc:
@@ -548,6 +860,24 @@ def main() -> int:
         "codecFourCC": int(capture.get(cv2.CAP_PROP_FOURCC)),
     }
     capture.release()
+    if args.decoder in ("nvcodec-gpu", "nvcodec-gpu-batch"):
+        try:
+            from GpuArucoDetector import GpuArucoDetector
+
+            prewarm = GpuArucoDetector(allowed_marker_ids=range(50))
+            prewarm_height, prewarm_width = prewarm.decoder.resized_shape(
+                metadata["height"], args.quality
+            )
+            blank = prewarm.cp.full(
+                (prewarm_height, prewarm_width), 255, dtype=prewarm.cp.uint8
+            )
+            if args.decoder == "nvcodec-gpu-batch":
+                prewarm.detect_batch(blank[None])
+            else:
+                prewarm.detect(blank)
+            prewarm.cp.cuda.Stream.null.synchronize()
+        except RuntimeError as exc:
+            parser.error(str(exc))
     minimum_input_fps = args.detection_hz * MINIMUM_RATE_FACTOR
     if metadata["fps"] < minimum_input_fps:
         parser.error(
@@ -568,12 +898,13 @@ def main() -> int:
             metadata["width"],
             metadata["height"],
             args.max_cpu_percent,
+            find_nvidia_smi(),
         )
         cases.append(case)
         print(
             f"  {'PASS' if case['passed'] else 'FAIL'} "
             f"decode={case['minimumDecodeFps']:.2f}fps detect={case['minimumDetectionFps']:.2f}fps "
-            f"latency-p95={case['detectionMsP95']:.2f}ms cpu-p95={case['cpuPercentP95']:.2f}%",
+            f"processing-p95={case['processingMsP95']:.2f}ms cpu-p95={case['cpuPercentP95']:.2f}%",
             flush=True,
         )
 

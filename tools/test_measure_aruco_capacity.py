@@ -57,6 +57,20 @@ class MeasureArucoCapacityTest(unittest.TestCase):
         self.assertEqual((4, 6), gray.shape)
         self.assertLess(int(gray.max()), 255)
 
+    def test_parse_nvidia_smi_sample(self):
+        self.assertEqual(
+            {"gpuPercent": 12.0, "decoderPercent": 34.0, "memoryUsedMB": 567.0},
+            MODULE.parse_nvidia_smi_sample("12, 34, 567"),
+        )
+        self.assertIsNone(MODULE.parse_nvidia_smi_sample("N/A, 1, 2"))
+
+    def test_record_marker_observation_tracks_raw_and_frame_presence(self):
+        result = MODULE.WorkerResult(source_id=1)
+        MODULE.record_marker_observation(result, [1, 1, 3])
+        self.assertEqual(1, result.marker_frames)
+        self.assertEqual({1: 2, 3: 1}, result.marker_ids)
+        self.assertEqual({1: 1, 3: 1}, result.marker_id_frames)
+
     def test_group_detection_frames_tolerates_short_detection_gaps(self):
         self.assertEqual(
             [

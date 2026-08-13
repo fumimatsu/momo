@@ -50,6 +50,8 @@ git pull --ff-only
 
 - PyNvVideoCodec 2.2.0
 - NVIDIA CUDA Runtime 12.9.79
+- NVIDIA CUDA NVRTC 12.9.86
+- CuPy CUDA 12x 14.1.1
 - OpenCV contrib headless 4.10.0.84
 - NumPy 2.5.2
 - psutil 7.2.2
@@ -89,6 +91,28 @@ $input = '.\tools\.artifacts\aruco-input\cpu-shadow-20260731T122739445Z-732b1f8f
   -DetectionHz 50 -Decoder nvcodec
 ```
 
+`-IncludeNvCodec`は小さなCuPy `RawKernel`のcompileと実行も行う。初期化が成功すれば、GPU ArUco
+試験を始める前にPyNvVideoCodec import、CUDA runtime読込、CuPy、NVRTCまで確認できている。
+
+## 3.1 GPU-only ID PoC
+
+direct NVDEC smoke testの後、GPU検証を2段階で実行する。
+
+```powershell
+.\tools\Validate-GpuArucoId.ps1 `
+  -InputPath $input -FrameCount 1500 -ExpectedMarkerIds 1,2,3
+.\tools\Validate-GpuArucoDetector.ps1 `
+  -InputPath $input -FrameCount 1500 -ExpectedMarkerIds 1,2,3
+```
+
+1つ目はCPUが出したcandidate cornersを使い、marker正規化と辞書decodeだけを検証する。2つ目は
+candidate抽出もGPUで行う。OpenCVへ渡す画像copyは比較用oracleだけであり、
+`cpuOracleHostBytes`へ分離して記録する。実際のGPU検出経路がhostへ返すのはallowlist済みIDと
+candidate数の診断値だけである。
+
+本番allowlistへ辞書の50 IDすべてを指定しない。対象courseとrunで設置したIDだけを設定する。
+単一frameでGPU IDが一致しても、通過debounceは必須である。
+
 `decode`と`detect`が47.5 FPS以上で、worker errorがないことを確認する。失敗した場合は台数試験へ
 進まず、driver、GPU認識、Python architecture、CUDA runtime、入力codecを確認する。
 
@@ -126,6 +150,41 @@ Core i7-8700上のCPU ArUcoが先に上限へ達する可能性が高い。合�
 運用marker ID 1、2、3のframe-set一致率99%以上と、3 detection frame以上のqualified group数一致を
 要求する。unknown IDとisolatedな単発検出は診断へ残し、course allowlistと通過debounceなしに
 race event化しない。
+
+GPU-only経路をCPU OpenCV経路と同条件で比較する場合は次を実行する。
+
+```powershell
+.\tools\Compare-CpuGpuArucoCapacity.ps1 `
+  -InputPath $input -SourceCounts 1,4,8,12,16 -DurationSeconds 30 `
+  -DetectionHz 50 -RecognitionQuality 0.6 `
+  -OutputDirectory ".\tools\.artifacts\cpu-gpu-aruco-capacity\$env:COMPUTERNAME"
+```
+
+既定のGPU backendは複数sourceを1回のGPU処理へ束ねる`nvcodec-gpu-batch`である。旧来の
+source別同期実装を比較する場合だけ`-GpuDecoder nvcodec-gpu`を指定する。
+
+60 FPS入力は`-DetectionHz 60`で測定できる。合格条件は57 Hz以上かつprocessing p95が
+16.67ms以下となるため、50 Hz結果の台数を転用しない。
+
+MADSYSTEM `ArUcoWebCamMulti`相当の2x2合成入力を検証する場合は、1920x1080 / 60 FPSの
+各象限へ960x540のFPV映像を配置した入力を用意し、次を実行する。
+
+```powershell
+.\tools\Validate-GpuArucoQuadrants.ps1 `
+  -InputPath .\tools\.artifacts\aruco-input\20260323-quad-1080p60-30s.mp4 `
+  -FrameCount 1800 -ExpectedMarkerIds 1 `
+  -OutputDirectory .\tools\.artifacts\gpu-aruco-quadrants\local-2x2-60fps
+```
+
+この試験は1回のNVDEC、GPU上の4区画分割、4区画のbatch検出を測る。CPU oracleは区画ごとの
+検出結果比較専用で、GPU処理時間には含めない。`frameWallMsP95 <= 16.67`、57 FPS以上、全区画の
+通過group一致を確認する。現行MADSYSTEMは全体を1回検出して中心座標で区画へ振り分けるため、
+この試験は出力責務の置換可能性を測るもので、内部アルゴリズムの完全再現ではない。
+
+`expectedMarkerInstanceCounts`は同一IDの物理マーカー枚数を保持し、
+`expectedMarkerFrameCounts`はIDが1枚以上見えたフレーム数を示す。通過判定の検証では後者だけを
+見て合格にしてはならない。`Validate-GpuArucoDetector.ps1`はpresenceとinstanceの両方に
+precision 98%以上、recall 95%以上を要求する。
 
 ## 6. 運用候補のsoak
 
@@ -166,6 +225,8 @@ Relay/WebRTCからmarker eventまでのE2E合格を本番上限の条件とす�
 | --- | --- | --- |
 | PyNvVideoCodec | 2.2.0 | MIT。packageのNOTICESにFFmpeg LGPL v3を含む |
 | NVIDIA CUDA Runtime | 12.9.79 | NVIDIA proprietary EULA |
+| NVIDIA CUDA NVRTC | 12.9.86 | NVIDIA proprietary EULA |
+| CuPy CUDA 12x | 14.1.1 | MIT |
 | OpenCV Python package | 4.10.0.84 | MIT wrapper、同梱OpenCVはApache 2.0 |
 | NumPy | 2.5.2 | BSD-3-Clauseほか |
 | psutil | 7.2.2 | BSD-3-Clause |
