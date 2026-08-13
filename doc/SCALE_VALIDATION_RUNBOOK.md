@@ -109,3 +109,31 @@ $env:MOMO_GO_EXE = 'C:\Program Files\Go\bin\go.exe'
 - QSV/CUDAが失敗した場合はsoftware結果を採用し、driver更新後に再測定する。
 - 10分合格は候補確定、1時間複数回合格を本番上限確定とする。
 - 録画capacityはWebRTC end-to-end保証ではない。Marker Observer完成後にRelay受信込みで再測定する。
+
+## 6. 50 Hz比較プロファイル
+
+50 FPS入力を全フレーム認識する場合は、25 Hzの通常試験とは成果物ディレクトリを分ける。
+合格条件は最低入力・検出47.5 FPS、検出処理latency p95 20 ms以下、process tree CPU p95 60%以下である。
+計測器は入力映像が47.5 FPS未満の場合、補間による見かけ上の50 Hz計測を防ぐため開始前に失敗する。
+
+最初は1、2、4台から開始し、合格が続く間だけ6、8台へ増やす。
+
+```powershell
+.\tools\Invoke-ArucoCapacitySuite.ps1 `
+  -InputPath .\tools\.artifacts\aruco-input\cpu-shadow-20260731T122739445Z-732b1f8f-upright-h264.mp4 `
+  -SourceCounts 1,2,4,6,8 `
+  -DurationSeconds 30 -DetectionHz 50 `
+  -OutputDirectory .\tools\.artifacts\aruco-capacity-suite\50hz-$env:COMPUTERNAME
+```
+
+最大合格台数が分かったら、その台数だけ10分確認する。decoderはsuiteで最も余力があった経路を指定する。
+
+```powershell
+.\tools\Measure-ArucoCapacity.ps1 `
+  -InputPath .\tools\.artifacts\aruco-input\cpu-shadow-20260731T122739445Z-732b1f8f-upright-h264.mp4 `
+  -SourceCounts 4 -DurationSeconds 600 -DetectionHz 50 -Decoder qsv `
+  -OutputPath .\tools\.artifacts\aruco-capacity-suite\50hz-$env:COMPUTERNAME\qsv-soak-report.json
+```
+
+25 Hzと50 Hzは同じPC、電源プラン、driver、入力hash、recognition qualityで比較する。
+台数上限だけでなく、`environment.json`と各reportの`acceptance`、CPU p95、検出latency p95を一緒に残す。
