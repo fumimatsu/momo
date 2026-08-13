@@ -34,9 +34,14 @@ if (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue) {
     })
 }
 $activePowerPlan = (& powercfg /GETACTIVESCHEME 2>$null) -join ' '
-if ([string]::IsNullOrWhiteSpace($GoExecutable)) {
-    $goCommand = Get-Command go -ErrorAction SilentlyContinue
-    if ($null -ne $goCommand) { $GoExecutable = $goCommand.Source }
+try {
+    $GoExecutable = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') `
+        -RequestedPath $GoExecutable `
+        -RequiredVersionPattern 'go1\.26(?:\.|\s)'
+}
+catch {
+    Write-Warning $_.Exception.Message
+    $GoExecutable = ""
 }
 $goVersion = if (-not [string]::IsNullOrWhiteSpace($GoExecutable) -and (Test-Path -LiteralPath $GoExecutable)) { (& $GoExecutable version) -join ' ' } else { $null }
 $result = [ordered]@{

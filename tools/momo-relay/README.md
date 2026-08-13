@@ -328,9 +328,15 @@ Reliable/Ordered channelのopen、接続前履歴を含む初回snapshot、V2 `i
 Relayから外部Viewerへ配る確定イベント区間の試験である。
 
 ```powershell
-go test -run '^TestMomoEventsDataChannelEndToEnd$' -v
-go test ./...
+.\tools\Invoke-RelayTests.ps1 -Run '^TestMomoEventsDataChannelEndToEnd$'
+.\tools\Invoke-RelayTests.ps1
+# CGO_ENABLED=1とC compilerがある環境、またはLinux CIで実行
+.\tools\Invoke-RelayTests.ps1 -Race
 ```
+
+`Invoke-RelayTests.ps1`は`PATH`だけに依存せず、`MOMO_GO_EXE`、repository内toolchain、
+Codex toolchain、Scoop、標準installer、registry、`MOMO_TOOLCHAIN_ROOTS`の順にGoを探索する。
+直接`go test`を実行して見つからない場合も、未導入と判断する前にこのwrapperを使う。
 
 GitHub ActionsはWindowsで通常の全試験、Linuxで`go test -race ./...`を実行する。
 

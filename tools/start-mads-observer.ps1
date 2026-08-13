@@ -43,7 +43,6 @@ if ($HealthRecoveryMode -in @('pit-marker', 'hybrid')) {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $relayDirectory = Join-Path $repoRoot 'tools\momo-relay'
 $relayExe = Join-Path $relayDirectory 'momo-local-relay-device-input-v15.exe'
-$bundledGoExe = Join-Path $relayDirectory '.toolchain\go\bin\go.exe'
 $observerExe = Join-Path $repoRoot '_build\windows_x86_64\release\momo\Release\momo.exe'
 $relayLogDirectory = $relayDirectory
 $resolvedRelayConfigPath = if ([string]::IsNullOrWhiteSpace($RelayConfigPath)) {
@@ -96,18 +95,9 @@ if (($RebuildRelay -or $RestartRelay) -and $relayRunning.Count -gt 0) {
 }
 
 if ($RebuildRelay) {
-    $pathGoExe = (Get-Command go.exe -ErrorAction SilentlyContinue).Source
-    $goExe = @(
-        $GoExecutable
-        $bundledGoExe
-        'D:\app\go1.26.5\go\bin\go.exe'
-        $pathGoExe
-    ) | Where-Object {
-        -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_)
-    } | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($goExe)) {
-        throw 'Go toolchain was not found. Set -GoExecutable or MOMO_GO_EXE.'
-    }
+    $goExe = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') `
+        -RequestedPath $GoExecutable `
+        -RequiredVersionPattern 'go1\.26(?:\.|\s)'
     Push-Location $relayDirectory
     try {
         & $goExe build -trimpath -o $relayExe .

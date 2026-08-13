@@ -31,23 +31,9 @@ $artifactRoot = if ([string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
 
-if ([string]::IsNullOrWhiteSpace($GoExecutable)) {
-    $candidates = @(@(
-        $env:MOMO_GO_EXE,
-        "D:\app\go1.26.5\go\bin\go.exe",
-        (Join-Path $relayDir ".toolchain\go\bin\go.exe"),
-        $(if (Get-Command go -ErrorAction SilentlyContinue) { (Get-Command go).Source } else { $null })
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) })
-    if ($candidates.Count -gt 0) { $GoExecutable = $candidates[0] }
-}
-if ([string]::IsNullOrWhiteSpace($GoExecutable) -or -not (Test-Path -LiteralPath $GoExecutable)) {
-    throw "Go 1.26 executable was not found. Set -GoExecutable or MOMO_GO_EXE."
-}
-
-$goVersion = & $GoExecutable version
-if ($LASTEXITCODE -ne 0 -or $goVersion -notmatch 'go1\.26') {
-    throw "Go 1.26 is required by tools/momo-relay/go.mod; found: $goVersion"
-}
+$GoExecutable = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') `
+    -RequestedPath $GoExecutable `
+    -RequiredVersionPattern 'go1\.26(?:\.|\s)'
 & (Join-Path $PSScriptRoot 'Get-ScaleTestEnvironment.ps1') `
     -GoExecutable $GoExecutable -OutputPath (Join-Path $artifactRoot 'environment.json') | Out-Null
 
