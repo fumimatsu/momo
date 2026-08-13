@@ -109,6 +109,23 @@
     return profile ? { profile: { ...profile }, identity, gamepad } : null;
   }
 
+  function getCalibrationButtonAction({
+    buttonIndex,
+    confirmButton,
+    stepKind,
+  } = {}) {
+    if (!Number.isInteger(buttonIndex)) {
+      return 'ignore';
+    }
+    if (stepKind === 'confirm') {
+      return 'select-confirm';
+    }
+    if (Number.isInteger(confirmButton) && buttonIndex === confirmButton) {
+      return stepKind === 'mapping' ? 'reserved-confirm' : 'confirm';
+    }
+    return stepKind === 'mapping' ? 'assign' : 'ignore';
+  }
+
   window.FpvGamepadProfiles = {
     STORAGE_KEY,
     STORE_VERSION,
@@ -120,5 +137,6 @@
     removeProfile,
     parseGamepadIdentity,
     profileForGamepad,
+    getCalibrationButtonAction,
   };
 })();

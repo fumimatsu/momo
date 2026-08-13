@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260814-blue-flag-gap-v2';
+  const PILOT_BUILD_ID = '20260814-calibration-confirm-v3';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -87,6 +87,7 @@
     strong: Object.freeze({ scale: 2.00, label: 'Strong' }),
   });
   const CALIBRATION_STEPS = Object.freeze([
+    Object.freeze({ id: 'confirmButton', title: 'CONFIRM BUTTON', instruction: '以降の記録と保存に使う決定ボタンを一度押してください。このボタンは走行操作には割り当てません。', button: true, confirm: true }),
     Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。' }),
     Object.freeze({ id: 'steeringRight', title: 'STEERING / FULL RIGHT', instruction: 'ハンドルを右端まで回し、その位置を保ったまま現在値を記録します。' }),
     Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルから手を離して中央へ戻し、現在値を記録します。' }),
@@ -5848,13 +5849,21 @@
       ? 'Complete'
       : `Step ${calibrationState.stepIndex + 1} / ${CALIBRATION_STEPS.length}`;
     calibrationTitle.textContent = complete ? 'CALIBRATION READY' : step.title;
+    const confirmLabel = Number.isInteger(calibrationState.confirmButton)
+      ? `BUTTON ${calibrationState.confirmButton}`
+      : '';
     calibrationInstruction.textContent = complete
-      ? '記録内容を保存してViewerを再読み込みします。Driveは再読み込み後もOFFです。'
-      : step.instruction;
+      ? `${confirmLabel}を押すと記録内容を保存してViewerを再読み込みします。Driveは再読み込み後もOFFです。`
+      : step.confirm
+        ? step.instruction
+        : step.button
+          ? `${step.instruction} 決定ボタン（${confirmLabel}）は使用できません。`
+          : `${step.instruction} ${confirmLabel}を押すか、Record Currentを選択してください。`;
     btnCalibrationCapture.disabled = Boolean(step?.button);
     btnCalibrationCapture.textContent = complete
       ? 'Save & Reload'
-      : step?.button ? 'Waiting for Button' : 'Record Current';
+      : step?.confirm ? 'Waiting for Confirm Button'
+        : step?.button ? 'Waiting for Button' : 'Record Current';
     btnCalibrationBack.disabled = calibrationState.stepIndex <= 0 || complete;
     calibrationError.textContent = '';
   }
@@ -5879,6 +5888,7 @@
       stepIndex: 0,
       gamepadIndex: gamepad.index,
       startSnapshot: snapshot,
+      confirmButton: null,
       throttleIdleSnapshot: null,
       brakeIdleSnapshot: null,
       mapping: createCalibrationMapping(gamepad),
@@ -5969,6 +5979,7 @@
           calibrationState.throttleIdleSnapshot,
           current,
           new Set([mapping.steeringAxis]),
+          new Set([calibrationState.confirmButton]),
         );
         if (!change) {
           calibrationError.textContent = 'アクセル入力の変化を検出できません。奥まで踏み込んでください。';
@@ -5981,7 +5992,7 @@
         break;
       case 'brakePressed': {
         const excludedAxes = new Set([mapping.steeringAxis]);
-        const excludedButtons = new Set();
+        const excludedButtons = new Set([calibrationState.confirmButton]);
         if (mapping.throttleAxis !== null) excludedAxes.add(mapping.throttleAxis);
         if (mapping.throttleButton !== null) excludedButtons.add(mapping.throttleButton);
         change = findCalibrationChange(calibrationState.brakeIdleSnapshot, current, excludedAxes, excludedButtons);
@@ -6037,15 +6048,30 @@
     const snapshot = snapshotCalibrationInput(gamepad);
     calibrationLive.textContent = describeCalibrationInput(snapshot);
     const step = CALIBRATION_STEPS[calibrationState.stepIndex];
-    if (!step?.button) {
-      return;
-    }
     for (let index = 0; index < gamepad.buttons.length; index += 1) {
       const pressed = getGamepadButtonValue(gamepad, index) >= 0.5;
       const previous = calibrationButtonState.get(index) === true;
       calibrationButtonState.set(index, pressed);
       if (pressed && !previous) {
-        captureCalibrationButton(gamepad, index);
+        const stepKind = step?.confirm
+          ? 'confirm'
+          : step?.button ? 'mapping' : 'capture';
+        const action = window.FpvGamepadProfiles?.getCalibrationButtonAction?.({
+          buttonIndex: index,
+          confirmButton: calibrationState.confirmButton,
+          stepKind,
+        }) || 'ignore';
+        if (action === 'select-confirm') {
+          calibrationState.confirmButton = index;
+          calibrationLive.textContent = `CONFIRM: BUTTON ${index} / ${gamepad.id || 'Unknown gamepad'}`;
+          advanceCalibration(gamepad);
+        } else if (action === 'confirm') {
+          captureCalibrationStep();
+        } else if (action === 'assign') {
+          captureCalibrationButton(gamepad, index);
+        } else if (action === 'reserved-confirm') {
+          calibrationError.textContent = `BUTTON ${index} は決定ボタンとして予約されています。別のボタンを押してください。`;
+        }
         break;
       }
     }
