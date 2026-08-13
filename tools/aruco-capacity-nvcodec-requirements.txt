@@ -1,0 +1,2 @@
+PyNvVideoCodec==2.2.0
+nvidia-cuda-runtime-cu12==12.9.79; platform_system == "Windows"

@@ -5,7 +5,7 @@ param(
     [ValidateRange(5, 3600)][int]$DurationSeconds = 30,
     [ValidateRange(1, 50)][double]$DetectionHz = 25,
     [ValidateRange(0.1, 1.0)][double]$RecognitionQuality = 0.6,
-    [ValidateSet('opencv', 'qsv', 'cuda')][string]$Decoder = 'opencv',
+    [ValidateSet('opencv', 'qsv', 'cuda', 'nvcodec')][string]$Decoder = 'opencv',
     [ValidateRange(1, 100)][double]$MaxCpuPercent = 60,
     [switch]$AllowCapacityFailure,
     [string]$PythonExecutable = "",

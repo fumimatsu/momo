@@ -6,7 +6,7 @@ param(
     [ValidateRange(1, 50)][double]$DetectionHz = 25,
     [ValidateRange(0.1, 1.0)][double]$RecognitionQuality = 0.6,
     [ValidateRange(1, 100)][double]$MaxCpuPercent = 60,
-    [ValidateSet('opencv', 'qsv', 'cuda')][string[]]$Decoders = @('opencv', 'qsv', 'cuda'),
+    [ValidateSet('opencv', 'qsv', 'cuda', 'nvcodec')][string[]]$Decoders = @('opencv', 'qsv', 'cuda'),
     [string]$PythonExecutable = "",
     [string]$FfmpegExecutable = "",
     [string]$OutputDirectory = ""
@@ -46,7 +46,7 @@ foreach ($decoder in $Decoders) {
         PythonExecutable = $PythonExecutable
         OutputPath = $reportPath
     }
-    if ($decoder -ne 'opencv') { $arguments.FfmpegExecutable = $FfmpegExecutable }
+    if ($decoder -in @('qsv', 'cuda')) { $arguments.FfmpegExecutable = $FfmpegExecutable }
     & (Join-Path $PSScriptRoot 'Measure-ArucoCapacity.ps1') @arguments
     $exitCode = $LASTEXITCODE
     if (-not (Test-Path -LiteralPath $reportPath)) {

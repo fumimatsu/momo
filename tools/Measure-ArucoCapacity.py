@@ -8,17 +8,22 @@ import json
 import math
 import os
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cv2
+import numpy as np
 import psutil
 
 
 DEFAULT_DETECTION_HZ = 25.0
 MINIMUM_RATE_FACTOR = 0.95
+_DLL_DIRECTORY_HANDLES: list[object] = []
+_NV_CODEC_MODULE = None
+_NV_CODEC_LOCK = threading.Lock()
 
 
 @dataclass
@@ -63,6 +68,52 @@ def make_detector() -> cv2.aruco.ArucoDetector:
     parameters.minOtsuStdDev = 0.8
     parameters.errorCorrectionRate = 0.6
     return cv2.aruco.ArucoDetector(dictionary, parameters)
+
+
+def find_nvcodec_cuda_root(prefix: Path | None = None) -> Path | None:
+    candidates: list[Path] = []
+    cuda_path = os.environ.get("CUDA_PATH")
+    if cuda_path:
+        candidates.append(Path(cuda_path))
+    if prefix is not None:
+        candidates.append(prefix / "Lib" / "site-packages" / "nvidia" / "cuda_runtime")
+    candidates.append(Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cuda_runtime")
+    for candidate in candidates:
+        if (candidate / "bin" / "cudart64_12.dll").is_file():
+            return candidate.resolve()
+    return None
+
+
+def load_nvcodec():
+    global _NV_CODEC_MODULE
+    with _NV_CODEC_LOCK:
+        if _NV_CODEC_MODULE is not None:
+            return _NV_CODEC_MODULE
+        if os.name == "nt":
+            cuda_root = find_nvcodec_cuda_root()
+            if cuda_root is not None:
+                os.environ["CUDA_PATH"] = str(cuda_root)
+                _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(cuda_root / "bin")))
+        try:
+            import PyNvVideoCodec as nvc
+        except (ImportError, OSError) as exc:
+            raise RuntimeError(
+                "nvcodec backend requires PyNvVideoCodec and the CUDA 12 runtime; "
+                "run Initialize-ArucoCapacity.ps1 -IncludeNvCodec"
+            ) from exc
+        _NV_CODEC_MODULE = nvc
+        return _NV_CODEC_MODULE
+
+
+def prepare_nvcodec_luma(nv12: np.ndarray, source_width: int, source_height: int, quality: float) -> np.ndarray:
+    if nv12.ndim != 2 or nv12.shape[0] < source_height or nv12.shape[1] < source_width:
+        raise ValueError(f"unexpected NV12 frame shape: {nv12.shape}")
+    resized_height = max(1, int(source_height * quality))
+    resized_width = max(1, int(resized_height * 16.0 / 9.0))
+    resized_height -= resized_height % 2
+    resized_width -= resized_width % 2
+    luma = nv12[:source_height, :source_width]
+    return cv2.resize(luma, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
 
 
 def run_worker(
@@ -233,6 +284,60 @@ def run_hardware_worker(
             result.error = stderr.decode("utf-8", errors="replace").strip() or "hardware_video_read_failed"
 
 
+def run_nvcodec_worker(
+    source_id: int,
+    video_path: str,
+    duration: float,
+    detection_hz: float,
+    quality: float,
+    source_width: int,
+    source_height: int,
+    start_event: threading.Event,
+    result: WorkerResult,
+) -> None:
+    decoder = None
+    try:
+        nvc = load_nvcodec()
+        decoder = nvc.ThreadedDecoder(video_path, 8, gpu_id=0, use_device_memory=False)
+        metadata = decoder.get_stream_metadata()
+        source_fps = float(metadata.average_fps) if metadata.average_fps > 0 else 50.0
+        detector = make_detector()
+        start_event.wait()
+        started_at = time.perf_counter()
+        deadline = started_at + duration
+        next_frame_at = started_at
+        frame_interval = 1.0 / min(source_fps, detection_hz)
+        while time.perf_counter() < deadline:
+            now = time.perf_counter()
+            if now < next_frame_at:
+                time.sleep(min(next_frame_at - now, 0.002))
+                continue
+            frames = decoder.get_batch_frames(1)
+            if not frames:
+                decoder.reconfigure_decoder(video_path, 0)
+                continue
+            nv12 = np.from_dlpack(frames[0])
+            gray = prepare_nvcodec_luma(nv12, source_width, source_height, quality)
+            detection_started = time.perf_counter()
+            _, ids, _ = detector.detectMarkers(gray)
+            result.detection_ms.append((time.perf_counter() - detection_started) * 1000)
+            result.decoded_frames += 1
+            result.detections += 1
+            next_frame_at += frame_interval
+            if next_frame_at < now - frame_interval:
+                next_frame_at = now
+            if ids is not None:
+                result.marker_frames += 1
+                for marker_id in ids.flatten():
+                    value = int(marker_id)
+                    result.marker_ids[value] = result.marker_ids.get(value, 0) + 1
+    except Exception as exc:  # pragma: no cover - diagnostic boundary
+        result.error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if decoder is not None:
+            decoder.end()
+
+
 def monitor_process(stop_event: threading.Event, samples: list[dict[str, float]]) -> None:
     process = psutil.Process(os.getpid())
     logical_cpus = psutil.cpu_count(logical=True) or 1
@@ -304,6 +409,25 @@ def run_case(
             )
             for result in results
         ]
+    elif decoder == "nvcodec":
+        threads = [
+            threading.Thread(
+                target=run_nvcodec_worker,
+                args=(
+                    result.source_id,
+                    video_path,
+                    duration,
+                    detection_hz,
+                    quality,
+                    source_width,
+                    source_height,
+                    start_event,
+                    result,
+                ),
+                name=f"aruco-source-{result.source_id:02d}",
+            )
+            for result in results
+        ]
     else:
         threads = [
             threading.Thread(
@@ -339,7 +463,9 @@ def run_case(
         if result.error:
             failures.append(f"source {result.source_id}: {result.error}")
         minimum_required_decode_fps = (
-            detection_hz * MINIMUM_RATE_FACTOR if decoder in ("qsv", "cuda") else 50.0 * MINIMUM_RATE_FACTOR
+            detection_hz * MINIMUM_RATE_FACTOR
+            if decoder in ("qsv", "cuda", "nvcodec")
+            else 50.0 * MINIMUM_RATE_FACTOR
         )
         if decode_fps < minimum_required_decode_fps:
             failures.append(
@@ -390,7 +516,7 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--detection-hz", type=float, default=DEFAULT_DETECTION_HZ)
     parser.add_argument("--quality", type=float, default=0.6)
-    parser.add_argument("--decoder", choices=("opencv", "qsv", "cuda"), default="opencv")
+    parser.add_argument("--decoder", choices=("opencv", "qsv", "cuda", "nvcodec"), default="opencv")
     parser.add_argument("--ffmpeg", help="FFmpeg executable with QSV/CUDA support")
     parser.add_argument("--max-cpu-percent", type=float, default=60.0)
     parser.add_argument("--output", required=True)
@@ -405,6 +531,11 @@ def main() -> int:
         parser.error("--max-cpu-percent must be in (0, 100]")
     if args.decoder in ("qsv", "cuda") and (not args.ffmpeg or not Path(args.ffmpeg).is_file()):
         parser.error("hardware decoder requires an existing --ffmpeg executable")
+    if args.decoder == "nvcodec":
+        try:
+            load_nvcodec()
+        except RuntimeError as exc:
+            parser.error(str(exc))
     input_path = Path(args.input).resolve()
     if not input_path.is_file():
         parser.error(f"input does not exist: {input_path}")

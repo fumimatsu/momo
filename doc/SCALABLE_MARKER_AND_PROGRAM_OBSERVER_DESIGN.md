@@ -3,7 +3,7 @@
 ## Status
 
 - 状態: foundation-measured
-- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定を実装。Marker Observer本体とAuto Directorは未着手
+- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較を実装。Marker Observer本体とAuto Directorは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
 
@@ -130,6 +130,18 @@ Relay 32台とArUco nodeは別々に測定しており、同一PCへ同居させ
 現在のMomo Windows buildが公開するH.264 hardware decoderはIntel VPLであり、CUDA結果は将来の
 Marker ObserverがFFmpeg/NVDEC経路を採用した場合の比較値である。現段階の試験は録画を独立processへ
 入力したcapacity試験で、WebRTC受信からArUco eventまでのend-to-end保証ではない。
+
+Ryzen 7 9700X、RTX 5070、64GB RAMの別PCでは、50 Hz direct NVDEC Phase 1を追加測定した。
+NVIDIA PyNvVideoCodecを同一processで使用し、host NV12のY planeから既存CPU ArUcoへ渡した結果、
+16 sourceが49.69 Hz、検出latency p95 9.04ms、CPU p95 59.62%で30秒合格した。17 sourceは
+49.65 Hzを維持したがCPU p95 62.19%で不合格だった。これは短時間capacity境界であり、運用上限ではない。
+運用候補12 sourceの10分soakは最低49.988 Hz、検出latency p95 7.971ms、CPU p95 44.531%、
+最大working set 466.352MBで合格し、172秒の入力終端を複数回越えて再開した。同一frame indexの
+1500 frame比較は、運用marker ID 1、2、3のframe-set一致率99.333%、全ID完全一致率98.2%だった。
+ID 1、2、3の総検出回数と、3 frame以上継続した検出group数は一致した。isolatedな1 frame誤検出は
+course allowlistだけでなく通過debounceでもevent化を防ぐ。direct NVDECの暫定運用候補は
+12 source/nodeとするが、1時間soakとWebRTC受信からevent配信までのend-to-end試験後に確定する。
+詳細は[GPU ArUco Implementation Plan](GPU_ARUCO_IMPLEMENTATION_PLAN.md)を参照する。
 
 ## 非目標
 

@@ -39,7 +39,8 @@ hardware decodeに対応しない場合は、対応buildを`-FfmpegExecutable`�
 ```powershell
 git clone https://github.com/fumimatsu/momo.git D:\src\momo
 Set-Location D:\src\momo
-git switch codex/relay-scale-foundation
+git switch master
+git pull --ff-only
 
 .\tools\Initialize-ArucoCapacity.ps1
 Get-FileHash D:\recordings\cpu-shadow-20260731T122739445Z-732b1f8f.webm -Algorithm SHA256
@@ -137,3 +138,36 @@ $env:MOMO_GO_EXE = 'C:\Program Files\Go\bin\go.exe'
 
 25 Hzと50 Hzは同じPC、電源プラン、driver、入力hash、recognition qualityで比較する。
 台数上限だけでなく、`environment.json`と各reportの`acceptance`、CPU p95、検出latency p95を一緒に残す。
+
+## 7. NVIDIA direct NVDEC比較
+
+別PCで最初から実施する場合は、対応driver、固定dependency、RTX 3060向けの探索順、parity、soak、
+license境界までまとめた
+[Direct NVDEC ArUco Validation Guide](DIRECT_NVDEC_ARUCO_VALIDATION_GUIDE.md)を先に使用する。
+
+FFmpeg subprocess経路とは別に、NVIDIA PyNvVideoCodecを同一測定processで使う`nvcodec` backendを
+比較できる。これはNVDEC後のNV12 Y planeだけをhostへ渡し、ArUco検出自体はCPUで行うPhase 1である。
+GPU ArUco実装ではないが、sourceごとのFFmpeg process、rawvideo pipe、gray変換を除去できる。
+
+```powershell
+.\tools\Initialize-ArucoCapacity.ps1 -IncludeNvCodec
+.\tools\Measure-ArucoCapacity.ps1 `
+  -InputPath .\tools\.artifacts\aruco-input\cpu-shadow-20260731T122739445Z-732b1f8f-upright-h264.mp4 `
+  -SourceCounts 4,8,10,12,14,16,17 `
+  -DurationSeconds 30 -DetectionHz 50 -Decoder nvcodec
+```
+
+同一frame indexのCPU基準比較と、候補台数の10分soakを続けて行う。
+
+```powershell
+.\tools\Compare-ArucoBackends.ps1 `
+  -InputPath .\tools\.artifacts\aruco-input\cpu-shadow-20260731T122739445Z-732b1f8f-upright-h264.mp4 `
+  -FrameCount 1500
+.\tools\Measure-ArucoCapacity.ps1 `
+  -InputPath .\tools\.artifacts\aruco-input\cpu-shadow-20260731T122739445Z-732b1f8f-upright-h264.mp4 `
+  -SourceCounts 12 -DurationSeconds 600 -DetectionHz 50 -Decoder nvcodec
+```
+
+`nvcodec`はNVIDIA GPUと対応driverを持つnodeだけで使用する。`opencv`をCPU基準、FFmpegの`cuda`を
+旧GPU比較として残す。device memoryのままGPU候補抽出へ進む後続設計は
+[GPU ArUco Implementation Plan](GPU_ARUCO_IMPLEMENTATION_PLAN.md)を参照する。

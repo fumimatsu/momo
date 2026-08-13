@@ -152,13 +152,28 @@ CPU/メモリは取得できないため、`-ProcessId`はRelayと同じPCで実
 ```
 
 suiteは`opencv`、`qsv`、`cuda`を順に測定し、PC構成とdriverも同じ成果物へ保存する。
-個別測定の`Decoder`にも同じ3種類を指定できる。hardware経路では対応FFmpegが必要である。
+個別測定の`Decoder`には、任意依存のPyNvVideoCodecを使う直接NVDEC経路`nvcodec`も指定できる。
+`nvcodec`を使うnodeは`Initialize-ArucoCapacity.ps1 -IncludeNvCodec`で初期化する。`qsv`と`cuda`の
+hardware経路では対応FFmpegが必要である。
+別PCへ導入する場合は
+[Direct NVDEC ArUco Validation Guide](../../doc/DIRECT_NVDEC_ARUCO_VALIDATION_GUIDE.md)に従い、
+GPU/driver確認、同一入力hash、smoke、capacity、parity、soakの順で実施する。
 合否は各sourceの出力FPS、検出FPS、検出latency p95、process tree CPU p95で判定する。
 本番上限の決定には10分以上、最終確認には1時間を使う。別PCでの完全な手順は
 [Scale Validation Runbook](../../doc/SCALE_VALIDATION_RUNBOOK.md)、結果の読み方と推奨配置は
 [Scalable Marker Observer and Program Observer Design](../../doc/SCALABLE_MARKER_AND_PROGRAM_OBSERVER_DESIGN.md)を参照する。
 50 FPS入力の全フレームを認識する比較試験は、suiteへ`-DetectionHz 50`を指定する。入力・検出47.5 FPS、
 検出latency p95 20 ms以下が自動的に合格条件となる。
+CPU基準と直接NVDECを同じframe indexで比較する場合は、次を実行する。レース運用対象IDの
+一致率と、未知IDを含む完全一致率を分けて記録する。
+
+```powershell
+../Compare-ArucoBackends.ps1 `
+  -InputPath ../.artifacts/aruco-input/cpu-shadow-upright-h264.mp4 -FrameCount 1500
+```
+
+direct NVDECの短時間上限と運用候補を分ける。短時間でCPU 60%直前まで通る台数をそのまま採用せず、
+20%以上のCPU余力を残す候補台数で10分、次に1時間を通してからnode設定へ反映する。
 
 ## LAN Pilot 車両選択
 
