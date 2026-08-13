@@ -1,0 +1,36 @@
+name: relay-test-workflow
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "tools/momo-relay/**"
+      - ".github/workflows/relay-test.yml"
+  pull_request:
+    paths:
+      - "tools/momo-relay/**"
+      - ".github/workflows/relay-test.yml"
+
+jobs:
+  relay-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            test_arguments: ./...
+          - os: ubuntu-24.04
+            test_arguments: -race ./...
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tools/momo-relay
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.0"
+          cache-dependency-path: tools/momo-relay/go.sum
+      - name: Test Relay including momo-events E2E
+        run: go test ${{ matrix.test_arguments }}

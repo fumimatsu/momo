@@ -319,6 +319,19 @@ snapshotは履歴復元専用で、ViewerはFFB、点滅、音声、HP計算を�
 配信は64件の有界専用queueへ分離し、詰まりがTelemetry受信や操縦転送を待たせない。
 詳細契約はViewer正本の`docs/authoritative-vehicle-events-implementation-plan.md`を参照する。
 
+`momo-events`の自動E2Eは、ローカルRelayのWebSocket signalingへ実Pion PeerConnectionを接続し、
+Reliable/Ordered channelのopen、接続前履歴を含む初回snapshot、V2 `impact_candidate`から確定live eventとHP減算、
+同一event再送の重複抑止を検証する。同時に元の`TEL:`が非信頼`momo-telemetry`へ届き、
+`momo-command`がopenのまま維持されることも確認する。これは車載Momoの`serial` DataChannelではなく、
+Relayから外部Viewerへ配る確定イベント区間の試験である。
+
+```powershell
+go test -run '^TestMomoEventsDataChannelEndToEnd$' -v
+go test ./...
+```
+
+GitHub ActionsはWindowsで通常の全試験、Linuxで`go test -race ./...`を実行する。
+
 MADSYSTEMが同じピット用ArUco markerを連続認識し、1秒ごとにRelayへtickを送る。
 Relayは有効なtick 1回につき10 HPと10 Fuelを同じlock内で回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
