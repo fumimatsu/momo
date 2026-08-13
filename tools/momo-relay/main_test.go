@@ -165,9 +165,19 @@ func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(time.Second)
-	for server.currentGlobalRaceState() == "" {
+	for {
+		allStatesPublished := server.currentGlobalRaceState() != ""
+		for _, source := range []*relay{first, second} {
+			if source.currentRaceState() == "" {
+				allStatesPublished = false
+				break
+			}
+		}
+		if allStatesPublished {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("canonical race state was not published")
+			t.Fatal("canonical race state was not published to the global and source streams")
 		}
 		time.Sleep(time.Millisecond)
 	}
