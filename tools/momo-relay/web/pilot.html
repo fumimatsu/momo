@@ -2163,11 +2163,268 @@
     }
 
     .calibration-instruction {
-      max-width: 700px;
-      min-height: 48px;
+      max-width: 860px;
+      min-height: 64px;
       margin: 0;
-      color: rgba(242, 249, 250, 0.78);
-      font: 600 15px/1.6 system-ui, sans-serif;
+      color: rgba(248, 252, 253, 0.96);
+      font: 750 clamp(19px, 2vw, 26px)/1.45 system-ui, sans-serif;
+      letter-spacing: 0.01em;
+      text-wrap: pretty;
+    }
+
+    .calibration-visual {
+      display: grid;
+      min-height: 180px;
+      margin-top: 18px;
+      place-items: center;
+      border: 1px solid rgba(122, 219, 237, 0.22);
+      border-radius: 12px;
+      background:
+        radial-gradient(circle at 50% 48%, rgba(35, 151, 174, 0.16), transparent 52%),
+        rgba(1, 7, 10, 0.58);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .calibration-visual::after {
+      position: absolute;
+      right: 14px;
+      bottom: 10px;
+      color: rgba(122, 219, 237, 0.72);
+      content: attr(data-hint);
+      font: 800 12px/1 system-ui, sans-serif;
+      letter-spacing: 0.14em;
+    }
+
+    .calibration-visual-scene {
+      display: none;
+      width: 100%;
+      min-height: 176px;
+      place-items: center;
+      position: relative;
+    }
+
+    .calibration-visual[data-action="connect"] .calibration-wheel-scene,
+    .calibration-visual[data-action^="steering-"] .calibration-wheel-scene,
+    .calibration-visual[data-action^="paddle-"] .calibration-wheel-scene,
+    .calibration-visual[data-action^="pedal-"] .calibration-pedal-scene,
+    .calibration-visual[data-action="button"] .calibration-button-scene,
+    .calibration-visual[data-action="complete"] .calibration-button-scene {
+      display: grid;
+    }
+
+    .calibration-wheel {
+      width: 126px;
+      height: 126px;
+      border: 10px solid #dff9fd;
+      border-radius: 50%;
+      box-shadow: 0 0 24px rgba(75, 214, 237, 0.22);
+      position: relative;
+      transform: rotate(0deg);
+    }
+
+    .calibration-wheel::before,
+    .calibration-wheel::after {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 86px;
+      height: 8px;
+      border-radius: 999px;
+      background: #dff9fd;
+      content: "";
+      transform: translate(-50%, -50%);
+    }
+
+    .calibration-wheel::after {
+      width: 64px;
+      transform: translate(-50%, -50%) rotate(90deg);
+    }
+
+    .calibration-wheel-hub {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 42px;
+      height: 42px;
+      border: 5px solid #061014;
+      border-radius: 50%;
+      background: #67dff1;
+      box-shadow: 0 0 18px rgba(103, 223, 241, 0.54);
+      transform: translate(-50%, -50%);
+      z-index: 2;
+    }
+
+    .calibration-paddle {
+      position: absolute;
+      top: 50%;
+      width: 20px;
+      height: 68px;
+      border: 2px solid rgba(223, 249, 253, 0.72);
+      border-radius: 8px;
+      background: rgba(18, 48, 58, 0.95);
+      transform: translateY(-50%);
+    }
+
+    .calibration-paddle.left { left: calc(50% - 100px); }
+    .calibration-paddle.right { right: calc(50% - 100px); }
+
+    .calibration-connect-badge {
+      display: none;
+      position: absolute;
+      left: calc(50% + 82px);
+      top: 50%;
+      padding: 8px 10px;
+      border: 2px solid #67dff1;
+      border-radius: 6px;
+      color: #dff9fd;
+      font: 900 12px/1 system-ui, sans-serif;
+      letter-spacing: 0.12em;
+      transform: translateY(-50%);
+    }
+
+    .calibration-visual[data-action="connect"] .calibration-connect-badge {
+      display: block;
+      animation: calibration-signal 1.4s ease-in-out infinite;
+    }
+
+    .calibration-visual[data-action="steering-left"] .calibration-wheel {
+      animation: calibration-steer-left 1.8s ease-in-out infinite;
+    }
+
+    .calibration-visual[data-action="steering-right"] .calibration-wheel {
+      animation: calibration-steer-right 1.8s ease-in-out infinite;
+    }
+
+    .calibration-visual[data-action="steering-center"] .calibration-wheel {
+      animation: calibration-steer-center 1.8s ease-in-out infinite;
+    }
+
+    .calibration-visual[data-action="paddle-left"] .calibration-paddle.left,
+    .calibration-visual[data-action="paddle-right"] .calibration-paddle.right {
+      animation: calibration-paddle-press 1.2s ease-in-out infinite;
+      border-color: #67dff1;
+      background: rgba(25, 143, 164, 0.86);
+      box-shadow: 0 0 20px rgba(103, 223, 241, 0.6);
+    }
+
+    .calibration-pedals {
+      display: flex;
+      align-items: flex-end;
+      gap: 42px;
+    }
+
+    .calibration-pedal {
+      display: grid;
+      width: 78px;
+      gap: 10px;
+      color: rgba(223, 249, 253, 0.62);
+      font: 800 11px/1 system-ui, sans-serif;
+      letter-spacing: 0.12em;
+      place-items: center;
+    }
+
+    .calibration-pedal-plate {
+      width: 54px;
+      height: 92px;
+      border: 4px solid currentColor;
+      border-radius: 12px 12px 18px 18px;
+      background: repeating-linear-gradient(0deg, transparent 0 11px, currentColor 12px 14px);
+      box-shadow: 0 0 16px rgba(103, 223, 241, 0.08);
+      transform-origin: 50% 100%;
+    }
+
+    .calibration-visual[data-action="pedal-throttle-press"] .calibration-pedal.throttle,
+    .calibration-visual[data-action="pedal-throttle-release"] .calibration-pedal.throttle,
+    .calibration-visual[data-action="pedal-brake-press"] .calibration-pedal.brake,
+    .calibration-visual[data-action="pedal-brake-release"] .calibration-pedal.brake {
+      color: #67dff1;
+      text-shadow: 0 0 12px rgba(103, 223, 241, 0.54);
+    }
+
+    .calibration-visual[data-action="pedal-throttle-press"] .calibration-pedal.throttle .calibration-pedal-plate,
+    .calibration-visual[data-action="pedal-brake-press"] .calibration-pedal.brake .calibration-pedal-plate {
+      animation: calibration-pedal-press 1.4s ease-in-out infinite;
+    }
+
+    .calibration-visual[data-action="pedal-throttle-release"] .calibration-pedal.throttle .calibration-pedal-plate,
+    .calibration-visual[data-action="pedal-brake-release"] .calibration-pedal.brake .calibration-pedal-plate {
+      animation: calibration-pedal-release 1.4s ease-in-out infinite;
+    }
+
+    .calibration-button-core {
+      display: grid;
+      min-width: 108px;
+      min-height: 108px;
+      padding: 16px;
+      border: 7px solid #dff9fd;
+      border-radius: 50%;
+      background: rgba(11, 64, 75, 0.82);
+      box-shadow: 0 0 28px rgba(103, 223, 241, 0.32);
+      color: #ffffff;
+      font: 900 18px/1 system-ui, sans-serif;
+      letter-spacing: 0.06em;
+      place-items: center;
+      text-align: center;
+      animation: calibration-button-press 1.25s ease-in-out infinite;
+    }
+
+    @keyframes calibration-steer-left {
+      0%, 20%, 100% { transform: rotate(0deg); }
+      48%, 72% { transform: rotate(-34deg); }
+    }
+
+    @keyframes calibration-steer-right {
+      0%, 20%, 100% { transform: rotate(0deg); }
+      48%, 72% { transform: rotate(34deg); }
+    }
+
+    @keyframes calibration-steer-center {
+      0% { transform: rotate(-20deg); }
+      45%, 72% { transform: rotate(0deg); }
+      100% { transform: rotate(20deg); }
+    }
+
+    @keyframes calibration-paddle-press {
+      0%, 100% { transform: translateY(-50%) scale(1); }
+      50% { transform: translateY(-50%) scale(0.82); }
+    }
+
+    @keyframes calibration-pedal-press {
+      0%, 100% { transform: perspective(160px) rotateX(0deg) translateY(0); }
+      50%, 72% { transform: perspective(160px) rotateX(24deg) translateY(12px); }
+    }
+
+    @keyframes calibration-pedal-release {
+      0%, 100% { transform: perspective(160px) rotateX(20deg) translateY(10px); }
+      45%, 72% { transform: perspective(160px) rotateX(0deg) translateY(0); }
+    }
+
+    @keyframes calibration-button-press {
+      0%, 100% { transform: scale(1); }
+      45%, 62% { transform: scale(0.86); background: rgba(25, 143, 164, 0.94); }
+    }
+
+    @keyframes calibration-signal {
+      0%, 100% { opacity: 0.48; transform: translateY(-50%) scale(0.94); }
+      50% { opacity: 1; transform: translateY(-50%) scale(1.05); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .calibration-wheel,
+      .calibration-paddle,
+      .calibration-pedal-plate,
+      .calibration-button-core,
+      .calibration-connect-badge {
+        animation: none !important;
+      }
+
+      .calibration-visual[data-action="steering-left"] .calibration-wheel { transform: rotate(-34deg); }
+      .calibration-visual[data-action="steering-right"] .calibration-wheel { transform: rotate(34deg); }
+      .calibration-visual[data-action="pedal-throttle-press"] .calibration-pedal.throttle .calibration-pedal-plate,
+      .calibration-visual[data-action="pedal-brake-press"] .calibration-pedal.brake .calibration-pedal-plate {
+        transform: perspective(160px) rotateX(24deg) translateY(12px);
+      }
     }
 
     .calibration-live {
@@ -2374,6 +2631,19 @@
 
       .calibration-stage {
         min-height: 240px;
+      }
+
+      .calibration-instruction {
+        font-size: clamp(18px, 5vw, 23px);
+      }
+
+      .calibration-visual {
+        min-height: 156px;
+      }
+
+      .calibration-visual-scene {
+        min-height: 152px;
+        transform: scale(0.84);
       }
 
       .race-summary {
@@ -2729,6 +2999,23 @@
             <div id="calibrationStepLabel" class="calibration-step-label">Step 1</div>
             <h2 id="calibrationTitle">Connect Wheel</h2>
             <p id="calibrationInstruction" class="calibration-instruction"></p>
+            <div id="calibrationVisual" class="calibration-visual" data-action="connect" data-hint="CONNECT USB" aria-hidden="true">
+              <div class="calibration-visual-scene calibration-wheel-scene">
+                <span class="calibration-paddle left"></span>
+                <div class="calibration-wheel"><span class="calibration-wheel-hub"></span></div>
+                <span class="calibration-paddle right"></span>
+                <span class="calibration-connect-badge">USB</span>
+              </div>
+              <div class="calibration-visual-scene calibration-pedal-scene">
+                <div class="calibration-pedals">
+                  <div class="calibration-pedal brake"><span class="calibration-pedal-plate"></span><span>BRAKE</span></div>
+                  <div class="calibration-pedal throttle"><span class="calibration-pedal-plate"></span><span>ACCEL</span></div>
+                </div>
+              </div>
+              <div class="calibration-visual-scene calibration-button-scene">
+                <div id="calibrationVisualKey" class="calibration-button-core">OK</div>
+              </div>
+            </div>
             <div id="calibrationLive" class="calibration-live">Waiting for gamepad...</div>
             <div class="calibration-controls">
               <button id="btnCalibrationCapture" class="primary" type="button">Record Current</button>
@@ -2890,15 +3177,15 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260814-calibration-confirm-v3"></script>
+    <script src="../../telemetry.js?v=20260814-calibration-visual-v4"></script>
     <script src="../../m5-audio.js?v=20260811-gear-audit-v3"></script>
     <script
-      src="./gamepad-profile.js?v=20260814-calibration-confirm-v3"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260814-calibration-confirm-v3'"
+      src="./gamepad-profile.js?v=20260814-calibration-visual-v4"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260814-calibration-visual-v4'"
     ></script>
     <script src="./ffb-bridge.js"></script>
-    <script src="./race-battle.js?v=20260814-calibration-confirm-v3"></script>
-    <script src="./pilot.js?v=20260814-calibration-confirm-v3"></script>
+    <script src="./race-battle.js?v=20260814-calibration-visual-v4"></script>
+    <script src="./pilot.js?v=20260814-calibration-visual-v4"></script>
     <script
       src="./cpu-shadow-capture.js?v=20260731-cpu-shadow-capture"
       onerror="this.onerror=null;this.src='../../cpu-shadow-capture.js?v=20260731-cpu-shadow-capture'"

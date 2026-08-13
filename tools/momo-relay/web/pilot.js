@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260814-calibration-confirm-v3';
+  const PILOT_BUILD_ID = '20260814-calibration-visual-v4';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -87,19 +87,19 @@
     strong: Object.freeze({ scale: 2.00, label: 'Strong' }),
   });
   const CALIBRATION_STEPS = Object.freeze([
-    Object.freeze({ id: 'confirmButton', title: 'CONFIRM BUTTON', instruction: '以降の記録と保存に使う決定ボタンを一度押してください。このボタンは走行操作には割り当てません。', button: true, confirm: true }),
-    Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'steeringRight', title: 'STEERING / FULL RIGHT', instruction: 'ハンドルを右端まで回し、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルから手を離して中央へ戻し、現在値を記録します。' }),
-    Object.freeze({ id: 'throttleIdle', title: 'THROTTLE / RELEASED', instruction: 'アクセルを踏まず、完全に戻した状態を記録します。' }),
-    Object.freeze({ id: 'throttlePressed', title: 'THROTTLE / FULL', instruction: 'アクセルを奥まで踏み込み、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'brakeIdle', title: 'BRAKE / RELEASED', instruction: 'ブレーキを踏まず、完全に戻した状態を記録します。' }),
-    Object.freeze({ id: 'brakePressed', title: 'BRAKE / FULL', instruction: 'ブレーキを奥まで踏み込み、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'paddleLeft', title: 'LEFT PADDLE', instruction: '左パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true }),
-    Object.freeze({ id: 'paddleRight', title: 'RIGHT PADDLE', instruction: '右パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true }),
-    Object.freeze({ id: 'driveButton', title: 'DRIVE BUTTON', instruction: '運転開始に使うボタンを一度押します。', button: true }),
-    Object.freeze({ id: 'ffbPresetButton', title: 'FFB BUTTON', instruction: 'FFB強度の切り替えに使うボタンを一度押します。', button: true }),
-    Object.freeze({ id: 'menuButton', title: 'MENU BUTTON', instruction: '走行画面でMENUを開くボタンを一度押します。', button: true }),
+    Object.freeze({ id: 'confirmButton', title: 'CONFIRM BUTTON', instruction: '以降の記録と保存に使う決定ボタンを一度押してください。このボタンは走行操作には割り当てません。', button: true, confirm: true, visual: 'button', visualKey: 'OK', visualHint: 'PRESS ONCE' }),
+    Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。', visual: 'steering-left', visualHint: 'TURN LEFT & HOLD' }),
+    Object.freeze({ id: 'steeringRight', title: 'STEERING / FULL RIGHT', instruction: 'ハンドルを右端まで回し、その位置を保ったまま現在値を記録します。', visual: 'steering-right', visualHint: 'TURN RIGHT & HOLD' }),
+    Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルから手を離して中央へ戻し、現在値を記録します。', visual: 'steering-center', visualHint: 'RETURN TO CENTER' }),
+    Object.freeze({ id: 'throttleIdle', title: 'THROTTLE / RELEASED', instruction: 'アクセルを踏まず、完全に戻した状態を記録します。', visual: 'pedal-throttle-release', visualHint: 'RELEASE ACCEL' }),
+    Object.freeze({ id: 'throttlePressed', title: 'THROTTLE / FULL', instruction: 'アクセルを奥まで踏み込み、その位置を保ったまま現在値を記録します。', visual: 'pedal-throttle-press', visualHint: 'PRESS ACCEL' }),
+    Object.freeze({ id: 'brakeIdle', title: 'BRAKE / RELEASED', instruction: 'ブレーキを踏まず、完全に戻した状態を記録します。', visual: 'pedal-brake-release', visualHint: 'RELEASE BRAKE' }),
+    Object.freeze({ id: 'brakePressed', title: 'BRAKE / FULL', instruction: 'ブレーキを奥まで踏み込み、その位置を保ったまま現在値を記録します。', visual: 'pedal-brake-press', visualHint: 'PRESS BRAKE' }),
+    Object.freeze({ id: 'paddleLeft', title: 'LEFT PADDLE', instruction: '左パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true, visual: 'paddle-left', visualHint: 'PRESS LEFT PADDLE' }),
+    Object.freeze({ id: 'paddleRight', title: 'RIGHT PADDLE', instruction: '右パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true, visual: 'paddle-right', visualHint: 'PRESS RIGHT PADDLE' }),
+    Object.freeze({ id: 'driveButton', title: 'DRIVE BUTTON', instruction: '運転開始に使うボタンを一度押します。', button: true, visual: 'button', visualKey: 'DRIVE', visualHint: 'PRESS DRIVE BUTTON' }),
+    Object.freeze({ id: 'ffbPresetButton', title: 'FFB BUTTON', instruction: 'FFB強度の切り替えに使うボタンを一度押します。', button: true, visual: 'button', visualKey: 'FFB', visualHint: 'PRESS FFB BUTTON' }),
+    Object.freeze({ id: 'menuButton', title: 'MENU BUTTON', instruction: '走行画面でMENUを開くボタンを一度押します。', button: true, visual: 'button', visualKey: 'MENU', visualHint: 'PRESS MENU BUTTON' }),
   ]);
   const FFB_INITIAL_PRESET = normalizeFfbPreset(getStringParam('ffbPreset', GAMEPAD_PROFILE?.ffbPreset || 'medium'));
   const FFB_SEND_INTERVAL_MS = Math.max(20, Math.min(100, getNumberParam('ffbSendMs', 20)));
@@ -343,6 +343,8 @@
   const calibrationStepLabel = document.getElementById('calibrationStepLabel');
   const calibrationTitle = document.getElementById('calibrationTitle');
   const calibrationInstruction = document.getElementById('calibrationInstruction');
+  const calibrationVisual = document.getElementById('calibrationVisual');
+  const calibrationVisualKey = document.getElementById('calibrationVisualKey');
   const calibrationLive = document.getElementById('calibrationLive');
   const calibrationError = document.getElementById('calibrationError');
   const btnCalibrationCapture = document.getElementById('btnCalibrationCapture');
@@ -5849,6 +5851,11 @@
       ? 'Complete'
       : `Step ${calibrationState.stepIndex + 1} / ${CALIBRATION_STEPS.length}`;
     calibrationTitle.textContent = complete ? 'CALIBRATION READY' : step.title;
+    if (calibrationVisual) {
+      calibrationVisual.dataset.action = complete ? 'complete' : step.visual;
+      calibrationVisual.dataset.hint = complete ? 'PRESS OK TO SAVE' : step.visualHint;
+    }
+    setText(calibrationVisualKey, complete ? 'OK' : step.visualKey || '');
     const confirmLabel = Number.isInteger(calibrationState.confirmButton)
       ? `BUTTON ${calibrationState.confirmButton}`
       : '';
@@ -5877,6 +5884,11 @@
       calibrationStepLabel.textContent = 'Input required';
       calibrationTitle.textContent = 'CONNECT WHEEL';
       calibrationInstruction.textContent = 'ハンコンをUSB接続し、いずれかのボタンを押してからRestartを選択してください。';
+      if (calibrationVisual) {
+        calibrationVisual.dataset.action = 'connect';
+        calibrationVisual.dataset.hint = 'CONNECT USB';
+      }
+      setText(calibrationVisualKey, 'USB');
       calibrationLive.textContent = 'No gamepad reported by browser';
       calibrationError.textContent = '';
       btnCalibrationCapture.disabled = true;
