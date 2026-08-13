@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260813-blue-flag-v1';
+  const PILOT_BUILD_ID = '20260814-blue-flag-gap-v2';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -223,10 +223,10 @@
   const RACE_REAR_CRITICAL_CLOSING_MS = Math.max(0, getNumberParam('rearCriticalClosingMs', 100));
   const RACE_BLUE_FLAG_ENABLED = getBooleanParam('blueFlag', true);
   const RACE_BLUE_FLAG_DEMO = getBooleanParam('blueFlagDemo', false);
-  const RACE_BLUE_FLAG_WARNING_GAP_MS = Math.max(0, getNumberParam('blueFlagGapMs', 5000));
+  const RACE_BLUE_FLAG_WARNING_GAP_MS = Math.max(0, getNumberParam('blueFlagGapMs', 3000));
   const RACE_BLUE_FLAG_RELEASE_GAP_MS = Math.max(
     RACE_BLUE_FLAG_WARNING_GAP_MS,
-    getNumberParam('blueFlagReleaseGapMs', 6500),
+    getNumberParam('blueFlagReleaseGapMs', 4000),
   );
   const G_METER_ENABLED = getBooleanParam('gMeter', true);
   const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
@@ -2077,7 +2077,7 @@
         { carId: 'FPV-03', driver: 'RIN', position: 2, lap: 3, status: 'racing', lapDeltaToAhead: 1 },
         {
           carId: 'FPV-02', driver: 'MOMO', position: 3, lap: 3, status: 'racing',
-          intervalToAheadMs: 840, lappingCarBehindId: 'FPV-01', lappingGapMs: 3200,
+          intervalToAheadMs: 840, lappingCarBehindId: 'FPV-01', lappingGapMs: 2400,
         },
         {
           carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing',

@@ -16,8 +16,8 @@
     criticalClosingMs: 100,
   });
   const DEFAULT_BLUE_FLAG_OPTIONS = Object.freeze({
-    warningGapMs: 5000,
-    releaseGapMs: 6500,
+    warningGapMs: 3000,
+    releaseGapMs: 4000,
   });
 
   function finiteNonNegative(value) {
