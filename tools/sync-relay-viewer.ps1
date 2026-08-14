@@ -53,27 +53,77 @@ function Get-RecordedDistributionDrift {
         return @('viewer-source.json does not identify a clean source commit')
     }
 
-    $driftedFiles = [System.Collections.Generic.List[string]]::new()
+    $sourceByDestination = @{}
     foreach ($file in $Files) {
-        $sourcePath = $file.Source -replace '\\', '/'
+        $sourceByDestination[[string]$file.Destination] = [string]$file.Source
+    }
+
+    $driftedFiles = [System.Collections.Generic.List[string]]::new()
+    foreach ($recordedFile in @($metadata.files)) {
+        $destination = [string]$recordedFile
+        if ([string]::IsNullOrWhiteSpace($destination)) {
+            continue
+        }
+        $source = if ($sourceByDestination.ContainsKey($destination)) {
+            $sourceByDestination[$destination]
+        }
+        else {
+            $destination
+        }
+        $sourcePath = $source -replace '\\', '/'
         $recordedBlob = @(& git -C $ViewerRoot rev-parse "$($metadata.sourceCommit):$sourcePath" 2>$null)
         if ($LASTEXITCODE -ne 0 -or $recordedBlob.Count -ne 1) {
-            $driftedFiles.Add("$($file.Destination) (not present in recorded source commit)")
+            $driftedFiles.Add("$destination (not present in recorded source commit)")
             continue
         }
 
-        $destinationPath = Join-Path $DistributionRoot $file.Destination
+        $destinationPath = Join-Path $DistributionRoot $destination
         if (-not (Test-Path -LiteralPath $destinationPath)) {
-            $driftedFiles.Add("$($file.Destination) (missing from distribution)")
+            $driftedFiles.Add("$destination (missing from distribution)")
             continue
         }
 
         $destinationBlob = @(& git -C $RepositoryRoot hash-object $destinationPath 2>$null)
         if ($LASTEXITCODE -ne 0 -or $destinationBlob.Count -ne 1 -or $recordedBlob[0].Trim() -ne $destinationBlob[0].Trim()) {
-            $driftedFiles.Add($file.Destination)
+            $driftedFiles.Add($destination)
         }
     }
     return $driftedFiles.ToArray()
+}
+
+function Remove-StaleDistributionFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$DistributionRoot,
+        [Parameter(Mandatory = $true)][array]$Files
+    )
+
+    $metadataPath = Join-Path $DistributionRoot 'viewer-source.json'
+    if (-not (Test-Path -LiteralPath $metadataPath)) {
+        return
+    }
+    $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+    $desired = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $Files) {
+        [void]$desired.Add([string]$file.Destination)
+    }
+    $rootPath = [System.IO.Path]::GetFullPath($DistributionRoot).TrimEnd('\') + '\'
+    foreach ($previousFile in @($metadata.files)) {
+        $relativePath = [string]$previousFile
+        if ([string]::IsNullOrWhiteSpace($relativePath) -or $desired.Contains($relativePath)) {
+            continue
+        }
+        if ([System.IO.Path]::IsPathRooted($relativePath)) {
+            throw "Recorded Viewer file is rooted: $relativePath"
+        }
+        $resolvedPath = [System.IO.Path]::GetFullPath((Join-Path $DistributionRoot $relativePath))
+        if (-not $resolvedPath.StartsWith($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Recorded Viewer file escapes the distribution directory: $relativePath"
+        }
+        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+            Remove-Item -LiteralPath $resolvedPath -Force
+            Write-Host "Removed stale Relay Viewer file: $relativePath"
+        }
+    }
 }
 
 foreach ($file in $sourceFiles) {
@@ -110,6 +160,8 @@ $commit = (& git -C $viewerRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not resolve Viewer source commit.'
 }
+
+Remove-StaleDistributionFiles -DistributionRoot $destinationDirectory -Files $sourceFiles
 
 foreach ($file in $sourceFiles) {
     Copy-Item -LiteralPath (Join-Path $viewerRoot $file.Source) -Destination (Join-Path $destinationDirectory $file.Destination) -Force

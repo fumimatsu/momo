@@ -168,6 +168,7 @@
   const AYAME_ROOM_ID = getStringParam(['roomId', 'ayameRoomId'], '');
   const AYAME_CLIENT_ID = getAyameClientId();
   const AYAME_SIGNALING_KEY = getStringParam(['signalingKey', 'ayameKey'], '');
+  let pilotSessionTicket = getStringParam(['pilotTicket', 'sessionTicket'], '');
   const AUTO_START = getBooleanParam('autoStart', SIGNALING_MODE !== 'ayame');
   // Local UI checks can exercise Drive state without connecting to a vehicle.
   const DRIVE_UI_TEST_MODE = !AUTO_START && getBooleanParam('driveUiTest', false);
@@ -4107,6 +4108,32 @@
     return roomLease?.token || '';
   }
 
+  function getAyameAuthnMetadata() {
+    const metadata = { role: 'pilot' };
+    if (pilotSessionTicket) {
+      metadata.pilotTicket = pilotSessionTicket;
+    } else if (getRoomLeaseToken()) {
+      metadata.leaseToken = getRoomLeaseToken();
+    }
+    return metadata;
+  }
+
+  function clearPilotSessionTicket() {
+    if (!pilotSessionTicket) return;
+    pilotSessionTicket = '';
+    const url = new URL(window.location.href);
+    url.searchParams.delete('pilotTicket');
+    url.searchParams.delete('sessionTicket');
+    if (url.hash.length > 1) {
+      const hashParams = new URLSearchParams(url.hash.slice(1));
+      hashParams.delete('pilotTicket');
+      hashParams.delete('sessionTicket');
+      const nextHash = hashParams.toString();
+      url.hash = nextHash ? `#${nextHash}` : '';
+    }
+    window.history.replaceState(null, '', url.toString());
+  }
+
   function isRoomLockedByOther() {
     if (!roomLockActive() || !roomLockStatus || roomLease) {
       return false;
@@ -4268,6 +4295,7 @@
           displayName: getStringParam(['id'], AYAME_CLIENT_ID),
           userAgent: navigator.userAgent,
           driveEnabled: rcDriveEnabled,
+          ticket: pilotSessionTicket,
         }),
       });
       roomLease = payload.lease || null;
@@ -4576,6 +4604,7 @@
       type: 'register',
       roomId: AYAME_ROOM_ID,
       clientId: AYAME_CLIENT_ID,
+      authnMetadata: getAyameAuthnMetadata(),
     };
     if (AYAME_SIGNALING_KEY) {
       message.key = AYAME_SIGNALING_KEY;
@@ -4698,10 +4727,17 @@
     return reason.includes('room lock') || reason.includes('lock required');
   }
 
+  function isPilotAuthenticationReject(message) {
+    const reason = getAyameRejectReason(message).toLowerCase();
+    return reason.includes('pilot ticket') || reason.includes('authentication metadata')
+      || reason.includes('authenticated lease');
+  }
+
   function handleAyameMessage(message) {
     switch (message.type) {
       case 'accept':
         ayameIceServers = normalizeIceServers(message.iceServers);
+        clearPilotSessionTicket();
         recordEvent('ayame accept', message.isExistUser ? 'peer exists' : 'waiting');
         if (message.isExistUser || typeof message.isExistUser === 'undefined') {
           makeOffer({ iceServers: ayameIceServers });
@@ -4737,7 +4773,10 @@
         break;
       case 'reject':
         recordEvent('ayame reject', getAyameRejectReason(message));
-        if (isRoomLockReject(message)) {
+        if (isPilotAuthenticationReject(message)) {
+          shouldReconnect = false;
+          clearRoomLease(getAyameRejectReason(message));
+        } else if (isRoomLockReject(message)) {
           clearRoomLease(getAyameRejectReason(message));
           scheduleReconnect('room lock lost', {
             force: true,

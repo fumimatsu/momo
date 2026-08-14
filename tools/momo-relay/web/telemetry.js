@@ -822,79 +822,12 @@
     return message;
   }
 
-  class TelemetryMockGenerator {
-    constructor(options = {}) {
-      this.src = options.src || 'imu0';
-      this.boot = options.boot || 'c0de0001';
-      this.periodMs = Math.max(10, Math.min(1000, options.periodMs || 50));
-      this.seq = options.seq || 0;
-      this.startedAt = null;
-    }
-
-    getTimestampUs(nowMs) {
-      if (this.startedAt === null) {
-        this.startedAt = nowMs;
-      }
-      return Math.max(0, Math.round((nowMs - this.startedAt) * 1000));
-    }
-
-    takeSequence() {
-      const current = this.seq >>> 0;
-      this.seq = (current + 1) >>> 0;
-      return current;
-    }
-
-    nextState(nowMs) {
-      const tUs = this.getTimestampUs(nowMs);
-      const phase = tUs / 1000000;
-      const yaw = Math.sin(phase * 0.7) * 0.4;
-      const halfYaw = yaw / 2;
-      return encodeTelemetry({
-        v: 1,
-        k: 's',
-        src: this.src,
-        boot: this.boot,
-        seq: this.takeSequence(),
-        t_us: tUs,
-        imu: {
-          a: [0.1, Number((Math.sin(phase) * 3.5).toFixed(3)), 9.807],
-          g: [0, 0, Number((Math.cos(phase * 0.7) * 0.28).toFixed(3))],
-        },
-        att: {
-          q: [Number(Math.cos(halfYaw).toFixed(6)), 0, 0, Number(Math.sin(halfYaw).toFixed(6))],
-          rpy: [0, 0, Number(yaw.toFixed(6))],
-        },
-        qual: {
-          period_us: Math.round(this.periodMs * 1000),
-          cal: 3,
-          flags: [],
-        },
-      });
-    }
-
-    nextImpact(nowMs, magnitude = 24.8) {
-      return encodeTelemetry({
-        v: 1,
-        k: 'e',
-        src: this.src,
-        boot: this.boot,
-        seq: this.takeSequence(),
-        t_us: this.getTimestampUs(nowMs),
-        evt: {
-          name: 'impact',
-          data: { mag_mps2: magnitude, axis: [1, 0, 0] },
-        },
-      });
-    }
-  }
-
   return {
     MAX_WIRE_BYTES,
     TELEMETRY_PREFIX,
     VEHICLE_FLU_AXES_FLAG,
     MotionFeatureExtractor,
     RelayEventInbox,
-    TelemetryMockGenerator,
     TelemetryTracker,
     classifySequence,
     deriveFfbLongitudinalLoad,

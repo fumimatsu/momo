@@ -28,6 +28,8 @@ Web Observer の正本は `momo-fpv-viewer/variants/observer/` の `observer.htm
 
 同期ファイルの正本は `momo-fpv-viewer/tools/distribution-targets.json` の `relay-web` である。
 `sync-relay-viewer.ps1` や `tools/momo-relay/web/` へファイル一覧を手作業で追加しない。
+同期スクリプトは直前の `viewer-source.json` に記録された管理対象のうち、新しい `relay-web` から外れた
+stale file を削除する。記録にない運用ファイルは削除しない。
 
 同期前に配布コピーが `viewer-source.json` の記録済み commit と異なる場合も、同期スクリプトは中断する。Relay client の変更は先に Viewer 正本へ移植してコミットする。移植済みの乖離を初回同期で置換する場合だけ、`-AllowDistributionDrift` を明示する。
 

@@ -1,0 +1,24 @@
+{
+  "name": "Momo FPV Viewer",
+  "short_name": "Momo FPV",
+  "description": "Fullscreen FPV viewer and controller for WebRTC Momo.",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#050608",
+  "theme_color": "#050608",
+  "scope": "./",
+  "icons": [
+    {
+      "src": "./apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
