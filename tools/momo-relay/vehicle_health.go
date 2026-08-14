@@ -21,6 +21,11 @@ const (
 	vehicleFuelMaximum               = 100.0
 	vehicleFuelRecoveryAmount        = 10.0
 	vehicleFuelDefaultDriveDuration  = 120 * time.Second
+	vehicleFuelVariationTimeConstant = 1500 * time.Millisecond
+	vehicleFuelVariationGrace        = 500 * time.Millisecond
+	vehicleFuelVariationDeadzone     = 0.4
+	vehicleFuelVariationFullPenalty  = 2.0
+	vehicleFuelRoughMaxMultiplier    = 1.6
 	vehicleGearOneForwardMaximum     = 1600
 	vehicleFuelEmptyForwardPWM       = vehicleGearOneForwardMaximum - 10
 	vehicleFuelEmptyReversePWM       = 1500 - (vehicleFuelEmptyForwardPWM - 1500)
@@ -43,27 +48,29 @@ const (
 )
 
 type vehicleHealthSnapshot struct {
-	HP                float64 `json:"hp"`
-	SpeedCap          float64 `json:"speedCap"`
-	Mode              string  `json:"mode"`
-	Fuel              float64 `json:"fuel"`
-	FuelState         string  `json:"fuelState"`
-	Boost             float64 `json:"boost"`
-	BoostState        string  `json:"boostState"`
-	BoostRemainingMS  int64   `json:"boostRemainingMs"`
-	Gear              int     `json:"gear"`
-	NormalGearMax     int     `json:"normalGearMax"`
-	Position          int     `json:"position"`
-	FieldSize         int     `json:"fieldSize"`
-	FuelRatePerSec    float64 `json:"fuelRatePerSecond"`
-	RequestedThrottle float64 `json:"requestedThrottle"`
-	EffectiveThrottle float64 `json:"effectiveThrottle"`
-	SessionType       string  `json:"sessionType"`
-	RaceGapKnown      bool    `json:"raceGapKnown"`
-	GapToAheadMS      *int64  `json:"gapToAheadMs,omitempty"`
-	LapDeltaToAhead   *int    `json:"lapDeltaToAhead,omitempty"`
-	BoostChargeMS     int64   `json:"boostChargeMs"`
-	ServerTimeMS      int64   `json:"serverTimeMs"`
+	HP                 float64 `json:"hp"`
+	SpeedCap           float64 `json:"speedCap"`
+	Mode               string  `json:"mode"`
+	Fuel               float64 `json:"fuel"`
+	FuelState          string  `json:"fuelState"`
+	Boost              float64 `json:"boost"`
+	BoostState         string  `json:"boostState"`
+	BoostRemainingMS   int64   `json:"boostRemainingMs"`
+	Gear               int     `json:"gear"`
+	NormalGearMax      int     `json:"normalGearMax"`
+	Position           int     `json:"position"`
+	FieldSize          int     `json:"fieldSize"`
+	FuelRatePerSec     float64 `json:"fuelRatePerSecond"`
+	FuelRateMultiplier float64 `json:"fuelRateMultiplier"`
+	ThrottleVariation  float64 `json:"throttleVariationPerSecond"`
+	RequestedThrottle  float64 `json:"requestedThrottle"`
+	EffectiveThrottle  float64 `json:"effectiveThrottle"`
+	SessionType        string  `json:"sessionType"`
+	RaceGapKnown       bool    `json:"raceGapKnown"`
+	GapToAheadMS       *int64  `json:"gapToAheadMs,omitempty"`
+	LapDeltaToAhead    *int    `json:"lapDeltaToAhead,omitempty"`
+	BoostChargeMS      int64   `json:"boostChargeMs"`
+	ServerTimeMS       int64   `json:"serverTimeMs"`
 }
 
 type vehicleRaceGap struct {
@@ -110,6 +117,10 @@ type vehicleHealth struct {
 	lapDeltaToAhead        int
 	fuelDriveDuration      time.Duration
 	fuelRatePerSec         float64
+	throttleVariation      float64
+	lastThrottleSample     float64
+	lastThrottleSampleAt   time.Time
+	hasThrottleSample      bool
 	requestedThrottle      float64
 	effectiveThrottle      float64
 	driveEnabled           bool
@@ -197,6 +208,7 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 	health.resetDamageEpisodeLocked()
 	health.lastPublishedAt = now
 	health.fuelRatePerSec = 0
+	health.resetThrottleVariationLocked()
 	health.lastUpdatedAt = now
 	health.lastRaceStateAt = now
 	health.raceGapKnown = false
@@ -244,6 +256,7 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 	health.boostActiveUntil = time.Time{}
 	health.requestedGear = 1
 	health.fuelRatePerSec = 0
+	health.resetThrottleVariationLocked()
 	health.requestedThrottle = 0
 	health.effectiveThrottle = 0
 	health.pitPresent = false
@@ -546,7 +559,9 @@ func (health *vehicleHealth) limitCommand(message string, now time.Time) string 
 			return message
 		}
 		gear := health.effectiveGearLocked(now)
-		health.requestedThrottle = normalizeForwardThrottle(throttle, gear)
+		requestedThrottle := normalizeForwardThrottle(throttle, gear)
+		health.observeThrottleVariationLocked(requestedThrottle, now)
+		health.requestedThrottle = requestedThrottle
 		limited := throttle
 		if throttle > 1500 {
 			limited = minInt(throttle, vehicleGearForwardMaximum(gear))
@@ -628,25 +643,27 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 
 func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot {
 	snapshot := vehicleHealthSnapshot{
-		HP:                health.hp,
-		SpeedCap:          vehicleHealthSpeedCap(health.hp),
-		Mode:              vehicleHealthMode(health.hp),
-		Fuel:              health.fuel,
-		FuelState:         vehicleFuelState(health.fuel),
-		Boost:             health.boost,
-		BoostState:        health.boostStateLocked(now),
-		BoostRemainingMS:  maxInt64(0, health.boostActiveUntil.Sub(now).Milliseconds()),
-		Gear:              health.effectiveGearLocked(now),
-		NormalGearMax:     vehicleNormalGearMaximum,
-		Position:          health.position,
-		FieldSize:         health.fieldSize,
-		FuelRatePerSec:    health.fuelRatePerSec,
-		RequestedThrottle: health.requestedThrottle,
-		EffectiveThrottle: health.effectiveThrottle,
-		SessionType:       vehicleSessionTypeState(health.lastSessionType),
-		RaceGapKnown:      health.raceGapKnown,
-		BoostChargeMS:     health.boostChargeDurationLocked().Milliseconds(),
-		ServerTimeMS:      now.UnixMilli(),
+		HP:                 health.hp,
+		SpeedCap:           vehicleHealthSpeedCap(health.hp),
+		Mode:               vehicleHealthMode(health.hp),
+		Fuel:               health.fuel,
+		FuelState:          vehicleFuelState(health.fuel),
+		Boost:              health.boost,
+		BoostState:         health.boostStateLocked(now),
+		BoostRemainingMS:   maxInt64(0, health.boostActiveUntil.Sub(now).Milliseconds()),
+		Gear:               health.effectiveGearLocked(now),
+		NormalGearMax:      vehicleNormalGearMaximum,
+		Position:           health.position,
+		FieldSize:          health.fieldSize,
+		FuelRatePerSec:     health.fuelRatePerSec,
+		FuelRateMultiplier: health.fuelRateMultiplierLocked(),
+		ThrottleVariation:  health.throttleVariation,
+		RequestedThrottle:  health.requestedThrottle,
+		EffectiveThrottle:  health.effectiveThrottle,
+		SessionType:        vehicleSessionTypeState(health.lastSessionType),
+		RaceGapKnown:       health.raceGapKnown,
+		BoostChargeMS:      health.boostChargeDurationLocked().Milliseconds(),
+		ServerTimeMS:       now.UnixMilli(),
 	}
 	if health.raceGapKnown && health.position > 1 {
 		if health.lapDeltaToAhead > 0 {
@@ -664,7 +681,7 @@ func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
 	return vehicleHealthSnapshot{
 		HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
 		Fuel: vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
-		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, SessionType: "unknown", ServerTimeMS: now.UnixMilli(),
+		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, FuelRateMultiplier: 1, SessionType: "unknown", ServerTimeMS: now.UnixMilli(),
 	}
 }
 
@@ -680,6 +697,7 @@ func (health *vehicleHealth) setDriveEnabled(enabled bool, now time.Time) vehicl
 		health.requestedThrottle = 0
 		health.effectiveThrottle = 0
 		health.lastForwardAt = time.Time{}
+		health.resetThrottleVariationLocked()
 	}
 	return health.snapshotLocked(now)
 }
@@ -762,9 +780,44 @@ func (health *vehicleHealth) raceGameplayActiveLocked(_ time.Time) bool {
 }
 
 func (health *vehicleHealth) fuelRateLocked() float64 {
-	// 初期版は入力やギアに依存しない。要求値と実効値は状態へ残し、後から
-	// この関数だけでスロットル量・ギア・Boost に応じた消費へ拡張できる。
-	return vehicleFuelMaximum / health.fuelDriveDuration.Seconds()
+	return vehicleFuelMaximum / health.fuelDriveDuration.Seconds() * health.fuelRateMultiplierLocked()
+}
+
+func (health *vehicleHealth) observeThrottleVariationLocked(throttle float64, now time.Time) {
+	throttle = clampFloat64(throttle, 0, 1)
+	if !health.hasThrottleSample || !now.After(health.lastThrottleSampleAt) {
+		health.lastThrottleSample = throttle
+		health.lastThrottleSampleAt = now
+		health.hasThrottleSample = true
+		return
+	}
+	elapsed := now.Sub(health.lastThrottleSampleAt)
+	decay := math.Exp(-elapsed.Seconds() / vehicleFuelVariationTimeConstant.Seconds())
+	if elapsed > vehicleFuelVariationGrace {
+		health.throttleVariation *= decay
+	} else {
+		instantVariation := math.Abs(throttle-health.lastThrottleSample) / elapsed.Seconds()
+		health.throttleVariation = health.throttleVariation*decay + instantVariation*(1-decay)
+	}
+	health.lastThrottleSample = throttle
+	health.lastThrottleSampleAt = now
+}
+
+func (health *vehicleHealth) fuelRateMultiplierLocked() float64 {
+	excess := math.Max(0, health.throttleVariation-vehicleFuelVariationDeadzone)
+	penaltyRange := vehicleFuelVariationFullPenalty - vehicleFuelVariationDeadzone
+	if penaltyRange <= 0 {
+		return 1
+	}
+	fraction := math.Min(1, excess/penaltyRange)
+	return 1 + fraction*(vehicleFuelRoughMaxMultiplier-1)
+}
+
+func (health *vehicleHealth) resetThrottleVariationLocked() {
+	health.throttleVariation = 0
+	health.lastThrottleSample = 0
+	health.lastThrottleSampleAt = time.Time{}
+	health.hasThrottleSample = false
 }
 
 func (health *vehicleHealth) fuelConsumptionEnabledLocked() bool {
@@ -851,6 +904,10 @@ func vehicleGearBrakeMinimum(gear int) int {
 func normalizeForwardThrottle(pwm int, gear int) float64 {
 	maximum := vehicleGearForwardMaximum(gear)
 	return math.Max(0, math.Min(1, float64(pwm-1500)/float64(maximum-1500)))
+}
+
+func clampFloat64(value float64, minimum float64, maximum float64) float64 {
+	return math.Max(minimum, math.Min(maximum, value))
 }
 
 func vehicleFuelState(fuel float64) string {

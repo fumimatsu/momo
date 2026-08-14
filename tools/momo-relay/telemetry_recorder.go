@@ -42,23 +42,25 @@ type telemetryRecorderStats struct {
 }
 
 type driveInputLogSample struct {
-	SteeringPWM       int     `json:"steeringPwm"`
-	Steering          float64 `json:"steering"`
-	RequestedPowerPWM int     `json:"requestedPowerPwm"`
-	EffectivePowerPWM int     `json:"effectivePowerPwm"`
-	Throttle          float64 `json:"throttle"`
-	Brake             float64 `json:"brake"`
-	EffectiveThrottle float64 `json:"effectiveThrottle"`
-	EffectiveBrake    float64 `json:"effectiveBrake"`
-	Gear              int     `json:"gear"`
-	DriveEnabled      bool    `json:"driveEnabled"`
-	HP                float64 `json:"hp"`
-	Fuel              float64 `json:"fuel"`
-	Boost             float64 `json:"boost"`
-	Position          int     `json:"position"`
-	FieldSize         int     `json:"fieldSize"`
-	FuelRatePerSecond float64 `json:"fuelRatePerSecond"`
-	SessionType       string  `json:"sessionType"`
+	SteeringPWM        int     `json:"steeringPwm"`
+	Steering           float64 `json:"steering"`
+	RequestedPowerPWM  int     `json:"requestedPowerPwm"`
+	EffectivePowerPWM  int     `json:"effectivePowerPwm"`
+	Throttle           float64 `json:"throttle"`
+	Brake              float64 `json:"brake"`
+	EffectiveThrottle  float64 `json:"effectiveThrottle"`
+	EffectiveBrake     float64 `json:"effectiveBrake"`
+	Gear               int     `json:"gear"`
+	DriveEnabled       bool    `json:"driveEnabled"`
+	HP                 float64 `json:"hp"`
+	Fuel               float64 `json:"fuel"`
+	Boost              float64 `json:"boost"`
+	Position           int     `json:"position"`
+	FieldSize          int     `json:"fieldSize"`
+	FuelRatePerSecond  float64 `json:"fuelRatePerSecond"`
+	FuelRateMultiplier float64 `json:"fuelRateMultiplier"`
+	ThrottleVariation  float64 `json:"throttleVariationPerSecond"`
+	SessionType        string  `json:"sessionType"`
 }
 
 type telemetryLogRecord struct {

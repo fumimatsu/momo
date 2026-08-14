@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -90,6 +91,37 @@ func TestVehicleGameplayQualifyConsumesFuel(t *testing.T) {
 	snapshot := health.snapshot(now)
 	if math.Abs(snapshot.Fuel-50) > 0.001 {
 		t.Fatalf("qualify fuel = %#v, want 50", snapshot)
+	}
+}
+
+func TestVehicleGameplayRoughThrottleConsumesMoreFuelThanSteadyThrottle(t *testing.T) {
+	base := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	steady := newVehicleHealthWithFuelDuration(base, 30*time.Second)
+	rough := newVehicleHealthWithFuelDuration(base, 30*time.Second)
+	for _, health := range []*vehicleHealth{steady, rough} {
+		health.observeRaceState(true, "rr_fuel_style", "green", 2, 4, base, "race")
+		health.setDriveEnabled(true, base)
+		health.setRequestedGear(3, base)
+		health.limitCommand("S:1500,T:1800", base)
+	}
+
+	for tick := 1; tick <= 200; tick++ {
+		now := base.Add(time.Duration(tick) * 50 * time.Millisecond)
+		steady.limitCommand("S:1500,T:1800", now)
+		roughPWM := 1800
+		if (tick/4)%2 == 0 {
+			roughPWM = 1500
+		}
+		rough.limitCommand(fmt.Sprintf("S:1500,T:%d", roughPWM), now)
+	}
+
+	steadySnapshot := steady.snapshot(base.Add(10 * time.Second))
+	roughSnapshot := rough.snapshot(base.Add(10 * time.Second))
+	if math.Abs(steadySnapshot.Fuel-(200.0/3.0)) > 0.001 || steadySnapshot.FuelRateMultiplier != 1 {
+		t.Fatalf("steady fuel snapshot = %#v", steadySnapshot)
+	}
+	if roughSnapshot.Fuel >= steadySnapshot.Fuel-5 || roughSnapshot.FuelRateMultiplier < 1.5 || roughSnapshot.ThrottleVariation <= vehicleFuelVariationFullPenalty {
+		t.Fatalf("rough fuel snapshot = %#v, steady = %#v", roughSnapshot, steadySnapshot)
 	}
 }
 

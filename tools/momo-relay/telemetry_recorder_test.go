@@ -31,6 +31,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		SteeringPWM: 1420, Steering: -0.16, RequestedPowerPWM: 1800, EffectivePowerPWM: 1700,
 		Throttle: 1, EffectiveThrottle: 2.0 / 3.0, Gear: 3, DriveEnabled: true,
 		HP: 80, Fuel: 45, Boost: 12, Position: 2, FieldSize: 4, FuelRatePerSecond: 0.5,
+		FuelRateMultiplier: 1.3, ThrottleVariation: 1.2,
 		SessionType: "race",
 	})
 	recorder.RecordVehicleEvent("11.3", "CP-1", vehicleImpactEvent{
@@ -72,7 +73,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[2].RaceRunID != "rr_123" || records[2].RacePhase != "countdown" {
 		t.Fatalf("telemetry race context = %#v", records[2])
 	}
-	if records[3].Type != "drive_input" || records[3].DriveInput == nil || records[3].DriveInput.SteeringPWM != 1420 || records[3].DriveInput.EffectivePowerPWM != 1700 || records[3].PilotID != 9 {
+	if records[3].Type != "drive_input" || records[3].DriveInput == nil || records[3].DriveInput.SteeringPWM != 1420 || records[3].DriveInput.EffectivePowerPWM != 1700 || records[3].DriveInput.FuelRateMultiplier != 1.3 || records[3].DriveInput.ThrottleVariation != 1.2 || records[3].PilotID != 9 {
 		t.Fatalf("drive input = %#v", records[3])
 	}
 	if records[4].Type != "vehicle_event" || records[4].VehicleEvent == nil || records[4].VehicleEvent.EventID != "impact-1" || records[4].VehicleEvent.SuppressionReason != "boost_active" {
