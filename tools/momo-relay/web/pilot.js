@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260815-race-summary-v2';
+  const PILOT_BUILD_ID = '20260815-race-summary-v3';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -1679,9 +1679,17 @@
     }
   }
 
+  function getDisplayedRaceLap(lap, lapCount) {
+    if (lap === null) {
+      return '--';
+    }
+    const currentLap = Math.floor(lap) + 1;
+    return String(lapCount === null ? currentLap : Math.min(currentLap, Math.floor(lapCount)));
+  }
+
   function renderRaceHud() {
-    const lap = raceState.lap === null ? '--' : String(raceState.lap);
     const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
+    const lap = getDisplayedRaceLap(raceState.lap, raceState.lapCount);
     const position = raceState.position === null ? '--' : String(raceState.position);
     const fieldSize = raceState.fieldSize === null ? '--' : String(raceState.fieldSize);
     setText(racePhase, raceState.phase);
