@@ -80,3 +80,45 @@ would hide whether the actual constraint is host scheduling, transfer, kernel wo
 full-stack resource contention. Native CUDA integration remains a later option. With Intel
 decode and NVIDIA detection on separate adapters, it does not automatically create a
 zero-copy path.
+
+### Source-level implementation order
+
+P0 makes the capacity result trustworthy before changing throughput:
+
+1. Split the live report into `inputReady`, `throughputPassed`, and the final capacity
+   result. The current `run_passed` accepts any one active source and does not enforce
+   95% of the requested detection rate, although the runbook defines that gate.
+2. Add explicit detector warm-up to replay measurement. A cold ten-second RTX 5070 replay
+   on 2026-08-14 reported 46.978 Hz and failed despite 9.781ms processing p95 because one
+   609.084ms startup cycle was included. Live luma already warms the detector before timing.
+3. Add the stage timings and source-age counters described in Acceptance Criteria.
+
+P1 removes bounded work without changing marker recognition:
+
+1. In Native `Sink::OnFrame`, stop after generating the shared BGRA source and luma plane
+   when `--shared-output-headless` is active. The second preview-oriented I420 scale and
+   BGRA conversion still run today even though the SDL preview is not presented.
+2. Replace the per-pixel horizontal-plus-vertical copy used by all four operational `HV`
+   source flips with an existing SIMD-capable libyuv rotate/mirror operation, after parity
+   tests confirm the exact orientation.
+3. Let `SharedLumaReader` fill a reusable host batch. Avoid `batch.y_planes[valid_indices]`
+   when all selected sources are valid, and use a reusable compact staging buffer otherwise.
+4. Compare a reusable pinned host batch plus preallocated device input and asynchronous H2D
+   against the current pageable `cp.asarray` path.
+
+P2 changes the detector internals and therefore requires full marker parity validation:
+
+1. Cache workspaces by `(batch, height, width)`. For four 960x528 inputs, `horizontal`,
+   `labels`, `counts`, and eight uint64 component-key arrays cover approximately 154 MB per
+   cycle before temporary corner arrays. CuPy's pool may recycle allocations, but the large
+   zero/full initialization and object construction still occur for each detection.
+2. Add a batch decode kernel that receives `candidate_sources`. The current implementation
+   copies candidate counts to the host and launches decode once per source.
+3. Return source index, decoded ID, validity, and corners with one packed D2H transfer instead
+   of separate synchronizing `cp.asnumpy` calls.
+
+P3 is architectural and should be attempted only if measured P0-P2 work cannot satisfy the
+gate. Options are a native C++/CUDA detector boundary or a dedicated Marker node that does
+not share its RTX and CPU scheduler with MADSYSTEM rendering. Either option must preserve
+latest-frame dropping, source isolation, and the existing marker-observation contract during
+migration.
