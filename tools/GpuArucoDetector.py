@@ -351,9 +351,18 @@ void batch_component_stats(
 
 
 @dataclass(frozen=True)
+class GpuMarkerObservation:
+    marker_id: int
+    center_x: float
+    center_y: float
+    area: float
+
+
+@dataclass(frozen=True)
 class GpuDetectionResult:
     marker_ids: list[int]
     candidate_count: int
+    markers: list[GpuMarkerObservation]
 
 
 class GpuArucoDetector:
@@ -745,9 +754,18 @@ class GpuArucoDetector:
         if self.allowed_ids_device is not None:
             valid &= self.cp.isin(ids, self.allowed_ids_device)
         valid_ids = ids[valid]
+        valid_corners = corners[valid]
+        height, width = gray_device.shape
+        markers = self._build_marker_observations(
+            self.cp.asnumpy(valid_ids),
+            self.cp.asnumpy(valid_corners),
+            width,
+            height,
+        )
         return GpuDetectionResult(
-            marker_ids=[int(value) for value in self.cp.asnumpy(valid_ids)],
+            marker_ids=[marker.marker_id for marker in markers],
             candidate_count=len(corners),
+            markers=markers,
         )
 
     def detect_batch(self, gray_batch) -> list[GpuDetectionResult]:
@@ -758,7 +776,10 @@ class GpuArucoDetector:
         batch_size = int(gray_batch.shape[0])
         corners, candidate_sources = self._extract_candidate_corners_batch(gray_batch)
         if len(corners) == 0:
-            return [GpuDetectionResult(marker_ids=[], candidate_count=0) for _ in range(batch_size)]
+            return [
+                GpuDetectionResult(marker_ids=[], candidate_count=0, markers=[])
+                for _ in range(batch_size)
+            ]
         candidate_counts = cp.asnumpy(
             cp.bincount(candidate_sources, minlength=batch_size)
         ).astype(np.int64)
@@ -780,23 +801,49 @@ class GpuArucoDetector:
             valid &= cp.isin(all_ids, self.allowed_ids_device)
         ids_host = cp.asnumpy(all_ids)
         valid_host = cp.asnumpy(valid)
+        corners_host = cp.asnumpy(corners)
+        height = int(gray_batch.shape[1])
+        width = int(gray_batch.shape[2])
 
         results = []
         offset = 0
         for candidate_count in candidate_counts:
             next_offset = offset + int(candidate_count)
-            marker_ids = [
-                int(marker_id)
-                for marker_id, accepted in zip(
-                    ids_host[offset:next_offset], valid_host[offset:next_offset]
-                )
-                if accepted
-            ]
+            accepted = valid_host[offset:next_offset]
+            markers = self._build_marker_observations(
+                ids_host[offset:next_offset][accepted],
+                corners_host[offset:next_offset][accepted],
+                width,
+                height,
+            )
             results.append(
                 GpuDetectionResult(
-                    marker_ids=marker_ids,
+                    marker_ids=[marker.marker_id for marker in markers],
                     candidate_count=int(candidate_count),
+                    markers=markers,
                 )
             )
             offset = next_offset
         return results
+
+    @staticmethod
+    def _build_marker_observations(ids_host, corners_host, width, height):
+        observations = []
+        width_scale = max(1.0, float(width))
+        height_scale = max(1.0, float(height))
+        image_area = width_scale * height_scale
+        for marker_id, corners in zip(ids_host, corners_host):
+            x = corners[:, 0]
+            y = corners[:, 1]
+            shifted_x = np.roll(x, -1)
+            shifted_y = np.roll(y, -1)
+            area = 0.5 * abs(float(np.sum(x * shifted_y - shifted_x * y)))
+            observations.append(
+                GpuMarkerObservation(
+                    marker_id=int(marker_id),
+                    center_x=float(np.mean(x) / width_scale),
+                    center_y=float(np.mean(y) / height_scale),
+                    area=float(area / image_area),
+                )
+            )
+        return observations

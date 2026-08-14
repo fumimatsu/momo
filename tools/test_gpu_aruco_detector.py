@@ -44,6 +44,9 @@ class GpuArucoDetectorTest(unittest.TestCase):
         canvas[152:200, 168:216] = marker
         result = detector.detect(detector.cp.asarray(canvas))
         self.assertEqual([1, 1], sorted(result.marker_ids))
+        self.assertEqual(2, len(result.markers))
+        self.assertTrue(all(0.0 <= marker.center_x <= 1.0 for marker in result.markers))
+        self.assertTrue(all(marker.area > 0.0 for marker in result.markers))
 
     def test_gpu_batch_detector_keeps_results_separated_by_source(self):
         try:

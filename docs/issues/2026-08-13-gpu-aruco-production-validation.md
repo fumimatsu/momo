@@ -120,3 +120,12 @@ centers to quadrants. The GPU PoC splits the decoded frame and batch-detects eac
 Integration must preserve MADSYSTEM's per-quadrant ID list contract and keep allowlist,
 temporal confirmation, checkpoint state, pit observations, and pilot assignment outside
 the detector process until those responsibilities are migrated deliberately.
+
+On 2026-08-14 the first Legacy Adapter slice was implemented. Four independent replay
+decoders publish per-frame observations through `Local\MomoMarkerObservationsV1`; the
+MADSYSTEM native reader consumed 500 batches in the final 10-second overlap with zero drops. The
+15-second producer run published 743 batches at 49.52 Hz with 11.294ms processing p95.
+The final standalone 30-second gate published 1,494 batches at 49.792 Hz with 9.944ms
+processing p95. This closes replay-to-MADSYSTEM IPC and preserves repeated marker instances. Keep this
+issue open: live Relay/WebRTC input, shadow parity evidence, one-hour operation, and
+qualified Reliable marker events remain incomplete.

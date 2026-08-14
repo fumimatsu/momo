@@ -2,8 +2,8 @@
 
 ## Status
 
-- 状態: foundation-measured
-- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較を実装。Marker Observer本体とAuto Directorは未着手
+- 状態: legacy-adapter-implemented
+- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較に加え、録画4入力のGPU Marker Observer producerとMADSYSTEM Legacy Adapterを実装。live Relay/WebRTC入力とReliable marker eventは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
 
@@ -359,6 +359,16 @@ checkpointの通過確定とPIT presenceでは状態遷移の意味が異なる�
 Marker Observerは画像解釈だけを行い、マーカーイベントから周回、順位、区間タイムを作る処理は
 Timing Engineへ分離する。移行初期はMADSYSTEMをTiming Engineとして利用し、外部marker eventを
 既存のcheckpoint処理へ渡すLegacy Adapterを追加する。
+
+2026-08-14にLegacy Adapterの最初の段階を実装した。この段階ではqualified eventではなく、
+sourceごとの毎frame観測を`Local\MomoMarkerObservationsV1`のbounded ringへ出力する。MADSYSTEMは
+`internal`、`shadow`、`external`を切り替えられ、`external`でも既存の連続認識、消失、PIT、
+パイロット割当、Race Control送信をそのまま使用する。詳細と検証順は
+[Marker Observer Legacy Adapter Guide](MARKER_OBSERVER_LEGACY_ADAPTER_GUIDE.md)を参照する。
+
+この順序により、live WebRTC受信と通過判定移管を同時変更せず、まず検出器の差だけを比較できる。
+次段階は録画producerをRelay/WebRTC source managerへ置き換えることであり、その後に通過確定を
+Reliable eventへ移す。Native Observerの合成映像共有はMADSYSTEMの映像演出用として当面残す。
 
 将来のTiming Engineは次を担当する。
 
