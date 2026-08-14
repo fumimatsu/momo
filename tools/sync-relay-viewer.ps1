@@ -10,24 +10,21 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $viewerRoot = (Resolve-Path -LiteralPath $ViewerRepository).Path
 $destinationDirectory = Join-Path $repoRoot 'tools\momo-relay\web'
-$sourceFiles = @(
-    [ordered]@{ Source = 'variants\relay\pilot.html'; Destination = 'pilot.html' },
-    [ordered]@{ Source = 'variants\relay\pilot.js'; Destination = 'pilot.js' },
-    [ordered]@{ Source = 'variants\relay\race-battle.js'; Destination = 'race-battle.js' },
-    [ordered]@{ Source = 'variants\relay\garage.html'; Destination = 'garage.html' },
-    [ordered]@{ Source = 'variants\relay\ffb-bridge.js'; Destination = 'ffb-bridge.js' },
-    [ordered]@{ Source = 'telemetry.js'; Destination = 'telemetry.js' },
-    [ordered]@{ Source = 'm5-audio.js'; Destination = 'm5-audio.js' },
-    [ordered]@{ Source = 'cpu-shadow-capture.js'; Destination = 'cpu-shadow-capture.js' },
-    [ordered]@{ Source = 'gamepad.html'; Destination = 'gamepad.html' },
-    [ordered]@{ Source = 'gamepad.js'; Destination = 'gamepad.js' },
-    [ordered]@{ Source = 'gamepad-profile.js'; Destination = 'gamepad-profile.js' },
-    [ordered]@{ Source = 'variants\observer\observer.html'; Destination = 'observer.html' },
-    [ordered]@{ Source = 'variants\observer\observer.css'; Destination = 'observer.css' },
-    [ordered]@{ Source = 'variants\observer\observer.js'; Destination = 'observer.js' },
-    [ordered]@{ Source = 'variants\observer\observer-core.js'; Destination = 'observer-core.js' },
-    [ordered]@{ Source = 'variants\observer\observer-config.json'; Destination = 'observer-config.json' }
-)
+$distributionManifestPath = Join-Path $viewerRoot 'tools\distribution-targets.json'
+if (-not (Test-Path -LiteralPath $distributionManifestPath)) {
+    throw "Viewer distribution manifest was not found: $distributionManifestPath"
+}
+$distributionManifest = Get-Content -Raw -LiteralPath $distributionManifestPath | ConvertFrom-Json
+$relayTarget = $distributionManifest.targets.'relay-web'
+if ($null -eq $relayTarget -or @($relayTarget.files).Count -eq 0) {
+    throw 'Viewer distribution manifest does not define relay-web files.'
+}
+$sourceFiles = @($relayTarget.files | ForEach-Object {
+    [ordered]@{
+        Source = ([string]$_.source -replace '/', '\')
+        Destination = ([string]$_.destination -replace '/', '\')
+    }
+})
 
 function Get-RecordedDistributionDrift {
     param(
@@ -123,6 +120,7 @@ $metadata = [ordered]@{
     sourceCommit = $commit
     sourceDirty = $dirty.Count -gt 0
     variant = 'relay-pilot'
+    target = 'relay-web'
     files = @($sourceFiles | ForEach-Object { $_.Destination })
 }
 $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destinationDirectory 'viewer-source.json') -Encoding utf8

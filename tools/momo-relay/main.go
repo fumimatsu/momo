@@ -2786,7 +2786,7 @@ func main() {
 	flag.StringVar(&raceViewerToken, "race-viewer-token", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_VIEWER_TOKEN")), "Race Control Viewer Bearer token")
 	flag.StringVar(&ayameSignalingURL, "ayame-signaling-url", "", "Ayame signaling WebSocket URL for external pilot distribution")
 	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
-	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", "", "Ayame signaling key for external pilot distribution")
+	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", strings.TrimSpace(os.Getenv("MOMO_AYAME_SIGNALING_KEY")), "Ayame backend signaling key for external pilot distribution; prefer MOMO_AYAME_SIGNALING_KEY")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
 	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "delete telemetry NDJSON logs older than this at startup (0 disables cleanup)")

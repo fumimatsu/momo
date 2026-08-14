@@ -24,6 +24,7 @@ Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ�
 `web/` は配布コピーである。正本は `momo-fpv-viewer/variants/relay/` と
 `momo-fpv-viewer/variants/observer/` にあり、更新時は
 `tools/sync-relay-viewer.ps1` を使う。詳細は [Viewer の正本と Relay 配布](../../docs/viewer-integration.md) を参照する。
+同期対象ファイルは Viewer 正本の `tools/distribution-targets.json` にある `relay-web` target から読み込む。
 
 外部 Pilot を Ayame / TURN 経由で接続する構成は、[Relay 経由 Ayame 外部 Pilot 設計](../../doc/RELAY_AYAME_EXTERNAL_PILOT_DESIGN.md) を参照する。現在は 1 source、1 Pilot の映像・操縦・telemetry・race state を実装している。外部 Pilot の command が 250 ms 途絶えた場合、Relay は対象 Pi へ neutral を送る。
 
@@ -265,9 +266,21 @@ WebRTC DataChannel で Relay と接続する。Ayame signaling WebSocket は Rel
 外部 Viewer は `relayTransport=1` を指定した Relay Pilot 版を使う。Pi 直結用の `viewer.html` は
 `serial` DataChannel を作るため、この URL の代わりに使ってはならない。
 
-```text
-https://fumimatsu.github.io/momo-fpv-viewer/variants/relay/pilot.html?signaling=ayame&relayTransport=1&ayameUrl=wss%3A%2F%2F133.88.123.51.nip.io%2Fsignaling&roomId=momo-relay-11-3-ext&clientId=auto&device=11.3&carId=CP-1&deviceStatus=off&autoReconnect=1&videoReconnect=1&iceMode=turn&roomLock=1&audioControls=0
+Relay backend の signaling key は Viewer URL へ入れず、Relay 起動前に環境変数へ設定する。
+
+```powershell
+$env:MOMO_AYAME_SIGNALING_KEY = '<backend-only-random-key>'
 ```
+
+Public Pilot は VPS authn service が発行した短期 `pilotTicket` を使う。ticket は room と Pilot role に
+限定され、初回認証で消費される。発行手順は `momo-fpv/docs/ayame-vps-turn.md` を参照する。
+
+```text
+https://<public-pages>/pilot.html?signaling=ayame&relayTransport=1&ayameUrl=wss%3A%2F%2F133.88.123.51.nip.io%2Fsignaling&roomId=momo-relay-11-3-ext&clientId=auto&device=11.3&carId=CP-1&deviceStatus=off&autoReconnect=1&videoReconnect=1&iceMode=turn&roomLock=1&audioControls=0#pilotTicket=<short-lived-ticket>
+```
+
+`pilotTicket` は query string ではなく URL fragment に置く。これにより Pages と HTTP access log へ
+ticket を送らず、Viewer は Ayame accept 後に address bar から ticket を削除する。
 
 `-ayame-pilot-room` を指定している source は Pilot lease を 1 件だけ使用する。既存 Local Pilot と同時に接続できない。
 同じ source に Local Pilot と外部 Pilot は同時に接続できない。別 source の Local Pilot、Observer、Unity の接続は維持する。
