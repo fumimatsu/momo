@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -266,6 +267,8 @@ type relay struct {
 	driveLoggingEnabled atomic.Bool
 	driveOwnerID        atomic.Uint64
 	driveGear           atomic.Int32
+	driveInputLogMu     sync.Mutex
+	lastDriveInputLogAt time.Time
 }
 
 type relayServer struct {
@@ -1964,7 +1967,86 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	// 引き続き制限後の値なので、走行性能の制御には影響しない。
 	health := r.vehicleHealth.snapshot(now)
 	r.driveGear.Store(int32(health.Gear))
+	r.recordDriveInput(client.id, message, forwarded, health, now)
 	r.broadcastCommand(commandAuditWithGear(message, int32(health.Gear)))
+}
+
+const driveInputLogInterval = 100 * time.Millisecond
+
+func (r *relay) recordDriveInput(pilotID uint64, requested webrtc.DataChannelMessage, effective webrtc.DataChannelMessage, health vehicleHealthSnapshot, now time.Time) {
+	if r.recorder == nil || !r.driveLoggingEnabled.Load() || !requested.IsString || !effective.IsString {
+		return
+	}
+	r.driveInputLogMu.Lock()
+	if !r.lastDriveInputLogAt.IsZero() && now.Sub(r.lastDriveInputLogAt) < driveInputLogInterval {
+		r.driveInputLogMu.Unlock()
+		return
+	}
+	r.lastDriveInputLogAt = now
+	r.driveInputLogMu.Unlock()
+
+	steeringPWM, requestedPowerPWM, ok := parseDriveCommand(string(requested.Data))
+	if !ok {
+		return
+	}
+	_, effectivePowerPWM, ok := parseDriveCommand(string(effective.Data))
+	if !ok {
+		return
+	}
+	throttle, brake := normalizeDrivePower(requestedPowerPWM, health.Gear)
+	effectiveThrottle, effectiveBrake := normalizeDrivePower(effectivePowerPWM, health.Gear)
+	r.recorder.RecordDriveInput(r.name, r.raceCarID, pilotID, driveInputLogSample{
+		SteeringPWM:       steeringPWM,
+		Steering:          clampFloat(float64(steeringPWM-1500)/500, -1, 1),
+		RequestedPowerPWM: requestedPowerPWM,
+		EffectivePowerPWM: effectivePowerPWM,
+		Throttle:          throttle,
+		Brake:             brake,
+		EffectiveThrottle: effectiveThrottle,
+		EffectiveBrake:    effectiveBrake,
+		Gear:              health.Gear,
+		DriveEnabled:      r.driveLoggingEnabled.Load(),
+		HP:                health.HP,
+		Fuel:              health.Fuel,
+		Boost:             health.Boost,
+		Position:          health.Position,
+		FieldSize:         health.FieldSize,
+		FuelRatePerSecond: health.FuelRatePerSec,
+		SessionType:       health.SessionType,
+	})
+}
+
+func parseDriveCommand(message string) (int, int, bool) {
+	steeringPWM := 0
+	powerPWM := 0
+	for _, field := range strings.Split(strings.TrimSpace(message), ",") {
+		field = strings.TrimSpace(field)
+		if strings.HasPrefix(field, "S:") {
+			value, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(field, "S:")))
+			if err == nil {
+				steeringPWM = value
+			}
+		}
+		if strings.HasPrefix(field, "T:") {
+			value, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(field, "T:")))
+			if err == nil {
+				powerPWM = value
+			}
+		}
+	}
+	return steeringPWM, powerPWM, steeringPWM >= 1000 && steeringPWM <= 2000 && powerPWM >= 1000 && powerPWM <= 2000
+}
+
+func normalizeDrivePower(pwm int, gear int) (float64, float64) {
+	if pwm >= 1500 {
+		return normalizeForwardThrottle(pwm, gear), 0
+	}
+	minimum := vehicleGearBrakeMinimum(gear)
+	return 0, clampFloat(float64(1500-pwm)/float64(1500-minimum), 0, 1)
+}
+
+func clampFloat(value float64, minimum float64, maximum float64) float64 {
+	return math.Max(minimum, math.Min(maximum, value))
 }
 
 func shouldLogCommandDrop(client *viewer, now time.Time) bool {
@@ -2912,8 +2994,8 @@ func main() {
 				log.Printf("close telemetry recorder: %v", err)
 			}
 			stats := recorder.Stats()
-			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d driveState=%d vehicleEvents=%d queueDrops=%d writeErrors=%d",
-				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.DriveStateRecords, stats.VehicleEventRecords, stats.QueueDrops, stats.WriteErrors)
+			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d driveState=%d driveInput=%d vehicleEvents=%d queueDrops=%d writeErrors=%d",
+				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.DriveStateRecords, stats.DriveInputRecords, stats.VehicleEventRecords, stats.QueueDrops, stats.WriteErrors)
 		}()
 		log.Printf("telemetry recorder started: path=%s", recorder.Path())
 	}

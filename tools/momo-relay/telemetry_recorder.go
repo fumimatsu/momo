@@ -35,9 +35,30 @@ type telemetryRecorderStats struct {
 	TelemetryRecords    uint64 `json:"telemetryRecords"`
 	RaceStateRecords    uint64 `json:"raceStateRecords"`
 	DriveStateRecords   uint64 `json:"driveStateRecords"`
+	DriveInputRecords   uint64 `json:"driveInputRecords"`
 	VehicleEventRecords uint64 `json:"vehicleEventRecords"`
 	QueueDrops          uint64 `json:"queueDrops"`
 	WriteErrors         uint64 `json:"writeErrors"`
+}
+
+type driveInputLogSample struct {
+	SteeringPWM       int     `json:"steeringPwm"`
+	Steering          float64 `json:"steering"`
+	RequestedPowerPWM int     `json:"requestedPowerPwm"`
+	EffectivePowerPWM int     `json:"effectivePowerPwm"`
+	Throttle          float64 `json:"throttle"`
+	Brake             float64 `json:"brake"`
+	EffectiveThrottle float64 `json:"effectiveThrottle"`
+	EffectiveBrake    float64 `json:"effectiveBrake"`
+	Gear              int     `json:"gear"`
+	DriveEnabled      bool    `json:"driveEnabled"`
+	HP                float64 `json:"hp"`
+	Fuel              float64 `json:"fuel"`
+	Boost             float64 `json:"boost"`
+	Position          int     `json:"position"`
+	FieldSize         int     `json:"fieldSize"`
+	FuelRatePerSecond float64 `json:"fuelRatePerSecond"`
+	SessionType       string  `json:"sessionType"`
 }
 
 type telemetryLogRecord struct {
@@ -59,6 +80,7 @@ type telemetryLogRecord struct {
 	DriveEnabled    *bool                   `json:"driveEnabled,omitempty"`
 	DriveReason     string                  `json:"driveReason,omitempty"`
 	PilotID         uint64                  `json:"pilotId,omitempty"`
+	DriveInput      *driveInputLogSample    `json:"driveInput,omitempty"`
 	VehicleEvent    *vehicleImpactEvent     `json:"vehicleEvent,omitempty"`
 	Stats           *telemetryRecorderStats `json:"stats,omitempty"`
 }
@@ -83,6 +105,7 @@ type telemetryRecorder struct {
 	telemetryRecords    atomic.Uint64
 	raceStateRecords    atomic.Uint64
 	driveStateRecords   atomic.Uint64
+	driveInputRecords   atomic.Uint64
 	vehicleEventRecords atomic.Uint64
 	queueDrops          atomic.Uint64
 	writeErrors         atomic.Uint64
@@ -267,6 +290,31 @@ func (r *telemetryRecorder) RecordDriveState(sourceID string, carID string, pilo
 	}
 }
 
+func (r *telemetryRecorder) RecordDriveInput(sourceID string, carID string, pilotID uint64, sample driveInputLogSample) {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	nowUTC := now.UTC()
+	elapsedUs := time.Since(r.startedAt).Microseconds()
+	sampleCopy := sample
+	record := telemetryLogRecord{
+		Type:            "drive_input",
+		SchemaVersion:   telemetryLogSchemaVersion,
+		RelaySessionID:  r.sessionID,
+		RelayReceivedAt: &nowUTC,
+		RelayElapsedUs:  &elapsedUs,
+		SourceID:        sourceID,
+		CarID:           carID,
+		PilotID:         pilotID,
+		DriveInput:      &sampleCopy,
+	}
+	r.appendRaceContext(&record, r.currentRaceContext())
+	if r.enqueue(record) {
+		r.driveInputRecords.Add(1)
+	}
+}
+
 func (r *telemetryRecorder) RecordVehicleEvent(sourceID string, carID string, event vehicleImpactEvent) {
 	if r == nil {
 		return
@@ -327,6 +375,7 @@ func (r *telemetryRecorder) Stats() telemetryRecorderStats {
 		TelemetryRecords:    r.telemetryRecords.Load(),
 		RaceStateRecords:    r.raceStateRecords.Load(),
 		DriveStateRecords:   r.driveStateRecords.Load(),
+		DriveInputRecords:   r.driveInputRecords.Load(),
 		VehicleEventRecords: r.vehicleEventRecords.Load(),
 		QueueDrops:          r.queueDrops.Load(),
 		WriteErrors:         r.writeErrors.Load(),

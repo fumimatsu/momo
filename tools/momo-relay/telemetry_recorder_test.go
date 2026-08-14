@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +27,12 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		Present:   true,
 	})
 	recorder.RecordTelemetry("11.3", "CP-1", 7, `TEL:{"v":1,"src":"imu0","seq":4}`)
+	recorder.RecordDriveInput("11.3", "CP-1", 9, driveInputLogSample{
+		SteeringPWM: 1420, Steering: -0.16, RequestedPowerPWM: 1800, EffectivePowerPWM: 1700,
+		Throttle: 1, EffectiveThrottle: 2.0 / 3.0, Gear: 3, DriveEnabled: true,
+		HP: 80, Fuel: 45, Boost: 12, Position: 2, FieldSize: 4, FuelRatePerSecond: 0.5,
+		SessionType: "race",
+	})
 	recorder.RecordVehicleEvent("11.3", "CP-1", vehicleImpactEvent{
 		Type:              "vehicle_event",
 		Version:           1,
@@ -47,8 +54,8 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	}
 
 	records := readTelemetryLogRecords(t, recorder.Path())
-	if len(records) != 5 {
-		t.Fatalf("record count = %d, want 5", len(records))
+	if len(records) != 6 {
+		t.Fatalf("record count = %d, want 6", len(records))
 	}
 	if records[0].Type != "relay_session" || records[0].RelayStartedAt == nil {
 		t.Fatalf("header = %#v, want relay_session with start time", records[0])
@@ -65,14 +72,32 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[2].RaceRunID != "rr_123" || records[2].RacePhase != "countdown" {
 		t.Fatalf("telemetry race context = %#v", records[2])
 	}
-	if records[3].Type != "vehicle_event" || records[3].VehicleEvent == nil || records[3].VehicleEvent.EventID != "impact-1" || records[3].VehicleEvent.SuppressionReason != "boost_active" {
-		t.Fatalf("vehicle event = %#v", records[3])
+	if records[3].Type != "drive_input" || records[3].DriveInput == nil || records[3].DriveInput.SteeringPWM != 1420 || records[3].DriveInput.EffectivePowerPWM != 1700 || records[3].PilotID != 9 {
+		t.Fatalf("drive input = %#v", records[3])
 	}
-	if records[3].SourceID != "11.3" || records[3].CarID != "CP-1" || records[3].RaceRunID != "rr_123" {
-		t.Fatalf("vehicle event context = %#v", records[3])
+	if records[4].Type != "vehicle_event" || records[4].VehicleEvent == nil || records[4].VehicleEvent.EventID != "impact-1" || records[4].VehicleEvent.SuppressionReason != "boost_active" {
+		t.Fatalf("vehicle event = %#v", records[4])
 	}
-	if records[4].Type != "relay_session_end" || records[4].Stats == nil || records[4].Stats.TelemetryRecords != 1 || records[4].Stats.RaceStateRecords != 1 || records[4].Stats.VehicleEventRecords != 1 {
-		t.Fatalf("footer = %#v, want final stats", records[4])
+	if records[4].SourceID != "11.3" || records[4].CarID != "CP-1" || records[4].RaceRunID != "rr_123" {
+		t.Fatalf("vehicle event context = %#v", records[4])
+	}
+	if records[5].Type != "relay_session_end" || records[5].Stats == nil || records[5].Stats.TelemetryRecords != 1 || records[5].Stats.RaceStateRecords != 1 || records[5].Stats.DriveInputRecords != 1 || records[5].Stats.VehicleEventRecords != 1 {
+		t.Fatalf("footer = %#v, want final stats", records[5])
+	}
+}
+
+func TestParseAndNormalizeDriveCommand(t *testing.T) {
+	steering, power, ok := parseDriveCommand("S:1250,T:1800\n")
+	if !ok || steering != 1250 || power != 1800 {
+		t.Fatalf("parsed drive command = steering %d power %d ok=%t", steering, power, ok)
+	}
+	throttle, brake := normalizeDrivePower(power, 3)
+	if math.Abs(throttle-1) > 0.000001 || brake != 0 {
+		t.Fatalf("normalized throttle = %.3f brake = %.3f", throttle, brake)
+	}
+	throttle, brake = normalizeDrivePower(1200, 3)
+	if throttle != 0 || math.Abs(brake-1) > 0.000001 {
+		t.Fatalf("normalized brake = throttle %.3f brake %.3f", throttle, brake)
 	}
 }
 

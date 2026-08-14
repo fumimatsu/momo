@@ -776,6 +776,19 @@ func vehicleGearForwardMaximum(gear int) int {
 	}
 }
 
+func vehicleGearBrakeMinimum(gear int) int {
+	switch gear {
+	case 1, 2:
+		return 1300
+	case 3:
+		return 1200
+	case 4:
+		return 1100
+	default:
+		return 1000
+	}
+}
+
 func normalizeForwardThrottle(pwm int, gear int) float64 {
 	maximum := vehicleGearForwardMaximum(gear)
 	return math.Max(0, math.Min(1, float64(pwm-1500)/float64(maximum-1500)))
