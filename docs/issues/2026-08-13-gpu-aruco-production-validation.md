@@ -129,3 +129,11 @@ The final standalone 30-second gate published 1,494 batches at 49.792 Hz with 9.
 processing p95. This closes replay-to-MADSYSTEM IPC and preserves repeated marker instances. Keep this
 issue open: live Relay/WebRTC input, shadow parity evidence, one-hour operation, and
 qualified Reliable marker events remain incomplete.
+
+The 2026-08-14 Native Observer live input slice now owns Relay/WebRTC receive and decode once
+per source and publishes fixed 960x528 I420 Y planes to the GPU worker. This closes the live
+input architecture item but not the live capacity item. Four full-stack inputs published
+about 17.5 Hz at about 89ms processing p95 while an isolated warmed replay reached 49.55 Hz.
+Detailed transfer, synchronization, and allocation work is tracked in
+`2026-08-14-live-luma-50hz-bottleneck.md`; this production issue remains open until that
+profile passes and a real timing/PIT/Race Control E2E run is complete.

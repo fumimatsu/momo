@@ -317,6 +317,46 @@ GPU経路の目的は4台だけを置き換えることではなく、映像受�
 - 5台以上は1プロセスへの追加より、source groupを分割したMarker node追加を優先する
 - GPU 0/1の番号ではなくadapter名、LUID、decode engine、CUDA deviceを試験記録へ残す
 
+### 50 Hz live経路の負荷分解
+
+現行経路は、Python workerがRelayへ別途接続する構成ではない。Native Observerが
+sourceごとのWebRTC受信と復号を1回だけ行い、同じVideo SinkからMADSYSTEM表示用BGRAと
+marker検出用Y平面を公開する。GPU workerは`Local\MomoObserverLumaV1`だけを読み、
+Relay接続、WebRTC復号、BGRA変換を重複させない。
+
+ソース調査で確認した現行の処理は次のとおり。
+
+- Native `Sink::OnFrame`はI420のY平面を960x528へscaleし、同じsourceのBGRA映像も生成する
+- Native `WriteSharedLuma`は50 Hzで固定4source bufferをzero fillし、有効sourceを複製した後、
+  固定長の4平面をtriple bufferへ一括`memcpy`する
+- Python `SharedLumaReader.read_latest`は検出cycleごとにNumPy配列を生成し、選択sourceを
+  共有メモリから複製する
+- `batch.y_planes[valid_indices]`はadvanced indexingによる追加hostコピーとなり、
+  `cp.asarray`がpageable host memoryからCUDA deviceへ転送する
+- GPU detectorはcandidate count、ID、valid mask、cornerを個別に`cp.asnumpy`し、sourceごとに
+  decode kernelを起動するため、host同期とkernel launchが複数回発生する
+- host/device入力、candidate、decode結果の一部はcycleごとに再確保される
+
+現行reportの`processingMs`は、`read_latest`完了後からmarker結果取得までを計測する。
+共有メモリ読取コピーとobservation IPC出力は含まず、有効source抽出、H2D転送、
+GPU検出、D2H転送、CUDA同期を1つの値に含む。したがって、現時点の証拠では
+Python interpreter単体、PCIe転送、GPU kernelのいずれか1つに原因を限定できない。
+
+最初の修正は機能変更ではなく、次のstage別計測とする。
+
+1. shared-memory readとhost copy
+2. valid-source selection
+3. H2D copy、CUDA EventによるGPU kernel、D2H copy
+4. observation整形とIPC write
+5. Native側Y平面生成、shared write、Sink lock待ち
+
+計測後は、NumPy/CuPy bufferの再利用、advanced indexingの除去、pinned host memoryと
+asynchronous H2D、D2H結果の一括転送、source間decodeの完全batch化の順に比較する。
+NativeへのCUDA統合は、これらの小さい変更で50 Hzと運用余力を満たせない場合の
+後続案とする。Intel decodeとNVIDIA CUDAを併用するPCでは、Native統合だけで
+cross-adapter host transferが消えるとは限らない。追跡は
+`docs/issues/2026-08-14-live-luma-50hz-bottleneck.md`で行う。
+
 ### プロセスとsource管理
 
 1台につき1プロセスは作らない。1つのMarker Observer Nodeが複数sourceを管理し、検出処理は
