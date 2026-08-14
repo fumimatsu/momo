@@ -185,3 +185,20 @@ Native P1として、`--shared-output-headless`ではMADSYSTEM共有BGRAとshare
 表示専用の2回目scale / BGRA変換を停止した。HV反転のshared lumaコピーはscalar per-pixel loopから
 libyuv `MirrorPlane`へ変更した。Windows CUDA無効ビルドは成功した。この変更はNative側CPUとSink lockを
 減らすが、RTX上のcandidate処理時間を直接短縮するものではない。
+
+## 本番 Relay 集約構成の再確認
+
+同日、車両の接続先を `192.168.11.100:8090` の本番 Relay だけに戻し、計測 PC 上のローカル Relay を
+停止した。Native Observer も本番 Relay の observer role へ直接接続した。11.4 再起動後は 4 台すべて
+Relay status 上で `STREAMING 50`、GPU Marker Worker は 4 source すべて `valid=True`、実効 48.4 Hz、
+cycle p95 約 12 ms、MADSYSTEM 側の observation batch は 4 source、`dropped=0` を確認した。
+
+この経路を再起動後も維持するため、`start-mads-observer.ps1` に `-SkipRelay` と
+`-ObserverRelayWebSocketUrl` を追加した。Pilot と Observer が同じ本番 Relay を使うため、車両側に 2 本の
+upstream WebRTC 接続を要求しない。
+
+MADSYSTEM の `raceControlBaseUrl` は `http://192.168.11.100:8787`、`relayGameplayBaseUrl` は
+`http://192.168.11.100:8090` へ統一した。ただし、計測 PC `192.168.11.105` から本番 Relay の Gameplay API は
+`403 operations access denied` だった。本番 Relay 起動時に Gameplay token を設定し、
+`-health-recovery-mode pit-marker` と `-gameplay-allow-cidr 192.168.11.105/32` を指定するまでは、
+通常のレース連携が動いても PIT presence / recovery だけは動作しない。

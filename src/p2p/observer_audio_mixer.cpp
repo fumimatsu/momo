@@ -1,6 +1,7 @@
 #include "p2p/observer_audio_mixer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include <rtc_base/logging.h>
@@ -12,6 +13,8 @@ constexpr size_t kFrameSamples = 160;
 constexpr size_t kStartupFrames = 6;
 constexpr size_t kStartupSamples = kStartupFrames * kFrameSamples;
 constexpr size_t kMaxQueuedSamples = kSampleRate / 2;
+constexpr double kMinimumMasterGain = 0.5;
+constexpr double kMaximumMasterGain = 3.0;
 
 int16_t ClampSample(int64_t sample) {
   return static_cast<int16_t>(
@@ -136,6 +139,30 @@ bool ObserverAudioMixer::IsSourceEnabled(const std::string& source_name) const {
   return source != sources_.end() && source->second.enabled;
 }
 
+double ObserverAudioMixer::SetMasterGain(double gain) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!std::isfinite(gain)) {
+    gain = 1.0;
+  }
+  master_gain_ = std::clamp(gain, kMinimumMasterGain, kMaximumMasterGain);
+  return master_gain_;
+}
+
+double ObserverAudioMixer::AdjustMasterGain(double delta) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!std::isfinite(delta)) {
+    return master_gain_;
+  }
+  master_gain_ = std::clamp(master_gain_ + delta, kMinimumMasterGain,
+                            kMaximumMasterGain);
+  return master_gain_;
+}
+
+double ObserverAudioMixer::GetMasterGain() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return master_gain_;
+}
+
 bool ObserverAudioMixer::QueueSamples(const std::string& source_name,
                                       const std::vector<int16_t>& samples) {
   if (samples.empty()) {
@@ -231,8 +258,10 @@ void ObserverAudioMixer::ProvideAudio(SDL_AudioStream* stream,
         ++contributors;
       }
       if (contributors > 0) {
-        mixed[sample_index] =
-            ClampSample(sum / static_cast<int64_t>(contributors));
+        const double average = static_cast<double>(sum) /
+                               static_cast<double>(contributors);
+        mixed[sample_index] = ClampSample(static_cast<int64_t>(
+            std::llround(average * master_gain_)));
       }
     }
   }

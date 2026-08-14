@@ -342,6 +342,11 @@ void Util::ParseArgs(int argc,
       ->add_option("--audio-source", args.p2p_multi_receiver_audio_source,
                    "Play M5 AUD telemetry from one source name or all")
       ->default_val("");
+  p2p_multi_receiver_app
+      ->add_option("--audio-gain", args.p2p_multi_receiver_audio_gain,
+                   "Observer audio master gain (0.5-3.0)")
+      ->default_val(1.0)
+      ->check(CLI::Range(0.5, 3.0));
   p2p_multi_receiver_app->add_flag("--flip-vertical", args.flip_vertical,
                                    "Flip every received video vertically");
   p2p_multi_receiver_app->add_flag("--flip-horizontal", args.flip_horizontal,

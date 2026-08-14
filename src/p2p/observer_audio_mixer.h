@@ -30,6 +30,9 @@ class ObserverAudioMixer {
 
   bool SetSourceEnabled(const std::string& source_name, bool enabled);
   bool IsSourceEnabled(const std::string& source_name) const;
+  double SetMasterGain(double gain);
+  double AdjustMasterGain(double delta);
+  double GetMasterGain() const;
   bool QueueSamples(const std::string& source_name,
                     const std::vector<int16_t>& samples);
   void ResetSource(const std::string& source_name);
@@ -58,6 +61,7 @@ class ObserverAudioMixer {
   bool initialized_ = false;
   bool initializing_ = false;
   bool shutting_down_ = false;
+  double master_gain_ = 1.0;
   std::string initialization_error_;
 };
 

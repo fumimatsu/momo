@@ -103,6 +103,39 @@ func TestRaceMessageForCarRejectsEmptyCarID(t *testing.T) {
 	}
 }
 
+func TestUnwrapRaceStateMessage(t *testing.T) {
+	raw := []byte(`{"type":"race_state","version":2,"raceId":"race-test"}`)
+	tests := []struct {
+		name    string
+		input   []byte
+		present bool
+		want    string
+	}{
+		{name: "Race Control raw state", input: raw, present: true, want: string(raw)},
+		{
+			name:    "Relay race stream wrapper",
+			input:   []byte(`{"type":"race-state","data":"RACE:{\"type\":\"race_state\",\"version\":2,\"raceId\":\"race-test\"}"}`),
+			present: true,
+			want:    string(raw),
+		},
+		{name: "Relay heartbeat", input: []byte(`{"type":"race-heartbeat"}`), present: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, present, err := unwrapRaceStateMessage(test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if present != test.present {
+				t.Fatalf("present = %v, want %v", present, test.present)
+			}
+			if string(got) != test.want {
+				t.Fatalf("payload = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 	fixture, err := os.ReadFile(filepath.Join("contracts", "sector-progress.race-state-v2.json"))
 	if err != nil {

@@ -27,6 +27,7 @@ struct P2PMultiReceiverClientConfig {
   std::vector<P2PMultiReceiverSource> sources;
   bool no_google_stun = false;
   std::string audio_source;
+  double audio_gain = 1.0;
 };
 
 class P2PMultiReceiverClient

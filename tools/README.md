@@ -136,6 +136,23 @@ Set-Location C:\src\momo
   -RaceControlViewerToken '<VIEWER_TOKEN>'
 ```
 
+車両が本番 Relay へ接続済みで、Observer も同じ Relay から受信する場合は、
+ローカル Relay を起動しない。車両から 2 台の Relay へ同時接続させる構成は避ける。
+
+```powershell
+Set-Location C:\src\momo
+.\tools\start-mads-observer.ps1 `
+  -SkipRelay `
+  -ObserverRelayWebSocketUrl 'ws://192.168.11.100:8090/ws' `
+  -ObserverSharedOutputFps 50 `
+  -ObserverAudioGain 1.5 `
+  -RestartObserver
+```
+
+この構成では Pilot、Observer、MADSYSTEM の PIT API を本番 Relay に集約する。
+MADSYSTEM の `relayGameplayBaseUrl` も同じ Relay の HTTP URL にする。
+本番 Relay 側では MADSYSTEM PC の固定 IP を Gameplay API の許可 CIDR に追加する。
+
 fresh clone には `tools/momo-relay/.toolchain/` がない。`-RebuildRelay` はこの bundled Go を
 参照するため、system Go で上記の手動 build を行った場合は `-RebuildRelay` を付けない。
 

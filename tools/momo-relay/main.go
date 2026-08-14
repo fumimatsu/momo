@@ -2702,6 +2702,32 @@ func (server *relayServer) startRaceControl(ctx context.Context, raceURL string,
 	}()
 }
 
+// unwrapRaceStateMessage accepts both the Race Control raw race_state v2
+// payload and the LAN Relay /ws/race-state wrapper. The latter lets a local
+// measurement Relay follow the site Relay without copying its Viewer token.
+func unwrapRaceStateMessage(data []byte) ([]byte, bool, error) {
+	data = bytes.TrimSpace(data)
+	var message struct {
+		Type string `json:"type"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal(data, &message); err != nil {
+		return nil, false, err
+	}
+	switch message.Type {
+	case "race-state":
+		payload := strings.TrimSpace(strings.TrimPrefix(message.Data, "RACE:"))
+		if payload == "" {
+			return nil, false, errors.New("relay race-state message has no data")
+		}
+		return []byte(payload), true, nil
+	case "race-heartbeat":
+		return nil, false, nil
+	default:
+		return data, true, nil
+	}
+}
+
 func (server *relayServer) connectRaceControl(ctx context.Context, raceURL string, viewerToken string) error {
 	headers := http.Header{}
 	if strings.TrimSpace(viewerToken) != "" {
@@ -2720,19 +2746,27 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 		if err != nil {
 			return fmt.Errorf("read Race Control WebSocket: %w", err)
 		}
-		var envelope raceStateEnvelope
-		if err := json.Unmarshal(data, &envelope); err != nil {
+		payload, present, err := unwrapRaceStateMessage(data)
+		if err != nil {
 			log.Printf("ignore malformed Race Control message: %v", err)
+			continue
+		}
+		if !present {
+			continue
+		}
+		var envelope raceStateEnvelope
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			log.Printf("ignore malformed Race Control state: %v", err)
 			continue
 		}
 		if envelope.Type != "race_state" || envelope.Version != 2 {
 			log.Printf("ignore unsupported Race Control message: type=%q version=%d", envelope.Type, envelope.Version)
 			continue
 		}
-		server.publishGlobalRaceState("RACE:" + string(data))
+		server.publishGlobalRaceState("RACE:" + string(payload))
 		server.observeRaceContext(envelope, time.Now())
 		if server.recorder != nil {
-			server.recorder.RecordRaceState(string(data), telemetryRaceContext{
+			server.recorder.RecordRaceState(string(payload), telemetryRaceContext{
 				RaceID:    envelope.RaceID,
 				RaceRunID: envelope.RaceRunID,
 				Phase:     envelope.Phase,
@@ -2742,7 +2776,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			})
 		}
 		for _, source := range server.sources {
-			message, err := raceMessageForCar(data, source.raceCarID)
+			message, err := raceMessageForCar(payload, source.raceCarID)
 			if err != nil {
 				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
 				continue
