@@ -15,6 +15,10 @@
     warningClosingMs: 300,
     criticalClosingMs: 100,
   });
+  const DEFAULT_BLUE_FLAG_OPTIONS = Object.freeze({
+    warningGapMs: 3000,
+    releaseGapMs: 4000,
+  });
 
   function finiteNonNegative(value) {
     if (
@@ -180,5 +184,107 @@
     return Object.freeze({ config, evaluate, reset });
   }
 
-  return Object.freeze({ DEFAULT_OPTIONS, createRearAttentionTracker });
+  function createBlueFlagTracker(options = {}) {
+    const config = Object.freeze({
+      warningGapMs: normalizedOption(options.warningGapMs, DEFAULT_BLUE_FLAG_OPTIONS.warningGapMs),
+      releaseGapMs: Math.max(
+        normalizedOption(options.warningGapMs, DEFAULT_BLUE_FLAG_OPTIONS.warningGapMs),
+        normalizedOption(options.releaseGapMs, DEFAULT_BLUE_FLAG_OPTIONS.releaseGapMs),
+      ),
+    });
+    let activeIdentity = '';
+    let lastMarkerKey = '';
+    let currentState = null;
+
+    function inactiveState() {
+      return {
+        active: false,
+        shouldPulse: false,
+        gapMs: null,
+        carId: '',
+        driver: '',
+        markerIndex: null,
+        markerRaceMs: null,
+      };
+    }
+
+    function reset() {
+      activeIdentity = '';
+      lastMarkerKey = '';
+      currentState = null;
+    }
+
+    function evaluate(input = {}) {
+      if (String(input.phaseCode || '').trim().toLowerCase() !== 'green') {
+        reset();
+        return inactiveState();
+      }
+
+      const self = input.self;
+      const lapping = input.lapping;
+      const selfCarId = typeof self?.carId === 'string' ? self.carId.trim() : '';
+      const lappingCarId = typeof lapping?.carId === 'string' ? lapping.carId.trim() : '';
+      const advisoryCarId = typeof self?.lappingCarBehindId === 'string'
+        ? self.lappingCarBehindId.trim()
+        : '';
+      const selfLap = integerNonNegative(self?.lap);
+      const lappingLap = integerNonNegative(lapping?.lap);
+      const selfPosition = integerNonNegative(self?.position);
+      const lappingPosition = integerNonNegative(lapping?.position);
+      if (!selfCarId
+        || !lappingCarId
+        || advisoryCarId !== lappingCarId
+        || String(self?.status || '').trim().toLowerCase() !== 'racing'
+        || String(lapping?.status || '').trim().toLowerCase() !== 'racing'
+        || selfLap === null
+        || lappingLap === null
+        || lappingLap <= selfLap
+        || selfPosition === null
+        || lappingPosition === null
+        || lappingPosition >= selfPosition) {
+        reset();
+        return inactiveState();
+      }
+
+      const markerIndex = integerNonNegative(lapping.lastMarkerIndex);
+      const markerRaceMs = integerNonNegative(lapping.lastMarkerRaceMs);
+      const gapMs = finiteNonNegative(self.lappingGapMs);
+      if (markerIndex === null || markerRaceMs === null || gapMs === null || gapMs === 0) {
+        reset();
+        return inactiveState();
+      }
+
+      const identity = `${String(input.raceRunId || '').trim()}:${selfCarId}:${lappingCarId}`;
+      const markerKey = `${lappingLap}:${markerIndex}:${markerRaceMs}`;
+      if (identity === activeIdentity && markerKey === lastMarkerKey) {
+        return currentState
+          ? { ...currentState, shouldPulse: false }
+          : inactiveState();
+      }
+
+      const wasActive = identity === activeIdentity && currentState?.active === true;
+      const active = gapMs <= (wasActive ? config.releaseGapMs : config.warningGapMs);
+      currentState = {
+        active,
+        shouldPulse: active && !wasActive,
+        gapMs,
+        carId: lappingCarId,
+        driver: typeof lapping.driver === 'string' ? lapping.driver.trim() : '',
+        markerIndex,
+        markerRaceMs,
+      };
+      activeIdentity = identity;
+      lastMarkerKey = markerKey;
+      return currentState;
+    }
+
+    return Object.freeze({ config, evaluate, reset });
+  }
+
+  return Object.freeze({
+    DEFAULT_OPTIONS,
+    DEFAULT_BLUE_FLAG_OPTIONS,
+    createRearAttentionTracker,
+    createBlueFlagTracker,
+  });
 }));

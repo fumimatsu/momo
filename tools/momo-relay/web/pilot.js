@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260813-telemetry-tuning-v1';
+  const PILOT_BUILD_ID = '20260814-calibration-visual-v4';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -87,18 +87,19 @@
     strong: Object.freeze({ scale: 2.00, label: 'Strong' }),
   });
   const CALIBRATION_STEPS = Object.freeze([
-    Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'steeringRight', title: 'STEERING / FULL RIGHT', instruction: 'ハンドルを右端まで回し、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルから手を離して中央へ戻し、現在値を記録します。' }),
-    Object.freeze({ id: 'throttleIdle', title: 'THROTTLE / RELEASED', instruction: 'アクセルを踏まず、完全に戻した状態を記録します。' }),
-    Object.freeze({ id: 'throttlePressed', title: 'THROTTLE / FULL', instruction: 'アクセルを奥まで踏み込み、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'brakeIdle', title: 'BRAKE / RELEASED', instruction: 'ブレーキを踏まず、完全に戻した状態を記録します。' }),
-    Object.freeze({ id: 'brakePressed', title: 'BRAKE / FULL', instruction: 'ブレーキを奥まで踏み込み、その位置を保ったまま現在値を記録します。' }),
-    Object.freeze({ id: 'paddleLeft', title: 'LEFT PADDLE', instruction: '左パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true }),
-    Object.freeze({ id: 'paddleRight', title: 'RIGHT PADDLE', instruction: '右パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true }),
-    Object.freeze({ id: 'driveButton', title: 'DRIVE BUTTON', instruction: '運転開始に使うボタンを一度押します。', button: true }),
-    Object.freeze({ id: 'ffbPresetButton', title: 'FFB BUTTON', instruction: 'FFB強度の切り替えに使うボタンを一度押します。', button: true }),
-    Object.freeze({ id: 'menuButton', title: 'MENU BUTTON', instruction: '走行画面でMENUを開くボタンを一度押します。', button: true }),
+    Object.freeze({ id: 'confirmButton', title: 'CONFIRM BUTTON', instruction: '以降の記録と保存に使う決定ボタンを一度押してください。このボタンは走行操作には割り当てません。', button: true, confirm: true, visual: 'button', visualKey: 'OK', visualHint: 'PRESS ONCE' }),
+    Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。', visual: 'steering-left', visualHint: 'TURN LEFT & HOLD' }),
+    Object.freeze({ id: 'steeringRight', title: 'STEERING / FULL RIGHT', instruction: 'ハンドルを右端まで回し、その位置を保ったまま現在値を記録します。', visual: 'steering-right', visualHint: 'TURN RIGHT & HOLD' }),
+    Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルから手を離して中央へ戻し、現在値を記録します。', visual: 'steering-center', visualHint: 'RETURN TO CENTER' }),
+    Object.freeze({ id: 'throttleIdle', title: 'THROTTLE / RELEASED', instruction: 'アクセルを踏まず、完全に戻した状態を記録します。', visual: 'pedal-throttle-release', visualHint: 'RELEASE ACCEL' }),
+    Object.freeze({ id: 'throttlePressed', title: 'THROTTLE / FULL', instruction: 'アクセルを奥まで踏み込み、その位置を保ったまま現在値を記録します。', visual: 'pedal-throttle-press', visualHint: 'PRESS ACCEL' }),
+    Object.freeze({ id: 'brakeIdle', title: 'BRAKE / RELEASED', instruction: 'ブレーキを踏まず、完全に戻した状態を記録します。', visual: 'pedal-brake-release', visualHint: 'RELEASE BRAKE' }),
+    Object.freeze({ id: 'brakePressed', title: 'BRAKE / FULL', instruction: 'ブレーキを奥まで踏み込み、その位置を保ったまま現在値を記録します。', visual: 'pedal-brake-press', visualHint: 'PRESS BRAKE' }),
+    Object.freeze({ id: 'paddleLeft', title: 'LEFT PADDLE', instruction: '左パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true, visual: 'paddle-left', visualHint: 'PRESS LEFT PADDLE' }),
+    Object.freeze({ id: 'paddleRight', title: 'RIGHT PADDLE', instruction: '右パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true, visual: 'paddle-right', visualHint: 'PRESS RIGHT PADDLE' }),
+    Object.freeze({ id: 'driveButton', title: 'DRIVE BUTTON', instruction: '運転開始に使うボタンを一度押します。', button: true, visual: 'button', visualKey: 'DRIVE', visualHint: 'PRESS DRIVE BUTTON' }),
+    Object.freeze({ id: 'ffbPresetButton', title: 'FFB BUTTON', instruction: 'FFB強度の切り替えに使うボタンを一度押します。', button: true, visual: 'button', visualKey: 'FFB', visualHint: 'PRESS FFB BUTTON' }),
+    Object.freeze({ id: 'menuButton', title: 'MENU BUTTON', instruction: '走行画面でMENUを開くボタンを一度押します。', button: true, visual: 'button', visualKey: 'MENU', visualHint: 'PRESS MENU BUTTON' }),
   ]);
   const FFB_INITIAL_PRESET = normalizeFfbPreset(getStringParam('ffbPreset', GAMEPAD_PROFILE?.ffbPreset || 'medium'));
   const FFB_SEND_INTERVAL_MS = Math.max(20, Math.min(100, getNumberParam('ffbSendMs', 20)));
@@ -222,6 +223,13 @@
   );
   const RACE_REAR_WARNING_CLOSING_MS = Math.max(0, getNumberParam('rearWarningClosingMs', 300));
   const RACE_REAR_CRITICAL_CLOSING_MS = Math.max(0, getNumberParam('rearCriticalClosingMs', 100));
+  const RACE_BLUE_FLAG_ENABLED = getBooleanParam('blueFlag', true);
+  const RACE_BLUE_FLAG_DEMO = getBooleanParam('blueFlagDemo', false);
+  const RACE_BLUE_FLAG_WARNING_GAP_MS = Math.max(0, getNumberParam('blueFlagGapMs', 3000));
+  const RACE_BLUE_FLAG_RELEASE_GAP_MS = Math.max(
+    RACE_BLUE_FLAG_WARNING_GAP_MS,
+    getNumberParam('blueFlagReleaseGapMs', 4000),
+  );
   const G_METER_ENABLED = getBooleanParam('gMeter', true);
   const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
   const G_METER_FULL_SCALE_G = Math.max(0.5, Math.min(3.0, getNumberParam('gMeterScaleG', 1.5)));
@@ -299,6 +307,7 @@
   const raceBattleBehindName = document.getElementById('raceBattleBehindName');
   const raceBattleBehindGap = document.getElementById('raceBattleBehindGap');
   const rearAttention = document.getElementById('rearAttention');
+  const rearAttentionKicker = document.getElementById('rearAttentionKicker');
   const rearAttentionLabel = document.getElementById('rearAttentionLabel');
   const rearAttentionGap = document.getElementById('rearAttentionGap');
   const rearAttentionDetail = document.getElementById('rearAttentionDetail');
@@ -335,6 +344,8 @@
   const calibrationStepLabel = document.getElementById('calibrationStepLabel');
   const calibrationTitle = document.getElementById('calibrationTitle');
   const calibrationInstruction = document.getElementById('calibrationInstruction');
+  const calibrationVisual = document.getElementById('calibrationVisual');
+  const calibrationVisualKey = document.getElementById('calibrationVisualKey');
   const calibrationLive = document.getElementById('calibrationLive');
   const calibrationError = document.getElementById('calibrationError');
   const btnCalibrationCapture = document.getElementById('btnCalibrationCapture');
@@ -532,6 +543,10 @@
     releaseGapMs: RACE_REAR_RELEASE_GAP_MS,
     warningClosingMs: RACE_REAR_WARNING_CLOSING_MS,
     criticalClosingMs: RACE_REAR_CRITICAL_CLOSING_MS,
+  }) || null;
+  const blueFlagTracker = window.MomoRaceBattle?.createBlueFlagTracker({
+    warningGapMs: RACE_BLUE_FLAG_WARNING_GAP_MS,
+    releaseGapMs: RACE_BLUE_FLAG_RELEASE_GAP_MS,
   }) || null;
   const raceState = {
     phase: 'STANDBY',
@@ -1209,6 +1224,13 @@
     return Number.isFinite(number) && number >= 0 ? Math.round(number) : null;
   }
 
+  function normalizeOptionalRaceNumber(value) {
+    if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
+      return null;
+    }
+    return normalizeRaceNumber(value);
+  }
+
   function formatRaceTime(milliseconds) {
     const value = normalizeRaceNumber(milliseconds);
     if (value === null) {
@@ -1279,11 +1301,16 @@
           carId,
           driver,
           position,
-          lap: normalizeRaceNumber(entry.lap),
-          intervalToAheadMs: normalizeRaceNumber(entry.intervalToAheadMs),
+          status: typeof entry.status === 'string' ? entry.status.trim().toLowerCase() : '',
+          lap: normalizeOptionalRaceNumber(entry.lap),
+          intervalToAheadMs: normalizeOptionalRaceNumber(entry.intervalToAheadMs),
           lapDeltaToAhead: normalizeRaceLapDelta(entry.lapDeltaToAhead),
-          lastMarkerIndex: normalizeRaceNumber(entry.lastMarkerIndex),
-          lastMarkerRaceMs: normalizeRaceNumber(entry.lastMarkerRaceMs),
+          lappingCarBehindId: typeof entry.lappingCarBehindId === 'string'
+            ? entry.lappingCarBehindId.trim()
+            : '',
+          lappingGapMs: normalizeOptionalRaceNumber(entry.lappingGapMs),
+          lastMarkerIndex: normalizeOptionalRaceNumber(entry.lastMarkerIndex),
+          lastMarkerRaceMs: normalizeOptionalRaceNumber(entry.lastMarkerRaceMs),
         };
       })
       .filter((entry) => entry !== null)
@@ -1409,6 +1436,7 @@
     }
     if (resetTracker) {
       rearAttentionTracker?.reset();
+      blueFlagTracker?.reset();
     }
     if (wasVisible) scheduleRaceBattleLayout();
   }
@@ -1430,6 +1458,8 @@
       rearAttention.classList.remove('is-active');
     }
     rearAttention.dataset.severity = severity;
+    rearAttention.dataset.mode = 'rear';
+    setText(rearAttentionKicker, 'PROXIMITY ALERT');
     setText(rearAttentionLabel, critical ? 'REAR ATTACK' : 'REAR PRESSURE');
     setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
     setText(
@@ -1445,12 +1475,55 @@
     }
   }
 
-  function evaluateRearAttention() {
-    if (!RACE_REAR_ATTENTION_ENABLED || !rearAttentionTracker) {
-      hideRearAttention(true);
+  function showBlueFlag(state) {
+    if (!rearAttention || !state?.active) {
       return;
     }
+    const rivalName = state.driver || state.carId;
+    const markerLabel = state.markerIndex === 0 ? 'LAP LINE' : `CP ${state.markerIndex}`;
+    if (!state.shouldPulse && rearAttention.dataset.mode !== 'blue-flag') {
+      rearAttention.classList.remove('is-active');
+    }
+    rearAttention.dataset.mode = 'blue-flag';
+    rearAttention.dataset.severity = 'blue-flag';
+    setText(rearAttentionKicker, 'RACE CONTROL');
+    setText(rearAttentionLabel, 'BLUE FLAG');
+    setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
+    setText(rearAttentionDetail, `LET FASTER CAR PASS  /  ${rivalName}  /  ${markerLabel}`);
+    rearAttention.hidden = false;
+    scheduleRaceBattleLayout();
+    if (state.shouldPulse) {
+      rearAttention.classList.remove('is-active');
+      void rearAttention.offsetWidth;
+      rearAttention.classList.add('is-active');
+    }
+  }
+
+  function evaluateRaceAttention() {
     const battle = getRaceBattle();
+    if (RACE_BLUE_FLAG_ENABLED && blueFlagTracker) {
+      const lapping = battle.self?.lappingCarBehindId
+        ? raceState.rivals.find((rival) => rival.carId === battle.self.lappingCarBehindId) || null
+        : null;
+      const blueFlagState = blueFlagTracker.evaluate({
+        raceRunId: activeRaceRunId,
+        phaseCode: raceState.phaseCode,
+        self: battle.self,
+        lapping,
+      });
+      if (raceState.phaseCode === 'green' && blueFlagState?.active) {
+        showBlueFlag(blueFlagState);
+        return;
+      }
+    } else {
+      blueFlagTracker?.reset();
+    }
+
+    if (!RACE_REAR_ATTENTION_ENABLED || !rearAttentionTracker) {
+      hideRearAttention(false);
+      rearAttentionTracker?.reset();
+      return;
+    }
     const state = rearAttentionTracker.evaluate({
       raceRunId: activeRaceRunId,
       phaseCode: raceState.phaseCode,
@@ -1986,44 +2059,68 @@
       }
     }
     raceState.sampledAt = performance.now();
-    evaluateRearAttention();
+    evaluateRaceAttention();
     renderRaceHud();
     syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
     announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     return true;
   }
 
-  function createRaceBattleDemoState(behindGapMs = 1250, markerIndex = 1, markerRaceMs = 24_000) {
+  function createRaceBattleDemoState(
+    behindGapMs = 1250,
+    markerIndex = 1,
+    markerRaceMs = 24_000,
+    blueFlag = false,
+  ) {
+    const rivals = blueFlag
+      ? [
+        {
+          carId: 'FPV-01', driver: 'AYA', position: 1, lap: 4, status: 'racing',
+          lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
+        { carId: 'FPV-03', driver: 'RIN', position: 2, lap: 3, status: 'racing', lapDeltaToAhead: 1 },
+        {
+          carId: 'FPV-02', driver: 'MOMO', position: 3, lap: 3, status: 'racing',
+          intervalToAheadMs: 840, lappingCarBehindId: 'FPV-01', lappingGapMs: 2400,
+        },
+        {
+          carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing',
+          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
+      ]
+      : [
+        { carId: 'FPV-01', driver: 'AYA', position: 1, lap: 3, status: 'racing' },
+        { carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, status: 'racing', intervalToAheadMs: 840 },
+        {
+          carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3, status: 'racing',
+          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+        },
+        { carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing', intervalToAheadMs: 2810 },
+      ];
     return {
       phase: 'RUNNING',
       phaseCode: 'green',
       carId: 'FPV-02',
       lap: 3,
       lapCount: 5,
-      position: 2,
+      position: blueFlag ? 3 : 2,
       fieldSize: 4,
       totalTimeMs: 72430,
       currentLapMs: 9420,
       lastLapMs: 23860,
       bestLapMs: 23580,
       clockRunning: false,
-      rivals: [
-        { carId: 'FPV-01', driver: 'AYA', position: 1, lap: 3 },
-        { carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, intervalToAheadMs: 840 },
-        {
-          carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3,
-          intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
-        },
-        { carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, intervalToAheadMs: 2810 },
-      ],
+      rivals,
     };
   }
 
   function startRaceBattleDemo() {
-    if (RACE_BATTLE_DEMO || RACE_REAR_ATTENTION_DEMO) {
-      setRaceState(createRaceBattleDemoState());
+    if (RACE_BATTLE_DEMO || RACE_REAR_ATTENTION_DEMO || RACE_BLUE_FLAG_DEMO) {
+      setRaceState(createRaceBattleDemoState(1250, 1, 24_000, RACE_BLUE_FLAG_DEMO));
       if (RACE_REAR_ATTENTION_DEMO) {
-        window.setTimeout(() => setRaceState(createRaceBattleDemoState(850, 2, 36_000)), 350);
+        window.setTimeout(() => setRaceState(
+          createRaceBattleDemoState(850, 2, 36_000, RACE_BLUE_FLAG_DEMO),
+        ), 350);
       }
     }
   }
@@ -5793,13 +5890,26 @@
       ? 'Complete'
       : `Step ${calibrationState.stepIndex + 1} / ${CALIBRATION_STEPS.length}`;
     calibrationTitle.textContent = complete ? 'CALIBRATION READY' : step.title;
+    if (calibrationVisual) {
+      calibrationVisual.dataset.action = complete ? 'complete' : step.visual;
+      calibrationVisual.dataset.hint = complete ? 'PRESS OK TO SAVE' : step.visualHint;
+    }
+    setText(calibrationVisualKey, complete ? 'OK' : step.visualKey || '');
+    const confirmLabel = Number.isInteger(calibrationState.confirmButton)
+      ? `BUTTON ${calibrationState.confirmButton}`
+      : '';
     calibrationInstruction.textContent = complete
-      ? '記録内容を保存してViewerを再読み込みします。Driveは再読み込み後もOFFです。'
-      : step.instruction;
+      ? `${confirmLabel}を押すと記録内容を保存してViewerを再読み込みします。Driveは再読み込み後もOFFです。`
+      : step.confirm
+        ? step.instruction
+        : step.button
+          ? `${step.instruction} 決定ボタン（${confirmLabel}）は使用できません。`
+          : `${step.instruction} ${confirmLabel}を押すか、Record Currentを選択してください。`;
     btnCalibrationCapture.disabled = Boolean(step?.button);
     btnCalibrationCapture.textContent = complete
       ? 'Save & Reload'
-      : step?.button ? 'Waiting for Button' : 'Record Current';
+      : step?.confirm ? 'Waiting for Confirm Button'
+        : step?.button ? 'Waiting for Button' : 'Record Current';
     btnCalibrationBack.disabled = calibrationState.stepIndex <= 0 || complete;
     calibrationError.textContent = '';
   }
@@ -5813,6 +5923,11 @@
       calibrationStepLabel.textContent = 'Input required';
       calibrationTitle.textContent = 'CONNECT WHEEL';
       calibrationInstruction.textContent = 'ハンコンをUSB接続し、いずれかのボタンを押してからRestartを選択してください。';
+      if (calibrationVisual) {
+        calibrationVisual.dataset.action = 'connect';
+        calibrationVisual.dataset.hint = 'CONNECT USB';
+      }
+      setText(calibrationVisualKey, 'USB');
       calibrationLive.textContent = 'No gamepad reported by browser';
       calibrationError.textContent = '';
       btnCalibrationCapture.disabled = true;
@@ -5824,6 +5939,7 @@
       stepIndex: 0,
       gamepadIndex: gamepad.index,
       startSnapshot: snapshot,
+      confirmButton: null,
       throttleIdleSnapshot: null,
       brakeIdleSnapshot: null,
       mapping: createCalibrationMapping(gamepad),
@@ -5914,6 +6030,7 @@
           calibrationState.throttleIdleSnapshot,
           current,
           new Set([mapping.steeringAxis]),
+          new Set([calibrationState.confirmButton]),
         );
         if (!change) {
           calibrationError.textContent = 'アクセル入力の変化を検出できません。奥まで踏み込んでください。';
@@ -5926,7 +6043,7 @@
         break;
       case 'brakePressed': {
         const excludedAxes = new Set([mapping.steeringAxis]);
-        const excludedButtons = new Set();
+        const excludedButtons = new Set([calibrationState.confirmButton]);
         if (mapping.throttleAxis !== null) excludedAxes.add(mapping.throttleAxis);
         if (mapping.throttleButton !== null) excludedButtons.add(mapping.throttleButton);
         change = findCalibrationChange(calibrationState.brakeIdleSnapshot, current, excludedAxes, excludedButtons);
@@ -5982,15 +6099,30 @@
     const snapshot = snapshotCalibrationInput(gamepad);
     calibrationLive.textContent = describeCalibrationInput(snapshot);
     const step = CALIBRATION_STEPS[calibrationState.stepIndex];
-    if (!step?.button) {
-      return;
-    }
     for (let index = 0; index < gamepad.buttons.length; index += 1) {
       const pressed = getGamepadButtonValue(gamepad, index) >= 0.5;
       const previous = calibrationButtonState.get(index) === true;
       calibrationButtonState.set(index, pressed);
       if (pressed && !previous) {
-        captureCalibrationButton(gamepad, index);
+        const stepKind = step?.confirm
+          ? 'confirm'
+          : step?.button ? 'mapping' : 'capture';
+        const action = window.FpvGamepadProfiles?.getCalibrationButtonAction?.({
+          buttonIndex: index,
+          confirmButton: calibrationState.confirmButton,
+          stepKind,
+        }) || 'ignore';
+        if (action === 'select-confirm') {
+          calibrationState.confirmButton = index;
+          calibrationLive.textContent = `CONFIRM: BUTTON ${index} / ${gamepad.id || 'Unknown gamepad'}`;
+          advanceCalibration(gamepad);
+        } else if (action === 'confirm') {
+          captureCalibrationStep();
+        } else if (action === 'assign') {
+          captureCalibrationButton(gamepad, index);
+        } else if (action === 'reserved-confirm') {
+          calibrationError.textContent = `BUTTON ${index} は決定ボタンとして予約されています。別のボタンを押してください。`;
+        }
         break;
       }
     }
