@@ -104,12 +104,32 @@
 
     .race-summary {
       position: fixed;
-      top: calc(94px + env(safe-area-inset-top));
+      top: calc(16px + env(safe-area-inset-top));
       left: calc(16px + env(safe-area-inset-left));
-      width: min(248px, calc(100vw - 32px));
-      padding: 11px 14px 10px;
+      width: min(284px, calc(100vw - 32px));
+      padding: 12px 16px 13px;
       transform: scale(var(--osd-scale));
       transform-origin: top left;
+    }
+
+    .race-identity {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .race-car-id {
+      overflow: hidden;
+      color: #67e9ff;
+      font-size: 25px;
+      font-style: italic;
+      line-height: 1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .race-summary-head {
@@ -117,7 +137,7 @@
       align-items: baseline;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 9px;
+      margin-bottom: 12px;
     }
 
     .race-phase {
@@ -128,10 +148,27 @@
     }
 
     .race-lap-count {
+      display: inline-flex;
+      align-items: baseline;
+      justify-content: flex-end;
+      gap: 5px;
       color: #ffffff;
-      font-size: 15px;
+      font-size: 22px;
+      font-style: italic;
       line-height: 1;
       white-space: nowrap;
+    }
+
+    .race-lap-current {
+      font-size: 72px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 0.78;
+    }
+
+    .race-lap-total {
+      color: #dceaf6;
+      font-size: 22px;
     }
 
     .race-time-grid {
@@ -148,13 +185,18 @@
 
     .race-time-row strong {
       color: #ffffff;
-      font-size: 19px;
+      font-size: 20px;
       font-weight: 400;
       line-height: 1;
     }
 
+    .race-time-row.current strong {
+      font-size: 27px;
+    }
+
     .race-time-row.best strong {
       color: #fbd64a;
+      font-size: 23px;
     }
 
     .race-total-anchor {
@@ -866,17 +908,18 @@
     }
 
     .status {
-      position: fixed;
-      top: calc(16px + env(safe-area-inset-top));
-      left: calc(16px + env(safe-area-inset-left));
-      display: grid;
+      display: none;
       grid-template-columns: 1fr;
       gap: 3px;
+      margin-top: 11px;
+      padding-top: 9px;
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
       min-width: 0;
-      font-size: 18px;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 11px;
       line-height: 1.1;
       letter-spacing: 0;
-      color: #ffffff;
+      color: #dceaf6;
       text-shadow:
         0 0 2px #000000,
         1px 1px 2px #000000,
@@ -884,8 +927,12 @@
       pointer-events: none;
     }
 
+    body.debug-osd .status {
+      display: grid;
+    }
+
     .status span {
-      color: #ffffff;
+      color: #a9c5dd;
     }
 
     .status-row {
@@ -909,7 +956,7 @@
 
     .status strong {
       display: inline-block;
-      min-width: 96px;
+      min-width: 72px;
       color: #ffffff;
       font-weight: 700;
     }
@@ -2648,8 +2695,24 @@
 
       .race-summary {
         top: calc(80px + env(safe-area-inset-top));
-        width: 210px;
-        padding: 8px 10px;
+        left: calc(8px + env(safe-area-inset-left));
+        width: 194px;
+        padding: 9px 11px 10px;
+      }
+
+      .race-identity {
+        margin-bottom: 8px;
+        padding-bottom: 6px;
+      }
+
+      .race-car-id {
+        font-size: 21px;
+      }
+
+      .race-summary-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
       }
 
       .race-phase {
@@ -2657,7 +2720,39 @@
       }
 
       .race-time-row strong {
-        font-size: 16px;
+        font-size: 17px;
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .race-time-row {
+        grid-template-columns: 76px minmax(0, 1fr);
+      }
+
+      .race-time-row .race-label {
+        white-space: nowrap;
+      }
+
+      .race-time-row.current strong {
+        font-size: 21px;
+      }
+
+      .race-time-row.best strong {
+        font-size: 20px;
+      }
+
+      .race-lap-count {
+        justify-self: end;
+        gap: 3px;
+        font-size: 17px;
+      }
+
+      .race-lap-current {
+        font-size: 63px;
+      }
+
+      .race-lap-total {
+        font-size: 17px;
       }
 
       .race-total {
@@ -2777,12 +2872,6 @@
         max-width: none;
       }
 
-      .status {
-        grid-template-columns: 1fr;
-        min-width: 0;
-        width: 100%;
-      }
-
       .control {
         width: 100%;
         min-width: 0;
@@ -2853,12 +2942,20 @@
       <output id="pitStopwatchTime">00:00.0</output>
     </section>
     <div class="race-summary race-card">
+      <div class="race-identity">
+        <span class="race-label">CAR</span>
+        <strong id="hostState" class="race-car-id">n/a</strong>
+      </div>
       <div class="race-summary-head">
         <span id="racePhase" class="race-phase">STANDBY</span>
-        <span id="raceLapCount" class="race-lap-count">LAP -- / --</span>
+        <span id="raceLapCount" class="race-lap-count" aria-label="Lap -- of --">
+          <span>LAP</span>
+          <strong id="raceLapCurrentNumber" class="race-lap-current">--</strong>
+          <span class="race-lap-total">/ <span id="raceLapTotalCount">--</span></span>
+        </span>
       </div>
       <div class="race-time-grid">
-        <div class="race-time-row">
+        <div class="race-time-row current">
           <span class="race-label">CURRENT LAP</span>
           <strong id="raceCurrentLap">--:--.---</strong>
         </div>
@@ -2870,6 +2967,36 @@
           <span class="race-label">BEST LAP</span>
           <strong id="raceBestLap">--:--.---</strong>
         </div>
+      </div>
+      <div class="status" aria-label="Debug connection status">
+        <div class="debug-only"><span>Endpoint</span> <strong id="endpointHostState">n/a</strong></div>
+        <div class="debug-only"><span>WebSocket</span> <strong id="wsState">closed</strong></div>
+        <div class="debug-only"><span>ICE</span> <strong id="iceState">new</strong></div>
+        <div class="debug-only"><span>Control DataChannel</span> <strong id="dcState">closed</strong></div>
+        <div class="status-row">
+          <div><span>Link</span> <strong id="linkState">starting</strong></div>
+          <div><span>Video</span> <strong id="videoState">waiting</strong></div>
+        </div>
+        <div class="status-row">
+          <div><span>FPS</span> <strong id="fpsState">0.0</strong></div>
+          <div><span>Delay</span> <strong id="latencyState">n/a</strong></div>
+        </div>
+        <div class="debug-only"><span>Render</span> <strong id="renderFpsState">0.0</strong></div>
+        <div class="debug-only"><span>Net</span> <strong id="netState">0kbps</strong></div>
+        <div class="debug-only"><span>Jitter</span> <strong id="jitterState">0ms</strong></div>
+        <div class="debug-only"><span>RTT</span> <strong id="rttState">n/a</strong></div>
+        <div class="debug-only"><span>DC RTT</span> <strong id="dcRttState">n/a</strong></div>
+        <div class="debug-only"><span>Dropped</span> <strong id="dropState">0</strong></div>
+        <div class="debug-only"><span>Uptime</span> <strong id="uptimeState">0s</strong></div>
+        <div class="debug-only"><span>Retry</span> <strong id="retryState">none</strong></div>
+        <div class="debug-only"><span>Last</span> <strong id="lastEventState">start</strong></div>
+        <div class="debug-only"><span>Diag</span> <strong id="diagState">n/a</strong></div>
+        <div class="debug-only"><span>VideoAge</span> <strong id="videoAgeState">n/a</strong></div>
+        <div class="debug-only"><span>RC</span> <strong id="rcState">manual</strong></div>
+        <div class="debug-only"><span>Telemetry</span> <strong id="telemetryState">n/a</strong></div>
+        <div class="debug-only"><span>Motion</span> <strong id="motionState">waiting</strong></div>
+        <div class="debug-only"><span>M5 Audio</span> <strong id="m5AudioState">off</strong></div>
+        <div class="debug-only"><span>Device</span> <strong id="deviceState">n/a</strong></div>
       </div>
     </div>
 
@@ -3028,39 +3155,6 @@
 
   <div class="hud">
     <div class="panel">
-      <div class="status">
-        <div class="status-row">
-          <div><span>ID</span> <strong id="hostState">n/a</strong></div>
-        </div>
-        <div class="debug-only"><span>WebSocket</span> <strong id="wsState">closed</strong></div>
-        <div class="debug-only"><span>ICE</span> <strong id="iceState">new</strong></div>
-        <div class="debug-only"><span>Control DataChannel</span> <strong id="dcState">closed</strong></div>
-        <div class="status-row">
-          <div><span>Link</span> <strong id="linkState">starting</strong></div>
-          <div><span>Video</span> <strong id="videoState">waiting</strong></div>
-        </div>
-        <div class="status-row">
-          <div><span>FPS</span> <strong id="fpsState">0.0</strong></div>
-          <div><span>Delay</span> <strong id="latencyState">n/a</strong></div>
-        </div>
-        <div class="debug-only"><span>Render</span> <strong id="renderFpsState">0.0</strong></div>
-        <div class="debug-only"><span>Net</span> <strong id="netState">0kbps</strong></div>
-        <div class="debug-only"><span>Jitter</span> <strong id="jitterState">0ms</strong></div>
-        <div class="debug-only"><span>RTT</span> <strong id="rttState">n/a</strong></div>
-        <div class="debug-only"><span>DC RTT</span> <strong id="dcRttState">n/a</strong></div>
-        <div class="debug-only"><span>Dropped</span> <strong id="dropState">0</strong></div>
-        <div class="debug-only"><span>Uptime</span> <strong id="uptimeState">0s</strong></div>
-        <div class="debug-only"><span>Retry</span> <strong id="retryState">none</strong></div>
-        <div class="debug-only"><span>Last</span> <strong id="lastEventState">start</strong></div>
-        <div class="debug-only"><span>Diag</span> <strong id="diagState">n/a</strong></div>
-        <div class="debug-only"><span>VideoAge</span> <strong id="videoAgeState">n/a</strong></div>
-        <div class="debug-only"><span>RC</span> <strong id="rcState">manual</strong></div>
-        <div class="debug-only"><span>Telemetry</span> <strong id="telemetryState">n/a</strong></div>
-        <div class="debug-only"><span>Motion</span> <strong id="motionState">waiting</strong></div>
-        <div class="debug-only"><span>M5 Audio</span> <strong id="m5AudioState">off</strong></div>
-        <div class="debug-only"><span>Device</span> <strong id="deviceState">n/a</strong></div>
-      </div>
-
       <div class="control" aria-label="RC controls">
         <div class="rc-axis rc-axis-steering">
           <label for="steering">Steering</label>
@@ -3164,15 +3258,15 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260814-ayame-lease-resume-v1"></script>
+    <script src="../../telemetry.js?v=20260815-race-summary-v2"></script>
     <script src="../../m5-audio.js?v=20260811-gear-audit-v3"></script>
     <script
-      src="./gamepad-profile.js?v=20260814-ayame-lease-resume-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260814-ayame-lease-resume-v1'"
+      src="./gamepad-profile.js?v=20260815-race-summary-v2"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260815-race-summary-v2'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260814-ayame-lease-resume-v1"></script>
-    <script src="./race-battle.js?v=20260814-ayame-lease-resume-v1"></script>
-    <script src="./pilot.js?v=20260814-ayame-lease-resume-v1"></script>
+    <script src="./ffb-bridge.js?v=20260815-race-summary-v2"></script>
+    <script src="./race-battle.js?v=20260815-race-summary-v2"></script>
+    <script src="./pilot.js?v=20260815-race-summary-v2"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

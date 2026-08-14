@@ -1,5 +1,6 @@
 import {
   abbreviateDriverName,
+  CurrentLapClockTracker,
   RaceStateDeduplicator,
   countActiveVideos,
   currentLapClockValue,
@@ -55,6 +56,7 @@ const CAR_EFFECTS = Object.freeze({
   'overall-best': { label: 'OVERALL BEST', durationMs: 2400, priority: 70 },
 });
 const raceDeduplicator = new RaceStateDeduplicator();
+const currentLapClocks = new CurrentLapClockTracker();
 const healthByCar = new Map();
 const telemetryByCar = new Map();
 const controlByCar = new Map();
@@ -1160,10 +1162,9 @@ function renderClocks(now) {
   const freshness = age === null ? 'waiting' : age < 3 ? 'live' : age < 10 ? 'delayed' : 'stale';
   if (updatedAgo.dataset.freshness !== freshness) updatedAgo.dataset.freshness = freshness;
   if (raceState && observerConfig) {
-    const elapsed = raceReceivedAt ? now - raceReceivedAt : 0;
     for (const car of observerConfig.cars) {
       const standing = standingByCar.get(car.carId);
-      const currentLapElapsed = currentLapClockValue(standing, raceState, elapsed);
+      const currentLapElapsed = currentLapClocks.value(car.carId, now);
       const value = formatDuration(currentLapElapsed);
       setTextIfChanged(currentLapNodeByCar.get(car.carId), value);
       const raceElapsed = markerRaceElapsedMs(car.carId, standing, now, currentLapElapsed);
@@ -1435,6 +1436,7 @@ function handleRaceState(state, source = 'websocket') {
   }
   raceState = state;
   raceReceivedAt = performance.now();
+  currentLapClocks.ingest(state, raceReceivedAt);
   rebuildRaceViewCache();
   for (const [carId, pit] of pendingPitByCar) {
     if (pit.raceRunId !== nextRunId) continue;
@@ -1661,6 +1663,7 @@ function seedObserverUiTest() {
 		});
 	});
 	raceReceivedAt = performance.now();
+	currentLapClocks.ingest(raceState, raceReceivedAt);
 	rebuildRaceViewCache();
 }
 

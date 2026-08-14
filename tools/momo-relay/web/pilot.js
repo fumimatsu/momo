@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260814-ayame-lease-resume-v1';
+  const PILOT_BUILD_ID = '20260815-race-summary-v2';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -227,10 +227,13 @@
   const m5AudioState = document.getElementById('m5AudioState');
   const modeState = document.getElementById('modeState');
   const deviceState = document.getElementById('deviceState');
+  const endpointHostState = document.getElementById('endpointHostState');
   const racePhase = document.getElementById('racePhase');
   const raceStartSignal = document.getElementById('raceStartSignal');
   const raceStartSignalLights = Array.from(document.querySelectorAll('[data-race-signal-light]'));
   const raceLapCount = document.getElementById('raceLapCount');
+  const raceLapCurrentNumber = document.getElementById('raceLapCurrentNumber');
+  const raceLapTotalCount = document.getElementById('raceLapTotalCount');
   const raceCurrentLap = document.getElementById('raceCurrentLap');
   const raceLastLap = document.getElementById('raceLastLap');
   const raceBestLap = document.getElementById('raceBestLap');
@@ -1682,7 +1685,9 @@
     const position = raceState.position === null ? '--' : String(raceState.position);
     const fieldSize = raceState.fieldSize === null ? '--' : String(raceState.fieldSize);
     setText(racePhase, raceState.phase);
-    setText(raceLapCount, `LAP ${lap} / ${lapCount}`);
+    setText(raceLapCurrentNumber, lap);
+    setText(raceLapTotalCount, lapCount);
+    raceLapCount?.setAttribute('aria-label', `Lap ${lap} of ${lapCount}`);
     setText(raceCurrentLap, formatRaceTime(getDisplayedRaceTime(raceState.currentLapMs)));
     setText(raceLastLap, formatRaceTime(raceState.lastLapMs));
     setText(raceBestLap, formatRaceTime(raceState.bestLapMs));
@@ -2709,8 +2714,8 @@
   function updateHostUi(host) {
     const hostHint = host || lastTelemetryHostHint || getEndpointHostName();
     lastTelemetryHostHint = hostHint;
-    const display = isDebugOsdEnabled() ? formatDebugHost(hostHint) : formatPublicDeviceId(hostHint);
-    setText(hostState, display);
+    setText(hostState, formatPublicDeviceId(hostHint));
+    setText(endpointHostState, formatDebugHost(hostHint));
   }
 
   function applyTelemetry(message, source = 'datachannel') {
