@@ -37,10 +37,6 @@ class GpuMarkerObserverLumaTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not configured"):
             MODULE.select_source_slots(["11.5"], ["11.6"])
 
-    def test_run_passes_when_at_least_one_configured_source_is_live(self):
-        self.assertTrue(MODULE.run_passed(10, [0, 10, 0, 0]))
-        self.assertFalse(MODULE.run_passed(10, [0, 0, 0, 0]))
-
     def test_marker_parser_rejects_reserved_ids(self):
         with self.assertRaises(argparse.ArgumentTypeError):
             MODULE.parse_marker_ids("2,17")

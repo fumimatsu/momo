@@ -164,6 +164,19 @@ engine utilization, VRAM, invalid-source intervals, and MADSYSTEM dropped batche
 passes only when the bounded report reaches at least 47.5 Hz and the full race-path acceptance
 test passes. Do not infer node capacity from an isolated detector replay.
 
+The bounded report separates capacity readiness from basic connectivity:
+
+- `inputReady`: every selected source is valid in at least 95% of published batches
+- `throughputPassed`: publication rate is at least 95% of `detectionHz`
+- `passed`: both conditions are true
+- `stageTimingsMs`: shared read, source selection, H2D submit/device time, detector wall time,
+  observation build, IPC write, and source age percentiles
+
+`h2dSubmit` is host wall time for the CuPy submission and `h2dDevice` is CUDA Event time.
+`detectorWall` still includes GPU work, D2H synchronization, and detector-side host result
+construction. It is intentionally retained until detector internals provide separate GPU and
+D2H boundaries. Warm-up time is reported separately and is not included in the bounded duration.
+
 ## Transitional BGRA producer
 
 Start Native Observer with its fixed four slots and shared-frame output, then run:

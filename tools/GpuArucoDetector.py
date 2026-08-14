@@ -421,6 +421,17 @@ class GpuArucoDetector:
             BATCH_COMPONENT_STATS_KERNEL, "batch_component_stats"
         )
 
+    def warmup(self, batch_size: int, height: int, width: int) -> None:
+        if batch_size < 1 or height < 1 or width < 1:
+            raise ValueError("warmup dimensions must be positive")
+        cp = self.cp
+        gray_batch = cp.zeros((batch_size, height, width), dtype=cp.uint8)
+        self.detect_batch(gray_batch)
+        self.decoder.decode_device(
+            gray_batch[0], cp.eye(3, dtype=cp.float32).reshape((1, 3, 3))
+        )
+        cp.cuda.Stream.null.synchronize()
+
     def _extract_candidate_corners_batch(self, gray_batch):
         cp = self.cp
         if gray_batch.ndim != 3:

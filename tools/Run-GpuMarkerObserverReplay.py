@@ -6,12 +6,16 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import math
 from pathlib import Path
 import sys
 import time
 
 from GpuArucoDetector import GpuArucoDetector
+from MarkerObserverMetrics import (
+    DEFAULT_REQUIRED_SOURCE_AVAILABILITY_RATIO,
+    evaluate_capacity,
+    percentile,
+)
 from MarkerObservationIpc import (
     DEFAULT_MAPPING_NAME,
     MarkerDetection,
@@ -64,14 +68,6 @@ def parse_marker_ids(value: str) -> frozenset[int]:
             "reserved marker IDs are not allowed: " + ",".join(str(value) for value in sorted(reserved))
         )
     return marker_ids
-
-
-def percentile(values: list[float], percent: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = max(0, min(len(ordered) - 1, math.ceil(len(ordered) * percent / 100.0) - 1))
-    return ordered[index]
 
 
 def read_frame(decoder, video_path: Path, loop: bool):
@@ -129,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
         decoders.append(decoder)
     if len(set(dimensions)) != 1:
         parser.error(f"all source videos must have the same dimensions: {dimensions}")
+
+    warmup_started = time.perf_counter()
+    width, height = dimensions[0]
+    detector.warmup(len(decoders), height, width)
+    warmup_ms = (time.perf_counter() - warmup_started) * 1000.0
 
     frame_interval = 1.0 / args.detection_hz
     frame_sequences = [0] * len(decoders)
@@ -209,7 +210,12 @@ def main(argv: list[str] | None = None) -> int:
 
     elapsed_seconds = time.perf_counter() - started_at
     publication_rate = published_batches / max(elapsed_seconds, 1e-9)
-    required_rate = args.detection_hz * 0.95
+    gate = evaluate_capacity(
+        args.detection_hz,
+        publication_rate,
+        published_batches,
+        frame_sequences,
+    )
     report = {
         "schemaVersion": 1,
         "stage": "gpu_marker_observer_replay",
@@ -223,13 +229,17 @@ def main(argv: list[str] | None = None) -> int:
                 "width": dimensions[index][0],
                 "height": dimensions[index][1],
                 "publishedFrames": frame_sequences[index],
+                "availabilityRatio": round(gate.source_availability_ratios[index], 6),
             }
             for index, (source_id, path) in enumerate(args.source)
         ],
         "detectionHz": args.detection_hz,
         "durationSeconds": round(elapsed_seconds, 3),
+        "warmupMs": round(warmup_ms, 3),
         "publishedBatches": published_batches,
         "publicationRateHz": round(publication_rate, 3),
+        "requiredPublicationRateHz": round(gate.required_publication_rate_hz, 3),
+        "requiredSourceAvailabilityRatio": DEFAULT_REQUIRED_SOURCE_AVAILABILITY_RATIO,
         "processingMsP50": round(percentile(processing_ms, 50), 3),
         "processingMsP95": round(percentile(processing_ms, 95), 3),
         "processingMsP99": round(percentile(processing_ms, 99), 3),
@@ -237,7 +247,9 @@ def main(argv: list[str] | None = None) -> int:
         "lateCycles": late_cycles,
         "markerInstances": observed_marker_instances,
         "reservedMarkerIds": sorted(RESERVED_MARKER_IDS),
-        "passed": publication_rate >= required_rate and all(frame_sequences),
+        "inputReady": gate.input_ready,
+        "throughputPassed": gate.throughput_passed,
+        "passed": gate.passed,
     }
     if args.output:
         output = Path(args.output).resolve()

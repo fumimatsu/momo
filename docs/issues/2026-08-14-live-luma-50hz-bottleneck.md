@@ -83,7 +83,7 @@ zero-copy path.
 
 ### Source-level implementation order
 
-P0 makes the capacity result trustworthy before changing throughput:
+P0 makes the capacity result trustworthy before changing throughput. This stage is implemented:
 
 1. Split the live report into `inputReady`, `throughputPassed`, and the final capacity
    result. The current `run_passed` accepts any one active source and does not enforce
@@ -92,6 +92,18 @@ P0 makes the capacity result trustworthy before changing throughput:
    on 2026-08-14 reported 46.978 Hz and failed despite 9.781ms processing p95 because one
    609.084ms startup cycle was included. Live luma already warms the detector before timing.
 3. Add the stage timings and source-age counters described in Acceptance Criteria.
+
+The implementation keeps report schema version 1 and adds optional fields. Live and replay
+reports now expose per-source availability, `inputReady`, `throughputPassed`, the required
+publication rate, and warm-up duration. Live reports also expose shared-read, source-selection,
+H2D submit/device, detector wall, observation-build, IPC-write, and source-age percentiles.
+The requested live duration now starts after mapping readiness and CUDA warm-up instead of at
+process startup.
+
+The first post-change RTX 5070 replay processed four 960x528 sources for ten seconds at
+49.775 Hz with 9.700ms processing p95 and passed. The pre-change cold run was 46.978 Hz with
+9.781ms p95 but included a 609.084ms first cycle. Explicit warm-up reduced the post-change
+maximum measured cycle to 92.835ms and made the short capacity gate reproducible.
 
 P1 removes bounded work without changing marker recognition:
 
