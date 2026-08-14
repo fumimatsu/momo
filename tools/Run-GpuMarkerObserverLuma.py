@@ -89,6 +89,16 @@ def percentile(values: list[float], percent: float) -> float:
     return ordered[index]
 
 
+def summarize_ms(values: list[float]) -> dict[str, float | int]:
+    return {
+        "samples": len(values),
+        "p50": round(percentile(values, 50), 3),
+        "p95": round(percentile(values, 95), 3),
+        "p99": round(percentile(values, 99), 3),
+        "max": round(max(values, default=0.0), 3),
+    }
+
+
 def select_source_slots(configured: list[str], requested: list[str] | None) -> list[int]:
     if not configured:
         raise ValueError("Native Observer did not configure any luma sources")
@@ -102,8 +112,62 @@ def select_source_slots(configured: list[str], requested: list[str] | None) -> l
     return [configured.index(source_id) for source_id in requested]
 
 
-def run_passed(published_batches: int, published_per_source: list[int]) -> bool:
-    return published_batches > 0 and any(published_per_source)
+def evaluate_run(
+    published_batches: int,
+    published_per_source: list[int],
+    publication_rate_hz: float,
+    detection_hz: int,
+    cycle_p95_ms: float,
+    required_source_count: int = 4,
+    minimum_rate_ratio: float = 0.95,
+    minimum_source_coverage: float = 0.95,
+    maximum_cycle_p95_ms: float = 20.0,
+) -> dict[str, object]:
+    active_source_count = sum(count > 0 for count in published_per_source)
+    minimum_rate_hz = detection_hz * minimum_rate_ratio
+    source_coverages = [
+        count / published_batches if published_batches > 0 else 0.0
+        for count in published_per_source
+    ]
+    input_reasons = []
+    throughput_reasons = []
+    if len(published_per_source) != required_source_count:
+        input_reasons.append(
+            f"configured source count {len(published_per_source)} != {required_source_count}"
+        )
+    if active_source_count != required_source_count:
+        input_reasons.append(
+            f"active source count {active_source_count} != {required_source_count}"
+        )
+    if any(coverage < minimum_source_coverage for coverage in source_coverages):
+        input_reasons.append(
+            f"source coverage below {minimum_source_coverage:.3f}"
+        )
+    if publication_rate_hz < minimum_rate_hz:
+        throughput_reasons.append(
+            f"publication rate {publication_rate_hz:.3f} Hz < {minimum_rate_hz:.3f} Hz"
+        )
+    if cycle_p95_ms > maximum_cycle_p95_ms:
+        throughput_reasons.append(
+            f"cycle p95 {cycle_p95_ms:.3f} ms > {maximum_cycle_p95_ms:.3f} ms"
+        )
+    input_ready = not input_reasons
+    throughput_passed = not throughput_reasons
+    reasons = input_reasons + throughput_reasons
+    return {
+        "inputReady": input_ready,
+        "throughputPassed": throughput_passed,
+        "passed": input_ready and throughput_passed,
+        "requiredSourceCount": required_source_count,
+        "activeSourceCount": active_source_count,
+        "minimumPublicationRateHz": round(minimum_rate_hz, 3),
+        "minimumSourceCoverage": minimum_source_coverage,
+        "maximumCycleP95Ms": maximum_cycle_p95_ms,
+        "sourceCoverages": [round(value, 6) for value in source_coverages],
+        "inputFailureReasons": input_reasons,
+        "throughputFailureReasons": throughput_reasons,
+        "failureReasons": reasons,
+    }
 
 
 class SharedLumaReader:
@@ -157,6 +221,9 @@ class SharedLumaReader:
     def _read_header(self) -> tuple[int, ...]:
         return self._HEADER.unpack_from(self.buffer, 0)
 
+    def latest_sequence(self) -> int:
+        return struct.unpack_from("<q", self.buffer, 40)[0]
+
     def _validate_and_read_sources(self) -> list[str]:
         for _ in range(8):
             header = self._read_header()
@@ -193,7 +260,24 @@ class SharedLumaReader:
                 return source_ids
         raise RuntimeError("shared luma source table remained unstable")
 
-    def read_latest(self, slot_indices: list[int]) -> LumaBatch | None:
+    def read_latest(
+        self,
+        slot_indices: list[int],
+        destination: np.ndarray | None = None,
+    ) -> LumaBatch | None:
+        expected_shape = (len(slot_indices), SHARED_LUMA_HEIGHT, SHARED_LUMA_WIDTH)
+        if destination is None:
+            planes = np.empty(expected_shape, dtype=np.uint8)
+        else:
+            if (
+                destination.shape != expected_shape
+                or destination.dtype != np.uint8
+                or not destination.flags.c_contiguous
+            ):
+                raise ValueError(
+                    f"destination must be contiguous uint8 with shape {expected_shape}"
+                )
+            planes = destination
         for _ in range(4):
             first_sequence = struct.unpack_from("<q", self.buffer, 40)[0]
             if first_sequence <= 0 or first_sequence & 1:
@@ -204,7 +288,6 @@ class SharedLumaReader:
             if active_buffer < 0 or active_buffer >= SHARED_LUMA_BUFFER_COUNT:
                 continue
             buffer_offset = SHARED_LUMA_PREFIX_SIZE + active_buffer * SHARED_LUMA_BUFFER_SIZE
-            planes = np.empty((len(slot_indices), SHARED_LUMA_HEIGHT, SHARED_LUMA_WIDTH), dtype=np.uint8)
             sources = []
             for output_index, slot_index in enumerate(slot_indices):
                 metadata_offset = buffer_offset + slot_index * SHARED_LUMA_SOURCE_METADATA_SIZE
@@ -263,6 +346,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration-seconds", type=float, default=0.0)
     parser.add_argument("--wait-for-mapping-seconds", type=float, default=20.0)
     parser.add_argument("--status-interval-seconds", type=float, default=1.0)
+    parser.add_argument("--required-source-count", type=int, default=4)
+    parser.add_argument("--minimum-rate-ratio", type=float, default=0.95)
+    parser.add_argument("--minimum-source-coverage", type=float, default=0.95)
+    parser.add_argument("--maximum-cycle-p95-ms", type=float, default=20.0)
     parser.add_argument(
         "--allowed-marker-ids",
         type=parse_marker_ids,
@@ -298,19 +385,30 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--wait-for-mapping-seconds must be zero or positive")
     if args.status_interval_seconds <= 0:
         parser.error("--status-interval-seconds must be positive")
+    if args.required_source_count < 1 or args.required_source_count > SHARED_LUMA_MAX_SOURCES:
+        parser.error(f"--required-source-count must be in 1..{SHARED_LUMA_MAX_SOURCES}")
+    if not 0 < args.minimum_rate_ratio <= 1:
+        parser.error("--minimum-rate-ratio must be in (0, 1]")
+    if not 0 < args.minimum_source_coverage <= 1:
+        parser.error("--minimum-source-coverage must be in (0, 1]")
+    if args.maximum_cycle_p95_ms <= 0:
+        parser.error("--maximum-cycle-p95-ms must be positive")
 
     detector = GpuArucoDetector(allowed_marker_ids=args.allowed_marker_ids)
     cp = detector.cp
     processing_ms: list[float] = []
+    stage_samples: dict[str, list[float]] = {}
+    source_age_samples: dict[str, list[float]] = {}
     published_batches = 0
     marker_instances = 0
     skipped_unstable_batches = 0
     skipped_duplicate_batches = 0
     last_shared_sequence = 0
-    last_status_at = time.monotonic()
-    overall_started_at = time.monotonic()
-    measured_started_at = overall_started_at
+    measured_started_at = time.monotonic()
     frame_interval = 1.0 / args.detection_hz
+
+    def add_stage(name: str, value_ms: float) -> None:
+        stage_samples.setdefault(name, []).append(value_ms)
 
     try:
         with open_shared_luma_reader(
@@ -322,14 +420,45 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as exc:
                 parser.error(str(exc))
             source_ids = [reader.source_ids[index] for index in slot_indices]
+            batch_shape = (len(slot_indices), SHARED_LUMA_HEIGHT, SHARED_LUMA_WIDTH)
+            batch_elements = int(np.prod(batch_shape))
+            pinned_owner = cp.cuda.alloc_pinned_memory(batch_elements)
+            host_planes = np.frombuffer(
+                pinned_owner,
+                dtype=np.uint8,
+                count=batch_elements,
+            ).reshape(batch_shape)
+            device_planes = cp.empty(batch_shape, dtype=cp.uint8)
 
-            # Compile and allocate the CUDA path before timing or publishing live results.
-            detector.detect_batch(
-                cp.zeros((len(slot_indices), SHARED_LUMA_HEIGHT, SHARED_LUMA_WIDTH), dtype=cp.uint8)
-            )
-            cp.cuda.Stream.null.synchronize()
+            warmup_deadline = time.monotonic() + max(args.wait_for_mapping_seconds, 1.0)
+            warmup_batch = None
+            warmup_source_count = min(args.required_source_count, len(slot_indices))
+            while time.monotonic() < warmup_deadline:
+                candidate = reader.read_latest(slot_indices, host_planes)
+                if (
+                    candidate is not None
+                    and sum(source.video_valid for source in candidate.sources)
+                    >= warmup_source_count
+                ):
+                    warmup_batch = candidate
+                    break
+                time.sleep(0.01)
+            if warmup_batch is None:
+                raise RuntimeError(
+                    f"Native Observer did not publish {warmup_source_count} live luma "
+                    "sources for warmup"
+                )
+
+            device_planes.set(warmup_batch.y_planes)
+            for _ in range(2):
+                warmup_timings: dict[str, float] = {}
+                detector.detect_batch(device_planes, warmup_timings)
+                cp.cuda.Stream.null.synchronize()
+            last_shared_sequence = warmup_batch.sequence
+
             measured_started_at = time.monotonic()
             next_detection_at = measured_started_at
+            last_status_at = measured_started_at
             published_per_source = [0] * len(slot_indices)
             last_marker_ids: list[list[int]] = [[] for _ in slot_indices]
 
@@ -344,37 +473,77 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 while (
                     args.duration_seconds == 0
-                    or time.monotonic() - overall_started_at < args.duration_seconds
+                    or time.monotonic() - measured_started_at < args.duration_seconds
                 ):
                     now = time.monotonic()
                     if now < next_detection_at:
                         time.sleep(min(next_detection_at - now, 0.002))
                         continue
-                    next_detection_at += frame_interval
-                    if next_detection_at < now - frame_interval:
-                        next_detection_at = now
+                    scheduled_at = next_detection_at
 
-                    batch = reader.read_latest(slot_indices)
+                    cycle_started = time.perf_counter()
+                    current_sequence = reader.latest_sequence()
+                    if (
+                        current_sequence <= 0
+                        or current_sequence & 1
+                        or current_sequence == last_shared_sequence
+                    ):
+                        skipped_duplicate_batches += 1
+                        time.sleep(0.0005)
+                        continue
+                    read_started = time.perf_counter()
+                    batch = reader.read_latest(slot_indices, host_planes)
+                    read_ms = (time.perf_counter() - read_started) * 1000.0
                     if batch is None:
                         skipped_unstable_batches += 1
+                        time.sleep(0.0005)
                         continue
                     if batch.sequence == last_shared_sequence:
                         skipped_duplicate_batches += 1
+                        time.sleep(0.0005)
                         continue
                     last_shared_sequence = batch.sequence
+                    add_stage("sharedReadHostCopyMs", read_ms)
+                    add_stage("scheduleLateMs", max(0.0, (now - scheduled_at) * 1000.0))
 
                     processing_started = time.perf_counter()
+                    selection_started = time.perf_counter()
                     valid_indices = [
                         index for index, source in enumerate(batch.sources) if source.video_valid
                     ]
+                    add_stage(
+                        "sourceSelectionMs",
+                        (time.perf_counter() - selection_started) * 1000.0,
+                    )
+
                     results_by_index = {}
                     if valid_indices:
-                        gray_batch = cp.asarray(batch.y_planes[valid_indices])
-                        results = detector.detect_batch(gray_batch)
-                        results_by_index = dict(zip(valid_indices, results))
+                        h2d_started = time.perf_counter()
+                        h2d_event_started = cp.cuda.Event()
+                        h2d_event_finished = cp.cuda.Event()
+                        h2d_event_started.record()
+                        device_planes.set(batch.y_planes)
+                        h2d_event_finished.record()
+                        h2d_event_finished.synchronize()
+                        add_stage("h2dWallMs", (time.perf_counter() - h2d_started) * 1000.0)
+                        add_stage(
+                            "h2dGpuMs",
+                            cp.cuda.get_elapsed_time(h2d_event_started, h2d_event_finished),
+                        )
+
+                        detector_timings: dict[str, float] = {}
+                        detect_started = time.perf_counter()
+                        results = detector.detect_batch(device_planes, detector_timings)
+                        add_stage("detectWallMs", (time.perf_counter() - detect_started) * 1000.0)
+                        for name, value in detector_timings.items():
+                            add_stage(name, value)
+                        results_by_index = {
+                            index: results[index] for index in valid_indices
+                        }
                     detected_at_unix_ns = time.time_ns()
                     processing_ms.append((time.perf_counter() - processing_started) * 1000.0)
 
+                    observation_started = time.perf_counter()
                     observations = []
                     for source_position, source in enumerate(batch.sources):
                         result = results_by_index.get(source_position)
@@ -398,6 +567,12 @@ def main(argv: list[str] | None = None) -> int:
                             last_marker_ids[source_position] = [
                                 item.marker_id for item in detections
                             ]
+                            source_age_samples.setdefault(source.source_id, []).append(
+                                max(
+                                    0.0,
+                                    (detected_at_unix_ns - source.timestamp_unix_ns) / 1_000_000.0,
+                                )
+                            )
                         observations.append(
                             SourceObservation(
                                 source_index=source.slot_index,
@@ -410,8 +585,19 @@ def main(argv: list[str] | None = None) -> int:
                                 detections=detections,
                             )
                         )
+                    add_stage(
+                        "observationFormatMs",
+                        (time.perf_counter() - observation_started) * 1000.0,
+                    )
+                    ipc_started = time.perf_counter()
                     writer.write(detected_at_unix_ns, observations)
+                    add_stage("ipcWriteMs", (time.perf_counter() - ipc_started) * 1000.0)
+                    add_stage("cycleMs", (time.perf_counter() - cycle_started) * 1000.0)
                     published_batches += 1
+                    next_detection_at = max(
+                        scheduled_at + frame_interval,
+                        time.monotonic(),
+                    )
 
                     if now - last_status_at >= args.status_interval_seconds:
                         elapsed = max(now - measured_started_at, 1e-9)
@@ -422,7 +608,8 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         print(
                             f"rate={published_batches / elapsed:.2f}Hz "
-                            f"p95={percentile(processing_ms, 95):.2f}ms {status}",
+                            f"cycle-p95={percentile(stage_samples['cycleMs'], 95):.2f}ms "
+                            f"{status}",
                             flush=True,
                         )
                         last_status_at = now
@@ -431,18 +618,33 @@ def main(argv: list[str] | None = None) -> int:
 
     elapsed_seconds = time.monotonic() - measured_started_at
     publication_rate = published_batches / max(elapsed_seconds, 1e-9)
+    cycle_p95_ms = percentile(stage_samples.get("cycleMs", []), 95)
+    acceptance = evaluate_run(
+        published_batches,
+        published_per_source,
+        publication_rate,
+        args.detection_hz,
+        cycle_p95_ms,
+        required_source_count=args.required_source_count,
+        minimum_rate_ratio=args.minimum_rate_ratio,
+        minimum_source_coverage=args.minimum_source_coverage,
+        maximum_cycle_p95_ms=args.maximum_cycle_p95_ms,
+    )
     report = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "stage": "gpu_marker_observer_native_luma",
         "measuredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "inputMappingName": args.input_mapping_name,
         "outputMappingName": args.output_mapping_name,
+        "hostInputMode": "reused_pinned_full_batch",
+        "schedulingMode": "latest_frame_bounded_rate",
         "sources": [
             {
                 "sourceIndex": slot_indices[index],
                 "sourceId": source_id,
                 "publishedFrames": published_per_source[index],
                 "lastMarkerIds": last_marker_ids[index],
+                "frameAgeMs": summarize_ms(source_age_samples.get(source_id, [])),
             }
             for index, source_id in enumerate(source_ids)
         ],
@@ -454,11 +656,17 @@ def main(argv: list[str] | None = None) -> int:
         "processingMsP95": round(percentile(processing_ms, 95), 3),
         "processingMsP99": round(percentile(processing_ms, 99), 3),
         "processingMsMax": round(max(processing_ms, default=0.0), 3),
+        "stageMetricsMs": {
+            name: summarize_ms(values) for name, values in sorted(stage_samples.items())
+        },
         "markerInstances": marker_instances,
         "activeSources": sum(count > 0 for count in published_per_source),
         "skippedUnstableBatches": skipped_unstable_batches,
         "skippedDuplicateBatches": skipped_duplicate_batches,
-        "passed": run_passed(published_batches, published_per_source),
+        "acceptance": acceptance,
+        "inputReady": acceptance["inputReady"],
+        "throughputPassed": acceptance["throughputPassed"],
+        "passed": acceptance["passed"],
     }
     if args.output:
         output = Path(args.output).resolve()
@@ -468,9 +676,11 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"{'PASS' if report['passed'] else 'FAIL'} sources={len(source_ids)} "
         f"batches={published_batches} rate={publication_rate:.2f}Hz "
-        f"processing-p95={report['processingMsP95']:.3f}ms",
+        f"cycle-p95={cycle_p95_ms:.3f}ms",
         flush=True,
     )
+    for reason in acceptance["failureReasons"]:
+        print(f"  gate: {reason}", flush=True)
     return 0 if report["passed"] else 1
 
 

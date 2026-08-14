@@ -6,6 +6,10 @@ param(
     [ValidateRange(1, 240)][int]$DetectionHz = 50,
     [ValidateRange(0, 86400)][double]$DurationSeconds = 0,
     [ValidateRange(0, 300)][double]$WaitForMappingSeconds = 20,
+    [ValidateRange(1, 4)][int]$RequiredSourceCount = 4,
+    [ValidateRange(0.01, 1.0)][double]$MinimumRateRatio = 0.95,
+    [ValidateRange(0.01, 1.0)][double]$MinimumSourceCoverage = 0.95,
+    [ValidateRange(0.1, 1000.0)][double]$MaximumCycleP95Ms = 20.0,
     [string]$AllowedMarkerIds = '',
     [string]$OutputPath = '',
     [string]$PythonExecutable = ''
@@ -34,7 +38,11 @@ $arguments = @(
     '--output-mapping-name', $OutputMappingName,
     '--detection-hz', $DetectionHz,
     '--duration-seconds', $DurationSeconds,
-    '--wait-for-mapping-seconds', $WaitForMappingSeconds
+    '--wait-for-mapping-seconds', $WaitForMappingSeconds,
+    '--required-source-count', $RequiredSourceCount,
+    '--minimum-rate-ratio', $MinimumRateRatio,
+    '--minimum-source-coverage', $MinimumSourceCoverage,
+    '--maximum-cycle-p95-ms', $MaximumCycleP95Ms
 )
 foreach ($sourceId in $SourceIds) {
     $arguments += @('--source-id', $sourceId)

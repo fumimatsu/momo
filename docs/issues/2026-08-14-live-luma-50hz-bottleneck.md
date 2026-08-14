@@ -122,3 +122,66 @@ gate. Options are a native C++/CUDA detector boundary or a dedicated Marker node
 not share its RTX and CPU scheduler with MADSYSTEM rendering. Either option must preserve
 latest-frame dropping, source isolation, and the existing marker-observation contract during
 migration.
+
+## RTX 4060 Laptop GPU での 4 source live 結果
+
+2026-08-14 に `192.168.11.100:8090` の Relay から `11.3`、`11.4`、`11.5`、`11.6` を
+Native Observer で受信し、960x528 Y planeを4台batchとして60秒測定した。GPUは
+NVIDIA GeForce RTX 4060 Laptop GPU、Native Observerはshared luma対応commit
+`add0eb25`のWindows CI artifactを使用した。
+
+| 条件 | publication | cycle p95 | 4 source coverage | 結果 |
+| --- | ---: | ---: | --- | --- |
+| 計測修正後のbaseline | 44.783 Hz | 20.997 ms | 100% | 不合格 |
+| reusable pinned host batch + latest-frame scheduler | 46.383 Hz | 20.138 ms | 100% | 不合格 |
+| 上記 + candidate workspace再利用、再接続後 | 48.067 Hz | 17.568 ms | 100% | 合格 |
+| 同じPython経路の再測定 | 45.133 Hz | 20.830 ms | 100% | 不合格 |
+| Native headless最適化後の再測定 | 47.350 Hz | 18.166 ms | 100% | 不合格 |
+| 上記 + candidate filter融合 | 49.183 Hz | 13.771 ms | 100% | 合格 |
+
+baselineに含まれていた初回実画像CUDA compileは、実フレームを2回warm-upして測定区間から除外した。
+共有メモリread用host batch、CUDA device input、candidate抽出用の固定workspaceを再利用し、
+全sourceが有効な通常経路からadvanced-indexing copyを除去した。pageable `cp.asarray`はpinned batchからの
+preallocated device input `set`へ変更した。schedulerはduplicate frameを読んだ時に次の20ms slotを
+消費せず、最新frame到着までbounded retryする。
+
+baselineから最終結果までpublicationは3.284 Hz増え、cycle p95は3.429 ms減った。shared read p95は
+1.398 msから0.452 ms、H2D wall p95は0.976 msから0.568 msへ減った。最終測定は2,884 batchを公開し、
+4 sourceすべて2,884 frame、marker instance 20,236件を保持した。
+
+途中の別測定では処理cycle p95 16.785 msを維持した一方、`11.4` coverage 58%、`11.5` coverage 82%で
+失敗した。これにより、処理性能と入力健全性を単一の`passed`へ混ぜると原因を誤ることが確認できた。
+reportは`inputReady`、`throughputPassed`、最終`passed`を分離し、4 sourceの各coverage 95%以上、
+publication 47.5 Hz以上、cycle p95 20 ms以下を要求する。
+
+この結果は60秒の短時間gateであり、運用上限の確定ではない。次は10分soak、1時間soak、
+Native Observer再接続時のsource別停止時間、MADSYSTEM同居条件を分けて測定する。
+
+同一PC、同一4 sourceでも短時間gateの再現性は確立していない。GPU時系列を取得した20秒測定では、
+RTX 4060 Laptop GPUのgraphics clockが開始時2250 MHzから、温度56から57度、power violation 0、
+thermal violation 0のまま660から840 MHzへ低下した。candidate filter p95は7.305 ms、decode p95は
+4.038 msとなり、cycle p95は18.166 msに収まったがpublicationは47.350 Hzで47.5 Hz gateを
+0.150 Hz下回った。現行実装はGPUのadaptive clock条件に対する余力がない。管理者権限なしの
+`nvidia-smi --lock-gpu-clocks`は拒否されたため、運用でclock固定を前提にして合格扱いしていない。
+
+stage分解ではcandidate filter、decode、unionの順で支配的だった。workspace reset p95は1.037 ms以下で、
+再利用はallocationを除去したが、巨大な統計配列の初期化とcandidate後処理が残っていた。GPU側P2として、
+candidate root scan、corner構築、valid判定を1つのRawKernelへ統合し、CuPyの複数elementwise launchと
+dynamic intermediateを除去した。candidate filter p95は8.096 msから0.096 ms、candidate全体p95は
+13.845 msから6.447 msへ低下した。全50 marker ID、同一IDの複数物理marker、source分離のparity testを
+通過した。
+
+融合後の4 source 60秒再測定は2,951 batch、49.183 Hz、cycle p95 13.771 ms、全source coverage 100%で
+厳格gateを通過した。active区間のGPU clockは570から2250 MHz、平均906.7 MHzまで低下したが、SM平均
+33.9%、最大43%、温度最大58度、power / thermal violation 0の条件で合格を維持した。frame age p95は
+source別35.343から36.493 msだった。
+
+最初の融合後60秒試験は途中で`cudaErrorUnknown`となった。同時刻のWindows System eventにNVIDIA
+`nvlddmkm`と`NVDisplay.ContainerLocalSystem`の再登録があり、driver再初期化後は同じCUDA parity testと
+60秒測定が成功した。この1件をkernel不具合または解決済みdriver問題のどちらにも断定せず、10分soakで
+driver eventを併記する。
+
+Native P1として、`--shared-output-headless`ではMADSYSTEM共有BGRAとshared luma生成後にreturnし、
+表示専用の2回目scale / BGRA変換を停止した。HV反転のshared lumaコピーはscalar per-pixel loopから
+libyuv `MirrorPlane`へ変更した。Windows CUDA無効ビルドは成功した。この変更はNative側CPUとSink lockを
+減らすが、RTX上のcandidate処理時間を直接短縮するものではない。

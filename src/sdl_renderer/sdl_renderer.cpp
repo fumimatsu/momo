@@ -16,6 +16,7 @@
 #include <api/video/i420_buffer.h>
 #include <rtc_base/logging.h>
 #include <third_party/libyuv/include/libyuv/convert_from.h>
+#include <third_party/libyuv/include/libyuv/planar_functions.h>
 #include <third_party/libyuv/include/libyuv/scale.h>
 #include <third_party/libyuv/include/libyuv/video_common.h>
 
@@ -767,6 +768,9 @@ void SDLRenderer::Sink::OnFrame(const webrtc::VideoFrame& frame) {
       source_buffer->StrideU(), source_buffer->DataV(), source_buffer->StrideV(),
       source_image_.get(), source_width_ * 4, source_width_, source_height_,
       libyuv::FOURCC_ARGB);
+  if (renderer_->shared_output_headless_) {
+    return;
+  }
   if (outline_changed_ || frame.width() != input_width_ ||
       frame.height() != input_height_) {
     int width, height;
@@ -953,18 +957,18 @@ bool SDLRenderer::Sink::CopyLumaTo(uint8_t* destination,
       destination_height != kSharedLumaHeight) {
     return false;
   }
-  for (int y = 0; y < destination_height; ++y) {
-    const int source_y = flip_vertical ? destination_height - 1 - y : y;
-    uint8_t* destination_row = destination + y * destination_stride;
-    const uint8_t* source_row =
-        source_luma_.data() + source_y * kSharedLumaStride;
-    if (!flip_horizontal) {
-      std::memcpy(destination_row, source_row, destination_width);
-      continue;
-    }
-    for (int x = 0; x < destination_width; ++x) {
-      destination_row[x] = source_row[destination_width - 1 - x];
-    }
+  const uint8_t* source = source_luma_.data();
+  int source_stride = kSharedLumaStride;
+  if (flip_vertical) {
+    source += static_cast<size_t>(destination_height - 1) * kSharedLumaStride;
+    source_stride = -source_stride;
+  }
+  if (flip_horizontal) {
+    libyuv::MirrorPlane(source, source_stride, destination, destination_stride,
+                        destination_width, destination_height);
+  } else {
+    libyuv::CopyPlane(source, source_stride, destination, destination_stride,
+                      destination_width, destination_height);
   }
   *source_sequence = source_sequence_;
   *timestamp_unix_ns = source_timestamp_unix_ns_;

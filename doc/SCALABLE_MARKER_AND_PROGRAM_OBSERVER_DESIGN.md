@@ -317,6 +317,49 @@ GPU経路の目的は4台だけを置き換えることではなく、映像受�
 - 5台以上は1プロセスへの追加より、source groupを分割したMarker node追加を優先する
 - GPU 0/1の番号ではなくadapter名、LUID、decode engine、CUDA deviceを試験記録へ残す
 
+### Relay直接受信のMarker Node
+
+ここでいう「Relay直接受信」はWebRTCをNative処理から外す意味ではない。Relayの映像を受けるには
+PeerConnection、H.264 decode、I420 frame受領の実装が必ず必要である。Python `aiortc`やsourceごとの
+FFmpeg subprocessへ置き換えると、software decode、process間copy、再接続実装が増え、4から8台の
+安定化には逆効果となる。現行の表示用`p2p-recv-multi`を経由せず、専用のNative Marker Receiverが
+Relayへ直接接続する構成を採用する。
+
+```text
+Relay
+  -> Dedicated Marker Receiver / WebRTC + hardware decode
+  -> source別 latest I420 Y plane / queue depth 1
+  -> GPU worker group
+       profile A: 4 source x 50 Hz
+       profile B: 8 source x 25 Hz
+  -> Local\MomoMarkerObservationsV1
+```
+
+Dedicated Marker ReceiverはSDL grid、BGRA合成、音声再生、共有FHD出力を持たない。sourceごとに
+独立した接続状態、sequence、frame age、reconnect backoffを管理し、1台停止時も他sourceのbatchを
+止めない。decode後は最新Y planeだけを保持し、古いframeをqueueしない。GPU workerは4 source単位の
+固定workspaceを基本とし、5から8台は2 groupへ分離する。1つのglobal batchへ8台を強制的に束ねると、
+遅い1台の再接続とframe到着jitterが全車のpublicationを落とすため採用しない。
+
+現行`p2p-recv-multi`と`Local\MomoObserverLumaV1`はsource上限4をcompile-time固定しており、
+8台化の土台にはしない。Marker observation IPCは最大32 sourceを保持できるため維持する。
+移行は次の順に行う。
+
+1. 現行Native Observer + GPU workerの4 source 50 Hzを10分、1時間soakする。
+2. Dedicated Marker Receiverへ同じ4 sourceを接続し、source sequence、frame age、marker parityをshadow比較する。
+3. 6、8 sourceを追加し、まず25 Hzで各source coverage 95%以上を確認する。
+4. 8 source 50 Hzは別profileとして測る。4 source groupを2つ同一GPUで逐次実行した結果を、
+   8 source 50 Hzの合格根拠にはしない。
+5. 8 sourceで余力20%を満たさない場合は、検出周期を黙って落とさずMarker Nodeを2台へ分割する。
+
+RTX 4060 Laptop GPUの現行live経路は4 source 50 Hzの60秒gateを48.067 Hz、cycle p95 17.568 msで
+一度通過したが、同じ経路の再測定は45.133 Hz、cycle p95 20.830 msで失敗した。GPU clockが
+2250 MHzから660から840 MHzへ自動低下する条件では、Native headless最適化後も20秒測定が
+47.350 Hz、cycle p95 18.166 msとなりrate gateを僅かに下回った。その後candidate filterを単一CUDA
+kernelへ融合し、60秒で49.183 Hz、cycle p95 13.771 ms、4 source coverage 100%を達成した。短時間gateは
+通過したが10分 / 1時間soakは未実施であり、8 source 50 Hzの余力を示す結果ではない。8台の現実的な初期運用profileは1 node 25 Hz、
+または2 Marker Nodeによる4台ずつ50 Hzとし、同一GPU上の2 workerは実測前提とする。
+
 ### 50 Hz live経路の負荷分解
 
 現行経路は、Python workerがRelayへ別途接続する構成ではない。Native Observerが

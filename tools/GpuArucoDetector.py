@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Iterable
 
 import numpy as np
@@ -350,6 +351,113 @@ void batch_component_stats(
 """
 
 
+BATCH_FILTER_CANDIDATES_KERNEL = r"""
+__device__ __forceinline__ float quadrilateral_area(
+    const float* xs,
+    const float* ys)
+{
+    float twice_area = 0.0f;
+    #pragma unroll
+    for (int corner = 0; corner < 4; ++corner) {
+        int next = (corner + 1) & 3;
+        twice_area += xs[corner] * ys[next] - xs[next] * ys[corner];
+    }
+    return 0.5f * fabsf(twice_area);
+}
+
+extern "C" __global__
+void batch_filter_candidates(
+    const unsigned int* all_counts,
+    const unsigned long long* all_min_sum,
+    const unsigned long long* all_max_sum,
+    const unsigned long long* all_min_difference,
+    const unsigned long long* all_max_difference,
+    const unsigned long long* all_min_x,
+    const unsigned long long* all_max_x,
+    const unsigned long long* all_min_y,
+    const unsigned long long* all_max_y,
+    int stats_stride,
+    int width,
+    unsigned int minimum_component_pixels,
+    unsigned int maximum_component_pixels,
+    float minimum_quad_area,
+    float minimum_compactness,
+    float minimum_component_density,
+    unsigned int* output_counts,
+    float* output_corners)
+{
+    int root = blockDim.x * blockIdx.x + threadIdx.x;
+    int batch = blockIdx.y;
+    if (root <= 0 || root >= stats_stride) return;
+
+    int stats_index = batch * stats_stride + root;
+    unsigned int component_count = all_counts[stats_index];
+    if (component_count < minimum_component_pixels ||
+        component_count > maximum_component_pixels) {
+        return;
+    }
+
+    unsigned int diagonal_indices[4] = {
+        (unsigned int)all_min_sum[stats_index],
+        (unsigned int)all_max_difference[stats_index],
+        (unsigned int)all_max_sum[stats_index],
+        (unsigned int)all_min_difference[stats_index],
+    };
+    unsigned int axis_indices[4] = {
+        (unsigned int)all_min_y[stats_index],
+        (unsigned int)all_max_x[stats_index],
+        (unsigned int)all_max_y[stats_index],
+        (unsigned int)all_min_x[stats_index],
+    };
+    float diagonal_x[4];
+    float diagonal_y[4];
+    float axis_x[4];
+    float axis_y[4];
+    #pragma unroll
+    for (int corner = 0; corner < 4; ++corner) {
+        diagonal_x[corner] = (float)(diagonal_indices[corner] % width);
+        diagonal_y[corner] = (float)(diagonal_indices[corner] / width);
+        axis_x[corner] = (float)(axis_indices[corner] % width);
+        axis_y[corner] = (float)(axis_indices[corner] / width);
+    }
+
+    float diagonal_area = quadrilateral_area(diagonal_x, diagonal_y);
+    float axis_area = quadrilateral_area(axis_x, axis_y);
+    const float* selected_x = axis_area > diagonal_area ? axis_x : diagonal_x;
+    const float* selected_y = axis_area > diagonal_area ? axis_y : diagonal_y;
+    float area = axis_area > diagonal_area ? axis_area : diagonal_area;
+    float perimeter = 0.0f;
+    float minimum_side = 3.402823466e+38F;
+    #pragma unroll
+    for (int corner = 0; corner < 4; ++corner) {
+        int next = (corner + 1) & 3;
+        float dx = selected_x[next] - selected_x[corner];
+        float dy = selected_y[next] - selected_y[corner];
+        float side = sqrtf(dx * dx + dy * dy);
+        perimeter += side;
+        minimum_side = fminf(minimum_side, side);
+    }
+    float compactness = area / fmaxf(perimeter * perimeter, 1.0f);
+    float density = (float)component_count / fmaxf(area, 1.0f);
+    if (area < minimum_quad_area ||
+        compactness < minimum_compactness ||
+        density < minimum_component_density ||
+        minimum_side < 3.0f) {
+        return;
+    }
+
+    unsigned int output_index = atomicAdd(output_counts + batch, 1U);
+    size_t output_offset =
+        ((size_t)batch * (size_t)stats_stride + output_index) * 8U;
+    #pragma unroll
+    for (int corner = 0; corner < 4; ++corner) {
+        output_corners[output_offset + corner * 2] = selected_x[corner];
+        output_corners[output_offset + corner * 2 + 1] = selected_y[corner];
+    }
+}
+"""
+
+
 @dataclass(frozen=True)
 class GpuMarkerObservation:
     marker_id: int
@@ -420,9 +528,61 @@ class GpuArucoDetector:
         self.batch_stats_kernel = self.cp.RawKernel(
             BATCH_COMPONENT_STATS_KERNEL, "batch_component_stats"
         )
+        self.batch_filter_candidates_kernel = self.cp.RawKernel(
+            BATCH_FILTER_CANDIDATES_KERNEL, "batch_filter_candidates"
+        )
+        self._batch_workspace_key = None
+        self._batch_workspace = None
 
-    def _extract_candidate_corners_batch(self, gray_batch):
+    def _get_batch_workspace(self, batch_size: int, height: int, width: int):
+        key = (batch_size, height, width)
+        if self._batch_workspace_key == key and self._batch_workspace is not None:
+            return self._batch_workspace
+
         cp = self.cp
+        stats_shape = (batch_size, width * height + 1)
+        frame_shape = (batch_size, height, width)
+        self._batch_workspace_key = key
+        self._batch_workspace = {
+            "horizontal": cp.empty(frame_shape, dtype=cp.uint32),
+            "labels": cp.empty(frame_shape, dtype=cp.uint32),
+            "counts": cp.empty(stats_shape, dtype=cp.uint32),
+            "min_sum": cp.empty(stats_shape, dtype=cp.uint64),
+            "max_sum": cp.empty(stats_shape, dtype=cp.uint64),
+            "min_difference": cp.empty(stats_shape, dtype=cp.uint64),
+            "max_difference": cp.empty(stats_shape, dtype=cp.uint64),
+            "min_x": cp.empty(stats_shape, dtype=cp.uint64),
+            "max_x": cp.empty(stats_shape, dtype=cp.uint64),
+            "min_y": cp.empty(stats_shape, dtype=cp.uint64),
+            "max_y": cp.empty(stats_shape, dtype=cp.uint64),
+            "candidate_counts": cp.empty(batch_size, dtype=cp.uint32),
+            "candidate_corners": cp.empty(
+                (batch_size, width * height + 1, 4, 2), dtype=cp.float32
+            ),
+        }
+        return self._batch_workspace
+
+    def _extract_candidate_corners_batch(
+        self,
+        gray_batch,
+        profile_events=None,
+        host_timings=None,
+    ):
+        cp = self.cp
+        stage_started = None
+        if profile_events is not None:
+            stage_started = cp.cuda.Event()
+            stage_started.record()
+
+        def finish_stage(name: str) -> None:
+            nonlocal stage_started
+            if profile_events is None:
+                return
+            stage_finished = cp.cuda.Event()
+            stage_finished.record()
+            profile_events.append((name, stage_started, stage_finished))
+            stage_started = stage_finished
+
         if gray_batch.ndim != 3:
             raise ValueError("gray_batch must have shape (batch, height, width)")
         if not gray_batch.flags.c_contiguous:
@@ -431,18 +591,18 @@ class GpuArucoDetector:
         if batch_size < 1:
             return (
                 cp.empty((0, 4, 2), dtype=cp.float32),
-                cp.empty(0, dtype=cp.int32),
+                np.empty(0, dtype=np.int64),
             )
         pixel_count = width * height
-        stats_stride = pixel_count + 1
         block_2d = (16, 16)
         grid_2d = (
             (width + block_2d[0] - 1) // block_2d[0],
             (height + block_2d[1] - 1) // block_2d[1],
             batch_size,
         )
-        horizontal = cp.empty((batch_size, height, width), dtype=cp.uint32)
-        labels = cp.empty((batch_size, height, width), dtype=cp.uint32)
+        workspace = self._get_batch_workspace(batch_size, height, width)
+        horizontal = workspace["horizontal"]
+        labels = workspace["labels"]
         self.batch_box_horizontal_kernel(
             grid_2d,
             block_2d,
@@ -471,6 +631,7 @@ class GpuArucoDetector:
                 labels,
             ),
         )
+        finish_stage("candidatePreprocessGpuMs")
 
         block_1d = (256,)
         grid_1d = ((pixel_count + block_1d[0] - 1) // block_1d[0], batch_size)
@@ -482,17 +643,28 @@ class GpuArucoDetector:
                 grid_1d, block_1d, (labels, np.int32(pixel_count))
             )
         self.batch_compress_kernel(grid_1d, block_1d, (labels, np.int32(pixel_count)))
+        finish_stage("candidateUnionGpuMs")
 
-        counts = cp.zeros((batch_size, stats_stride), dtype=cp.uint32)
+        counts = workspace["counts"]
         minimum_key = np.iinfo(np.uint64).max
-        min_sum = cp.full((batch_size, stats_stride), minimum_key, dtype=cp.uint64)
-        max_sum = cp.zeros((batch_size, stats_stride), dtype=cp.uint64)
-        min_difference = cp.full((batch_size, stats_stride), minimum_key, dtype=cp.uint64)
-        max_difference = cp.zeros((batch_size, stats_stride), dtype=cp.uint64)
-        min_x = cp.full((batch_size, stats_stride), minimum_key, dtype=cp.uint64)
-        max_x = cp.zeros((batch_size, stats_stride), dtype=cp.uint64)
-        min_y = cp.full((batch_size, stats_stride), minimum_key, dtype=cp.uint64)
-        max_y = cp.zeros((batch_size, stats_stride), dtype=cp.uint64)
+        min_sum = workspace["min_sum"]
+        max_sum = workspace["max_sum"]
+        min_difference = workspace["min_difference"]
+        max_difference = workspace["max_difference"]
+        min_x = workspace["min_x"]
+        max_x = workspace["max_x"]
+        min_y = workspace["min_y"]
+        max_y = workspace["max_y"]
+        counts.fill(0)
+        min_sum.fill(minimum_key)
+        max_sum.fill(0)
+        min_difference.fill(minimum_key)
+        max_difference.fill(0)
+        min_x.fill(minimum_key)
+        max_x.fill(0)
+        min_y.fill(minimum_key)
+        max_y.fill(0)
+        finish_stage("candidateWorkspaceResetGpuMs")
         self.batch_stats_kernel(
             grid_1d,
             block_1d,
@@ -511,77 +683,67 @@ class GpuArucoDetector:
                 max_y,
             ),
         )
+        finish_stage("candidateStatsGpuMs")
 
-        source_indices, roots = cp.nonzero(counts >= self.minimum_component_pixels)
-        nonzero = roots > 0
-        source_indices = source_indices[nonzero].astype(cp.int32)
-        roots = roots[nonzero]
-        if len(roots) == 0:
-            return (
-                cp.empty((0, 4, 2), dtype=cp.float32),
-                cp.empty(0, dtype=cp.int32),
-            )
-
-        index = (source_indices, roots)
-        diagonal_keys = cp.stack(
-            (min_sum[index], max_difference[index], max_sum[index], min_difference[index]),
-            axis=1,
-        )
-        axis_keys = cp.stack(
-            (min_y[index], max_x[index], max_y[index], min_x[index]), axis=1
-        )
-        diagonal_indices = (diagonal_keys & cp.uint64(0xFFFFFFFF)).astype(cp.int32)
-        axis_indices = (axis_keys & cp.uint64(0xFFFFFFFF)).astype(cp.int32)
-        diagonal_corners = cp.stack(
-            (diagonal_indices % width, diagonal_indices // width), axis=2
-        ).astype(cp.float32)
-        axis_corners = cp.stack(
-            (axis_indices % width, axis_indices // width), axis=2
-        ).astype(cp.float32)
-        diagonal_shifted = cp.roll(diagonal_corners, -1, axis=1)
-        axis_shifted = cp.roll(axis_corners, -1, axis=1)
-        diagonal_area = 0.5 * cp.abs(
-            cp.sum(
-                diagonal_corners[:, :, 0] * diagonal_shifted[:, :, 1]
-                - diagonal_shifted[:, :, 0] * diagonal_corners[:, :, 1],
-                axis=1,
-            )
-        )
-        axis_area = 0.5 * cp.abs(
-            cp.sum(
-                axis_corners[:, :, 0] * axis_shifted[:, :, 1]
-                - axis_shifted[:, :, 0] * axis_corners[:, :, 1],
-                axis=1,
-            )
-        )
-        corners = cp.where(
-            (axis_area > diagonal_area)[:, None, None], axis_corners, diagonal_corners
-        )
-        shifted = cp.roll(corners, -1, axis=1)
-        side_lengths = cp.sqrt(cp.sum((shifted - corners) ** 2, axis=2))
-        area = 0.5 * cp.abs(
-            cp.sum(
-                corners[:, :, 0] * shifted[:, :, 1]
-                - shifted[:, :, 0] * corners[:, :, 1],
-                axis=1,
-            )
-        )
-        perimeter = cp.sum(side_lengths, axis=1)
-        compactness = area / cp.maximum(perimeter * perimeter, cp.float32(1.0))
-        component_counts = counts[index]
-        component_density = component_counts / cp.maximum(area, cp.float32(1.0))
+        candidate_counts_device = workspace["candidate_counts"]
+        candidate_corners = workspace["candidate_corners"]
+        candidate_counts_device.fill(0)
         maximum_component_pixels = max(
             self.minimum_component_pixels,
             int(pixel_count * self.maximum_component_area_ratio),
         )
-        valid = (
-            (component_counts <= maximum_component_pixels)
-            & (area >= self.minimum_quad_area)
-            & (compactness >= self.minimum_compactness)
-            & (component_density >= self.minimum_component_density)
-            & (cp.min(side_lengths, axis=1) >= 3.0)
+        filter_grid = (
+            (pixel_count + 1 + block_1d[0] - 1) // block_1d[0],
+            batch_size,
         )
-        return corners[valid], source_indices[valid]
+        self.batch_filter_candidates_kernel(
+            filter_grid,
+            block_1d,
+            (
+                counts,
+                min_sum,
+                max_sum,
+                min_difference,
+                max_difference,
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                np.int32(pixel_count + 1),
+                np.int32(width),
+                np.uint32(self.minimum_component_pixels),
+                np.uint32(maximum_component_pixels),
+                np.float32(self.minimum_quad_area),
+                np.float32(self.minimum_compactness),
+                np.float32(self.minimum_component_density),
+                candidate_counts_device,
+                candidate_corners,
+            ),
+        )
+        finish_stage("candidateFilterGpuMs")
+
+        cp.cuda.get_current_stream().synchronize()
+        count_copy_started = time.perf_counter()
+        candidate_counts = cp.asnumpy(candidate_counts_device).astype(np.int64)
+        if host_timings is not None:
+            host_timings["candidateCountD2hMs"] = (
+                time.perf_counter() - count_copy_started
+            ) * 1000.0
+        compact_started = time.perf_counter()
+        corner_parts = []
+        for source_index, candidate_count in enumerate(candidate_counts):
+            if candidate_count <= 0:
+                continue
+            corner_parts.append(candidate_corners[source_index, :candidate_count])
+        if corner_parts:
+            corners = cp.concatenate(corner_parts, axis=0)
+        else:
+            corners = cp.empty((0, 4, 2), dtype=cp.float32)
+        if host_timings is not None:
+            host_timings["candidateCompactWallMs"] = (
+                time.perf_counter() - compact_started
+            ) * 1000.0
+        return corners, candidate_counts
 
     def _extract_candidate_corners(self, gray_device):
         cp = self.cp
@@ -768,22 +930,55 @@ class GpuArucoDetector:
             markers=markers,
         )
 
-    def detect_batch(self, gray_batch) -> list[GpuDetectionResult]:
+    def detect_batch(
+        self,
+        gray_batch,
+        timings: dict[str, float] | None = None,
+    ) -> list[GpuDetectionResult]:
         cp = self.cp
+        input_started = time.perf_counter()
         gray_batch = cp.asarray(gray_batch, dtype=cp.uint8)
+        if timings is not None:
+            timings["detectorInputWallMs"] = (
+                time.perf_counter() - input_started
+            ) * 1000.0
         if gray_batch.ndim != 3 or gray_batch.shape[0] < 1:
             raise ValueError("gray_batch must have shape (batch, height, width)")
         batch_size = int(gray_batch.shape[0])
-        corners, candidate_sources = self._extract_candidate_corners_batch(gray_batch)
+
+        candidate_started = cp.cuda.Event()
+        candidate_finished = cp.cuda.Event()
+        candidate_started.record()
+        candidate_profile_events = [] if timings is not None else None
+        candidate_host_timings: dict[str, float] = {}
+        corners, candidate_counts = self._extract_candidate_corners_batch(
+            gray_batch,
+            candidate_profile_events,
+            candidate_host_timings,
+        )
+        candidate_finished.record()
+        candidate_finished.synchronize()
+        candidate_gpu_ms = cp.cuda.get_elapsed_time(candidate_started, candidate_finished)
+        if timings is not None:
+            for name, started, finished in candidate_profile_events:
+                timings[name] = cp.cuda.get_elapsed_time(started, finished)
+            timings.update(candidate_host_timings)
+        d2h_ms = candidate_host_timings["candidateCountD2hMs"]
         if len(corners) == 0:
+            if timings is not None:
+                timings["candidateGpuMs"] = candidate_gpu_ms
+                timings["decodeGpuMs"] = 0.0
+                timings["gpuKernelMs"] = candidate_gpu_ms
+                timings["d2hMs"] = d2h_ms
+                timings["resultFormatMs"] = 0.0
             return [
                 GpuDetectionResult(marker_ids=[], candidate_count=0, markers=[])
                 for _ in range(batch_size)
             ]
-        candidate_counts = cp.asnumpy(
-            cp.bincount(candidate_sources, minlength=batch_size)
-        ).astype(np.int64)
 
+        decode_started = cp.cuda.Event()
+        decode_finished = cp.cuda.Event()
+        decode_started.record()
         homographies = self._homographies_from_corners(corners)
         decoded_parts = []
         offset = 0
@@ -799,12 +994,19 @@ class GpuArucoDetector:
         valid = all_ids >= 0
         if self.allowed_ids_device is not None:
             valid &= cp.isin(all_ids, self.allowed_ids_device)
+        decode_finished.record()
+        decode_finished.synchronize()
+        decode_gpu_ms = cp.cuda.get_elapsed_time(decode_started, decode_finished)
+
+        result_copy_started = time.perf_counter()
         ids_host = cp.asnumpy(all_ids)
         valid_host = cp.asnumpy(valid)
         corners_host = cp.asnumpy(corners)
+        d2h_ms += (time.perf_counter() - result_copy_started) * 1000.0
         height = int(gray_batch.shape[1])
         width = int(gray_batch.shape[2])
 
+        format_started = time.perf_counter()
         results = []
         offset = 0
         for candidate_count in candidate_counts:
@@ -824,6 +1026,14 @@ class GpuArucoDetector:
                 )
             )
             offset = next_offset
+        if timings is not None:
+            timings["candidateGpuMs"] = candidate_gpu_ms
+            timings["decodeGpuMs"] = decode_gpu_ms
+            timings["gpuKernelMs"] = candidate_gpu_ms + decode_gpu_ms
+            timings["d2hMs"] = d2h_ms
+            timings["resultFormatMs"] = (
+                time.perf_counter() - format_started
+            ) * 1000.0
         return results
 
     @staticmethod

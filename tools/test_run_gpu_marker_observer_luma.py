@@ -37,9 +37,38 @@ class GpuMarkerObserverLumaTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not configured"):
             MODULE.select_source_slots(["11.5"], ["11.6"])
 
-    def test_run_passes_when_at_least_one_configured_source_is_live(self):
-        self.assertTrue(MODULE.run_passed(10, [0, 10, 0, 0]))
-        self.assertFalse(MODULE.run_passed(10, [0, 0, 0, 0]))
+    def test_run_requires_four_live_sources_at_target_rate(self):
+        accepted = MODULE.evaluate_run(500, [500, 500, 500, 500], 49.8, 50, 18.0)
+        self.assertTrue(accepted["passed"])
+        self.assertTrue(accepted["inputReady"])
+        self.assertTrue(accepted["throughputPassed"])
+        self.assertEqual([], accepted["failureReasons"])
+
+    def test_run_rejects_one_live_source(self):
+        rejected = MODULE.evaluate_run(500, [0, 500, 0, 0], 49.8, 50, 18.0)
+        self.assertFalse(rejected["passed"])
+        self.assertFalse(rejected["inputReady"])
+        self.assertTrue(rejected["throughputPassed"])
+        self.assertIn("active source count 1 != 4", rejected["failureReasons"])
+
+    def test_run_rejects_low_publication_rate(self):
+        rejected = MODULE.evaluate_run(400, [400, 400, 400, 400], 40.0, 50, 18.0)
+        self.assertFalse(rejected["passed"])
+        self.assertTrue(rejected["inputReady"])
+        self.assertFalse(rejected["throughputPassed"])
+        self.assertTrue(
+            any("publication rate" in reason for reason in rejected["failureReasons"])
+        )
+
+    def test_run_rejects_partial_source_coverage(self):
+        rejected = MODULE.evaluate_run(500, [500, 500, 300, 500], 49.8, 50, 18.0)
+        self.assertFalse(rejected["passed"])
+        self.assertIn("source coverage below 0.950", rejected["failureReasons"])
+
+    def test_run_rejects_slow_cycle_p95(self):
+        rejected = MODULE.evaluate_run(500, [500, 500, 500, 500], 49.8, 50, 25.0)
+        self.assertFalse(rejected["passed"])
+        self.assertTrue(any("cycle p95" in reason for reason in rejected["failureReasons"]))
 
     def test_marker_parser_rejects_reserved_ids(self):
         with self.assertRaises(argparse.ArgumentTypeError):
@@ -93,14 +122,17 @@ class GpuMarkerObserverLumaTest(unittest.TestCase):
                 [73]
             ) * MODULE.SHARED_LUMA_PLANE_SIZE
 
+            destination = np.empty((1, 528, 960), dtype=np.uint8)
             with MODULE.SharedLumaReader(mapping_name) as reader:
-                batch = reader.read_latest([1])
+                self.assertEqual(2, reader.latest_sequence())
+                batch = reader.read_latest([1], destination)
             self.assertIsNotNone(batch)
             assert batch is not None
             self.assertEqual(["11.5", "11.6"], reader.source_ids)
             self.assertEqual(42, batch.sources[0].source_sequence)
             self.assertTrue(batch.sources[0].video_valid)
             self.assertEqual((1, 528, 960), batch.y_planes.shape)
+            self.assertIs(destination, batch.y_planes)
             self.assertTrue(np.all(batch.y_planes == 73))
         finally:
             mapping.close()
