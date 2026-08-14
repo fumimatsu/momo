@@ -49,6 +49,8 @@ struct MomoArgs {
   int window_height = 480;
   bool fullscreen = false;
   std::string shared_frame_name = "Local\\MomoObserverFrameV1";
+  std::string shared_luma_name = "";
+  bool shared_output_headless = false;
   bool flip_vertical = false;
   bool flip_horizontal = false;
   std::string serial_device = "";

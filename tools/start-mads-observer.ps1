@@ -21,6 +21,9 @@ param(
     [ValidateRange(0, 8760)]
     [int]$TelemetryLogRetentionHours = 24,
     [string]$ObserverAudioSource = 'all',
+    [string]$ObserverLumaMappingName = 'Local\MomoObserverLumaV1',
+    [string]$ObserverExecutable = '',
+    [switch]$ObserverHeadless,
     [string]$ObserverCrashDumpDirectory = '',
     [string]$GoExecutable = $env:MOMO_GO_EXE,
     [switch]$RestartRelay,
@@ -43,7 +46,11 @@ if ($HealthRecoveryMode -in @('pit-marker', 'hybrid')) {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $relayDirectory = Join-Path $repoRoot 'tools\momo-relay'
 $relayExe = Join-Path $relayDirectory 'momo-local-relay-device-input-v15.exe'
-$observerExe = Join-Path $repoRoot '_build\windows_x86_64\release\momo\Release\momo.exe'
+$observerExe = if ([string]::IsNullOrWhiteSpace($ObserverExecutable)) {
+    Join-Path $repoRoot '_build\windows_x86_64\release\momo\Release\momo.exe'
+} else {
+    [System.IO.Path]::GetFullPath($ObserverExecutable.Trim())
+}
 $relayLogDirectory = $relayDirectory
 $resolvedRelayConfigPath = if ([string]::IsNullOrWhiteSpace($RelayConfigPath)) {
     ''
@@ -152,12 +159,12 @@ if ($relayRunning.Count -eq 0) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()
         $relayArgs += '-telemetry-log-retention', "$($TelemetryLogRetentionHours)h"
     }
-    $ayamePilotRooms = if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
-        @(
+    $ayamePilotRooms = @(
+        if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
             if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) { "11.3=$($AyamePilotRoom113.Trim())" }
             if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom116)) { "11.6=$($AyamePilotRoom116.Trim())" }
-        )
-    } else { @() }
+        }
+    )
     if (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not [string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
         $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
         $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
@@ -200,6 +207,7 @@ if ($observerRunning.Count -eq 0) {
     $observerArgs = @(
         '--use-sdl', '--window-width', '1280', '--window-height', '720',
         '--shared-frame-name', 'Local\MomoObserverFrameV1',
+        '--shared-luma-name', $ObserverLumaMappingName,
         'p2p-recv-multi',
         '--source', '11.3=ws://127.0.0.1:8090/ws?role=observer&device=11.3',
         '--source-flip', '11.3=HV',
@@ -210,6 +218,9 @@ if ($observerRunning.Count -eq 0) {
         '--source', '11.6=ws://127.0.0.1:8090/ws?role=observer&device=11.6',
         '--source-flip', '11.6=HV'
     )
+    if ($ObserverHeadless) {
+        $observerArgs = @('--shared-output-headless') + $observerArgs
+    }
     if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
         $observerArgs += '--audio-source', $ObserverAudioSource.Trim()
     }

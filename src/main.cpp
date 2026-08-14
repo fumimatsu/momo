@@ -317,7 +317,12 @@ int main(int argc, char* argv[]) {
                                        args.flip_horizontal,
                                        use_p2p_multi_receiver
                                            ? args.shared_frame_name
-                                           : ""));
+                                           : "",
+                                       use_p2p_multi_receiver
+                                           ? args.shared_luma_name
+                                           : "",
+                                       use_p2p_multi_receiver &&
+                                           args.shared_output_headless));
   }
 
   std::unique_ptr<RTCManager> rtc_manager(new RTCManager(

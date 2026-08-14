@@ -3,7 +3,7 @@
 ## Status
 
 - 状態: legacy-adapter-implemented
-- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較に加え、録画4入力のGPU Marker Observer producerとMADSYSTEM Legacy Adapterを実装。live Relay/WebRTC入力とReliable marker eventは未着手
+- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較、録画4入力のGPU Marker Observer producer、MADSYSTEM Legacy Adapterに加え、Native Observer Video Sinkのlive I420 Y平面バッチを実装。Reliable marker eventは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
 
@@ -274,6 +274,13 @@ Marker ObserverはSDL合成やBGRA共有フレームを経由せず、WebRTCのV
 復号済みフレームを直接受ける。可能な場合はI420のY平面をグレースケール入力として利用し、
 色変換と全画面コピーを避ける。
 
+2026-08-14のlive integrationでは、既存Native Observerのsource managerとdecoderを再利用し、
+Video Sinkから固定4sourceの960x528 Y平面を`Local\MomoObserverLumaV1`へtriple bufferで公開する。
+GPU workerは有効なY平面を1回のCUDA batchへ転送し、結果だけをLegacy Adapter IPCへ書く。
+表示用`Local\MomoObserverFrameV1`も同じSinkから生成するため、MADSYSTEM表示とMarker認識がRelayへ
+別々に接続・復号することはない。次の分離段階ではこの契約を保ったまま、Native nodeから
+GPU detectorを直接呼び出すか、ローカルworkerを独立サービスとして維持するかを負荷と障害分離で決める。
+
 各sourceの処理待ちフレームは最新1枚だけとする。検出処理が追い付かない場合は古いフレームを捨て、
 キューを蓄積して検出時刻が遅れることを防ぐ。
 
@@ -287,6 +294,28 @@ Marker ObserverはSDL合成やBGRA共有フレームを経由せず、WebRTCのV
 
 checkpointを見られる最短時間が40ms未満の場合は50 Hz検出も比較する。固定値だけで判断せず、
 実走録画からmarker visible durationの分布を取得し、25 Hzで連続認識条件を満たすことを確認する。
+
+### 50 Hz live経路の現状
+
+2026-08-14のi7-8700 / Intel UHD 630 / RTX 3060環境では、4台の入力映像自体は各50 FPSを維持したが、
+Relay、Native Observer、MADSYSTEM External、GPU Marker Workerを同居させた検出結果の公開は約17.5 Hz、
+処理p95は約89 msだった。対象プロセスは合計約6.24 CPU core、12 logical CPUの約52%を使用し、RTXは
+平均約30%、最大41%だった。GPUが飽和する前に、Intel decodeから共有Y平面、Python、RTXへのhost copyと
+同期が上限になっている。
+
+同じ4映像のwarmed replayは単独条件で49.55 Hzに到達した一方、full live stackとの同居時は17.716 Hz
+だった。このため、50 Hz node上限を「RTX 3060なら4台」と固定してはならない。別PCではfull stack条件と
+Marker専用node条件を分けて測り、最低20%の余力を残した台数を採用する。
+
+CPU-onlyで4台が必要な検出周期と連続認識条件を満たす環境は、小規模運用の有効なfallbackである。
+GPU経路の目的は4台だけを置き換えることではなく、映像受信を一本化し、Marker nodeを追加して台数を
+水平拡張できる境界を作ることにある。当面は次の方針とする。
+
+- 1から4台でCPU-onlyが25 Hz以上と余力20%以上を満たす場合は、実績ある経路を選択できる
+- 50 Hzが必要なコースでは、GPU経路をMarker専用PCで再測定する
+- Relay、MADSYSTEM、Program表示を同じMarker nodeへ同居させた結果を専用node容量へ流用しない
+- 5台以上は1プロセスへの追加より、source groupを分割したMarker node追加を優先する
+- GPU 0/1の番号ではなくadapter名、LUID、decode engine、CUDA deviceを試験記録へ残す
 
 ### プロセスとsource管理
 

@@ -29,6 +29,7 @@
 #endif
 
 class SharedFrameWriter;
+class SharedLumaWriter;
 
 class SDLRenderer : public VideoTrackReceiver {
  public:
@@ -41,7 +42,9 @@ class SDLRenderer : public VideoTrackReceiver {
   SDLRenderer(int width, int height, bool fullscreen,
               bool enable_aruco = false, bool flip_vertical = false,
               bool flip_horizontal = false,
-              std::string shared_frame_name = "");
+              std::string shared_frame_name = "",
+              std::string shared_luma_name = "",
+              bool shared_output_headless = false);
   ~SDLRenderer();
 
   void SetDispatchFunction(std::function<void(std::function<void()>)> dispatch);
@@ -102,6 +105,14 @@ class SDLRenderer : public VideoTrackReceiver {
     bool CopySourceTo(uint8_t* destination, int destination_stride,
                       int destination_width, int destination_height,
                       bool flip_vertical, bool flip_horizontal) const;
+    bool CopyLumaTo(uint8_t* destination,
+                    int destination_stride,
+                    int destination_width,
+                    int destination_height,
+                    bool flip_vertical,
+                    bool flip_horizontal,
+                    uint64_t* source_sequence,
+                    int64_t* timestamp_unix_ns) const;
 
    private:
     SDLRenderer* renderer_;
@@ -118,6 +129,9 @@ class SDLRenderer : public VideoTrackReceiver {
     bool scaled_;
     std::unique_ptr<uint8_t[]> image_;
     std::unique_ptr<uint8_t[]> source_image_;
+    std::vector<uint8_t> source_luma_;
+    uint64_t source_sequence_;
+    int64_t source_timestamp_unix_ns_;
     int source_width_;
     int source_height_;
     int offset_x_;
@@ -141,6 +155,7 @@ class SDLRenderer : public VideoTrackReceiver {
   void SetFullScreen(bool fullscreen);
   void PollEvent();
   void WriteSharedFrame();
+  void WriteSharedLuma();
   struct SourceSlot {
     std::string name;
     SourceState state;
@@ -181,8 +196,11 @@ class SDLRenderer : public VideoTrackReceiver {
   int rows_;
   int cols_;
   bool enable_aruco_;
+  bool shared_output_headless_;
   std::unique_ptr<SharedFrameWriter> shared_frame_writer_;
   std::vector<uint8_t> shared_frame_buffer_;
+  std::unique_ptr<SharedLumaWriter> shared_luma_writer_;
+  std::vector<uint8_t> shared_luma_buffer_;
   std::vector<SourceSlot> fixed_slots_;
   webrtc::Mutex source_overlay_lock_;
   std::unordered_map<std::string, std::string> source_overlay_text_
