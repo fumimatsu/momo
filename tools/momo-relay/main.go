@@ -305,11 +305,16 @@ type raceStateEnvelope struct {
 	RaceInfo  struct {
 		SessionType string `json:"sessionType"`
 	} `json:"raceInfo"`
-	Standings []struct {
-		CarID    string `json:"carId"`
-		Position int    `json:"position"`
-		Status   string `json:"status"`
-	} `json:"standings"`
+	Standings []raceStateStanding `json:"standings"`
+}
+
+type raceStateStanding struct {
+	CarID             string `json:"carId"`
+	Position          int    `json:"position"`
+	Lap               int    `json:"lap"`
+	Status            string `json:"status"`
+	IntervalToAheadMS *int64 `json:"intervalToAheadMs"`
+	LapDeltaToAhead   *int   `json:"lapDeltaToAhead"`
 }
 
 type sourceFlag []string

@@ -93,47 +93,62 @@ func TestVehicleGameplayQualifyConsumesFuel(t *testing.T) {
 	}
 }
 
-func TestVehicleGameplayBoostUsesRankAndExpiresToGearThree(t *testing.T) {
+func TestVehicleGameplayBoostUsesRaceGapAndExpiresToGearThree(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := prepareGameplayHealth(base, 5*time.Minute, 4, 4)
-	advanceGameplayDriving(health, base, 22, 4, 4)
+	health.observeRaceStateWithGap(true, "rr_gameplay", "green", 4, 4, vehicleRaceGap{Known: true, LapDeltaToAhead: 1}, base)
+	for tick := 1; tick <= 16*10; tick++ {
+		now := base.Add(time.Duration(tick) * 100 * time.Millisecond)
+		if tick%10 == 0 {
+			health.observeRaceStateWithGap(true, "rr_gameplay", "green", 4, 4, vehicleRaceGap{Known: true, LapDeltaToAhead: 1}, now)
+		}
+		health.limitCommand("S:1500,T:2000", now)
+	}
 
-	ready := health.snapshot(base.Add(22 * time.Second))
+	ready := health.snapshot(base.Add(16 * time.Second))
 	if ready.BoostState != "ready" || math.Abs(ready.Boost-vehicleBoostMaximum) > 0.001 || ready.Gear != 3 {
 		t.Fatalf("last-place boost state = %#v", ready)
 	}
-	active, ok := health.activateBoost(base.Add(22 * time.Second))
+	active, ok := health.activateBoost(base.Add(16 * time.Second))
 	if !ok || active.Gear != 4 || active.BoostState != "active" || active.BoostRemainingMS != vehicleBoostDuration.Milliseconds() {
 		t.Fatalf("boost activation = %#v accepted=%t", active, ok)
 	}
-	if _, accepted := health.setRequestedGear(2, base.Add(23*time.Second)); accepted {
+	if _, accepted := health.setRequestedGear(2, base.Add(17*time.Second)); accepted {
 		t.Fatal("gear shift was accepted while boost was active")
 	}
-	if got := health.limitCommand("S:1500,T:2000", base.Add(23*time.Second)); got != "S:1500,T:1900" {
+	if got := health.limitCommand("S:1500,T:2000", base.Add(17*time.Second)); got != "S:1500,T:1900" {
 		t.Fatalf("boost command = %q, want G4 PWM 1900", got)
 	}
-	expired := health.snapshot(base.Add(24500 * time.Millisecond))
+	expired := health.snapshot(base.Add(18500 * time.Millisecond))
 	if expired.Gear != 3 || expired.BoostState != "charging" || expired.Boost != 0 {
 		t.Fatalf("expired boost state = %#v", expired)
 	}
 }
 
-func TestVehicleGameplayBoostChargeDurationsByRank(t *testing.T) {
+func TestVehicleGameplayBoostChargeDurationsByRaceGap(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
-	for position, want := range map[int]time.Duration{
-		1: 40 * time.Second,
-		2: 34 * time.Second,
-		3: 28 * time.Second,
-		4: 22 * time.Second,
-	} {
+	tests := []struct {
+		name     string
+		position int
+		gap      vehicleRaceGap
+		want     time.Duration
+	}{
+		{name: "leader", position: 1, gap: vehicleRaceGap{Known: true}, want: 45 * time.Second},
+		{name: "close", position: 2, gap: vehicleRaceGap{Known: true, IntervalToAheadMS: 0}, want: 40 * time.Second},
+		{name: "four_seconds", position: 3, gap: vehicleRaceGap{Known: true, IntervalToAheadMS: 4000}, want: 30 * time.Second},
+		{name: "far", position: 4, gap: vehicleRaceGap{Known: true, IntervalToAheadMS: 8000}, want: 20 * time.Second},
+		{name: "one_lap", position: 4, gap: vehicleRaceGap{Known: true, LapDeltaToAhead: 1}, want: 16 * time.Second},
+		{name: "three_laps", position: 4, gap: vehicleRaceGap{Known: true, LapDeltaToAhead: 3}, want: 12 * time.Second},
+		{name: "unknown", position: 3, gap: vehicleRaceGap{}, want: 30 * time.Second},
+	}
+	for _, test := range tests {
+		health.observeRaceStateWithGap(true, "rr_gap", "green", test.position, 4, test.gap, base)
 		health.mu.Lock()
-		health.position = position
-		health.fieldSize = 4
 		got := health.boostChargeDurationLocked()
 		health.mu.Unlock()
-		if got != want {
-			t.Errorf("position %d charge duration = %s, want %s", position, got, want)
+		if got != test.want {
+			t.Errorf("%s charge duration = %s, want %s", test.name, got, test.want)
 		}
 	}
 }
@@ -200,21 +215,18 @@ func TestRelayRaceContextUpdatesGameplayRank(t *testing.T) {
 		"11.5": {raceCarID: "CP-1", vehicleHealth: health, viewers: make(map[uint64]*viewer)},
 	}}
 	envelope := raceStateEnvelope{RaceRunID: "rr_gameplay", Phase: "green"}
-	envelope.Standings = append(envelope.Standings,
-		struct {
-			CarID    string `json:"carId"`
-			Position int    `json:"position"`
-			Status   string `json:"status"`
-		}{CarID: "CP-2", Position: 1, Status: "racing"},
-		struct {
-			CarID    string `json:"carId"`
-			Position int    `json:"position"`
-			Status   string `json:"status"`
-		}{CarID: "CP-1", Position: 2, Status: "racing"},
-	)
+	envelope.Standings = make([]raceStateStanding, 2)
+	envelope.Standings[0].CarID = "CP-2"
+	envelope.Standings[0].Position = 1
+	envelope.Standings[0].Status = "racing"
+	envelope.Standings[1].CarID = "CP-1"
+	envelope.Standings[1].Position = 2
+	envelope.Standings[1].Status = "racing"
+	gapMS := int64(4000)
+	envelope.Standings[1].IntervalToAheadMS = &gapMS
 	server.observeRaceContext(envelope, base)
 	snapshot := health.snapshot(base)
-	if snapshot.Position != 2 || snapshot.FieldSize != 2 {
+	if snapshot.Position != 2 || snapshot.FieldSize != 2 || !snapshot.RaceGapKnown || snapshot.GapToAheadMS == nil || *snapshot.GapToAheadMS != gapMS || snapshot.BoostChargeMS != (30*time.Second).Milliseconds() {
 		t.Fatalf("race rank snapshot = %#v", snapshot)
 	}
 }

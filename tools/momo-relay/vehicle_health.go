@@ -27,6 +27,12 @@ const (
 	vehicleBoostMaximum              = 100.0
 	vehicleBoostDuration             = 2500 * time.Millisecond
 	vehicleBoostFallbackCharge       = 30 * time.Second
+	vehicleBoostLeaderCharge         = 45 * time.Second
+	vehicleBoostCloseGapCharge       = 40 * time.Second
+	vehicleBoostFarGapCharge         = 20 * time.Second
+	vehicleBoostFullGapBenefit       = 8 * time.Second
+	vehicleBoostOneLapDownCharge     = 16 * time.Second
+	vehicleBoostMinimumCharge        = 12 * time.Second
 	vehicleNormalGearMaximum         = 3
 	vehicleBoostGear                 = 4
 	relayImpactWeakMagnitudeMPS2     = 10.0
@@ -53,7 +59,17 @@ type vehicleHealthSnapshot struct {
 	RequestedThrottle float64 `json:"requestedThrottle"`
 	EffectiveThrottle float64 `json:"effectiveThrottle"`
 	SessionType       string  `json:"sessionType"`
+	RaceGapKnown      bool    `json:"raceGapKnown"`
+	GapToAheadMS      *int64  `json:"gapToAheadMs,omitempty"`
+	LapDeltaToAhead   *int    `json:"lapDeltaToAhead,omitempty"`
+	BoostChargeMS     int64   `json:"boostChargeMs"`
 	ServerTimeMS      int64   `json:"serverTimeMs"`
+}
+
+type vehicleRaceGap struct {
+	Known             bool
+	IntervalToAheadMS int64
+	LapDeltaToAhead   int
 }
 
 type pitRecoveryApplyResult struct {
@@ -89,6 +105,9 @@ type vehicleHealth struct {
 	requestedGear          int
 	position               int
 	fieldSize              int
+	raceGapKnown           bool
+	gapToAheadMS           int64
+	lapDeltaToAhead        int
 	fuelDriveDuration      time.Duration
 	fuelRatePerSec         float64
 	requestedThrottle      float64
@@ -180,6 +199,9 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 	health.fuelRatePerSec = 0
 	health.lastUpdatedAt = now
 	health.lastRaceStateAt = now
+	health.raceGapKnown = false
+	health.gapToAheadMS = 0
+	health.lapDeltaToAhead = 0
 	health.resetPitRecoveryLocked()
 	health.resetImpactDedupeLocked()
 }
@@ -236,6 +258,10 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 }
 
 func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, phase string, position int, fieldSize int, now time.Time, sessionTypes ...string) (vehicleHealthSnapshot, bool) {
+	return health.observeRaceStateWithGap(connected, raceRunID, phase, position, fieldSize, vehicleRaceGap{}, now, sessionTypes...)
+}
+
+func (health *vehicleHealth) observeRaceStateWithGap(connected bool, raceRunID string, phase string, position int, fieldSize int, gap vehicleRaceGap, now time.Time, sessionTypes ...string) (vehicleHealthSnapshot, bool) {
 	if health == nil {
 		return defaultVehicleHealthSnapshot(now), false
 	}
@@ -245,6 +271,9 @@ func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, 
 	previousRunID := health.activeRaceRunID
 	previousPosition := health.position
 	previousFieldSize := health.fieldSize
+	previousGapKnown := health.raceGapKnown
+	previousGapToAheadMS := health.gapToAheadMS
+	previousLapDeltaToAhead := health.lapDeltaToAhead
 	previousSessionType := health.lastSessionType
 	health.mu.Unlock()
 	health.observeRaceRun(raceRunID, now)
@@ -255,12 +284,16 @@ func (health *vehicleHealth) observeRaceState(connected bool, raceRunID string, 
 	health.lastRaceStateAt = now
 	health.position = position
 	health.fieldSize = fieldSize
+	health.raceGapKnown = gap.Known
+	health.gapToAheadMS = maxInt64(0, gap.IntervalToAheadMS)
+	health.lapDeltaToAhead = maxInt(0, gap.LapDeltaToAhead)
 	health.lastSessionType = normalizeRaceSessionType(firstString(sessionTypes))
 	if !connected {
 		health.cancelBoostLocked()
 	}
 	if previousConnected != connected || previousPhase != strings.ToLower(strings.TrimSpace(phase)) || previousRunID != raceRunID ||
 		previousPosition != position || previousFieldSize != fieldSize || previousSessionType != health.lastSessionType ||
+		previousGapKnown != health.raceGapKnown || previousGapToAheadMS != health.gapToAheadMS || previousLapDeltaToAhead != health.lapDeltaToAhead ||
 		snapshot.BoostState != health.boostStateLocked(now) {
 		changed = true
 	}
@@ -594,7 +627,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 }
 
 func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot {
-	return vehicleHealthSnapshot{
+	snapshot := vehicleHealthSnapshot{
 		HP:                health.hp,
 		SpeedCap:          vehicleHealthSpeedCap(health.hp),
 		Mode:              vehicleHealthMode(health.hp),
@@ -611,8 +644,20 @@ func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot
 		RequestedThrottle: health.requestedThrottle,
 		EffectiveThrottle: health.effectiveThrottle,
 		SessionType:       vehicleSessionTypeState(health.lastSessionType),
+		RaceGapKnown:      health.raceGapKnown,
+		BoostChargeMS:     health.boostChargeDurationLocked().Milliseconds(),
 		ServerTimeMS:      now.UnixMilli(),
 	}
+	if health.raceGapKnown && health.position > 1 {
+		if health.lapDeltaToAhead > 0 {
+			lapDelta := health.lapDeltaToAhead
+			snapshot.LapDeltaToAhead = &lapDelta
+		} else {
+			gapMS := health.gapToAheadMS
+			snapshot.GapToAheadMS = &gapMS
+		}
+	}
+	return snapshot
 }
 
 func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
@@ -754,11 +799,25 @@ func firstString(values []string) string {
 }
 
 func (health *vehicleHealth) boostChargeDurationLocked() time.Duration {
-	if health.fieldSize <= 1 || health.position < 1 || health.position > health.fieldSize {
+	if health.position == 1 {
+		return vehicleBoostLeaderCharge
+	}
+	if !health.raceGapKnown || health.position < 1 {
 		return vehicleBoostFallbackCharge
 	}
-	fraction := float64(health.position-1) / float64(health.fieldSize-1)
-	return time.Duration(float64(40*time.Second) - fraction*float64(18*time.Second))
+	if health.lapDeltaToAhead > 0 {
+		duration := vehicleBoostOneLapDownCharge - time.Duration(health.lapDeltaToAhead-1)*2*time.Second
+		if duration < vehicleBoostMinimumCharge {
+			return vehicleBoostMinimumCharge
+		}
+		return duration
+	}
+	gap := time.Duration(health.gapToAheadMS) * time.Millisecond
+	if gap >= vehicleBoostFullGapBenefit {
+		return vehicleBoostFarGapCharge
+	}
+	fraction := float64(gap) / float64(vehicleBoostFullGapBenefit)
+	return time.Duration(float64(vehicleBoostCloseGapCharge) - fraction*float64(vehicleBoostCloseGapCharge-vehicleBoostFarGapCharge))
 }
 
 func vehicleGearForwardMaximum(gear int) int {

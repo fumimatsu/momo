@@ -139,18 +139,25 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 
 	for _, source := range server.sources {
 		position := 0
+		gap := vehicleRaceGap{}
 		for _, standing := range envelope.Standings {
 			if standing.CarID == source.raceCarID {
 				position = standing.Position
+				gap = vehicleRaceGap{
+					Known:             standing.Position == 1 || standing.IntervalToAheadMS != nil || standing.LapDeltaToAhead != nil,
+					IntervalToAheadMS: nonNegativeInt64Value(standing.IntervalToAheadMS),
+					LapDeltaToAhead:   nonNegativeIntValue(standing.LapDeltaToAhead),
+				}
 				break
 			}
 		}
-		health, changed := source.vehicleHealth.observeRaceState(
+		health, changed := source.vehicleHealth.observeRaceStateWithGap(
 			true,
 			currentRunID,
 			currentPhase,
 			position,
 			len(envelope.Standings),
+			gap,
 			now,
 			envelope.RaceInfo.SessionType,
 		)
@@ -178,6 +185,20 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 			}
 		}
 	}
+}
+
+func nonNegativeInt64Value(value *int64) int64 {
+	if value == nil || *value < 0 {
+		return 0
+	}
+	return *value
+}
+
+func nonNegativeIntValue(value *int) int {
+	if value == nil || *value < 0 {
+		return 0
+	}
+	return *value
 }
 
 func (server *relayServer) markRaceControlDisconnected() {
