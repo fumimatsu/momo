@@ -26,8 +26,6 @@
 
 #define STD_ASPECT 1.33
 #define WIDE_ASPECT 1.78
-#define FRAME_INTERVAL (1000 / 50)
-
 namespace {
 
 constexpr int kSharedFrameWidth = 1920;
@@ -420,7 +418,8 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
                          bool flip_horizontal,
                          std::string shared_frame_name,
                          std::string shared_luma_name,
-                         bool shared_output_headless)
+                         bool shared_output_headless,
+                         int shared_output_fps)
     : running_(true),
       window_(nullptr),
       renderer_(nullptr),
@@ -432,7 +431,8 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
       rows_(1),
       cols_(1),
       enable_aruco_(enable_aruco),
-      shared_output_headless_(shared_output_headless) {
+      shared_output_headless_(shared_output_headless),
+      shared_output_fps_(std::max(1, shared_output_fps)) {
 #if !defined(USE_OPENCV_ARUCO)
   if (enable_aruco_) {
     RTC_LOG(LS_ERROR) << "ArUco detection was requested, but this build does "
@@ -599,6 +599,8 @@ int SDLRenderer::RenderThread() {
   SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
 
   uint32_t start_time, duration;
+  const uint32_t frame_interval_ms =
+      std::max(1U, 1000U / static_cast<uint32_t>(shared_output_fps_));
   while (running_) {
     start_time = SDL_GetTicks();
     {
@@ -664,8 +666,8 @@ int SDLRenderer::RenderThread() {
       }
     }
     duration = SDL_GetTicks() - start_time;
-    if (duration < FRAME_INTERVAL) {
-      SDL_Delay(FRAME_INTERVAL - duration);
+    if (duration < frame_interval_ms) {
+      SDL_Delay(frame_interval_ms - duration);
     }
   }
 
@@ -709,7 +711,9 @@ SDLRenderer::Sink::Sink(SDLRenderer* renderer,
 #else
   static_cast<void>(enable_aruco);
 #endif
-  track_->AddOrUpdateSink(this, webrtc::VideoSinkWants());
+  webrtc::VideoSinkWants wants;
+  wants.max_framerate_fps = renderer_->shared_output_fps_;
+  track_->AddOrUpdateSink(this, wants);
 }
 
 SDLRenderer::Sink::~Sink() {

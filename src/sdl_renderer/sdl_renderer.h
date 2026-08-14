@@ -44,7 +44,8 @@ class SDLRenderer : public VideoTrackReceiver {
               bool flip_horizontal = false,
               std::string shared_frame_name = "",
               std::string shared_luma_name = "",
-              bool shared_output_headless = false);
+              bool shared_output_headless = false,
+              int shared_output_fps = 50);
   ~SDLRenderer();
 
   void SetDispatchFunction(std::function<void(std::function<void()>)> dispatch);
@@ -197,6 +198,7 @@ class SDLRenderer : public VideoTrackReceiver {
   int cols_;
   bool enable_aruco_;
   bool shared_output_headless_;
+  int shared_output_fps_;
   std::unique_ptr<SharedFrameWriter> shared_frame_writer_;
   std::vector<uint8_t> shared_frame_buffer_;
   std::unique_ptr<SharedLumaWriter> shared_luma_writer_;

@@ -51,6 +51,7 @@ struct MomoArgs {
   std::string shared_frame_name = "Local\\MomoObserverFrameV1";
   std::string shared_luma_name = "";
   bool shared_output_headless = false;
+  int shared_output_fps = 50;
   bool flip_vertical = false;
   bool flip_horizontal = false;
   std::string serial_device = "";

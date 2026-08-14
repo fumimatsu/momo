@@ -164,6 +164,10 @@ void Util::ParseArgs(int argc,
   app.add_flag("--shared-output-headless", args.shared_output_headless,
                "Publish p2p-recv-multi shared outputs without drawing the "
                "Native Observer window");
+  app.add_option("--shared-output-fps", args.shared_output_fps,
+                 "Maximum receive and publish rate for p2p-recv-multi shared "
+                 "outputs")
+      ->check(CLI::Range(1, MAX_FRAMERATE));
   app.add_flag("--fullscreen", args.fullscreen,
                "Use fullscreen window for videos (if SDL is available)");
   app.add_flag("--version", version, "Show version information");

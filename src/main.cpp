@@ -322,7 +322,8 @@ int main(int argc, char* argv[]) {
                                            ? args.shared_luma_name
                                            : "",
                                        use_p2p_multi_receiver &&
-                                           args.shared_output_headless));
+                                           args.shared_output_headless,
+                                       args.shared_output_fps));
   }
 
   std::unique_ptr<RTCManager> rtc_manager(new RTCManager(

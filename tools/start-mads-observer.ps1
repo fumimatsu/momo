@@ -22,6 +22,8 @@ param(
     [int]$TelemetryLogRetentionHours = 24,
     [string]$ObserverAudioSource = 'all',
     [string]$ObserverLumaMappingName = 'Local\MomoObserverLumaV1',
+    [ValidateRange(1, 60)]
+    [int]$ObserverSharedOutputFps = 25,
     [string]$ObserverExecutable = '',
     [switch]$ObserverHeadless,
     [string]$ObserverCrashDumpDirectory = '',
@@ -208,6 +210,7 @@ if ($observerRunning.Count -eq 0) {
         '--use-sdl', '--window-width', '1280', '--window-height', '720',
         '--shared-frame-name', 'Local\MomoObserverFrameV1',
         '--shared-luma-name', $ObserverLumaMappingName,
+        '--shared-output-fps', $ObserverSharedOutputFps,
         'p2p-recv-multi',
         '--source', '11.3=ws://127.0.0.1:8090/ws?role=observer&device=11.3',
         '--source-flip', '11.3=HV',
