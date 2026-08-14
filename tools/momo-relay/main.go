@@ -2106,6 +2106,15 @@ func (r *relay) removeViewer(id uint64) {
 	}
 }
 
+var errAyamePeerLeft = errors.New("Ayame peer left")
+
+func ayamePilotRetryDelay(err error) time.Duration {
+	if errors.Is(err, errAyamePeerLeft) {
+		return 0
+	}
+	return 3 * time.Second
+}
+
 // Ayame の room は source ごとに 1 つだけ割り当てる。ここでは映像の下流配信だけを
 // 担当する。外部操縦は deadman / neutral failsafe が未実装のため、別段階で追加する。
 func (r *relay) startAyamePilot(ctx context.Context, signalingURL string, roomID string, clientID string, key string) {
@@ -2113,12 +2122,25 @@ func (r *relay) startAyamePilot(ctx context.Context, signalingURL string, roomID
 		for {
 			err := r.connectAyamePilot(ctx, signalingURL, roomID, clientID, key)
 			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("source %q: Ayame pilot disconnected: %v; retrying in 3 seconds", r.name, err)
+				if errors.Is(err, errAyamePeerLeft) {
+					log.Printf("source %q: Ayame pilot peer left; re-registering immediately", r.name)
+				} else {
+					log.Printf("source %q: Ayame pilot disconnected: %v; retrying in 3 seconds", r.name, err)
+				}
+			}
+			delay := ayamePilotRetryDelay(err)
+			if delay == 0 {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					continue
+				}
 			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(3 * time.Second):
+			case <-time.After(delay):
 			}
 		}
 	}()
@@ -2331,8 +2353,10 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 			if err := sendSignal(signalMessage{Type: "pong"}); err != nil {
 				return fmt.Errorf("send Ayame pong: %w", err)
 			}
-		case "bye", "reject":
-			return fmt.Errorf("Ayame %s: %s", message.Type, firstNonEmpty(message.Reason, message.Error))
+		case "bye":
+			return fmt.Errorf("%w: %s", errAyamePeerLeft, firstNonEmpty(message.Reason, message.Error))
+		case "reject":
+			return fmt.Errorf("Ayame reject: %s", firstNonEmpty(message.Reason, message.Error))
 		}
 	}
 }

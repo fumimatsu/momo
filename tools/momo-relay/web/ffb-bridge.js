@@ -40,6 +40,8 @@
       this.selectedDeviceId = '';
       this.deviceProfile = null;
       this.deviceCapabilities = null;
+      this.protocol = 0;
+      this.features = [];
       this.lastError = '';
       this.lastStatus = null;
       this.heartbeatId = 0;
@@ -55,6 +57,8 @@
         selectedDeviceId: this.selectedDeviceId,
         deviceProfile: this.deviceProfile,
         deviceCapabilities: this.deviceCapabilities,
+        protocol: this.protocol,
+        features: this.features.slice(),
         lastError: this.lastError,
         lastStatus: this.lastStatus,
       };
@@ -75,7 +79,7 @@
       ws.addEventListener('open', () => {
         this.connected = true;
         this.connecting = false;
-        this.send({ type: 'hello', client: 'momo-fpv-viewer', protocol: 1, compatibility: collectCompatibilityInfo() });
+        this.send({ type: 'hello', client: 'momo-fpv-viewer', protocol: 2, compatibility: collectCompatibilityInfo() });
         this.listDevices();
         this.startHeartbeat();
         this.emitState();
@@ -89,6 +93,8 @@
         this.acquired = false;
         this.deviceProfile = null;
         this.deviceCapabilities = null;
+        this.protocol = 0;
+        this.features = [];
         this.emitState();
       });
       ws.addEventListener('error', () => {
@@ -99,7 +105,12 @@
 
     handleMessage(message) {
       if (!message || typeof message.type !== 'string') return;
-      if (message.type === 'deviceList') {
+      if (message.type === 'helloAck') {
+        this.protocol = Number.isInteger(message.protocol) ? message.protocol : 0;
+        this.features = Array.isArray(message.features)
+          ? message.features.filter((feature) => typeof feature === 'string')
+          : [];
+      } else if (message.type === 'deviceList') {
         this.devices = Array.isArray(message.devices) ? message.devices : [];
       } else if (message.type === 'acquired') {
         this.acquired = !!message.ok;
@@ -134,14 +145,18 @@
       });
     }
 
-    sendFfb(command) {
-      if (!this.connected || !this.acquired) return false;
-      return this.send({ type: 'setFfb', ...command });
+    supportsFeature(feature) {
+      return this.features.includes(feature);
     }
 
-    triggerImpactPulse(event) {
-      if (!this.connected || !this.acquired) return false;
-      return this.send({ type: 'impactPulse', ...event });
+    sendVehicleDynamics(state) {
+      if (!this.connected || !this.acquired || !this.supportsFeature('vehicleDynamicsV1')) return false;
+      return this.send({ ...state, type: 'setVehicleDynamics', schemaVersion: 1 });
+    }
+
+    triggerVehicleImpact(event) {
+      if (!this.connected || !this.acquired || !this.supportsFeature('vehicleImpactV1')) return false;
+      return this.send({ ...event, type: 'vehicleImpact', schemaVersion: 1 });
     }
 
     stopAll() { return this.send({ type: 'stopAll' }); }
@@ -156,6 +171,8 @@
       this.acquired = false;
       this.deviceProfile = null;
       this.deviceCapabilities = null;
+      this.protocol = 0;
+      this.features = [];
       this.emitState();
     }
 

@@ -2974,17 +2974,6 @@
             <button id="btnStartCalibration" class="wide primary-action" type="button">Guided Calibration</button>
             <button id="btnInputSetup" class="wide" type="button">Advanced Input</button>
             <button id="btnDebug" class="wide" type="button">Debug</button>
-            <span class="debug-controls wide">
-              <label>
-                Mode
-                <select id="modeSelect" disabled>
-                  <option value="">refresh</option>
-                </select>
-              </label>
-              <button id="btnApplyMode" type="button" disabled>Apply</button>
-              <button id="btnRefreshMode" type="button">Refresh Mode</button>
-              <button id="btnRefreshDevice" type="button">Refresh Device</button>
-            </span>
           </div>
         </section>
       </div>
@@ -3042,7 +3031,6 @@
       <div class="status">
         <div class="status-row">
           <div><span>ID</span> <strong id="hostState">n/a</strong></div>
-          <div><span>Time</span> <strong id="timeState">n/a</strong></div>
         </div>
         <div class="debug-only"><span>WebSocket</span> <strong id="wsState">closed</strong></div>
         <div class="debug-only"><span>ICE</span> <strong id="iceState">new</strong></div>
@@ -3070,7 +3058,6 @@
         <div class="debug-only"><span>Telemetry</span> <strong id="telemetryState">n/a</strong></div>
         <div class="debug-only"><span>Motion</span> <strong id="motionState">waiting</strong></div>
         <div class="debug-only"><span>M5 Audio</span> <strong id="m5AudioState">off</strong></div>
-        <div class="debug-only"><span>Mode</span> <strong id="modeState">n/a</strong></div>
         <div class="debug-only"><span>Device</span> <strong id="deviceState">n/a</strong></div>
       </div>
 
@@ -3177,15 +3164,15 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260814-calibration-visual-v4"></script>
+    <script src="../../telemetry.js?v=20260814-ayame-lease-resume-v1"></script>
     <script src="../../m5-audio.js?v=20260811-gear-audit-v3"></script>
     <script
-      src="./gamepad-profile.js?v=20260814-calibration-visual-v4"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260814-calibration-visual-v4'"
+      src="./gamepad-profile.js?v=20260814-ayame-lease-resume-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260814-ayame-lease-resume-v1'"
     ></script>
-    <script src="./ffb-bridge.js"></script>
-    <script src="./race-battle.js?v=20260814-calibration-visual-v4"></script>
-    <script src="./pilot.js?v=20260814-calibration-visual-v4"></script>
+    <script src="./ffb-bridge.js?v=20260814-ayame-lease-resume-v1"></script>
+    <script src="./race-battle.js?v=20260814-ayame-lease-resume-v1"></script>
+    <script src="./pilot.js?v=20260814-ayame-lease-resume-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

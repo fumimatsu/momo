@@ -30,6 +30,7 @@ const optionInputs = {
 
 const profileApi = window.FpvGamepadProfiles;
 const legacyStorageKey = "fpvGamepadMapping";
+const roomLeaseStorageKey = "fpvAyameRoomLeaseV1";
 const pageParams = new URLSearchParams(location.search);
 const targetDevice = pageParams.get("device")?.trim() || "";
 const relayPilotTarget = pageParams.get("viewer") === "relay-pilot";
@@ -38,6 +39,7 @@ const relayPilotPath = pageParams.get("relayPilotPath") === "flat"
   ? "./pilot.html"
   : "./variants/relay/pilot.html";
 const returnViewerUrl = getReturnViewerUrl();
+const returnViewerRoomId = getReturnViewerParam(["roomId", "ayameRoomId"]);
 const profileScope = targetDevice ? `device:${targetDevice}` : "";
 const scopedLegacyStorageKey = targetDevice
   ? `${legacyStorageKey}:${encodeURIComponent(targetDevice)}`
@@ -55,6 +57,7 @@ let selectedProfileKey = "";
 let profileStore = profileApi.load(window.localStorage, profileScope);
 let legacyMapping = null;
 let currentLanguage = loadLanguage();
+let roomLeaseHeartbeatTimer = 0;
 
 const translations = {
   en: {
@@ -515,9 +518,97 @@ function getReturnViewerUrl() {
   }
 }
 
+function getReturnViewerParam(names) {
+  if (!returnViewerUrl) {
+    return "";
+  }
+  const url = new URL(returnViewerUrl);
+  const hashParams = new URLSearchParams(url.hash.replace(/^#\??/, ""));
+  for (const name of names) {
+    const value = url.searchParams.get(name) || hashParams.get(name);
+    if (value) return value.trim();
+  }
+  return "";
+}
+
+function loadActiveRoomLease() {
+  if (!relayPilotTarget || !returnViewerUrl) {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage?.getItem(roomLeaseStorageKey);
+    const lease = raw ? JSON.parse(raw) : null;
+    const valid = lease && lease.schemaVersion === 1
+      && typeof lease.lockUrl === "string" && lease.lockUrl.length > 0
+      && typeof lease.roomId === "string" && lease.roomId.length > 0
+      && typeof lease.clientId === "string" && lease.clientId.length > 0
+      && typeof lease.token === "string" && lease.token.length > 0
+      && lease.authenticated === true
+      && (!returnViewerRoomId || lease.roomId === returnViewerRoomId)
+      && Number(lease.expiresAt) > Date.now() / 1000;
+    if (valid) return lease;
+    window.sessionStorage?.removeItem(roomLeaseStorageKey);
+  } catch (_) {
+  }
+  return null;
+}
+
+function persistActiveRoomLease(lease) {
+  try {
+    window.sessionStorage?.setItem(roomLeaseStorageKey, JSON.stringify(lease));
+  } catch (_) {
+  }
+}
+
+async function heartbeatActiveRoomLease() {
+  const lease = loadActiveRoomLease();
+  if (!lease) return false;
+  const endpoint = `${lease.lockUrl}/rooms/${encodeURIComponent(lease.roomId)}/heartbeat`;
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        clientId: lease.clientId,
+        token: lease.token,
+        ttlSec: lease.ttlSec || 30,
+        driveEnabled: false
+      })
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 409) {
+        window.sessionStorage?.removeItem(roomLeaseStorageKey);
+      }
+      return false;
+    }
+    const payload = await response.json();
+    persistActiveRoomLease({
+      ...lease,
+      ...(payload.lease || {}),
+      token: lease.token,
+      authenticated: lease.authenticated === true
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function startActiveRoomLeaseHeartbeat() {
+  const lease = loadActiveRoomLease();
+  if (!lease || roomLeaseHeartbeatTimer) return;
+  heartbeatActiveRoomLease();
+  const intervalMs = Math.max(3000, Math.min(10000, Math.floor(((lease.ttlSec || 30) * 1000) / 3)));
+  roomLeaseHeartbeatTimer = window.setInterval(heartbeatActiveRoomLease, intervalMs);
+}
+
 function updateViewerLink() {
   if (openViewerEl) {
     openViewerEl.href = buildViewerUrl();
+    if (relayPilotTarget && returnViewerUrl) {
+      openViewerEl.target = "_self";
+      openViewerEl.removeAttribute("rel");
+    }
   }
 }
 
@@ -991,6 +1082,13 @@ window.addEventListener("gamepaddisconnected", (event) => {
   console.log("gamepaddisconnected", event.gamepad);
 });
 
+window.addEventListener("pagehide", () => {
+  if (roomLeaseHeartbeatTimer) {
+    window.clearInterval(roomLeaseHeartbeatTimer);
+    roomLeaseHeartbeatTimer = 0;
+  }
+});
+
 padsEl.addEventListener("pointerdown", (event) => {
   const selectButton = event.target.closest("button[data-select-gamepad]");
   if (selectButton) {
@@ -1051,6 +1149,7 @@ captureButtons.forEach((button) => {
 loadSavedMapping();
 syncOptionsFromMapping();
 applyLanguage();
+startActiveRoomLeaseHeartbeat();
 languageButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setLanguage(button.dataset.lang);

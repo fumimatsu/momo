@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,53 @@ func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
 	}
 	if got := payload["viewerCarId"]; got != "CP-2" {
 		t.Fatalf("viewerCarId = %v, want CP-2", got)
+	}
+}
+
+func TestAyamePilotRetryDelay(t *testing.T) {
+	if got := ayamePilotRetryDelay(fmt.Errorf("signaling ended: %w", errAyamePeerLeft)); got != 0 {
+		t.Fatalf("peer departure retry delay = %s, want immediate retry", got)
+	}
+	if got := ayamePilotRetryDelay(errors.New("network failure")); got != 3*time.Second {
+		t.Fatalf("network failure retry delay = %s, want 3s", got)
+	}
+}
+
+func TestConnectAyamePilotClassifiesPeerBye(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			t.Errorf("upgrade signaling WebSocket: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		var message signalMessage
+		if err := conn.ReadJSON(&message); err != nil {
+			t.Errorf("read Ayame register: %v", err)
+			return
+		}
+		if message.Type != "register" || message.RoomID != "room-3" || message.ClientID != "relay-11.3" {
+			t.Errorf("Ayame register = %#v", message)
+			return
+		}
+		if err := conn.WriteJSON(signalMessage{Type: "bye", Reason: "peer disconnected"}); err != nil {
+			t.Errorf("write Ayame bye: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	relay := &relay{name: "11.3", viewers: make(map[uint64]*viewer)}
+	err := relay.connectAyamePilot(
+		context.Background(),
+		"ws"+strings.TrimPrefix(server.URL, "http"),
+		"room-3",
+		"relay-11.3",
+		"test-key",
+	)
+	if !errors.Is(err, errAyamePeerLeft) {
+		t.Fatalf("connectAyamePilot() error = %v, want errAyamePeerLeft", err)
 	}
 }
 
