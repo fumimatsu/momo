@@ -3,6 +3,10 @@ param(
     [string]$RaceId = 'race-test',
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = 'hybrid',
+    [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
+    [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
+    [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
+    [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
@@ -132,6 +136,10 @@ try {
         RaceControlUrl = $raceControlWsUrl
         RaceControlViewerToken = $viewerToken
         HealthRecoveryMode = $HealthRecoveryMode
+        GameplayAllowCidr = $GameplayAllowCidr
+        AyameSignalingUrl = $AyameSignalingUrl
+        AyamePilotRoom113 = $AyamePilotRoom113
+        AyamePilotRoom116 = $AyamePilotRoom116
         FuelDriveDurationSeconds = $FuelDriveDurationSeconds
         TelemetryLogDirectory = $TelemetryLogDirectory
         TelemetryLogRetentionHours = $TelemetryLogRetentionHours

@@ -12,7 +12,7 @@ param(
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$GarageAllowCidr = '192.168.11.0/24',
-    [string]$GameplayAllowCidr = '127.0.0.1/32',
+    [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
     [ValidateRange(1, 86400)]
@@ -122,12 +122,14 @@ if ($relayRunning.Count -eq 0) {
     $relayArgs = @(
         '-listen', ':8090',
         '-operations-allow-cidr', $OperationsAllowCidr,
-        '-gameplay-allow-cidr', $GameplayAllowCidr,
         '-health-recovery-mode', $HealthRecoveryMode,
         '-fuel-drive-duration', "$($FuelDriveDurationSeconds)s",
         '-garage-allow-cidr', '127.0.0.1/32',
         '-garage-allow-cidr', $GarageAllowCidr
     )
+    foreach ($gameplayAllowCidrEntry in $GameplayAllowCidr) {
+        $relayArgs += @('-gameplay-allow-cidr', $gameplayAllowCidrEntry)
+    }
     if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
         $relayArgs += @(
             '-source', "11.3=ws://$Device113`:8080/ws",
@@ -152,12 +154,12 @@ if ($relayRunning.Count -eq 0) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()
         $relayArgs += '-telemetry-log-retention', "$($TelemetryLogRetentionHours)h"
     }
-    $ayamePilotRooms = if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
+    $ayamePilotRooms = @(if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
         @(
             if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) { "11.3=$($AyamePilotRoom113.Trim())" }
             if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom116)) { "11.6=$($AyamePilotRoom116.Trim())" }
         )
-    } else { @() }
+    })
     if (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not [string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
         $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
         $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
