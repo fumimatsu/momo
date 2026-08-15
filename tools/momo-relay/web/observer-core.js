@@ -569,6 +569,60 @@ export function currentLapClockValue(standing, state, elapsedSinceSnapshotMs = 0
   return base + Math.max(0, finiteNumber(elapsedSinceSnapshotMs) ?? 0);
 }
 
+export class CurrentLapClockTracker {
+  constructor() {
+    this.clocks = new Map();
+  }
+
+  ingest(state, receivedAtMs = 0) {
+    const receivedAt = Math.max(0, finiteNumber(receivedAtMs) ?? 0);
+    const runId = String(state?.raceRunId || '');
+    const seenCarIds = new Set();
+
+    for (const standing of state?.standings || []) {
+      const carId = String(standing?.carId || '').trim();
+      if (!carId) continue;
+      seenCarIds.add(carId);
+
+      const base = finiteNumber(standing.currentLapMs);
+      const lap = finiteNumber(standing.lap);
+      const running = state?.phase === 'green' && standing.status === 'racing' && base !== null;
+      const previous = this.clocks.get(carId);
+      const sameLap = previous
+        && previous.runId === runId
+        && previous.lap === lap;
+
+      let anchorValueMs = base;
+      if (sameLap && previous.anchorValueMs !== null) {
+        const previousValue = previous.running
+          ? previous.anchorValueMs + Math.max(0, receivedAt - previous.anchorAtMs)
+          : previous.anchorValueMs;
+        if (previous.running) anchorValueMs = Math.max(base ?? 0, previousValue);
+      }
+
+      this.clocks.set(carId, {
+        runId,
+        lap,
+        running,
+        anchorValueMs,
+        anchorAtMs: receivedAt,
+      });
+    }
+
+    for (const carId of this.clocks.keys()) {
+      if (!seenCarIds.has(carId)) this.clocks.delete(carId);
+    }
+  }
+
+  value(carId, nowMs = 0) {
+    const clock = this.clocks.get(carId);
+    if (!clock || clock.anchorValueMs === null) return null;
+    if (!clock.running) return clock.anchorValueMs;
+    const now = Math.max(0, finiteNumber(nowMs) ?? 0);
+    return clock.anchorValueMs + Math.max(0, now - clock.anchorAtMs);
+  }
+}
+
 export function reconstructRaceElapsedMs(standing, lapHistory, currentLapElapsedMs) {
   const carId = typeof standing?.carId === 'string' ? standing.carId.trim() : '';
   const currentLap = finiteNumber(currentLapElapsedMs);
