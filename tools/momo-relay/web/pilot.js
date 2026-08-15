@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260815-pilot-map-layout-v3';
+  const PILOT_BUILD_ID = '20260815-pilot-map-motion-v4';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -1225,7 +1225,7 @@
     return Number.isInteger(number) ? number : null;
   }
 
-  function normalizeRaceRivals(rivals) {
+  function normalizeRaceRivals(rivals, lapHistory = []) {
     if (!Array.isArray(rivals)) {
       return null;
     }
@@ -1239,6 +1239,8 @@
         const driver = typeof entry.driver === 'string' && entry.driver.trim()
           ? entry.driver.trim()
           : '';
+        const raceElapsedMs = window.MomoRaceBattle?.resolveRaceMapElapsedMs(entry, lapHistory)
+          ?? normalizeOptionalRaceNumber(entry.raceElapsedMs);
         return {
           carId,
           driver,
@@ -1251,7 +1253,7 @@
           lapTimeMs: normalizeOptionalRaceNumber(entry.lapTimeMs),
           bestLapMs: normalizeOptionalRaceNumber(entry.bestLapMs),
           allTimeMs: normalizeOptionalRaceNumber(entry.allTimeMs),
-          raceElapsedMs: normalizeOptionalRaceNumber(entry.raceElapsedMs),
+          raceElapsedMs,
           intervalToAheadMs: normalizeOptionalRaceNumber(entry.intervalToAheadMs),
           lapDeltaToAhead: normalizeRaceLapDelta(entry.lapDeltaToAhead),
           lappingCarBehindId: typeof entry.lappingCarBehindId === 'string'
@@ -1391,9 +1393,7 @@
       : 0;
     const lapDurationMs = raceMapLapDuration(rival);
     const currentLapMs = normalizeRaceNumber(rival.currentLapMs);
-    const raceElapsedMs = normalizeRaceNumber(rival.raceElapsedMs)
-      ?? normalizeRaceNumber(rival.allTimeMs)
-      ?? (rival.carId === raceState.carId ? normalizeRaceNumber(raceState.totalTimeMs) : null);
+    const raceElapsedMs = normalizeRaceNumber(rival.raceElapsedMs);
     const markerIndex = normalizeRaceNumber(rival.lastMarkerIndex);
     const markerRaceMs = normalizeRaceNumber(rival.lastMarkerRaceMs);
     if (markerIndex !== null && markerIndex < RACE_MAP_SECTOR_BOUNDARIES.length - 1
@@ -1983,7 +1983,7 @@
       serverTimeMs: normalizeRaceNumber(state.serverTimeMs),
       clockRunning: state.phase === 'green' && standing?.status === 'racing',
       laps,
-      rivals: normalizeRaceRivals(state.standings) || [],
+      rivals: normalizeRaceRivals(state.standings, state.lapHistory) || [],
     };
   }
 
