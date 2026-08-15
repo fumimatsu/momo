@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from collections.abc import Iterable
 import ctypes
 from dataclasses import dataclass
 import json
@@ -48,6 +50,7 @@ SHARED_LUMA_MAPPING_SIZE = (
 SHARED_LUMA_VALID = 1
 RESERVED_MARKER_IDS = frozenset({17, 34, 37})
 DEFAULT_ALLOWED_MARKER_IDS = frozenset(set(range(50)) - RESERVED_MARKER_IDS)
+METRICS_WINDOW_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -81,22 +84,47 @@ def parse_marker_ids(value: str) -> frozenset[int]:
     return marker_ids
 
 
-def percentile(values: list[float], percent: float) -> float:
-    if not values:
-        return 0.0
+def percentile(values: Iterable[float], percent: float) -> float:
     ordered = sorted(values)
+    if not ordered:
+        return 0.0
     index = max(0, min(len(ordered) - 1, math.ceil(len(ordered) * percent / 100.0) - 1))
     return ordered[index]
 
 
-def summarize_ms(values: list[float]) -> dict[str, float | int]:
+def summarize_ms(values: Iterable[float]) -> dict[str, float | int]:
+    samples = list(values)
     return {
-        "samples": len(values),
-        "p50": round(percentile(values, 50), 3),
-        "p95": round(percentile(values, 95), 3),
-        "p99": round(percentile(values, 99), 3),
-        "max": round(max(values, default=0.0), 3),
+        "samples": len(samples),
+        "p50": round(percentile(samples, 50), 3),
+        "p95": round(percentile(samples, 95), 3),
+        "p99": round(percentile(samples, 99), 3),
+        "max": round(max(samples, default=0.0), 3),
     }
+
+
+class RollingSamples:
+    def __init__(self, capacity: int):
+        if capacity < 1:
+            raise ValueError("capacity must be positive")
+        self._values: deque[float] = deque(maxlen=capacity)
+        self.sample_count = 0
+        self.maximum = 0.0
+
+    def append(self, value: float) -> None:
+        self._values.append(value)
+        self.sample_count += 1
+        self.maximum = max(self.maximum, value)
+
+    def percentile(self, percent: float) -> float:
+        return percentile(self._values, percent)
+
+    def summarize_ms(self) -> dict[str, float | int]:
+        summary = summarize_ms(self._values)
+        summary["samples"] = self.sample_count
+        summary["windowSamples"] = len(self._values)
+        summary["max"] = round(self.maximum, 3)
+        return summary
 
 
 def select_source_slots(configured: list[str], requested: list[str] | None) -> list[int]:
@@ -396,9 +424,10 @@ def main(argv: list[str] | None = None) -> int:
 
     detector = GpuArucoDetector(allowed_marker_ids=args.allowed_marker_ids)
     cp = detector.cp
-    processing_ms: list[float] = []
-    stage_samples: dict[str, list[float]] = {}
-    source_age_samples: dict[str, list[float]] = {}
+    metrics_window_capacity = args.detection_hz * METRICS_WINDOW_SECONDS
+    processing_ms = RollingSamples(metrics_window_capacity)
+    stage_samples: dict[str, RollingSamples] = {}
+    source_age_samples: dict[str, RollingSamples] = {}
     published_batches = 0
     marker_instances = 0
     skipped_unstable_batches = 0
@@ -408,7 +437,11 @@ def main(argv: list[str] | None = None) -> int:
     frame_interval = 1.0 / args.detection_hz
 
     def add_stage(name: str, value_ms: float) -> None:
-        stage_samples.setdefault(name, []).append(value_ms)
+        samples = stage_samples.get(name)
+        if samples is None:
+            samples = RollingSamples(metrics_window_capacity)
+            stage_samples[name] = samples
+        samples.append(value_ms)
 
     try:
         with open_shared_luma_reader(
@@ -567,7 +600,11 @@ def main(argv: list[str] | None = None) -> int:
                             last_marker_ids[source_position] = [
                                 item.marker_id for item in detections
                             ]
-                            source_age_samples.setdefault(source.source_id, []).append(
+                            age_samples = source_age_samples.get(source.source_id)
+                            if age_samples is None:
+                                age_samples = RollingSamples(metrics_window_capacity)
+                                source_age_samples[source.source_id] = age_samples
+                            age_samples.append(
                                 max(
                                     0.0,
                                     (detected_at_unix_ns - source.timestamp_unix_ns) / 1_000_000.0,
@@ -608,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         print(
                             f"rate={published_batches / elapsed:.2f}Hz "
-                            f"cycle-p95={percentile(stage_samples['cycleMs'], 95):.2f}ms "
+                            f"cycle-p95={stage_samples['cycleMs'].percentile(95):.2f}ms "
                             f"{status}",
                             flush=True,
                         )
@@ -618,7 +655,8 @@ def main(argv: list[str] | None = None) -> int:
 
     elapsed_seconds = time.monotonic() - measured_started_at
     publication_rate = published_batches / max(elapsed_seconds, 1e-9)
-    cycle_p95_ms = percentile(stage_samples.get("cycleMs", []), 95)
+    cycle_samples = stage_samples.get("cycleMs")
+    cycle_p95_ms = cycle_samples.percentile(95) if cycle_samples is not None else 0.0
     acceptance = evaluate_run(
         published_batches,
         published_per_source,
@@ -644,7 +682,11 @@ def main(argv: list[str] | None = None) -> int:
                 "sourceId": source_id,
                 "publishedFrames": published_per_source[index],
                 "lastMarkerIds": last_marker_ids[index],
-                "frameAgeMs": summarize_ms(source_age_samples.get(source_id, [])),
+                "frameAgeMs": (
+                    source_age_samples[source_id].summarize_ms()
+                    if source_id in source_age_samples
+                    else summarize_ms([])
+                ),
             }
             for index, source_id in enumerate(source_ids)
         ],
@@ -652,12 +694,13 @@ def main(argv: list[str] | None = None) -> int:
         "durationSeconds": round(elapsed_seconds, 3),
         "publishedBatches": published_batches,
         "publicationRateHz": round(publication_rate, 3),
-        "processingMsP50": round(percentile(processing_ms, 50), 3),
-        "processingMsP95": round(percentile(processing_ms, 95), 3),
-        "processingMsP99": round(percentile(processing_ms, 99), 3),
-        "processingMsMax": round(max(processing_ms, default=0.0), 3),
+        "metricsWindowSeconds": METRICS_WINDOW_SECONDS,
+        "processingMsP50": round(processing_ms.percentile(50), 3),
+        "processingMsP95": round(processing_ms.percentile(95), 3),
+        "processingMsP99": round(processing_ms.percentile(99), 3),
+        "processingMsMax": round(processing_ms.maximum, 3),
         "stageMetricsMs": {
-            name: summarize_ms(values) for name, values in sorted(stage_samples.items())
+            name: values.summarize_ms() for name, values in sorted(stage_samples.items())
         },
         "markerInstances": marker_instances,
         "activeSources": sum(count > 0 for count in published_per_source),

@@ -74,6 +74,35 @@ class GpuMarkerObserverLumaTest(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             MODULE.parse_marker_ids("2,17")
 
+    def test_rolling_samples_keeps_only_latest_window(self):
+        samples = MODULE.RollingSamples(3)
+        for value in [1.0, 2.0, 3.0, 4.0]:
+            samples.append(value)
+
+        self.assertEqual(3.0, samples.percentile(50))
+        self.assertEqual(
+            {
+                "samples": 4,
+                "windowSamples": 3,
+                "p50": 3.0,
+                "p95": 4.0,
+                "p99": 4.0,
+                "max": 4.0,
+            },
+            samples.summarize_ms(),
+        )
+
+    def test_rolling_samples_preserves_all_run_maximum(self):
+        samples = MODULE.RollingSamples(2)
+        for value in [9.0, 2.0, 3.0]:
+            samples.append(value)
+
+        self.assertEqual(9.0, samples.summarize_ms()["max"])
+
+    def test_rolling_samples_rejects_empty_capacity(self):
+        with self.assertRaisesRegex(ValueError, "capacity must be positive"):
+            MODULE.RollingSamples(0)
+
     @unittest.skipUnless(MODULE.os.name == "nt", "Windows shared memory only")
     def test_reader_reads_selected_native_luma_slot(self):
         mapping_name = rf"Local\MomoObserverLumaTest{MODULE.os.getpid()}"
