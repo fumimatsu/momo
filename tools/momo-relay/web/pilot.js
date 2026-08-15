@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260815-race-summary-v3';
+  const PILOT_BUILD_ID = '20260815-pilot-map-layout-v3';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -155,6 +155,12 @@
   const RACE_BATTLE_DEMO = getBooleanParam('raceBattleDemo', false);
   const RACE_BATTLE_MAX_GAP_MS = 5000;
   const RACE_BATTLE_GAP_STEP_MS = 100;
+  const RACE_MAP_ENABLED = getBooleanParam('raceMap', RACE_BATTLE_ENABLED);
+  const RACE_MAP_DEFAULT_LAP_MS = Math.max(3000, getNumberParam('raceMapDefaultLapMs', 24000));
+  const RACE_MAP_RENDER_INTERVAL_MS = 1000 / 20;
+  const RACE_MAP_SECTOR_BOUNDARIES = Object.freeze([0, 0.42277, 0.73115, 1]);
+  const RACE_MAP_MARKER_OFFSETS = Object.freeze([[-15, -15], [15, -15], [-15, 15], [15, 15]]);
+  const RACE_MAP_COLORS = Object.freeze(['green', 'yellow', 'cyan', 'red']);
   const RACE_REAR_ATTENTION_ENABLED = getBooleanParam('rearAttention', true);
   const RACE_REAR_ATTENTION_DEMO = getBooleanParam('rearAttentionDemo', false);
   const RACE_REAR_WARNING_GAP_MS = Math.max(0, getNumberParam('rearWarningGapMs', 2500));
@@ -253,6 +259,9 @@
   const raceBattleBehindPosition = document.getElementById('raceBattleBehindPosition');
   const raceBattleBehindName = document.getElementById('raceBattleBehindName');
   const raceBattleBehindGap = document.getElementById('raceBattleBehindGap');
+  const raceCourseMap = document.getElementById('raceCourseMap');
+  const raceCoursePath = document.getElementById('raceCoursePath');
+  const raceCourseMarkers = document.getElementById('raceCourseMarkers');
   const rearAttention = document.getElementById('rearAttention');
   const rearAttentionKicker = document.getElementById('rearAttentionKicker');
   const rearAttentionLabel = document.getElementById('rearAttentionLabel');
@@ -468,6 +477,10 @@
   let acceptedRaceServerTimeMs = null;
   const acceptedRaceRunIds = new Set();
   let raceBattleLayoutFrame = null;
+  let raceMapAnimationFrame = 0;
+  let raceMapRenderedAt = 0;
+  let raceCourseLength = 0;
+  const raceCourseMarkerNodes = new Map();
   let lastRaceLapAnnouncementKey = '';
   let raceSignalAudioContext = null;
   let raceSignalSoundUnlocked = false;
@@ -497,6 +510,7 @@
     currentLapMs: null,
     lastLapMs: null,
     bestLapMs: null,
+    overallBestLapMs: null,
     startAtMs: null,
     serverTimeMs: null,
     laps: [],
@@ -1231,6 +1245,13 @@
           position,
           status: typeof entry.status === 'string' ? entry.status.trim().toLowerCase() : '',
           lap: normalizeOptionalRaceNumber(entry.lap),
+          sectorCount: normalizeOptionalRaceNumber(entry.sectorCount),
+          currentSector: normalizeOptionalRaceNumber(entry.currentSector),
+          currentLapMs: normalizeOptionalRaceNumber(entry.currentLapMs),
+          lapTimeMs: normalizeOptionalRaceNumber(entry.lapTimeMs),
+          bestLapMs: normalizeOptionalRaceNumber(entry.bestLapMs),
+          allTimeMs: normalizeOptionalRaceNumber(entry.allTimeMs),
+          raceElapsedMs: normalizeOptionalRaceNumber(entry.raceElapsedMs),
           intervalToAheadMs: normalizeOptionalRaceNumber(entry.intervalToAheadMs),
           lapDeltaToAhead: normalizeRaceLapDelta(entry.lapDeltaToAhead),
           lappingCarBehindId: typeof entry.lappingCarBehindId === 'string'
@@ -1320,12 +1341,136 @@
     setText(gapElement, isAvailable ? formatRaceInterval(intervalToAheadMs, lapDeltaToAhead) : '--');
   }
 
+  function raceMapDriverLabel(rival) {
+    const source = String(rival?.driver || rival?.carId || '--').trim();
+    return Array.from(source).slice(0, 3).join('').toUpperCase() || '--';
+  }
+
+  function raceMapColor(rival, index) {
+    const suffix = Number.parseInt(String(rival?.carId || '').match(/(\d+)$/)?.[1] || '', 10);
+    const colorIndex = Number.isInteger(suffix) && suffix > 0 ? suffix - 1 : index;
+    return RACE_MAP_COLORS[((colorIndex % RACE_MAP_COLORS.length) + RACE_MAP_COLORS.length)
+      % RACE_MAP_COLORS.length];
+  }
+
+  function ensureRaceCourseMarker(rival, index) {
+    let nodes = raceCourseMarkerNodes.get(rival.carId);
+    if (nodes) {
+      return nodes;
+    }
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    marker.classList.add('race-course-marker');
+    marker.dataset.carId = rival.carId;
+    marker.dataset.color = raceMapColor(rival, index);
+    const core = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    core.setAttribute('r', '24');
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('y', '8');
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    marker.append(core, label, title);
+    raceCourseMarkers?.append(marker);
+    nodes = { marker, label, title };
+    raceCourseMarkerNodes.set(rival.carId, nodes);
+    return nodes;
+  }
+
+  function raceMapLapDuration(rival) {
+    for (const value of [rival?.lapTimeMs, rival?.bestLapMs, raceState.lastLapMs, raceState.bestLapMs]) {
+      const duration = normalizeRaceNumber(value);
+      if (duration !== null && duration >= 3000) {
+        return duration;
+      }
+    }
+    return RACE_MAP_DEFAULT_LAP_MS;
+  }
+
+  function estimateRaceMapProgress(rival, now, index, fieldSize) {
+    const running = raceState.phaseCode === 'green' && rival.status === 'racing';
+    const localAdvanceMs = running && raceState.sampledAt > 0
+      ? Math.max(0, now - raceState.sampledAt)
+      : 0;
+    const lapDurationMs = raceMapLapDuration(rival);
+    const currentLapMs = normalizeRaceNumber(rival.currentLapMs);
+    const raceElapsedMs = normalizeRaceNumber(rival.raceElapsedMs)
+      ?? normalizeRaceNumber(rival.allTimeMs)
+      ?? (rival.carId === raceState.carId ? normalizeRaceNumber(raceState.totalTimeMs) : null);
+    const markerIndex = normalizeRaceNumber(rival.lastMarkerIndex);
+    const markerRaceMs = normalizeRaceNumber(rival.lastMarkerRaceMs);
+    if (markerIndex !== null && markerIndex < RACE_MAP_SECTOR_BOUNDARIES.length - 1
+        && markerRaceMs !== null && raceElapsedMs !== null) {
+      const anchor = RACE_MAP_SECTOR_BOUNDARIES[markerIndex];
+      const next = RACE_MAP_SECTOR_BOUNDARIES[markerIndex + 1];
+      const elapsedSinceMarkerMs = Math.max(0, raceElapsedMs + localAdvanceMs - markerRaceMs);
+      return Math.min(next, anchor + (elapsedSinceMarkerMs / lapDurationMs));
+    }
+    if (currentLapMs !== null) {
+      return ((currentLapMs + localAdvanceMs) / lapDurationMs) % 1;
+    }
+    const count = Math.max(1, fieldSize);
+    return ((count - index) / count + 0.08) % 1;
+  }
+
+  function renderRaceCourseMap(now = performance.now()) {
+    if (!raceCourseMap || !raceCoursePath || !raceCourseMarkers || !raceBattle) {
+      return;
+    }
+    if (!RACE_MAP_ENABLED) {
+      raceBattle.hidden = true;
+      return;
+    }
+    raceBattle.hidden = false;
+    if (!raceCourseLength && typeof raceCoursePath.getTotalLength === 'function') {
+      raceCourseLength = raceCoursePath.getTotalLength();
+    }
+    if (!raceCourseLength) {
+      return;
+    }
+    const activeCarIds = new Set();
+    const rivals = raceState.rivals.slice(0, 4);
+    rivals.forEach((rival, index) => {
+      activeCarIds.add(rival.carId);
+      const nodes = ensureRaceCourseMarker(rival, index);
+      const progress = estimateRaceMapProgress(rival, now, index, rivals.length);
+      const point = raceCoursePath.getPointAtLength(progress * raceCourseLength);
+      const [offsetX, offsetY] = RACE_MAP_MARKER_OFFSETS[index] || [0, 0];
+      nodes.marker.removeAttribute('hidden');
+      nodes.marker.dataset.self = String(rival.carId === raceState.carId);
+      nodes.marker.dataset.color = raceMapColor(rival, index);
+      nodes.marker.setAttribute(
+        'transform',
+        `translate(${(point.x + offsetX).toFixed(2)} ${(point.y + offsetY).toFixed(2)})`,
+      );
+      nodes.label.textContent = raceMapDriverLabel(rival);
+      nodes.title.textContent = `${rival.driver || rival.carId} / P${rival.position} / estimated position`;
+    });
+    for (const [carId, nodes] of raceCourseMarkerNodes) {
+      if (!activeCarIds.has(carId)) {
+        nodes.marker.setAttribute('hidden', '');
+      }
+    }
+    raceCourseMap.dataset.state = rivals.length > 0 ? 'live' : 'waiting';
+  }
+
+  function startRaceCourseMapAnimation() {
+    if (raceMapAnimationFrame) {
+      return;
+    }
+    const render = (now) => {
+      if (!document.hidden && now - raceMapRenderedAt >= RACE_MAP_RENDER_INTERVAL_MS) {
+        raceMapRenderedAt = now;
+        renderRaceCourseMap(now);
+      }
+      raceMapAnimationFrame = window.requestAnimationFrame(render);
+    };
+    raceMapAnimationFrame = window.requestAnimationFrame(render);
+  }
+
   function renderRaceBattle() {
     if (!raceBattle) {
       return;
     }
-    raceBattle.hidden = !RACE_BATTLE_ENABLED;
-    if (!RACE_BATTLE_ENABLED) {
+    raceBattle.hidden = !RACE_MAP_ENABLED;
+    if (!RACE_MAP_ENABLED) {
       return;
     }
     const battle = getRaceBattle();
@@ -1354,6 +1499,7 @@
       battle.behind?.lapDeltaToAhead ?? null,
       'NO BEHIND',
     );
+    renderRaceCourseMap();
   }
 
   function hideRearAttention(resetTracker = false) {
@@ -1687,6 +1833,25 @@
     return String(lapCount === null ? currentLap : Math.min(currentLap, Math.floor(lapCount)));
   }
 
+  function classifyRaceBestTime(value, personalBest, overallBest) {
+    if (!Number.isFinite(value) || value <= 0) {
+      return '';
+    }
+    const rounded = Math.round(value);
+    if (Number.isFinite(overallBest) && Math.round(overallBest) === rounded) {
+      return 'is-overall-best';
+    }
+    if (Number.isFinite(personalBest) && Math.round(personalBest) === rounded) {
+      return 'is-personal-best';
+    }
+    return '';
+  }
+
+  function applyRaceBestTimeClass(element, className) {
+    element?.classList.toggle('is-personal-best', className === 'is-personal-best');
+    element?.classList.toggle('is-overall-best', className === 'is-overall-best');
+  }
+
   function renderRaceHud() {
     const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
     const lap = getDisplayedRaceLap(raceState.lap, raceState.lapCount);
@@ -1699,6 +1864,11 @@
     setText(raceCurrentLap, formatRaceTime(getDisplayedRaceTime(raceState.currentLapMs)));
     setText(raceLastLap, formatRaceTime(raceState.lastLapMs));
     setText(raceBestLap, formatRaceTime(raceState.bestLapMs));
+    applyRaceBestTimeClass(raceBestLap, classifyRaceBestTime(
+      raceState.bestLapMs,
+      raceState.bestLapMs,
+      raceState.overallBestLapMs,
+    ));
     setText(raceTotalTime, formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs, raceState.allTimeMode)));
     renderRaceStartSignal();
     if (racePosition) {
@@ -1722,8 +1892,13 @@
     }
     for (const entry of raceState.laps) {
       const item = document.createElement('li');
-      if (raceState.bestLapMs !== null && entry.timeMs === raceState.bestLapMs) {
-        item.classList.add('is-best');
+      const bestClass = classifyRaceBestTime(
+        entry.timeMs,
+        raceState.bestLapMs,
+        raceState.overallBestLapMs,
+      );
+      if (bestClass) {
+        item.classList.add(bestClass);
       }
       const label = document.createElement('span');
       label.textContent = `LAP ${entry.lap}`;
@@ -1784,6 +1959,9 @@
       lap: completedLap,
       timeMs,
     }));
+    const overallBestLapCandidates = state.standings
+      .map((entry) => normalizeRaceNumber(entry?.bestLapMs))
+      .filter((value) => value !== null && value > 0);
     return {
       reset: isNewRun,
       phase: displayRacePhase(state.phase),
@@ -1798,6 +1976,9 @@
       currentLapMs: normalizeRaceNumber(standing?.currentLapMs),
       lastLapMs,
       bestLapMs: normalizeRaceNumber(standing?.bestLapMs),
+      overallBestLapMs: overallBestLapCandidates.length > 0
+        ? Math.min(...overallBestLapCandidates)
+        : null,
       startAtMs: normalizeRaceNumber(state.startAtMs),
       serverTimeMs: normalizeRaceNumber(state.serverTimeMs),
       clockRunning: state.phase === 'green' && standing?.status === 'racing',
@@ -1946,6 +2127,7 @@
       raceState.currentLapMs = null;
       raceState.lastLapMs = null;
       raceState.bestLapMs = null;
+      raceState.overallBestLapMs = null;
       raceState.startAtMs = null;
       raceState.serverTimeMs = null;
       raceState.laps = [];
@@ -1974,7 +2156,7 @@
       raceState.allTimeMode = normalizeAllTimeMode(nextState.allTimeMode);
     }
     for (const field of ['lap', 'lapCount', 'position', 'fieldSize', 'totalTimeMs',
-      'currentLapMs', 'lastLapMs', 'bestLapMs', 'startAtMs', 'serverTimeMs']) {
+      'currentLapMs', 'lastLapMs', 'bestLapMs', 'overallBestLapMs', 'startAtMs', 'serverTimeMs']) {
       if (Object.prototype.hasOwnProperty.call(nextState, field)) {
         raceState[field] = nextState[field] === null ? null : normalizeRaceNumber(nextState[field]);
       }
@@ -2028,13 +2210,24 @@
       ]
       : [
         { carId: 'FPV-01', driver: 'AYA', position: 1, lap: 3, status: 'racing' },
-        { carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, status: 'racing', intervalToAheadMs: 840 },
+        {
+          carId: 'FPV-02', driver: 'MOMO', position: 2, lap: 3, status: 'racing',
+          intervalToAheadMs: 840, sectorCount: 3, currentLapMs: 9420,
+        },
         {
           carId: 'FPV-03', driver: 'RIN', position: 3, lap: 3, status: 'racing',
           intervalToAheadMs: behindGapMs, lastMarkerIndex: markerIndex, lastMarkerRaceMs: markerRaceMs,
+          raceElapsedMs: markerRaceMs + 2200, sectorCount: 3, currentLapMs: 10800,
         },
-        { carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing', intervalToAheadMs: 2810 },
+        {
+          carId: 'FPV-04', driver: 'KAI', position: 4, lap: 3, status: 'racing',
+          intervalToAheadMs: 2810, sectorCount: 3, currentLapMs: 13800,
+        },
       ];
+    if (!blueFlag) {
+      rivals[0].sectorCount = 3;
+      rivals[0].currentLapMs = 7200;
+    }
     return {
       phase: 'RUNNING',
       phaseCode: 'green',
@@ -2047,6 +2240,12 @@
       currentLapMs: 9420,
       lastLapMs: 23860,
       bestLapMs: 23580,
+      overallBestLapMs: 23110,
+      laps: [
+        { lap: 3, timeMs: 23580 },
+        { lap: 2, timeMs: 23860 },
+        { lap: 1, timeMs: 24110 },
+      ],
       clockRunning: false,
       rivals,
     };
@@ -6172,6 +6371,7 @@
   window.addEventListener('keydown', prepareRaceAnnouncement);
   renderRaceHud();
   startRaceBattleDemo();
+  startRaceCourseMapAnimation();
   window.setInterval(() => {
     renderPitStopwatch();
     if (
