@@ -3171,10 +3171,34 @@
       right: auto;
       bottom: auto;
       left: auto;
-      width: 520px;
+      width: 420px;
       justify-self: center;
-      padding: 7px 10px 8px;
+      gap: 8px;
+      padding: 5px 8px 6px;
       transform: none;
+    }
+
+    .cockpit-cluster .vehicle-resource-row {
+      grid-template-rows: 12px 13px;
+      gap: 2px 5px;
+      min-height: 29px;
+      padding: 0 2px;
+    }
+
+    .cockpit-cluster .vehicle-resource-row + .vehicle-resource-row {
+      padding-left: 10px;
+    }
+
+    .cockpit-cluster .vehicle-resource-label {
+      font-size: 10px;
+    }
+
+    .cockpit-cluster .vehicle-resource-row output {
+      font-size: 11px;
+    }
+
+    .cockpit-cluster .vehicle-resource-rail {
+      height: 13px;
     }
 
     .cockpit-cluster .drive-hud {
@@ -3195,7 +3219,7 @@
     .cockpit-cluster .drive-instruments {
       grid-template-columns: 44px 130px 44px;
       justify-content: center;
-      gap: 34px;
+      gap: 68px;
       min-height: 122px;
     }
 
@@ -3249,7 +3273,10 @@
         width: calc(100vw - 16px);
       }
 
-      .cockpit-cluster .vehicle-resource-hud,
+      .cockpit-cluster .vehicle-resource-hud {
+        width: min(420px, calc(100vw - 20px));
+      }
+
       .cockpit-cluster .drive-header {
         width: min(520px, calc(100vw - 20px));
       }
