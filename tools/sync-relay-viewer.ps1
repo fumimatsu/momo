@@ -175,5 +175,21 @@ $metadata = [ordered]@{
     target = 'relay-web'
     files = @($sourceFiles | ForEach-Object { $_.Destination })
 }
-$metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destinationDirectory 'viewer-source.json') -Encoding utf8
+$metadataLines = [System.Collections.Generic.List[string]]::new()
+$metadataLines.Add('{')
+$metadataLines.Add("  `"sourceRepository`": $($metadata.sourceRepository | ConvertTo-Json -Compress),")
+$metadataLines.Add("  `"sourceCommit`": $($metadata.sourceCommit | ConvertTo-Json -Compress),")
+$metadataLines.Add("  `"sourceDirty`": $(([bool]$metadata.sourceDirty).ToString().ToLowerInvariant()),")
+$metadataLines.Add("  `"variant`": $($metadata.variant | ConvertTo-Json -Compress),")
+$metadataLines.Add("  `"target`": $($metadata.target | ConvertTo-Json -Compress),")
+$metadataLines.Add('  "files": [')
+for ($index = 0; $index -lt $metadata.files.Count; $index++) {
+    $suffix = if ($index -lt $metadata.files.Count - 1) { ',' } else { '' }
+    $metadataLines.Add("    $($metadata.files[$index] | ConvertTo-Json -Compress)$suffix")
+}
+$metadataLines.Add('  ]')
+$metadataLines.Add('}')
+$metadataPath = Join-Path $destinationDirectory 'viewer-source.json'
+$utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllLines($metadataPath, $metadataLines, $utf8WithoutBom)
 Write-Host "Synchronized Relay Viewer from $commit"

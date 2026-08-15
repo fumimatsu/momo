@@ -51,6 +51,39 @@
     return number === null ? fallback : number;
   }
 
+  function resolveRaceMapElapsedMs(standing, lapHistory = []) {
+    const markerRaceMs = finiteNonNegative(standing?.lastMarkerRaceMs);
+    const explicitRaceElapsedMs = finiteNonNegative(standing?.raceElapsedMs);
+    if (explicitRaceElapsedMs !== null
+      && (markerRaceMs === null || explicitRaceElapsedMs >= markerRaceMs)) {
+      return explicitRaceElapsedMs;
+    }
+
+    const carId = typeof standing?.carId === 'string' ? standing.carId.trim() : '';
+    const currentLapMs = finiteNonNegative(standing?.currentLapMs);
+    let latestCompletedAtRaceMs = null;
+    if (carId && currentLapMs !== null && Array.isArray(lapHistory)) {
+      for (const entry of lapHistory) {
+        if (typeof entry?.carId !== 'string' || entry.carId.trim() !== carId) {
+          continue;
+        }
+        const completedAtRaceMs = finiteNonNegative(entry.completedAtRaceMs);
+        if (completedAtRaceMs !== null
+          && (latestCompletedAtRaceMs === null || completedAtRaceMs > latestCompletedAtRaceMs)) {
+          latestCompletedAtRaceMs = completedAtRaceMs;
+        }
+      }
+    }
+    if (latestCompletedAtRaceMs !== null) {
+      const reconstructed = latestCompletedAtRaceMs + currentLapMs;
+      return markerRaceMs === null ? reconstructed : Math.max(markerRaceMs, reconstructed);
+    }
+    if (markerRaceMs !== null) {
+      return markerRaceMs;
+    }
+    return finiteNonNegative(standing?.allTimeMs);
+  }
+
   function createRearAttentionTracker(options = {}) {
     const config = Object.freeze({
       warningGapMs: normalizedOption(options.warningGapMs, DEFAULT_OPTIONS.warningGapMs),
@@ -286,5 +319,6 @@
     DEFAULT_BLUE_FLAG_OPTIONS,
     createRearAttentionTracker,
     createBlueFlagTracker,
+    resolveRaceMapElapsedMs,
   });
 }));
