@@ -2902,7 +2902,7 @@ func main() {
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", strings.TrimSpace(os.Getenv("MOMO_AYAME_SIGNALING_KEY")), "Ayame backend signaling key for external pilot distribution; prefer MOMO_AYAME_SIGNALING_KEY")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
-	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "delete telemetry NDJSON logs older than this at startup (0 disables cleanup)")
+	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "retain telemetry NDJSON logs for this duration; clean every 2h while race is idle (0 disables cleanup)")
 	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
 	flag.DurationVar(&fuelDriveDuration, "fuel-drive-duration", vehicleFuelDefaultDriveDuration, "active forward-driving time required to consume a full fuel tank")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
@@ -2992,7 +2992,7 @@ func main() {
 	}
 	var recorder *telemetryRecorder
 	if strings.TrimSpace(telemetryLogDir) != "" {
-		recorder, err = newTelemetryRecorder(strings.TrimSpace(telemetryLogDir), telemetryLogRetention)
+		recorder, err = newTelemetryRecorder(strings.TrimSpace(telemetryLogDir))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -3044,6 +3044,7 @@ func main() {
 		}
 	}
 	serverRelay.startRaceControl(ctx, raceURL, raceViewerToken)
+	serverRelay.startTelemetryLogRetention(ctx, strings.TrimSpace(telemetryLogDir), telemetryLogRetention)
 
 	webRoot, err := fs.Sub(webAssets, "web")
 	if err != nil {

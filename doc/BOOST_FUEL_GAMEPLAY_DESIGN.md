@@ -12,7 +12,7 @@ Race Control は既存の phase、run、standings を配信し、MADSYSTEM は�
 | 通常gear | G1..G3。`GEAR:4` / `GEAR:5` は拒否する |
 | Boost | G3かつ100の時、右パドルで2.5秒だけG4へ入る |
 | G4上限 | 前進PWM 1900。終了時はRelayがG3へ戻す |
-| Boost充填 | 4台時はP1=40秒、P2=34秒、P3=28秒、P4=22秒。順位不明時は30秒 |
+| Boost充填 | green中は前走車とのタイム差・周回差に連動し、順位情報なし・レース外は30秒 |
 | Fuel | 既定では合計120秒の有効前進で100から0まで定率消費する |
 | Practice | `raceInfo.sessionType=practice` の間はFuelを消費しない |
 | Fuel 0 | Boostを解除し、前進PWMを1速上限より10低い1590へ制限する。PITへ戻るため完全停止にはしない |
@@ -22,22 +22,24 @@ Race Control は既存の phase、run、standings を配信し、MADSYSTEM は�
 | damage有効期間 | Practiceを含む有効な`green`セッション中だけHPを減算する |
 | run reset | 新runまたはreadyでHP 100、Fuel 100、Boost 0、G1へ戻す |
 
-Fuel消費とBoost充填は、次をすべて満たす間だけ進行する。
+Fuel消費は、次をすべて満たす間だけ進行する。
 
 - Race Control接続中
 - phaseが`green`
-- 最終race state受信から5秒以内
 - Drive ON
 - PIT外
 - 350 ms以内に有効な前進指令を受信
 - Fuelが0より大きい
 
-Fuel消費だけは `raceInfo.sessionType=practice` のとき停止する。Boost充填はPracticeでも進行する。
+Fuel消費は `raceInfo.sessionType=practice` のとき停止する。Boost充填はRace Control状態に依存せず、
+Drive ON、PIT外、350 ms以内の有効な前進指令、Fuelが0より大きい条件で進行する。
+`green`中は前走車とのタイム差・周回差を使い、それ以外は30秒の基準時間で充填する。
 `sessionType` がない旧Race Controlでは後方互換のためFuelを消費する。
 
-HPダメージはRace Control接続中、raceRunIdあり、phaseが`green`、最終race state受信から5秒以内の
-条件を満たす場合だけ適用する。Practiceも対象に含む。条件外の衝撃は`race_inactive`として配信・記録するが、
-HPと回復待ち時間を変更しない。
+HPダメージと走行回復はRace Control接続中、raceRunIdあり、phaseが`green`の条件でだけ進行する。
+Practiceも対象に含む。条件外の衝撃は`race_inactive`として配信・記録し、Boost有効中は
+`boost_active`として抑制する。phaseが`green`以外へ変化した時、またはRace Control切断時は
+残っているHPダメージを即時回復する。
 
 ## Fuel拡張境界
 

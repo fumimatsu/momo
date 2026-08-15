@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -116,25 +117,29 @@ type telemetryRecorder struct {
 	lastWriteErr error
 }
 
-func newTelemetryRecorder(directory string, retention time.Duration) (*telemetryRecorder, error) {
-	if err := removeExpiredTelemetryLogs(directory, retention, time.Now()); err != nil {
-		return nil, err
-	}
+func newTelemetryRecorder(directory string) (*telemetryRecorder, error) {
 	return newTelemetryRecorderWithQueue(directory, defaultTelemetryLogQueue)
 }
 
 func removeExpiredTelemetryLogs(directory string, retention time.Duration, now time.Time) error {
+	_, err := removeExpiredTelemetryLogsExcept(directory, retention, now, "")
+	return err
+}
+
+func removeExpiredTelemetryLogsExcept(directory string, retention time.Duration, now time.Time, excludedPath string) (int, error) {
 	if retention <= 0 {
-		return nil
+		return 0, nil
 	}
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return 0, nil
 		}
-		return fmt.Errorf("read telemetry log directory: %w", err)
+		return 0, fmt.Errorf("read telemetry log directory: %w", err)
 	}
 	cutoff := now.Add(-retention)
+	excludedPath = filepath.Clean(strings.TrimSpace(excludedPath))
+	removed := 0
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -145,17 +150,21 @@ func removeExpiredTelemetryLogs(directory string, retention time.Duration, now t
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return fmt.Errorf("stat telemetry log %q: %w", entry.Name(), err)
+			return removed, fmt.Errorf("stat telemetry log %q: %w", entry.Name(), err)
 		}
 		if !info.ModTime().Before(cutoff) {
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("remove expired telemetry log %q: %w", path, err)
+		if excludedPath != "." && strings.EqualFold(filepath.Clean(path), excludedPath) {
+			continue
 		}
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("remove expired telemetry log %q: %w", path, err)
+		}
+		removed++
 	}
-	return nil
+	return removed, nil
 }
 
 func newTelemetryRecorderWithQueue(directory string, queueCapacity int) (*telemetryRecorder, error) {

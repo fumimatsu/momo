@@ -74,6 +74,30 @@ func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T)
 	}
 }
 
+func TestVehicleHealthRestoresDamageWhenRaceLeavesGreen(t *testing.T) {
+	base := time.Date(2026, 8, 15, 14, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_finished_recovery", "green", 1, 4, base)
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base)
+	snapshot, changed := health.observeRacePhase("finished", base.Add(time.Second))
+
+	if !changed || snapshot.HP != vehicleHealthMaximum {
+		t.Fatalf("finished damage restoration = %#v changed=%t", snapshot, changed)
+	}
+}
+
+func TestVehicleHealthRestoresDamageWhenRaceDisconnects(t *testing.T) {
+	base := time.Date(2026, 8, 15, 14, 30, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.observeRaceState(true, "rr_disconnected_recovery", "green", 1, 4, base)
+	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base)
+	snapshot, changed := health.markRaceDisconnected(base.Add(time.Second))
+
+	if !changed || snapshot.HP != vehicleHealthMaximum {
+		t.Fatalf("disconnected damage restoration = %#v changed=%t", snapshot, changed)
+	}
+}
+
 func TestVehicleHealthReadyTransitionResetsOnlyOnce(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)

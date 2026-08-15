@@ -53,8 +53,10 @@ power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率
 ```
 
 環境変数`MOMO_RELAY_TELEMETRY_LOG_DIR`でも同じ保存先を指定できる。Relay単体では
-`-telemetry-log-dir <directory>`を使う。既定では起動時に24時間より古い`telemetry-*.ndjson`だけを
-削除する。保持期間は`-telemetry-log-retention 48h`のように変更でき、`0`で自動削除を無効にできる。
+`-telemetry-log-dir <directory>`を使う。既定では2時間ごとに整理可否を確認し、Race ControlがGreenでなく、
+かつ前進走行中の車両がない場合だけ24時間より古い`telemetry-*.ndjson`を削除する。書き込み中のログは
+常に除外し、安全条件を満たさない回は次の確認まで延期する。保持期間は`-telemetry-log-retention 48h`のように
+変更でき、`0`で自動削除を無効にできる。
 
 出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`drive_input`、`telemetry`、`vehicle_event`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
@@ -343,8 +345,9 @@ RAW診断とsynthetic testの互換用に残すが、V1 `impact`はHPを変更�
 `severe >= 18 m/s2 && jerk >= 250 m/s3`である。strongは12 HP、severeは20 HPを減算し、
 damage cooldownは600 msとする。同じ`carId:boot:sequence`の再送は重複として無視する。
 HPダメージはPracticeを含む有効なレースセッション中だけ適用する。Race Control接続中、
-raceRunIdあり、phaseが`green`、最終race state受信から5秒以内の条件を満たさない衝撃は、
-`race_inactive`としてイベントへ記録するがHPと回復待ち時間を変更しない。
+raceRunIdあり、phaseが`green`の条件を満たさない衝撃は`race_inactive`としてイベントへ記録し、
+HPと回復待ち時間を変更しない。phaseが`green`以外へ変化した時、またはRace Control切断時は
+残っているダメージを即時回復する。Boost有効中の衝撃も`boost_active`としてHPを変更しない。
 
 RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。
 各sourceはレース単位で直近32件を保持し、channel open時に`vehicle_event_snapshot`を送る。
@@ -413,7 +416,7 @@ Fuel 0でもPITへ戻れるよう前進PWMを1590、後退PWMを対称の1410へ
 通常ギア上限はG3である。前進中に溜まるBoostが100になると、G3から右パドルで2.5秒だけG4を起動できる。
 充填時間は順位そのものではなくRace Controlの`intervalToAheadMs`と`lapDeltaToAhead`で決める。先頭は45秒、
 同一周回では0秒差の40秒から8秒差以上の20秒まで線形に短縮し、1周遅れは16秒、3周差以上は12秒とする。
-タイム差がまだ無い場合は30秒へfallbackする。
+タイム差がまだ無い場合、およびRace Control未接続・`green`以外の整備走行では30秒へfallbackする。
 `GEAR:4`の直接指定は拒否し、G4終了時はRelayがG3へ戻す。
 
 Relayは旧client向けの`VHS:1`を維持し、HP、Fuel、Boost、実効gearをJSONの`VGS:1`でも配信する。

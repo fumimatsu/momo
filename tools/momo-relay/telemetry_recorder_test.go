@@ -160,6 +160,36 @@ func TestRemoveExpiredTelemetryLogsOnlyDeletesMatchingOldFiles(t *testing.T) {
 	}
 }
 
+func TestRemoveExpiredTelemetryLogsExceptPreservesActiveFile(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	closedPath := filepath.Join(directory, "telemetry-closed.ndjson")
+	activePath := filepath.Join(directory, "telemetry-active.ndjson")
+	for _, path := range []string{closedPath, activePath} {
+		if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", path, err)
+		}
+		oldTime := now.Add(-25 * time.Hour)
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatalf("Chtimes(%q) error = %v", path, err)
+		}
+	}
+
+	removed, err := removeExpiredTelemetryLogsExcept(directory, 24*time.Hour, now, activePath)
+	if err != nil {
+		t.Fatalf("removeExpiredTelemetryLogsExcept() error = %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, err := os.Stat(closedPath); !os.IsNotExist(err) {
+		t.Fatalf("closed telemetry stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active telemetry stat error = %v", err)
+	}
+}
+
 func TestRelayRecordsOnlyTELTextMessages(t *testing.T) {
 	recorder, err := newTelemetryRecorderWithQueue(t.TempDir(), 16)
 	if err != nil {
