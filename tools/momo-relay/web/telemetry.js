@@ -159,17 +159,11 @@
   }
 
   function validateStateV2(payload) {
-    if (!isPlainObject(payload.m) || !isPlainObject(payload.q)) {
+    if (!isPlainObject(payload.q)) {
       return 'compact_state_fields';
     }
     if (hasOwn(payload, 'e')) {
       return 'compact_state_event_mix';
-    }
-    if (!isVector(payload.m.a, 3, -1000, 1000)) {
-      return 'compact_acceleration';
-    }
-    if (!isNumberInRange(payload.m.y, -100, 100)) {
-      return 'compact_yaw_rate';
     }
     if (!isIntegerInRange(payload.q.p, 10000, 1000000)) {
       return 'compact_period';
@@ -180,6 +174,41 @@
         || !payload.q.f.every((flag) => typeof flag === 'string'
           && /^[a-z0-9_]{1,24}$/.test(flag))) {
       return 'compact_quality_flags';
+    }
+
+    const hasMotion = isPlainObject(payload.m);
+    const hasEsc = isPlainObject(payload.esc);
+    if (hasMotion === hasEsc) {
+      return 'compact_state_variant';
+    }
+    if (hasMotion) {
+      if (hasOwn(payload.q, 'ok') || hasOwn(payload.q, 'age')) {
+        return 'compact_motion_quality';
+      }
+      if (!isVector(payload.m.a, 3, -1000, 1000)) {
+        return 'compact_acceleration';
+      }
+      if (!isNumberInRange(payload.m.y, -100, 100)) {
+        return 'compact_yaw_rate';
+      }
+      return '';
+    }
+
+    if (typeof payload.q.ok !== 'boolean'
+        || !isIntegerInRange(payload.q.age, 0, 65535)) {
+      return 'compact_esc_quality';
+    }
+    const escFields = Object.keys(payload.esc);
+    if (escFields.length === 0
+        || escFields.some((field) => !['rpm', 'max', 'v', 'tc', 'out'].includes(field))) {
+      return 'compact_esc_fields';
+    }
+    if ((hasOwn(payload.esc, 'rpm') && !isIntegerInRange(payload.esc.rpm, 0, 2000000))
+        || (hasOwn(payload.esc, 'max') && !isIntegerInRange(payload.esc.max, 0, 2000000))
+        || (hasOwn(payload.esc, 'v') && !isNumberInRange(payload.esc.v, 0, 100))
+        || (hasOwn(payload.esc, 'tc') && !isNumberInRange(payload.esc.tc, -100, 300))
+        || (hasOwn(payload.esc, 'out') && !isIntegerInRange(payload.esc.out, 0, 1000))) {
+      return 'compact_esc_value';
     }
     return '';
   }
@@ -773,20 +802,31 @@
       const streams = Array.from(this.streams.values()).map((stream) => {
         const stateAgeMs = stream.state ? Math.max(0, nowMs - stream.lastStateAt) : null;
         const staleThresholdMs = stream.state ? getStaleThresholdMs(stream.periodUs) : null;
+        const escQuality = stream.state?.v === 2 && isPlainObject(stream.state.esc)
+          ? stream.state.q
+          : null;
+        const sourceStale = escQuality
+          ? escQuality.ok !== true || escQuality.age > staleThresholdMs
+          : false;
         return {
           ...stream,
           stateAgeMs,
           staleThresholdMs,
-          stale: !stream.state || stateAgeMs > staleThresholdMs,
+          stale: !stream.state || stateAgeMs > staleThresholdMs || sourceStale,
         };
       });
-      const primary = streams
-        .filter((stream) => stream.state)
+      const primaryMotion = streams
+        .filter((stream) => isPlainObject(stream.state?.m) || isPlainObject(stream.state?.imu))
+        .sort((left, right) => right.lastStateAt - left.lastStateAt)[0] || null;
+      const primaryEsc = streams
+        .filter((stream) => isPlainObject(stream.state?.esc))
         .sort((left, right) => right.lastStateAt - left.lastStateAt)[0] || null;
       return {
         counters: { ...this.counters },
         streams,
-        primary,
+        primary: primaryMotion,
+        primaryMotion,
+        primaryEsc,
         lastResult: this.lastResult,
       };
     }

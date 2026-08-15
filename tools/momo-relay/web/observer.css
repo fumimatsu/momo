@@ -371,6 +371,7 @@ td:last-child { color: var(--cyan); }
 }
 .camera-telemetry[data-active="true"] { border-left-color: var(--car); }
 .camera-telemetry strong { grid-column: 1 / -1; color: var(--cyan); font-size: 11px; }
+.camera-telemetry .telemetry-esc { grid-column: 1 / -1; color: rgba(255, 211, 92, .9); }
 .camera-controls {
   position: absolute;
   z-index: 2;

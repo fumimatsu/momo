@@ -64,7 +64,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[1].Type != "race_state" || records[1].RaceRunID != "rr_123" || records[1].RaceSequence == nil || *records[1].RaceSequence != 0 {
 		t.Fatalf("race record = %#v, want race run rr_123 sequence 0", records[1])
 	}
-	if records[2].Type != "telemetry" || records[2].SourceID != "11.3" || records[2].CarID != "CP-1" || records[2].UpstreamGen != 7 {
+	if records[2].Type != "telemetry" || records[2].SourceID != "11.3" || records[2].TelemetrySource != "imu0" || records[2].CarID != "CP-1" || records[2].UpstreamGen != 7 {
 		t.Fatalf("telemetry identity = %#v", records[2])
 	}
 	if records[2].Raw != `TEL:{"v":1,"src":"imu0","seq":4}` || records[2].RelayReceivedAt == nil || records[2].RelayElapsedUs == nil {
@@ -84,6 +84,21 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	}
 	if records[5].Type != "relay_session_end" || records[5].Stats == nil || records[5].Stats.TelemetryRecords != 1 || records[5].Stats.RaceStateRecords != 1 || records[5].Stats.DriveInputRecords != 1 || records[5].Stats.VehicleEventRecords != 1 {
 		t.Fatalf("footer = %#v, want final stats", records[5])
+	}
+}
+
+func TestTelemetryPayloadSourceSeparatesVehicleAndESCStream(t *testing.T) {
+	if got := telemetryPayloadSource(`TEL:{"v":2,"k":"s","src":"esc0","esc":{"rpm":1200}}`); got != "esc0" {
+		t.Fatalf("telemetryPayloadSource() = %q, want esc0", got)
+	}
+	for _, raw := range []string{
+		`TEL:{"v":2,"src":"bad/source"}`,
+		`TEL:{invalid}`,
+		`PONG:1`,
+	} {
+		if got := telemetryPayloadSource(raw); got != "" {
+			t.Fatalf("telemetryPayloadSource(%q) = %q, want empty", raw, got)
+		}
 	}
 }
 

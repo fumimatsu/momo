@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260815-pilot-map-motion-v4';
+  const PILOT_BUILD_ID = '20260816-esc-telemetry-v1';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -75,7 +75,7 @@
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
   const DC_PING_INTERVAL_MS = getNumberParam('dcPingMs', 1000);
   // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
-  const FFB_ENABLED = getBooleanParamWithProfile('ffbEnabled', 'ffbEnabled', getBooleanParam('ffbTest', false));
+  const FFB_ENABLED = getBooleanParamWithProfile('ffbEnabled', 'ffbEnabled', getBooleanParam('ffbTest', true));
   const FFB_BRIDGE_URL = getStringParam('ffbUrl', GAMEPAD_PROFILE?.ffbBridgeUrl || 'ws://127.0.0.1:24725');
   const FFB_BASE_FRICTION = Math.max(0, Math.min(1.0, getNumberParamWithProfile('ffbBaseFriction', 'ffbBaseFriction', 0.28)));
   const FFB_PARKING_FRICTION = Math.max(0, Math.min(1.0, getNumberParamWithProfile('ffbParkingFriction', 'ffbParkingFriction', 0.08)));
@@ -421,6 +421,7 @@
     ? new window.FpvTelemetry.RelayEventInbox()
     : null;
   let latestMotion = null;
+  let latestEsc = null;
   let vehicleHealth = null;
 	let vehicleGameplay = null;
 	let vehiclePitPresence = null;
@@ -2817,6 +2818,13 @@
   }
 
   function getTelemetryStatus() {
+    const esc = latestEsc?.state?.esc;
+    if (esc) {
+      const rpm = Number.isInteger(esc.rpm) ? esc.rpm : '--';
+      const voltage = Number.isFinite(esc.v) ? esc.v.toFixed(2) : '--';
+      const temperature = Number.isFinite(esc.tc) ? esc.tc.toFixed(0) : '--';
+      return `ESC ${rpm}RPM ${voltage}V ${temperature}C${latestEsc.stale ? ' STALE' : ''}`;
+    }
     return lastTelemetry;
   }
 
@@ -2933,6 +2941,7 @@
     const telemetryResult = telemetryTracker?.ingest(message, arrivalMs);
     if (telemetryResult?.accepted) {
       latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
+      latestEsc = telemetryTracker.getSnapshot(arrivalMs).primaryEsc || latestEsc;
     }
     const motion = getMotionSnapshot();
     updateMotionUi(motion);
@@ -5753,7 +5762,7 @@
       throttleMax: 2000,
       brakeInvert: false,
       pedalDeadzone: 0.05,
-      ffbEnabled: false,
+      ffbEnabled: true,
       ffbPreset: 'medium',
       ffbBaseFriction: 0.28,
       ffbParkingFriction: 0.08,

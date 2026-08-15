@@ -72,6 +72,7 @@ type telemetryLogRecord struct {
 	RelayReceivedAt *time.Time              `json:"relayReceivedAt,omitempty"`
 	RelayElapsedUs  *int64                  `json:"relayElapsedUs,omitempty"`
 	SourceID        string                  `json:"sourceId,omitempty"`
+	TelemetrySource string                  `json:"telemetrySource,omitempty"`
 	CarID           string                  `json:"carId,omitempty"`
 	UpstreamGen     uint64                  `json:"upstreamGeneration,omitempty"`
 	Raw             string                  `json:"raw,omitempty"`
@@ -244,6 +245,7 @@ func (r *telemetryRecorder) RecordTelemetry(sourceID string, carID string, upstr
 		RelayReceivedAt: &nowUTC,
 		RelayElapsedUs:  &elapsedUs,
 		SourceID:        sourceID,
+		TelemetrySource: telemetryPayloadSource(raw),
 		CarID:           carID,
 		UpstreamGen:     upstreamGeneration,
 		Raw:             raw,
@@ -252,6 +254,20 @@ func (r *telemetryRecorder) RecordTelemetry(sourceID string, carID string, upstr
 	if r.enqueue(record) {
 		r.telemetryRecords.Add(1)
 	}
+}
+
+func telemetryPayloadSource(raw string) string {
+	if !strings.HasPrefix(raw, "TEL:") {
+		return ""
+	}
+	var envelope struct {
+		Source string `json:"src"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(raw, "TEL:")), &envelope); err != nil ||
+		!isTelemetrySourceName(envelope.Source) {
+		return ""
+	}
+	return envelope.Source
 }
 
 func (r *telemetryRecorder) RecordRaceState(raw string, context telemetryRaceContext) {

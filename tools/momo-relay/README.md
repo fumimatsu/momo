@@ -60,9 +60,21 @@ power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率
 
 出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`drive_input`、`telemetry`、`vehicle_event`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
-`telemetry`にはRelay受信UTC時刻、Relay開始からの単調経過時間、`sourceId`、`carId`、
-上流接続generation、`TEL:`全文を含める。DataChannelはunreliableなため、ログはRelayへ届いた
-sampleだけを表す。M5の`boot`と`seq`から欠損を検出する。
+`telemetry` には Relay 受信 UTC 時刻、Relay 開始からの単調経過時間、車両を示す `sourceId`、
+送信ストリームを示す `telemetrySource`、`carId`、上流接続 generation、`TEL:` 全文を含める。
+`telemetrySource` は IMU の `imu0` と ESC の `esc0` を分離して確認するために使う。DataChannel は
+unreliable なため、ログは Relay へ届いた sample だけを表す。M5 の `boot` と `seq` から欠損を検出する。
+
+```powershell
+$log = (Get-ChildItem 'E:\fpv-telemetry-logs\telemetry-*.ndjson' |
+  Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+Get-Content $log -Tail 500 | ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.type -eq 'telemetry' -and $_.telemetrySource -eq 'esc0' } |
+  Select-Object -Last 10
+```
+
+記録対象は `DRIVE:1` の車両だけである。停止中に ESC の到達だけを確認する場合は Relay の status と
+Viewer の debug OSD を使い、走行ログを採る場合は Pilot を DRIVE ON にする。
 
 記録キューは有限で、満杯時はログsampleをdropして終了レコードの`queueDrops`へ数える。ファイルI/Oが
 映像、RC command、Telemetry中継を待たせることはない。4台を30Hz、1 message最大256 bytesで送る場合、

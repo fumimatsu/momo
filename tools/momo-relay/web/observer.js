@@ -330,6 +330,7 @@ class ObserverPeer {
     this.motionFeatures = window.FpvTelemetry
       ? new window.FpvTelemetry.MotionFeatureExtractor()
       : null;
+    this.latestMotion = null;
     this.vehicleEvents = window.FpvTelemetry
       ? new window.FpvTelemetry.RelayEventInbox()
       : null;
@@ -365,11 +366,13 @@ class ObserverPeer {
     const arrivalMs = performance.now();
     const result = this.telemetryTracker.ingest(message, arrivalMs);
     if (!result.accepted) return;
-    const motion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
+    const nextMotion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
+    if (nextMotion) this.latestMotion = nextMotion;
     const snapshot = this.telemetryTracker.getSnapshot(arrivalMs);
     this.onTelemetry(this.car, {
-      motion,
+      motion: this.latestMotion,
       primary: snapshot.primary,
+      esc: snapshot.primaryEsc,
       counters: snapshot.counters,
     });
   }
@@ -1298,8 +1301,11 @@ function createCameraTiles() {
     const forward = element('span', 'telemetry-forward', 'FWD -- G');
     const yaw = element('span', 'telemetry-yaw', 'YAW --');
     const loss = element('span', 'telemetry-loss', 'LOSS --');
-    telemetry.append(rate, lateral, forward, yaw, loss);
-    telemetryNodesByCar.set(car.carId, { root: telemetry, rate, lateral, forward, yaw, loss });
+    const esc = element('span', 'telemetry-esc', 'ESC --');
+    telemetry.append(rate, lateral, forward, yaw, loss, esc);
+    telemetryNodesByCar.set(car.carId, {
+      root: telemetry, rate, lateral, forward, yaw, loss, esc,
+    });
     const controls = element('div', 'camera-controls');
     controls.dataset.active = 'false';
     controls.setAttribute('aria-label', 'Throttle 0 percent, brake 0 percent');
@@ -1587,6 +1593,12 @@ function renderCameraTelemetry(car, telemetry) {
   setTextIfChanged(nodes.forward, `FWD ${signed(motion?.forwardMps2 / 9.80665)} G`);
   setTextIfChanged(nodes.yaw, `YAW ${signed(motion?.yawRateRadPerSec)} rad/s`);
   setTextIfChanged(nodes.loss, `LOSS ${telemetry.counters?.missing ?? 0}`);
+  const escStream = telemetry.esc;
+  const esc = escStream?.state?.esc;
+  const escText = esc
+    ? `ESC ${Number.isInteger(esc.rpm) ? `${esc.rpm} RPM` : '-- RPM'} ${Number.isFinite(esc.v) ? `${esc.v.toFixed(2)} V` : '-- V'} ${Number.isFinite(esc.tc) ? `${esc.tc.toFixed(0)} C` : '-- C'}${escStream.stale ? ' STALE' : ''}`
+    : 'ESC --';
+  setTextIfChanged(nodes.esc, escText);
   nodes.root.dataset.active = motion ? 'true' : 'false';
 }
 

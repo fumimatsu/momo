@@ -235,7 +235,7 @@ function createDefaultMapping() {
     brakeIdle: 1,
     brakePressed: -1,
     pedalDeadzone: 0.05,
-    ffbEnabled: false,
+    ffbEnabled: true,
     ffbPreset: "medium",
     ffbBaseFriction: 0.28,
     ffbParkingFriction: 0.08,
