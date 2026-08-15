@@ -14,8 +14,50 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
+
+func TestClassifyDownstreamRTCPRequestsRecovery(t *testing.T) {
+	requestKeyframe, nackRequests := classifyDownstreamRTCP([]rtcp.Packet{
+		&rtcp.ReceiverReport{},
+		&rtcp.TransportLayerNack{},
+		&rtcp.TransportLayerNack{},
+		&rtcp.PictureLossIndication{},
+	})
+	if !requestKeyframe {
+		t.Fatal("PLI did not request an upstream keyframe")
+	}
+	if nackRequests != 2 {
+		t.Fatalf("NACK requests = %d, want 2", nackRequests)
+	}
+}
+
+func TestClassifyDownstreamRTCPForwardsFIR(t *testing.T) {
+	requestKeyframe, nackRequests := classifyDownstreamRTCP([]rtcp.Packet{
+		&rtcp.FullIntraRequest{},
+	})
+	if !requestKeyframe || nackRequests != 0 {
+		t.Fatalf("FIR classification = keyframe:%t nack:%d", requestKeyframe, nackRequests)
+	}
+}
+
+func TestH264CodecAdvertisesPacketLossFeedback(t *testing.T) {
+	want := map[webrtc.RTCPFeedback]bool{
+		{Type: "nack"}:                   false,
+		{Type: "nack", Parameter: "pli"}: false,
+	}
+	for _, feedback := range h264Codec.RTCPFeedback {
+		if _, exists := want[feedback]; exists {
+			want[feedback] = true
+		}
+	}
+	for feedback, found := range want {
+		if !found {
+			t.Fatalf("H264 RTCP feedback missing: %#v", feedback)
+		}
+	}
+}
 
 func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
 	message, err := raceMessageForCar([]byte(`{"type":"race_state","version":2,"standings":[]}`), "CP-2")

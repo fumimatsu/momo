@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -58,6 +59,10 @@ var h264Codec = webrtc.RTPCodecCapability{
 	MimeType:    webrtc.MimeTypeH264,
 	ClockRate:   90000,
 	SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+	RTCPFeedback: []webrtc.RTCPFeedback{
+		{Type: "nack"},
+		{Type: "nack", Parameter: "pli"},
+	},
 }
 
 type signalMessage struct {
@@ -238,7 +243,9 @@ type relay struct {
 	connectionAttempts     atomic.Uint64
 	pliNewTrack            atomic.Uint64
 	pliViewerConnect       atomic.Uint64
+	pliViewerFeedback      atomic.Uint64
 	pliWatchdog            atomic.Uint64
+	nackViewerFeedback     atomic.Uint64
 	rtpStalls              atomic.Uint64
 	telemetryTextTEL       atomic.Uint64
 	telemetryBinaryTEL     atomic.Uint64
@@ -514,13 +521,15 @@ type viewerOperationsState struct {
 }
 
 type pliRequestCounts struct {
-	NewTrack      uint64 `json:"newTrack"`
-	ViewerConnect uint64 `json:"viewerConnect"`
-	Watchdog      uint64 `json:"watchdog"`
+	NewTrack       uint64 `json:"newTrack"`
+	ViewerConnect  uint64 `json:"viewerConnect"`
+	ViewerFeedback uint64 `json:"viewerFeedback"`
+	Watchdog       uint64 `json:"watchdog"`
 }
 
 type recoveryOperationsState struct {
 	PLIRequests   pliRequestCounts `json:"pliRequests"`
+	NACKRequests  uint64           `json:"nackRequests"`
 	RTPStalls     uint64           `json:"rtpStalls"`
 	RetryAttempts uint64           `json:"retryAttempts"`
 	LastErrorCode *string          `json:"lastErrorCode"`
@@ -568,16 +577,19 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 func newH264API() (*webrtc.API, error) {
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType:    h264Codec.MimeType,
-			ClockRate:   h264Codec.ClockRate,
-			SDPFmtpLine: h264Codec.SDPFmtpLine,
-		},
-		PayloadType: 102,
+		RTPCodecCapability: h264Codec,
+		PayloadType:        102,
 	}, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("register H264 codec: %w", err)
 	}
-	return webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine)), nil
+	interceptorRegistry := &interceptor.Registry{}
+	if err := webrtc.RegisterDefaultInterceptors(mediaEngine, interceptorRegistry); err != nil {
+		return nil, fmt.Errorf("register WebRTC interceptors: %w", err)
+	}
+	return webrtc.NewAPI(
+		webrtc.WithMediaEngine(mediaEngine),
+		webrtc.WithInterceptorRegistry(interceptorRegistry),
+	), nil
 }
 
 func (r *relay) start(ctx context.Context) {
@@ -1010,10 +1022,12 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		Downstream: r.downstreamStatusSnapshot(now),
 		Recovery: recoveryOperationsState{
 			PLIRequests: pliRequestCounts{
-				NewTrack:      r.pliNewTrack.Load(),
-				ViewerConnect: r.pliViewerConnect.Load(),
-				Watchdog:      r.pliWatchdog.Load(),
+				NewTrack:       r.pliNewTrack.Load(),
+				ViewerConnect:  r.pliViewerConnect.Load(),
+				ViewerFeedback: r.pliViewerFeedback.Load(),
+				Watchdog:       r.pliWatchdog.Load(),
 			},
+			NACKRequests:  r.nackViewerFeedback.Load(),
 			RTPStalls:     r.rtpStalls.Load(),
 			RetryAttempts: retries,
 			LastErrorCode: lastErrorCode,
@@ -1491,6 +1505,8 @@ func (r *relay) requestKeyframe(reason string) {
 		r.pliNewTrack.Add(1)
 	case "viewer_connect":
 		r.pliViewerConnect.Add(1)
+	case "viewer_feedback":
+		r.pliViewerFeedback.Add(1)
 	case "watchdog":
 		r.pliWatchdog.Add(1)
 	}
@@ -1500,6 +1516,36 @@ func (r *relay) requestKeyframe(reason string) {
 		log.Printf("source %q: request upstream keyframe: %v", r.name, err)
 	} else {
 		log.Printf("source %q: requested upstream keyframe for SSRC=%d", r.name, ssrc)
+	}
+}
+
+func classifyDownstreamRTCP(packets []rtcp.Packet) (requestKeyframe bool, nackRequests uint64) {
+	for _, packet := range packets {
+		switch packet.(type) {
+		case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+			requestKeyframe = true
+		case *rtcp.TransportLayerNack:
+			nackRequests++
+		}
+	}
+	return requestKeyframe, nackRequests
+}
+
+// RTPSender.ReadRTCP lets the registered interceptors process downstream NACKs.
+// A keyframe request cannot be fulfilled by the Relay, so forward it to Momo.
+func (r *relay) readDownstreamRTCP(sender *webrtc.RTPSender) {
+	for {
+		packets, _, err := sender.ReadRTCP()
+		if err != nil {
+			return
+		}
+		requestKeyframe, nackRequests := classifyDownstreamRTCP(packets)
+		if nackRequests > 0 {
+			r.nackViewerFeedback.Add(nackRequests)
+		}
+		if requestKeyframe {
+			r.requestKeyframe("viewer_feedback")
+		}
 	}
 }
 
@@ -2239,12 +2285,14 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 				log.Printf("source %q: Ayame pilot opened unsupported DataChannel %q", r.name, channel.Label())
 			}
 		})
-		if _, createErr = pc.AddTrack(r.videoTrack); createErr != nil {
+		rtpSender, addTrackErr := pc.AddTrack(r.videoTrack)
+		if addTrackErr != nil {
 			_ = pc.Close()
 			r.removeViewer(client.id)
 			pc = nil
-			return fmt.Errorf("add Ayame video track: %w", createErr)
+			return fmt.Errorf("add Ayame video track: %w", addTrackErr)
 		}
+		go r.readDownstreamRTCP(rtpSender)
 		return nil
 	}
 
@@ -2572,11 +2620,12 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		}
 	})
 
-	_, err = pc.AddTrack(r.videoTrack)
+	rtpSender, err := pc.AddTrack(r.videoTrack)
 	if err != nil {
 		_ = sendSignal(signalMessage{Type: "error", Error: err.Error()})
 		return
 	}
+	go r.readDownstreamRTCP(rtpSender)
 
 	remoteDescriptionSet := false
 	var pendingCandidates []webrtc.ICECandidateInit
