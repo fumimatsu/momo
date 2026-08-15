@@ -28,7 +28,14 @@ namespace {
 constexpr uint8_t kTelemetryBinaryVersion = 3;
 constexpr uint8_t kTelemetryBinaryState = 1;
 constexpr uint8_t kTelemetryBinaryEvent = 2;
+constexpr uint8_t kTelemetryBinaryEscState = 3;
 constexpr size_t kTelemetryBinaryMaxEncodedBytes = 64;
+constexpr uint16_t kEscMotorRpm = 1u << 0;
+constexpr uint16_t kEscMaximumMotorRpm = 1u << 1;
+constexpr uint16_t kEscVoltage = 1u << 2;
+constexpr uint16_t kEscTemperature = 1u << 3;
+constexpr uint16_t kEscDriveOutput = 1u << 4;
+constexpr uint16_t kEscFresh = 1u << 0;
 
 uint16_t Crc16Ccitt(const uint8_t* data, size_t length) {
   uint16_t crc = 0xffff;
@@ -81,7 +88,7 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
   if (!CobsDecode(encoded, encoded_length, &payload) || payload.size() < 22) return false;
   const uint16_t expected_crc = ReadU16(payload, payload.size() - 2);
   if (Crc16Ccitt(payload.data(), payload.size() - 2) != expected_crc ||
-      payload[0] != kTelemetryBinaryVersion || payload[2] != 1) return false;
+      payload[0] != kTelemetryBinaryVersion) return false;
 
   const uint8_t type = payload[1];
   const uint32_t boot = ReadU32(payload, 4);
@@ -89,7 +96,7 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
   const uint64_t timestamp_us = ReadU64(payload, 12);
   char text[384];
   int written = 0;
-  if (type == kTelemetryBinaryState && payload.size() == 34) {
+  if (type == kTelemetryBinaryState && payload.size() == 34 && payload[2] == 1) {
     const float forward = ReadI16(payload, 20) * 0.01f;
     const float lateral = ReadI16(payload, 22) * 0.01f;
     const float vertical = ReadI16(payload, 24) * 0.01f;
@@ -99,7 +106,7 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
         "TEL:{\"v\":2,\"k\":\"s\",\"src\":\"imu0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"m\":{\"a\":[%.2f,%.2f,%.2f],\"y\":%.2f},\"q\":{\"p\":%u,\"f\":[\"flu_axes\"]}}",
         boot, sequence, static_cast<unsigned long long>(timestamp_us), forward, lateral,
         vertical, yaw, period_us);
-  } else if (type == kTelemetryBinaryEvent && payload.size() == 32) {
+  } else if (type == kTelemetryBinaryEvent && payload.size() == 32 && payload[2] == 1) {
     const float magnitude = ReadU16(payload, 20) * 0.1f;
     const float forward = ReadI16(payload, 22) * 0.001f;
     const float lateral = ReadI16(payload, 24) * 0.001f;
@@ -109,6 +116,48 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
         "TEL:{\"v\":2,\"k\":\"e\",\"src\":\"imu0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"e\":{\"n\":\"impact_candidate\",\"m\":%.1f,\"a\":[%.3f,%.3f,%.3f],\"j\":%.0f}}",
         boot, sequence, static_cast<unsigned long long>(timestamp_us), magnitude, forward,
         lateral, vertical, jerk);
+  } else if (type == kTelemetryBinaryEscState && payload.size() == 48 &&
+             payload[2] == 0 && payload[3] == 1) {
+    const uint16_t valid = ReadU16(payload, 20);
+    const uint16_t status = ReadU16(payload, 22);
+    std::string esc = "{";
+    bool first = true;
+    const auto append_u32 = [&esc, &first](const char* name, uint32_t value) {
+      if (!first) esc += ',';
+      first = false;
+      esc += '\"';
+      esc += name;
+      esc += "\":";
+      esc += std::to_string(value);
+    };
+    const auto append_decimal = [&esc, &first](const char* name, double value,
+                                                int precision) {
+      char field[64];
+      const int field_length = std::snprintf(
+          field, sizeof(field), "%s\"%s\":%.*f", first ? "" : ",", name,
+          precision, value);
+      if (field_length > 0 && static_cast<size_t>(field_length) < sizeof(field)) {
+        esc.append(field, static_cast<size_t>(field_length));
+        first = false;
+      }
+    };
+    if ((valid & kEscMotorRpm) != 0) append_u32("rpm", ReadU32(payload, 24));
+    if ((valid & kEscMaximumMotorRpm) != 0) append_u32("max", ReadU32(payload, 28));
+    if ((valid & kEscVoltage) != 0) {
+      append_decimal("v", ReadU16(payload, 32) / 1000.0, 3);
+    }
+    if ((valid & kEscTemperature) != 0) {
+      append_decimal("tc", ReadI16(payload, 36) / 10.0, 1);
+    }
+    if ((valid & kEscDriveOutput) != 0) append_u32("out", ReadU16(payload, 40));
+    esc += '}';
+    const uint32_t poll_period_us = static_cast<uint32_t>(ReadU16(payload, 44)) * 1000u;
+    const uint16_t age_ms = ReadU16(payload, 42);
+    written = std::snprintf(
+        text, sizeof(text),
+        "TEL:{\"v\":2,\"k\":\"s\",\"src\":\"esc0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"esc\":%s,\"q\":{\"p\":%u,\"ok\":%s,\"age\":%u,\"f\":[\"blrs4_prg\"]}}",
+        boot, sequence, static_cast<unsigned long long>(timestamp_us), esc.c_str(),
+        poll_period_us, (status & kEscFresh) != 0 ? "true" : "false", age_ms);
   }
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(text)) return false;
   *line = text;

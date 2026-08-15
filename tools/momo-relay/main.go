@@ -47,6 +47,7 @@ const (
 	telemetryDataHighWatermark   = uint64(64 * 1024)
 	gameplayWebSocketQueueSize   = 128
 	observerTelemetryInterval    = time.Second / 15
+	maxTelemetryStateSources     = 16
 	raceStreamPingInterval       = 5 * time.Second
 	raceStreamPongWait           = 15 * time.Second
 	raceStreamWriteTimeout       = 5 * time.Second
@@ -91,13 +92,13 @@ type viewer struct {
 	lastCommandDropLog  atomic.Int64
 	lastTelemetryLog    atomic.Int64
 	lastTelemetrySentAt atomic.Int64
-	lastObserverStateAt atomic.Int64
 	telemetryMessages   atomic.Uint64
 	telemetryBytes      atomic.Uint64
 	telemetrySendErrors atomic.Uint64
 	telemetryDropped    atomic.Uint64
 	telemetryThrottled  atomic.Uint64
 	telemetryWS         chan string
+	telemetryStateWS    *sourceLatestTelemetryQueue
 	gameplayWS          chan string
 	commandWS           chan string
 	raceWS              chan string
@@ -105,8 +106,79 @@ type viewer struct {
 	eventsWS            chan string
 	audioSubscribed     atomic.Bool
 	telemetrySendMu     sync.Mutex
+	observerStateMu     sync.Mutex
+	observerStateAt     map[string]int64
 	raceSendMu          sync.Mutex
 	eventsSendMu        sync.Mutex
+}
+
+// sourceLatestTelemetryQueue keeps one latest state per telemetry source.
+// A single latest-wins slot is insufficient once imu0 and esc0 have different
+// production rates because the faster source can permanently replace the slower one.
+type sourceLatestTelemetryQueue struct {
+	mu     sync.Mutex
+	latest map[string]string
+	order  []string
+	ready  chan struct{}
+}
+
+func newSourceLatestTelemetryQueue() *sourceLatestTelemetryQueue {
+	return &sourceLatestTelemetryQueue{
+		latest: make(map[string]string),
+		ready:  make(chan struct{}, 1),
+	}
+}
+
+func (queue *sourceLatestTelemetryQueue) Ready() <-chan struct{} {
+	if queue == nil {
+		return nil
+	}
+	return queue.ready
+}
+
+func (queue *sourceLatestTelemetryQueue) Enqueue(source string, payload string) {
+	if queue == nil {
+		return
+	}
+	queue.mu.Lock()
+	if _, exists := queue.latest[source]; !exists {
+		if len(queue.latest) >= maxTelemetryStateSources {
+			source = "_overflow"
+		}
+		if _, exists := queue.latest[source]; !exists {
+			queue.order = append(queue.order, source)
+		}
+	}
+	queue.latest[source] = payload
+	queue.mu.Unlock()
+	select {
+	case queue.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (queue *sourceLatestTelemetryQueue) Dequeue() (string, bool) {
+	if queue == nil {
+		return "", false
+	}
+	queue.mu.Lock()
+	if len(queue.order) == 0 {
+		queue.mu.Unlock()
+		return "", false
+	}
+	source := queue.order[0]
+	queue.order = queue.order[1:]
+	payload := queue.latest[source]
+	delete(queue.latest, source)
+	hasMore := len(queue.order) > 0
+	queue.mu.Unlock()
+	if hasMore {
+		select {
+		case queue.ready <- struct{}{}:
+		default:
+		}
+	}
+	return payload, true
 }
 
 type sourceLifecycle int32
@@ -1539,6 +1611,8 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 							r.name, client.id, client.role, client.remoteAddr, len(client.gameplayWS), client.telemetryDropped.Load())
 					}
 				}
+			} else if source, state := telemetryStateSource(message); state && client.telemetryStateWS != nil {
+				client.telemetryStateWS.Enqueue(source, payload)
 			} else {
 				enqueueLatestTelemetry(client.telemetryWS, payload)
 			}
@@ -1587,16 +1661,59 @@ func shouldDeliverObserverTelemetry(client *viewer, message webrtc.DataChannelMe
 	if bytes.Contains(message.Data, []byte(`"k":"e"`)) || bytes.Contains(message.Data, []byte(`"evt"`)) {
 		return true
 	}
-	nowUnixNano := now.UnixNano()
-	for {
-		previous := client.lastObserverStateAt.Load()
-		if previous != 0 && nowUnixNano-previous < observerTelemetryInterval.Nanoseconds() {
-			return false
-		}
-		if client.lastObserverStateAt.CompareAndSwap(previous, nowUnixNano) {
-			return true
-		}
+	source, state := telemetryStateSource(message)
+	if !state {
+		return true
 	}
+	nowUnixNano := now.UnixNano()
+	client.observerStateMu.Lock()
+	defer client.observerStateMu.Unlock()
+	if client.observerStateAt == nil {
+		client.observerStateAt = make(map[string]int64)
+	}
+	if _, exists := client.observerStateAt[source]; !exists && len(client.observerStateAt) >= maxTelemetryStateSources {
+		source = "_overflow"
+	}
+	previous := client.observerStateAt[source]
+	if previous != 0 && nowUnixNano-previous < observerTelemetryInterval.Nanoseconds() {
+		return false
+	}
+	client.observerStateAt[source] = nowUnixNano
+	return true
+}
+
+func telemetryStateSource(message webrtc.DataChannelMessage) (string, bool) {
+	if !message.IsString || !bytes.HasPrefix(message.Data, []byte("TEL:")) {
+		return "", false
+	}
+	var envelope struct {
+		Kind   string `json:"k"`
+		Source string `json:"src"`
+	}
+	if err := json.Unmarshal(bytes.TrimPrefix(message.Data, []byte("TEL:")), &envelope); err != nil || envelope.Kind != "s" {
+		return "", false
+	}
+	if !isTelemetrySourceName(envelope.Source) {
+		return "_default", true
+	}
+	return envelope.Source, true
+}
+
+func isTelemetrySourceName(source string) bool {
+	if len(source) == 0 || len(source) > 16 {
+		return false
+	}
+	for index := 0; index < len(source); index++ {
+		character := source[index]
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func isM5AudioMessage(message webrtc.DataChannelMessage) bool {
@@ -2522,6 +2639,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	defer close(viewerDataDone)
 	if role == "pilot" || clientKind == "web-observer" {
 		client.telemetryWS = make(chan string, 1)
+		client.telemetryStateWS = newSourceLatestTelemetryQueue()
 		client.gameplayWS = make(chan string, gameplayWebSocketQueueSize)
 		client.eventsWS = make(chan string, 64)
 	}
@@ -2578,6 +2696,15 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				case payload := <-client.telemetryWS:
 					if err := sendSignal(signalMessage{Type: "telemetry", Data: payload}); err != nil {
 						log.Printf("source %q: send WebSocket telemetry to viewer %d: %v", r.name, client.id, err)
+						return
+					}
+				case <-client.telemetryStateWS.Ready():
+					payload, ok := client.telemetryStateWS.Dequeue()
+					if !ok {
+						continue
+					}
+					if err := sendSignal(signalMessage{Type: "telemetry", Data: payload}); err != nil {
+						log.Printf("source %q: send WebSocket telemetry state to viewer %d: %v", r.name, client.id, err)
 						return
 					}
 				case payload := <-client.commandWS:

@@ -543,15 +543,25 @@ func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
 func TestObserverTelemetrySamplingKeepsEventsAndLimitsState(t *testing.T) {
 	client := &viewer{id: 1, role: "observer", clientKind: "web-observer"}
 	base := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
-	state := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"s","seq":1}`), IsString: true}
+	state := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"s","src":"imu0","seq":1}`), IsString: true}
 	if !shouldDeliverObserverTelemetry(client, state, base) {
 		t.Fatal("first observer telemetry state must be delivered")
+	}
+	escState := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"s","src":"esc0","seq":1}`), IsString: true}
+	if !shouldDeliverObserverTelemetry(client, escState, base) {
+		t.Fatal("first state from a second telemetry source must be delivered independently")
 	}
 	if shouldDeliverObserverTelemetry(client, state, base.Add(observerTelemetryInterval-time.Millisecond)) {
 		t.Fatal("observer telemetry state inside the sample interval must be dropped")
 	}
+	if shouldDeliverObserverTelemetry(client, escState, base.Add(observerTelemetryInterval-time.Millisecond)) {
+		t.Fatal("second telemetry source inside its sample interval must be dropped")
+	}
 	if !shouldDeliverObserverTelemetry(client, state, base.Add(observerTelemetryInterval)) {
 		t.Fatal("observer telemetry state at the sample interval must be delivered")
+	}
+	if !shouldDeliverObserverTelemetry(client, escState, base.Add(observerTelemetryInterval)) {
+		t.Fatal("second telemetry source at the sample interval must be delivered")
 	}
 	event := webrtc.DataChannelMessage{Data: []byte(`TEL:{"v":2,"k":"e","seq":2}`), IsString: true}
 	if !shouldDeliverObserverTelemetry(client, event, base.Add(observerTelemetryInterval+time.Millisecond)) {
@@ -559,6 +569,49 @@ func TestObserverTelemetrySamplingKeepsEventsAndLimitsState(t *testing.T) {
 	}
 	if !shouldDeliverObserverTelemetry(client, webrtc.DataChannelMessage{Data: []byte(`PIT:1,{}`), IsString: true}, base) {
 		t.Fatal("gameplay messages must bypass telemetry sampling")
+	}
+}
+
+func TestSourceLatestTelemetryQueuePreservesLatestStatePerSource(t *testing.T) {
+	queue := newSourceLatestTelemetryQueue()
+	queue.Enqueue("imu0", `TEL:{"src":"imu0","seq":1}`)
+	queue.Enqueue("esc0", `TEL:{"src":"esc0","seq":1}`)
+	queue.Enqueue("imu0", `TEL:{"src":"imu0","seq":2}`)
+
+	first, ok := queue.Dequeue()
+	if !ok || first != `TEL:{"src":"imu0","seq":2}` {
+		t.Fatalf("first source state = %q, %v", first, ok)
+	}
+	second, ok := queue.Dequeue()
+	if !ok || second != `TEL:{"src":"esc0","seq":1}` {
+		t.Fatalf("second source state = %q, %v", second, ok)
+	}
+	if payload, ok := queue.Dequeue(); ok {
+		t.Fatalf("unexpected queued state %q", payload)
+	}
+}
+
+func TestBroadcastTelemetryQueuesStatePerSource(t *testing.T) {
+	client := &viewer{
+		id:               1,
+		role:             "pilot",
+		telemetryWS:      make(chan string, 1),
+		telemetryStateWS: newSourceLatestTelemetryQueue(),
+	}
+	source := &relay{viewers: map[uint64]*viewer{client.id: client}}
+	source.broadcastTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(`TEL:{"v":2,"k":"s","src":"imu0","seq":1}`),
+		IsString: true,
+	})
+	source.broadcastTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(`TEL:{"v":2,"k":"s","src":"esc0","seq":1}`),
+		IsString: true,
+	})
+
+	first, firstOK := client.telemetryStateWS.Dequeue()
+	second, secondOK := client.telemetryStateWS.Dequeue()
+	if !firstOK || !secondOK || !strings.Contains(first, `"src":"imu0"`) || !strings.Contains(second, `"src":"esc0"`) {
+		t.Fatalf("source states were not preserved: first=%q second=%q", first, second)
 	}
 }
 
