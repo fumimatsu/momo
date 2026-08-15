@@ -36,9 +36,11 @@ Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面
 
 ## 車体テレメトリ記録
 
-Relayは各`-source`の上流Momoから受信した`TEL:` text messageを、全車共通のRelay時計で
+Relayは各`-source`の上流Momoから受信した`TEL:` text messageとPilotの走行入力を、全車共通のRelay時計で
 1本のNDJSONへ記録できる。Relay Pilotが信頼性ありの`momo-drive` channelで`DRIVE:1`を送った
-sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断で直ちに止める。Viewerの
+sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断で直ちに止める。走行入力は50Hzの
+操縦経路を待たせないよう10Hzを上限に`drive_input`として保存する。各sampleにはsteering、要求・制限後の
+power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率、アクセル変動量を含める。Viewerの
 接続有無に依存しないため、車体座標、重力除去、軸符号を走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
 `race_state`、`raceRunId`、phase、flag、sequenceに加え、Relayが確定した`vehicle_event`も記録する。
 `vehicle_event`には衝撃クラス、強度、jerk、軸、ダメージ適用結果、抑制理由、適用前後HPを含む。
@@ -54,7 +56,7 @@ sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断
 `-telemetry-log-dir <directory>`を使う。既定では起動時に24時間より古い`telemetry-*.ndjson`だけを
 削除する。保持期間は`-telemetry-log-retention 48h`のように変更でき、`0`で自動削除を無効にできる。
 
-出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`telemetry`、`vehicle_event`、
+出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`drive_input`、`telemetry`、`vehicle_event`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
 `telemetry`にはRelay受信UTC時刻、Relay開始からの単調経過時間、`sourceId`、`carId`、
 上流接続generation、`TEL:`全文を含める。DataChannelはunreliableなため、ログはRelayへ届いた
@@ -62,7 +64,8 @@ sampleだけを表す。M5の`boot`と`seq`から欠損を検出する。
 
 記録キューは有限で、満杯時はログsampleをdropして終了レコードの`queueDrops`へ数える。ファイルI/Oが
 映像、RC command、Telemetry中継を待たせることはない。4台を30Hz、1 message最大256 bytesで送る場合、
-wire上の生データ量は約111MB/時間であり、NDJSONのメタデータ込みでは約150MB/時間を見込む。Relayの強制終了時は
+wire上の生データ量は約111MB/時間であり、NDJSONのメタデータ込みでは約150MB/時間を見込む。4台が同時走行する
+最悪条件では`drive_input`が約95MB/時間加わる。Relayの強制終了時は
 終了レコードが無いことがあるが、1秒ごとにflushするため最後の完全なNDJSON行までは解析できる。
 
 ## Operations Dashboard
@@ -400,13 +403,17 @@ $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
   -RaceControlViewerToken '<VIEWER_TOKEN>'
 ```
 
-Fuelは`green`中、Race Control状態が新しく、Drive ONで前進指令が継続している間だけ減る。
-既定は合計120秒の有効前進で100から0になり、`-fuel-drive-duration`で変更できる。
+Fuelは`green`中、Race Control接続が有効で、Drive ONかつ前進指令が継続している間だけ減る。
+一定入力は従来どおり合計120秒の有効前進で100から0になり、`-fuel-drive-duration`で変更できる。
+アクセルの上げ下げは約1.5秒の移動平均で評価し、細かな全開・戻しを繰り返すほど消費率を最大1.6倍にする。
+一定フルアクセル自体には追加ペナルティを掛けず、Practiceでは従来どおりFuelを消費しない。
 Fuel 0でもPITへ戻れるよう前進PWMを1590、後退PWMを対称の1410へ制限し、完全停止にはしない。
 ダメージによる速度制限は前進だけに適用し、障害物から脱出するための後退出力は維持する。
 
 通常ギア上限はG3である。前進中に溜まるBoostが100になると、G3から右パドルで2.5秒だけG4を起動できる。
-充填時間は4台時にP1=40秒、P2=34秒、P3=28秒、P4=22秒で、順位不明時は30秒とする。
+充填時間は順位そのものではなくRace Controlの`intervalToAheadMs`と`lapDeltaToAhead`で決める。先頭は45秒、
+同一周回では0秒差の40秒から8秒差以上の20秒まで線形に短縮し、1周遅れは16秒、3周差以上は12秒とする。
+タイム差がまだ無い場合は30秒へfallbackする。
 `GEAR:4`の直接指定は拒否し、G4終了時はRelayがG3へ戻す。
 
 Relayは旧client向けの`VHS:1`を維持し、HP、Fuel、Boost、実効gearをJSONの`VGS:1`でも配信する。
