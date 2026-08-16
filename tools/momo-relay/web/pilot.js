@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260816-relay-tts-track-steering-v3';
+  const PILOT_BUILD_ID = '20260817-race-audio-playback-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -311,6 +311,7 @@
 	const raceRadioCueAsset = document.getElementById('raceRadioCueAsset');
 	const remoteRaceAudio = document.createElement('audio');
 	remoteRaceAudio.autoplay = true;
+	remoteRaceAudio.playsInline = true;
 	remoteRaceAudio.hidden = true;
 	remoteRaceAudio.volume = RACE_ANNOUNCE_VOLUME;
 	remoteRaceAudio.setAttribute('aria-hidden', 'true');
@@ -639,6 +640,8 @@
   let lastRaceSignalSoundKey = '';
   let selectedRaceAnnouncementVoiceName = '';
 	let remoteRaceAudioEnabled = false;
+	let remoteRaceAudioPlaybackPromise = null;
+	let remoteRaceAudioPlaybackBlocked = '';
 	const remoteRaceAudioTracker = raceAnnouncer.createRemoteAudioTracker();
   const receivedRaceLapHistory = new Map();
   const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
@@ -2487,6 +2490,43 @@
 		m5AudioPlayer?.setOutputGain?.(level, rampMs);
 	}
 
+	function getRemoteRaceAudioTrack() {
+		return remoteRaceAudio.srcObject?.getAudioTracks?.()[0] || null;
+	}
+
+	function ensureRemoteRaceAudioPlayback(reason = 'retry') {
+		const track = getRemoteRaceAudioTrack();
+		if (!track || track.readyState === 'ended') {
+			return Promise.resolve(false);
+		}
+		if (!remoteRaceAudio.paused) {
+			remoteRaceAudioPlaybackBlocked = '';
+			return Promise.resolve(true);
+		}
+		if (remoteRaceAudioPlaybackPromise) {
+			return remoteRaceAudioPlaybackPromise;
+		}
+		remoteRaceAudioPlaybackPromise = Promise.resolve(remoteRaceAudio.play())
+			.then(() => {
+				remoteRaceAudioPlaybackBlocked = '';
+				recordEvent('race audio playback ready', reason);
+				return true;
+			})
+			.catch((error) => {
+				remoteRaceAudioPlaybackBlocked = error.message || String(error);
+				recordEvent('race audio play blocked', remoteRaceAudioPlaybackBlocked);
+				return false;
+			})
+			.finally(() => {
+				remoteRaceAudioPlaybackPromise = null;
+			});
+		return remoteRaceAudioPlaybackPromise;
+	}
+
+	function unlockRemoteRaceAudioPlayback() {
+		ensureRemoteRaceAudioPlayback('user gesture');
+	}
+
 	function handleRemoteRaceAudioMessage(message) {
 		const payload = raceAnnouncer.parseRemoteMessage(message);
 		if (!payload) return false;
@@ -2505,6 +2545,7 @@
 			remoteRaceAudioTracker.play(payload.eventId);
 			stopRaceAnnouncement();
 			setM5AudioDucking(Number(payload.ducking?.m5AudioGain) || 0.4, payload.ducking?.attackMs || 80);
+			ensureRemoteRaceAudioPlayback('playing event');
 			recordEvent('race audio playing', `${payload.kind || 'event'} ${payload.language || ''}`.trim());
 			return true;
 		}
@@ -5576,6 +5617,8 @@
     remoteVideo.srcObject = null;
 		remoteRaceAudio.pause();
 		remoteRaceAudio.srcObject = null;
+		remoteRaceAudioPlaybackPromise = null;
+		remoteRaceAudioPlaybackBlocked = '';
 		remoteRaceAudioEnabled = false;
 		remoteRaceAudioTracker.reset();
 		setM5AudioDucking(1, 0);
@@ -6218,10 +6261,11 @@
 
     const mediaStream = new MediaStream();
     remoteVideo.srcObject = mediaStream;
-    peer.ontrack = (event) => {
+		peer.ontrack = (event) => {
 			if (event.track.kind === 'audio' && usesRelayTransport()) {
 				remoteRaceAudio.srcObject = new MediaStream([event.track]);
-				remoteRaceAudio.play().catch((error) => recordEvent('race audio play blocked', error.message || String(error)));
+				event.track.addEventListener?.('unmute', () => ensureRemoteRaceAudioPlayback('track unmuted'));
+				ensureRemoteRaceAudioPlayback('audio track');
 				return;
 			}
       mediaStream.addTrack(event.track);
@@ -7276,7 +7320,21 @@
         q: AUDIO_FILTER_Q,
         contextState: audioContext?.state || 'none',
       },
-      m5Audio: m5AudioPlayer?.snapshot() || null,
+		m5Audio: m5AudioPlayer?.snapshot() || null,
+		raceAudio: {
+			enabled: remoteRaceAudioEnabled,
+			channel: snapshotDataChannelForCapture(raceAudioChannel),
+			paused: remoteRaceAudio.paused,
+			playbackBlocked: remoteRaceAudioPlaybackBlocked || null,
+			track: (() => {
+				const track = getRemoteRaceAudioTrack();
+				return track ? {
+					readyState: track.readyState,
+					muted: track.muted,
+					enabled: track.enabled,
+				} : null;
+			})(),
+		},
       downlink: {
         transport: usesWebSocketDownlink() ? 'websocket' : 'datachannel',
         websocketState: ws ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] : 'none',
@@ -7367,8 +7425,10 @@
     getNotificationDiagnostics: () => notificationController.getState(),
   };
   window.addEventListener('momo-race-state', (event) => setRaceState(event.detail));
-  window.addEventListener('pointerdown', unlockRaceSignalSound);
-  window.addEventListener('keydown', unlockRaceSignalSound);
+	window.addEventListener('pointerdown', unlockRaceSignalSound);
+	window.addEventListener('keydown', unlockRaceSignalSound);
+	window.addEventListener('pointerdown', unlockRemoteRaceAudioPlayback);
+	window.addEventListener('keydown', unlockRemoteRaceAudioPlayback);
   window.addEventListener('pointerdown', prepareRaceAnnouncement);
   window.addEventListener('keydown', prepareRaceAnnouncement);
   window.speechSynthesis?.addEventListener?.('voiceschanged', prepareRaceAnnouncement);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -42,17 +44,36 @@ func TestRaceAudioDetectorEmitsNewLapAndFinishOnce(t *testing.T) {
 	}
 }
 
+func TestRaceAudioDetectorEmitsFinalLapBeforeFinishFromStandingStatus(t *testing.T) {
+	detector := raceAudioDetector{}
+	detector.observe(raceAudioTestStateWithStatus("run-1", "green", "racing", 9, 18586), "CP-1")
+
+	events := detector.observe(raceAudioTestStateWithStatus("run-1", "green", "finished", 10, 27760), "CP-1")
+	if len(events) != 2 {
+		t.Fatalf("final snapshot emitted %d events, want 2: %#v", len(events), events)
+	}
+	if events[0].Kind != "lap_complete" || events[1].Kind != "race_finish" {
+		t.Fatalf("final event order = %q then %q, want lap_complete then race_finish", events[0].Kind, events[1].Kind)
+	}
+	if events := detector.observe(raceAudioTestStateWithStatus("run-1", "green", "finished", 10, 27760), "CP-1"); len(events) != 0 {
+		t.Fatalf("duplicate final snapshot emitted %d events", len(events))
+	}
+}
+
 func TestRaceAudioEnglishTemplatesAreShortAndOmitUnknownPosition(t *testing.T) {
-	if got, want := raceAudioEnglishLapText(4, 13715, 2), "Lap 4. 13.715. P 2."; got != want {
+	if got, want := raceAudioEnglishLapText(4, 13715, 2), "Lap 4. 13 point seven one five. P 2."; got != want {
 		t.Fatalf("lap text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishLapText(4, 13715, 0), "Lap 4. 13.715."; got != want {
+	if got, want := raceAudioEnglishLapText(4, 13715, 0), "Lap 4. 13 point seven one five."; got != want {
 		t.Fatalf("lap text without position = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishFinishText(2), "Race finished. P 2."; got != want {
+	if got, want := raceAudioEnglishLapTime(13005), "13 point zero zero five"; got != want {
+		t.Fatalf("lap time = %q, want %q", got, want)
+	}
+	if got, want := raceAudioEnglishFinishText(2), "Checkered flag. Race finished. P 2."; got != want {
 		t.Fatalf("finish text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishFinishText(0), "Race finished."; got != want {
+	if got, want := raceAudioEnglishFinishText(0), "Checkered flag. Race finished."; got != want {
 		t.Fatalf("finish text without position = %q, want %q", got, want)
 	}
 }
@@ -175,6 +196,123 @@ func TestRaceAudioTrackDeliversOpusWithoutRenegotiation(t *testing.T) {
 	})
 	if latency > time.Second {
 		t.Fatalf("race audio track delivery took %s", latency)
+	}
+}
+
+func TestRelayPilotRaceAudioTrackEndToEnd(t *testing.T) {
+	source, err := newRelay("11.4", "ws://127.0.0.1:1/ws", "CP-2", false,
+		defaultRTPStallTimeout, defaultUpstreamStartTimeout, vehicleHealthRecoveryDisabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.raceAudio = &raceAudioSource{
+		relay:   source,
+		service: &raceAudioServiceClient{defaultLanguage: "en-US"},
+	}
+	server := &relayServer{sources: map[string]*relay{"11.4": source}}
+	httpServer := httptest.NewServer(http.HandlerFunc(server.serveViewerWS))
+	defer httpServer.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/?device=11.4&role=pilot&client=web-pilot"
+	signaling, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer signaling.Close()
+
+	clientAPI, err := newH264API()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := clientAPI.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+
+	unordered := false
+	maxRetransmits := uint16(0)
+	if _, err := peer.CreateDataChannel(commandLabel, &webrtc.DataChannelInit{
+		Ordered:        &unordered,
+		MaxRetransmits: &maxRetransmits,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ordered := true
+	raceAudioChannel, err := peer.CreateDataChannel(raceAudioLabel, &webrtc.DataChannelInit{Ordered: &ordered})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.CreateDataChannel(driveLabel, &webrtc.DataChannelInit{Ordered: &ordered}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peer.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
+		Direction: webrtc.RTPTransceiverDirectionRecvonly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	raceAudioOpen := make(chan struct{})
+	raceAudioChannel.OnOpen(func() { close(raceAudioOpen) })
+	audioPayloads := make(chan []byte, 8)
+	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if track.Kind() != webrtc.RTPCodecTypeAudio {
+			return
+		}
+		go func() {
+			packet, _, readErr := track.ReadRTP()
+			if readErr == nil {
+				audioPayloads <- append([]byte(nil), packet.Payload...)
+			}
+		}()
+	})
+
+	signalingErrors := make(chan error, 8)
+	answerSet := make(chan struct{})
+	var writeMu sync.Mutex
+	writeSignal := func(message signalMessage) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return signaling.WriteJSON(message)
+	}
+	peer.OnICECandidate(func(candidate *webrtc.ICECandidate) {
+		if candidate == nil {
+			return
+		}
+		candidateJSON := candidate.ToJSON()
+		if err := writeSignal(signalMessage{Type: "candidate", ICE: &candidateJSON}); err != nil {
+			reportE2EError(signalingErrors, fmt.Errorf("send client ICE candidate: %w", err))
+		}
+	})
+	go readRelaySignaling(peer, signaling, answerSet, signalingErrors)
+
+	offer, err := peer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSignal(signalMessage{Type: "offer", SDP: offer.SDP}); err != nil {
+		t.Fatal(err)
+	}
+	waitForE2ESignal(t, "Relay answer", answerSet, signalingErrors)
+	waitForE2ESignal(t, "momo-race-audio open", raceAudioOpen, signalingErrors)
+
+	select {
+	case payload := <-audioPayloads:
+		if len(payload) == 0 {
+			t.Fatal("race audio RTP payload is empty")
+		}
+	case err := <-signalingErrors:
+		t.Fatal(err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the Relay Pilot race audio track")
 	}
 }
 
@@ -353,6 +491,10 @@ func measureRaceAudioTrackDelivery(t *testing.T, clip raceAudioClip) time.Durati
 }
 
 func raceAudioTestState(runID string, phase string, newestLap int, newestLapMS int) string {
+	return raceAudioTestStateWithStatus(runID, phase, "racing", newestLap, newestLapMS)
+}
+
+func raceAudioTestStateWithStatus(runID string, phase string, status string, newestLap int, newestLapMS int) string {
 	history := make([]map[string]any, 0, newestLap)
 	for lap := 1; lap <= newestLap; lap++ {
 		lapTimeMS := 14000 + lap
@@ -366,7 +508,7 @@ func raceAudioTestState(runID string, phase string, newestLap int, newestLapMS i
 	payload := map[string]any{
 		"type": "race_state", "version": 2, "raceId": "race-test", "raceRunId": runID,
 		"phase": phase, "viewerCarId": "CP-1",
-		"standings":  []map[string]any{{"carId": "CP-1", "position": 2, "status": "racing", "lap": newestLap}},
+		"standings":  []map[string]any{{"carId": "CP-1", "position": 2, "status": status, "lap": newestLap}},
 		"lapHistory": history,
 	}
 	encoded, _ := json.Marshal(payload)

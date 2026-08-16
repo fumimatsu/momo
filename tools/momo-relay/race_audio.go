@@ -140,7 +140,7 @@ type raceAudioDetector struct {
 	mu          sync.Mutex
 	initialized bool
 	runID       string
-	phase       string
+	finished    bool
 	seenLaps    map[string]struct{}
 }
 
@@ -317,7 +317,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	if detector.runID != runID {
 		detector.initialized = false
 		detector.runID = runID
-		detector.phase = ""
+		detector.finished = false
 		detector.seenLaps = make(map[string]struct{})
 	}
 	if detector.seenLaps == nil {
@@ -334,20 +334,23 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		}
 	}
 	sort.Slice(histories, func(left, right int) bool { return histories[left].Lap < histories[right].Lap })
+	standingPosition := 0
+	standingStatus := ""
+	for _, standing := range state.Standings {
+		if standing.CarID == carID {
+			standingPosition = standing.Position
+			standingStatus = strings.ToLower(strings.TrimSpace(standing.Status))
+			break
+		}
+	}
+	isFinished := strings.EqualFold(strings.TrimSpace(state.Phase), "finished") || standingStatus == "finished"
 	if !detector.initialized {
 		for _, history := range histories {
 			detector.seenLaps[raceAudioLapKey(runID, carID, history.Lap, history.LapTimeMS)] = struct{}{}
 		}
-		detector.phase = state.Phase
+		detector.finished = isFinished
 		detector.initialized = true
 		return nil
-	}
-	standingPosition := 0
-	for _, standing := range state.Standings {
-		if standing.CarID == carID {
-			standingPosition = standing.Position
-			break
-		}
 	}
 	events := make([]raceAudioEvent, 0, 2)
 	for _, history := range histories {
@@ -364,7 +367,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, standingPosition),
 		})
 	}
-	if detector.phase != "finished" && state.Phase == "finished" {
+	if !detector.finished && isFinished {
 		events = append(events, raceAudioEvent{
 			EventID:      fmt.Sprintf("%s:%s:race_finish", runID, carID),
 			Kind:         "race_finish",
@@ -373,16 +376,32 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: raceAudioJapaneseFinishText(standingPosition),
 		})
 	}
-	detector.phase = state.Phase
+	detector.finished = detector.finished || isFinished
 	return events
 }
 
 func raceAudioEnglishLapText(lap int, lapTimeMS int, position int) string {
-	text := fmt.Sprintf("Lap %d. %.3f.", lap, float64(lapTimeMS)/1000)
+	text := fmt.Sprintf("Lap %d. %s.", lap, raceAudioEnglishLapTime(lapTimeMS))
 	if position > 0 {
 		text += fmt.Sprintf(" P %d.", position)
 	}
 	return text
+}
+
+func raceAudioEnglishLapTime(lapTimeMS int) string {
+	digitWords := [...]string{
+		"zero", "one", "two", "three", "four",
+		"five", "six", "seven", "eight", "nine",
+	}
+	seconds := lapTimeMS / 1000
+	milliseconds := lapTimeMS % 1000
+	return fmt.Sprintf(
+		"%d point %s %s %s",
+		seconds,
+		digitWords[milliseconds/100],
+		digitWords[(milliseconds/10)%10],
+		digitWords[milliseconds%10],
+	)
 }
 
 func raceAudioJapaneseLapText(lap int, lapTimeMS int, position int) string {
@@ -395,9 +414,9 @@ func raceAudioJapaneseLapText(lap int, lapTimeMS int, position int) string {
 
 func raceAudioEnglishFinishText(position int) string {
 	if position > 0 {
-		return fmt.Sprintf("Race finished. P %d.", position)
+		return fmt.Sprintf("Checkered flag. Race finished. P %d.", position)
 	}
-	return "Race finished."
+	return "Checkered flag. Race finished."
 }
 
 func raceAudioJapaneseFinishText(position int) string {
