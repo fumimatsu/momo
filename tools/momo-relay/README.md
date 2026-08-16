@@ -28,10 +28,12 @@ Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ�
 
 外部 Pilot を Ayame / TURN 経由で接続する構成は、[Relay 経由 Ayame 外部 Pilot 設計](../../doc/RELAY_AYAME_EXTERNAL_PILOT_DESIGN.md) を参照する。現在は 1 source、1 Pilot の映像・操縦・telemetry・race state を実装している。外部 Pilot の command が 250 ms 途絶えた場合、Relay は対象 Pi へ neutral を送る。
 
-英語・日本語のレース音声を Relay で生成・cache し、遠隔 Pilot へ配信する計画は
+英語・日本語のレース音声を内部 TTS service で生成し、遠隔 Pilot へ配信する構成は
 [Relay 配信型レース音声サービス設計](../../docs/relay-race-audio-service.md) を参照する。
-音声本体は HTTPS、再生イベントと URL は `momo-race` DataChannel で送る。TTS は Relay と
-別プロセスに分離し、停止時も映像と操縦を継続する。
+音声本体は Relay が専用 WebRTC Opus track で送り、再生状態と言語選択だけを
+`momo-race-audio` DataChannel で送る。TTS は Relay と別 PC に配置でき、停止時も映像と操縦を継続する。
+初期本番は英語 Kokoro `am_michael` を使う。Pilot は TTS の `queued` 受信時に固定 radio cue を鳴らし、
+音声生成を待つ間から M5Audio を duck する。
 
 Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面の設計は、[Relay Operations Dashboard 設計](../../doc/RELAY_OPERATIONS_DASHBOARD_DESIGN.md) を参照する。
 

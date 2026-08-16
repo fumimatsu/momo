@@ -92,6 +92,7 @@ type viewer struct {
 	telemetry           atomic.Pointer[webrtc.DataChannel]
 	command             atomic.Pointer[webrtc.DataChannel]
 	race                atomic.Pointer[webrtc.DataChannel]
+	raceAudio           atomic.Pointer[webrtc.DataChannel]
 	drive               atomic.Pointer[webrtc.DataChannel]
 	events              atomic.Pointer[webrtc.DataChannel]
 	lastCommandUnixNano atomic.Int64
@@ -116,6 +117,12 @@ type viewer struct {
 	observerStateAt     map[string]int64
 	raceSendMu          sync.Mutex
 	eventsSendMu        sync.Mutex
+	raceAudioSendMu     sync.Mutex
+	raceAudioLanguage   atomic.Value
+	raceAudioTrack      *webrtc.TrackLocalStaticSample
+	raceAudioQueue      chan raceAudioClip
+	raceAudioStop       chan struct{}
+	raceAudioStopOnce   sync.Once
 }
 
 // sourceLatestTelemetryQueue keeps one latest state per telemetry source.
@@ -332,6 +339,7 @@ type relay struct {
 	pitPresence            *pitPresenceState
 	vehicleEvents          *vehicleEventStore
 	eventDispatch          chan string
+	raceAudio              *raceAudioSource
 
 	rtpRewriteMu          sync.Mutex
 	rtpRewriteInitialized bool
@@ -670,6 +678,12 @@ func newH264API() (*webrtc.API, error) {
 	}, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("register H264 codec: %w", err)
 	}
+	if err := mediaEngine.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: opusCodec,
+		PayloadType:        111,
+	}, webrtc.RTPCodecTypeAudio); err != nil {
+		return nil, fmt.Errorf("register Opus codec: %w", err)
+	}
 	interceptorRegistry := &interceptor.Registry{}
 	if err := webrtc.RegisterDefaultInterceptors(mediaEngine, interceptorRegistry); err != nil {
 		return nil, fmt.Errorf("register WebRTC interceptors: %w", err)
@@ -683,6 +697,9 @@ func newH264API() (*webrtc.API, error) {
 func (r *relay) start(ctx context.Context) {
 	go r.watchPilotCommands(ctx)
 	go r.runVehicleEventDispatcher(ctx)
+	if r.raceAudio != nil {
+		r.raceAudio.start(ctx)
+	}
 	go func() {
 		for {
 			r.lifecycle.Store(int32(sourceConnecting))
@@ -1940,6 +1957,9 @@ func (r *relay) publishRaceState(message string) {
 	r.raceState = message
 	r.raceStateMu.Unlock()
 	r.broadcastRaceState(message)
+	if r.raceAudio != nil {
+		r.raceAudio.observe(message)
+	}
 }
 
 func (r *relay) currentRaceState() string {
@@ -2448,13 +2468,18 @@ func (r *relay) reservePilot(id uint64) bool {
 
 func (r *relay) removeViewer(id uint64) {
 	wasPilot := false
+	var removed *viewer
 	r.viewersMu.Lock()
+	removed = r.viewers[id]
 	delete(r.viewers, id)
 	if r.pilotID == id {
 		r.pilotID = 0
 		wasPilot = true
 	}
 	r.viewersMu.Unlock()
+	if removed != nil && removed.raceAudioStop != nil {
+		removed.raceAudioStopOnce.Do(func() { close(removed.raceAudioStop) })
+	}
 	if wasPilot {
 		r.driveGear.Store(0)
 		r.setDriveLogging(id, false, "pilot disconnected")
@@ -2559,6 +2584,7 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 			r.removeViewer(client.id)
 			return fmt.Errorf("create Ayame peer connection: %w", createErr)
 		}
+		client.pc = pc
 		pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 			if candidate == nil {
 				return
@@ -2616,6 +2642,8 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 					r.sendCurrentRaceState(client, channel)
 				})
 				channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
+			case raceAudioLabel:
+				r.handleRaceAudioChannel(client, channel)
 			case eventsLabel:
 				channel.OnOpen(func() {
 					r.openVehicleEventsChannel(client, channel)
@@ -2634,6 +2662,12 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 			return fmt.Errorf("add Ayame video track: %w", addTrackErr)
 		}
 		go r.readDownstreamRTCP(rtpSender)
+		if err := r.configureRaceAudioPeer(client, pc); err != nil {
+			_ = pc.Close()
+			r.removeViewer(client.id)
+			pc = nil
+			return err
+		}
 		return nil
 	}
 
@@ -2964,6 +2998,8 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				r.sendCurrentRaceState(client, channel)
 			})
 			channel.OnClose(func() { client.race.CompareAndSwap(channel, nil) })
+		case raceAudioLabel:
+			r.handleRaceAudioChannel(client, channel)
 		case eventsLabel:
 			channel.OnOpen(func() {
 				r.openVehicleEventsChannel(client, channel)
@@ -2981,6 +3017,10 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	go r.readDownstreamRTCP(rtpSender)
+	if err := r.configureRaceAudioPeer(client, pc); err != nil {
+		_ = sendSignal(signalMessage{Type: "error", Error: err.Error()})
+		return
+	}
 
 	remoteDescriptionSet := false
 	var pendingCandidates []webrtc.ICECandidateInit
@@ -3206,6 +3246,11 @@ func main() {
 	var gameplayAllowCIDRs sourceFlag
 	var raceURL string
 	var raceViewerToken string
+	var raceAudioServiceURL string
+	var raceAudioLanguageValue string
+	var raceAudioEnglishVoice string
+	var raceAudioJapaneseVoice string
+	var raceAudioSpeed float64
 	var ayameSignalingURL string
 	var ayameClientIDPrefix string
 	var ayameSignalingKey string
@@ -3228,6 +3273,11 @@ func main() {
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
 	flag.StringVar(&raceURL, "race-url", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_WS_URL")), "Race Control WebSocket URL for race_state v2 distribution")
 	flag.StringVar(&raceViewerToken, "race-viewer-token", strings.TrimSpace(os.Getenv("MOMO_RACE_CONTROL_VIEWER_TOKEN")), "Race Control Viewer Bearer token")
+	flag.StringVar(&raceAudioServiceURL, "race-audio-service-url", strings.TrimSpace(os.Getenv("MOMO_RACE_AUDIO_SERVICE_URL")), "internal race audio synthesis service URL")
+	flag.StringVar(&raceAudioLanguageValue, "race-audio-default-language", raceAudioDefaultLanguage, "race audio language before the Pilot preference arrives: en-US or ja-JP")
+	flag.StringVar(&raceAudioEnglishVoice, "race-audio-en-voice", raceAudioDefaultEnglishVoice, "English voice name sent to the race audio service")
+	flag.StringVar(&raceAudioJapaneseVoice, "race-audio-ja-voice", raceAudioDefaultJapaneseVoice, "Japanese voice name sent to the race audio service")
+	flag.Float64Var(&raceAudioSpeed, "race-audio-speed", 1.04, "race audio speech speed from 0.5 to 2.0")
 	flag.StringVar(&ayameSignalingURL, "ayame-signaling-url", "", "Ayame signaling WebSocket URL for external pilot distribution")
 	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", strings.TrimSpace(os.Getenv("MOMO_AYAME_SIGNALING_KEY")), "Ayame backend signaling key for external pilot distribution; prefer MOMO_AYAME_SIGNALING_KEY")
@@ -3266,6 +3316,17 @@ func main() {
 	}
 	gameplayToken := strings.TrimSpace(os.Getenv("MOMO_RELAY_GAMEPLAY_TOKEN"))
 	sourceAdminToken := strings.TrimSpace(os.Getenv("MOMO_RELAY_ADMIN_TOKEN"))
+	raceAudioService, err := newRaceAudioServiceClient(
+		raceAudioServiceURL,
+		strings.TrimSpace(os.Getenv("MOMO_RACE_AUDIO_SERVICE_TOKEN")),
+		raceAudioLanguageValue,
+		raceAudioEnglishVoice,
+		raceAudioJapaneseVoice,
+		raceAudioSpeed,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if healthRecoveryMode.allowsPitRecovery() {
 		if gameplayToken == "" {
 			log.Fatalf("MOMO_RELAY_GAMEPLAY_TOKEN is required when -health-recovery-mode=%s", healthRecoveryMode)
@@ -3401,6 +3462,7 @@ func main() {
 			upstreamStartTimeout: upstreamStartTimeout,
 			healthRecoveryMode:   healthRecoveryMode,
 			fuelDriveDuration:    fuelDriveDuration,
+			raceAudioService:     raceAudioService,
 			ayameSignalingURL:    strings.TrimSpace(ayameSignalingURL),
 			ayameClientIDPrefix:  strings.TrimSpace(ayameClientIDPrefix),
 			ayameSignalingKey:    strings.TrimSpace(ayameSignalingKey),

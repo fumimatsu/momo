@@ -7,6 +7,13 @@ param(
     [string]$RelaySourceRegistryPath = $env:MOMO_RELAY_SOURCE_REGISTRY,
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
+    [string]$RaceAudioServiceUrl = $env:MOMO_RACE_AUDIO_SERVICE_URL,
+    [ValidateSet('en-US', 'ja-JP')]
+    [string]$RaceAudioDefaultLanguage = 'en-US',
+    [string]$RaceAudioEnglishVoice = 'am_michael',
+    [string]$RaceAudioJapaneseVoice = 'jf_alpha',
+    [ValidateRange(0.5, 2.0)]
+    [double]$RaceAudioSpeed = 1.04,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
@@ -73,6 +80,16 @@ if (-not $SkipRelay -and $HealthRecoveryMode -in @('pit-marker', 'hybrid')) {
     }
     if ([string]::IsNullOrWhiteSpace($RaceControlUrl)) {
         throw "RaceControlUrl is required when HealthRecoveryMode is $HealthRecoveryMode."
+    }
+}
+if (-not $SkipRelay -and -not [string]::IsNullOrWhiteSpace($RaceAudioServiceUrl)) {
+    $raceAudioServiceUri = $null
+    if (-not [Uri]::TryCreate($RaceAudioServiceUrl.Trim(), [UriKind]::Absolute, [ref]$raceAudioServiceUri) `
+        -or $raceAudioServiceUri.Scheme -notin @('http', 'https')) {
+        throw "RaceAudioServiceUrl must be an absolute http:// or https:// URL: $RaceAudioServiceUrl"
+    }
+    if ([string]::IsNullOrWhiteSpace($env:MOMO_RACE_AUDIO_SERVICE_TOKEN)) {
+        throw 'MOMO_RACE_AUDIO_SERVICE_TOKEN is required when RaceAudioServiceUrl is set.'
     }
 }
 
@@ -203,6 +220,14 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
         if (-not [string]::IsNullOrWhiteSpace($RaceControlViewerToken)) {
             $relayArgs += '-race-viewer-token', $RaceControlViewerToken.Trim()
         }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RaceAudioServiceUrl)) {
+        $relayArgs += '-race-audio-service-url', $RaceAudioServiceUrl.Trim()
+        $relayArgs += '-race-audio-default-language', $RaceAudioDefaultLanguage
+        $relayArgs += '-race-audio-en-voice', $RaceAudioEnglishVoice.Trim()
+        $relayArgs += '-race-audio-ja-voice', $RaceAudioJapaneseVoice.Trim()
+        $relayArgs += '-race-audio-speed', $RaceAudioSpeed.ToString(
+            '0.00', [System.Globalization.CultureInfo]::InvariantCulture)
     }
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()

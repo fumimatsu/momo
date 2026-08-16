@@ -1,0 +1,21 @@
+[project]
+name = "momo-race-audio-service"
+version = "0.1.0"
+description = "Internal multilingual TTS and Opus packet service for Momo Relay"
+requires-python = ">=3.13"
+dependencies = [
+  "av>=18.1.0,<19",
+  "kokoro-onnx>=0.4.9,<0.5",
+  "numpy>=2.0,<3",
+  "piper-plus>=1.13.0,<2",
+  "piper-plus-g2p[en,ja]>=0.2.0,<0.3",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

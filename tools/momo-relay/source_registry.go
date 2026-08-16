@@ -31,6 +31,7 @@ type relaySourceRuntime struct {
 	upstreamStartTimeout time.Duration
 	healthRecoveryMode   vehicleHealthRecoveryMode
 	fuelDriveDuration    time.Duration
+	raceAudioService     *raceAudioServiceClient
 	ayameSignalingURL    string
 	ayameClientIDPrefix  string
 	ayameSignalingKey    string
@@ -377,6 +378,7 @@ func (server *relayServer) prepareManagedSource(definition relayFileSource, dyna
 		return nil, sourceError(http.StatusInternalServerError, "source_initialization_failed", "initialize source %q: %v", normalized.ID, err)
 	}
 	source.recorder = server.recorder
+	source.raceAudio = newRaceAudioSource(source, server.sourceRuntime.raceAudioService)
 	return &managedRelaySource{
 		relay:      source,
 		definition: normalized,
