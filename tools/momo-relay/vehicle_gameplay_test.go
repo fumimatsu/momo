@@ -58,6 +58,94 @@ func TestVehicleGameplayFuelDrainAndEmptyLimit(t *testing.T) {
 	}
 }
 
+func TestVehicleGameplayKeepsEmptyLimitUntilThrottleReleaseAfterPitRecovery(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	health := prepareGameplayHealth(base, 10*time.Second, 1, 4)
+	advanceGameplayDriving(health, base, 10, 1, 4)
+	health.setPitPresent(true, base.Add(10*time.Second))
+
+	command := pitRecoveryCommand{
+		CommandID: "cmd-empty-release",
+		RaceRunID: "rr_gameplay",
+		CarID:     "CP-1",
+		EntryID:   "entry-empty-release",
+		Tick:      1,
+	}
+	result, applyErr := health.applyPitRecovery(command, base.Add(11*time.Second))
+	if applyErr != nil {
+		t.Fatalf("pit recovery failed: %#v", applyErr)
+	}
+	if result.Snapshot.Fuel != 10 {
+		t.Fatalf("pit recovery fuel = %.1f, want 10", result.Snapshot.Fuel)
+	}
+
+	health.setPitPresent(false, base.Add(11*time.Second))
+	if got := health.limitCommand("S:1500,T:2000", base.Add(11*time.Second)); got != "S:1500,T:1590" {
+		t.Fatalf("latched empty-fuel command = %q, want limp PWM 1590", got)
+	}
+	if got := health.limitCommand("S:1500,T:1521", base.Add(11*time.Second)); got != "S:1500,T:1521" {
+		t.Fatalf("pre-release command changed: %q", got)
+	}
+	if got := health.limitCommand("S:1500,T:2000", base.Add(11*time.Second)); got != "S:1500,T:1590" {
+		t.Fatalf("empty-fuel limit released above neutral threshold: %q", got)
+	}
+	if got := health.limitCommand("S:1500,T:1520", base.Add(11*time.Second)); got != "S:1500,T:1520" {
+		t.Fatalf("release command changed: %q", got)
+	}
+	if got := health.limitCommand("S:1500,T:2000", base.Add(11*time.Second)); got != "S:1500,T:1800" {
+		t.Fatalf("post-release command = %q, want normal G3 PWM 1800", got)
+	}
+}
+
+func TestVehicleGameplayEmptyPitReleaseBeforeRecoveryDoesNotLatch(t *testing.T) {
+	base := time.Date(2026, 8, 17, 12, 30, 0, 0, time.UTC)
+	health := prepareGameplayHealth(base, 10*time.Second, 1, 4)
+	advanceGameplayDriving(health, base, 10, 1, 4)
+	health.setPitPresent(true, base.Add(10*time.Second))
+	if got := health.limitCommand("S:1500,T:1500", base.Add(10*time.Second)); got != "S:1500,T:1500" {
+		t.Fatalf("neutral release command changed: %q", got)
+	}
+
+	command := pitRecoveryCommand{
+		CommandID: "cmd-released-before-recovery",
+		RaceRunID: "rr_gameplay",
+		CarID:     "CP-1",
+		EntryID:   "entry-released-before-recovery",
+		Tick:      1,
+	}
+	if _, applyErr := health.applyPitRecovery(command, base.Add(11*time.Second)); applyErr != nil {
+		t.Fatalf("pit recovery failed: %#v", applyErr)
+	}
+	if got := health.limitCommand("S:1500,T:2000", base.Add(11*time.Second)); got != "S:1500,T:1800" {
+		t.Fatalf("released throttle remained limited after recovery: %q", got)
+	}
+}
+
+func TestVehicleGameplayDriveOffClearsEmptyPitLimit(t *testing.T) {
+	base := time.Date(2026, 8, 17, 13, 0, 0, 0, time.UTC)
+	health := prepareGameplayHealth(base, 10*time.Second, 1, 4)
+	advanceGameplayDriving(health, base, 10, 1, 4)
+	health.setPitPresent(true, base.Add(10*time.Second))
+
+	command := pitRecoveryCommand{
+		CommandID: "cmd-drive-off",
+		RaceRunID: "rr_gameplay",
+		CarID:     "CP-1",
+		EntryID:   "entry-drive-off",
+		Tick:      1,
+	}
+	if _, applyErr := health.applyPitRecovery(command, base.Add(11*time.Second)); applyErr != nil {
+		t.Fatalf("pit recovery failed: %#v", applyErr)
+	}
+	health.setDriveEnabled(false, base.Add(11*time.Second))
+	health.setPitPresent(false, base.Add(11*time.Second))
+	health.setDriveEnabled(true, base.Add(11*time.Second))
+
+	if got := health.limitCommand("S:1500,T:2000", base.Add(11*time.Second)); got != "S:1500,T:1800" {
+		t.Fatalf("Drive Off did not clear empty PIT limit: %q", got)
+	}
+}
+
 func TestVehicleGameplayPracticeDoesNotConsumeFuel(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealthWithFuelDuration(base, 10*time.Second)

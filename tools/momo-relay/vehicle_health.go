@@ -29,6 +29,7 @@ const (
 	vehicleGearOneForwardMaximum     = 1600
 	vehicleFuelEmptyForwardPWM       = vehicleGearOneForwardMaximum - 10
 	vehicleFuelEmptyReversePWM       = 1500 - (vehicleFuelEmptyForwardPWM - 1500)
+	vehicleFuelEmptyReleasePWM       = 1520
 	vehicleBoostMaximum              = 100.0
 	vehicleBoostDuration             = 2500 * time.Millisecond
 	vehicleBoostFallbackCharge       = 30 * time.Second
@@ -125,6 +126,7 @@ type vehicleHealth struct {
 	effectiveThrottle      float64
 	driveEnabled           bool
 	pitPresent             bool
+	emptyFuelLimitLatched  bool
 	raceConnected          bool
 	lastRaceStateAt        time.Time
 	lastUpdatedAt          time.Time
@@ -420,6 +422,7 @@ func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now ti
 	}
 
 	health.advanceRecoveryLocked(now)
+	health.latchEmptyFuelLimitLocked()
 	previousHP := health.hp
 	previousFuel := health.fuel
 	health.hp = math.Min(vehicleHealthMaximum, health.hp+pitRecoveryAmount)
@@ -455,6 +458,7 @@ func (health *vehicleHealth) resetPitRecoveryLocked() {
 	health.pitEntryID = ""
 	health.lastPitTick = 0
 	health.lastPitAt = time.Time{}
+	health.emptyFuelLimitLatched = false
 	health.pitReceipts = make(map[string]pitRecoveryReceipt)
 	health.pitSeenEntries = make(map[string]struct{})
 }
@@ -576,14 +580,21 @@ func (health *vehicleHealth) limitCommand(message string, now time.Time) string 
 		requestedThrottle := normalizeForwardThrottle(throttle, gear)
 		health.observeThrottleVariationLocked(requestedThrottle, now)
 		health.requestedThrottle = requestedThrottle
+		if health.pitPresent && health.fuel <= 0 && throttle > vehicleFuelEmptyReleasePWM {
+			health.emptyFuelLimitLatched = true
+		}
+		if health.emptyFuelLimitLatched && throttle <= vehicleFuelEmptyReleasePWM {
+			health.emptyFuelLimitLatched = false
+		}
+		fuelEmptyLimited := health.fuel <= 0 || health.emptyFuelLimitLatched
 		limited := throttle
 		if throttle > 1500 {
 			limited = minInt(throttle, vehicleGearForwardMaximum(gear))
 			limited = 1500 + int(math.Round(float64(limited-1500)*vehicleHealthSpeedCap(health.hp)))
-			if health.fuel <= 0 {
+			if fuelEmptyLimited {
 				limited = minInt(limited, vehicleFuelEmptyForwardPWM)
 			}
-		} else if throttle < 1500 && health.fuel <= 0 {
+		} else if throttle < 1500 && fuelEmptyLimited {
 			// Damage may require full reverse to escape an obstacle. Empty fuel alone
 			// receives a symmetric limp limit so reverse cannot bypass fuel gameplay.
 			limited = maxInt(throttle, vehicleFuelEmptyReversePWM)
@@ -709,6 +720,7 @@ func (health *vehicleHealth) setDriveEnabled(enabled bool, now time.Time) vehicl
 	health.advanceRecoveryLocked(now)
 	health.driveEnabled = enabled
 	if !enabled {
+		health.emptyFuelLimitLatched = false
 		health.requestedThrottle = 0
 		health.effectiveThrottle = 0
 		health.lastForwardAt = time.Time{}
@@ -726,6 +738,7 @@ func (health *vehicleHealth) setPitPresent(present bool, now time.Time) vehicleH
 	health.advanceRecoveryLocked(now)
 	health.pitPresent = present
 	if present {
+		health.latchEmptyFuelLimitLocked()
 		health.cancelBoostLocked()
 	}
 	return health.snapshotLocked(now)
@@ -771,6 +784,12 @@ func (health *vehicleHealth) effectiveGearLocked(now time.Time) int {
 func (health *vehicleHealth) cancelBoostLocked() {
 	health.boost = 0
 	health.boostActiveUntil = time.Time{}
+}
+
+func (health *vehicleHealth) latchEmptyFuelLimitLocked() {
+	if health.pitPresent && health.fuel <= 0 && health.requestedThrottle > 0 {
+		health.emptyFuelLimitLatched = true
+	}
 }
 
 func (health *vehicleHealth) boostStateLocked(now time.Time) string {
