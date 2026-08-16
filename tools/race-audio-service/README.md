@@ -72,3 +72,20 @@ uv run python .\race_audio_service.py --listen 127.0.0.1:18090 --engine fixture
 現行既定は英語 Kokoro の `am_michael` である。`jf_alpha`、VOICEVOX、Piper Plus は比較経路として残すが、
 初期本番構成では使用しない。
 この PC では FP32 model が INT8 model より大幅に速かったため、`kokoro-v1.0.onnx` を既定にする。
+
+## Sample-based radio cue comparison
+
+`build_sampled_radio_cue_candidates.py` は、利用許諾を別途確認した短い無線音源から比較用 WAV を生成する。
+入力ディレクトリには次のファイル名が必要である。
+
+- `radio-click.mp3`
+- `radio-buzz-squelch.mp3`
+- `radio-signoff-squelch.mp3`
+- `walkie-talkie-beep.mp3`
+
+音源ファイル自体はリポジトリへ含めない。ライセンスと再配布条件を確認してから使用する。
+処理は既存依存の PyAV と NumPy だけを使う。
+
+```powershell
+uv run python .\build_sampled_radio_cue_candidates.py C:\path\to\sources C:\temp\race-radio-cues
+```
