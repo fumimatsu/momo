@@ -1,5 +1,8 @@
 # Relay 配信型レース音声サービス
 
+本番適用、再起動、Viewer 再接続、Web Observer の対応範囲は
+[`relay-race-audio-operations.md`](relay-race-audio-operations.md) を参照する。
+
 ## 状態
 
 Relay Pilot へ LAP 完了と GOAL の英語 TTS を配信する初期実装である。
