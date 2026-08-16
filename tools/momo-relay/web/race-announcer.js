@@ -189,33 +189,6 @@
     const level = Math.max(0, Math.min(1, Number(volume) || 0));
     if (level <= 0) return false;
 
-    if (signal === 'radio') {
-      playTone(context, {
-        type: 'triangle',
-        frequency: 430,
-        endFrequency: 510,
-        durationMs: 92,
-        volume: level * 0.72,
-      });
-      playTone(context, {
-        type: 'sine',
-        frequency: 645,
-        endFrequency: 765,
-        delaySeconds: 0.012,
-        durationMs: 88,
-        volume: level * 0.28,
-      });
-      playTone(context, {
-        type: 'triangle',
-        frequency: 560,
-        endFrequency: 465,
-        delaySeconds: 0.112,
-        durationMs: 96,
-        volume: level * 0.68,
-      });
-      return true;
-    }
-
     if (signal === 'green') {
       playTone(context, {
         type: 'triangle',

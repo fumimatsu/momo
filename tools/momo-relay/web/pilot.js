@@ -293,6 +293,10 @@
   const RACE_ANNOUNCE_VOICE = getStringParam('raceAnnounceVoice', '');
   const RACE_ANNOUNCE_RATE = Math.max(0.5, Math.min(2.5, getNumberParam('raceAnnounceRate', 1.04)));
   const RACE_ANNOUNCE_VOLUME = Math.max(0, Math.min(1, getNumberParamAllowZero('raceAnnounceVolume', 0.95)));
+	const RACE_RADIO_CUE_VOLUME = Math.max(
+		0,
+		Math.min(0.4, getNumberParamAllowZero('raceRadioCueVolume', 0.22)),
+	);
 	const RACE_REMOTE_AUDIO_LANGUAGE = raceAnnouncer.normalizeRemoteLanguage(
 		RACE_ANNOUNCE_LANGUAGE,
 		RACE_ANNOUNCE_ENABLED,
@@ -304,6 +308,7 @@
   );
 
   const remoteVideo = document.getElementById('remote_video');
+	const raceRadioCueAsset = document.getElementById('raceRadioCueAsset');
 	const remoteRaceAudio = document.createElement('audio');
 	remoteRaceAudio.autoplay = true;
 	remoteRaceAudio.hidden = true;
@@ -628,6 +633,8 @@
   let lastRaceLapAnnouncementKey = '';
   let lastRaceMilestoneKey = '';
   let raceSignalAudioContext = null;
+	let raceRadioCueBuffer = null;
+	let raceRadioCueBufferPromise = null;
   let raceSignalSoundUnlocked = false;
   let lastRaceSignalSoundKey = '';
   let selectedRaceAnnouncementVoiceName = '';
@@ -2186,6 +2193,36 @@
     return raceSignalAudioContext;
   }
 
+	function preloadRaceRadioCueSound(context) {
+		if (raceRadioCueBuffer) {
+			return Promise.resolve(raceRadioCueBuffer);
+		}
+		if (raceRadioCueBufferPromise) {
+			return raceRadioCueBufferPromise;
+		}
+		if (!context || !raceRadioCueAsset?.href || typeof fetch !== 'function') {
+			return Promise.resolve(null);
+		}
+		raceRadioCueBufferPromise = fetch(raceRadioCueAsset.href, { cache: 'force-cache' })
+			.then((response) => {
+				if (!response.ok) {
+					throw new Error(`HTTP ${response.status}`);
+				}
+				return response.arrayBuffer();
+			})
+			.then((encoded) => context.decodeAudioData(encoded))
+			.then((buffer) => {
+				raceRadioCueBuffer = buffer;
+				return buffer;
+			})
+			.catch((error) => {
+				raceRadioCueBufferPromise = null;
+				recordEvent('race audio cue preload failed', error.message || String(error));
+				return null;
+			});
+		return raceRadioCueBufferPromise;
+	}
+
   function unlockRaceSignalSound() {
     if ((!RACE_SIGNAL_SOUND_ENABLED && !RACE_ANNOUNCE_ENABLED) || raceSignalSoundUnlocked) {
       return;
@@ -2194,6 +2231,7 @@
     if (!context) {
       return;
     }
+		preloadRaceRadioCueSound(context);
     context.resume?.()
       .then(() => {
         raceSignalSoundUnlocked = context.state === 'running';
@@ -2269,13 +2307,20 @@
 			unlockRaceSignalSound();
 			return false;
 		}
-		const played = raceAnnouncer.playSignal(
-			context,
-			'radio',
-			Math.min(RACE_ANNOUNCE_VOLUME, 0.32),
-		);
-		if (played) recordEvent('race audio cue', 'queued');
-		return played;
+		if (!raceRadioCueBuffer || RACE_RADIO_CUE_VOLUME <= 0) {
+			preloadRaceRadioCueSound(context);
+			recordEvent('race audio cue skipped', raceRadioCueBuffer ? 'muted' : 'not ready');
+			return false;
+		}
+		const source = context.createBufferSource();
+		const gain = context.createGain();
+		source.buffer = raceRadioCueBuffer;
+		gain.gain.value = Math.min(RACE_ANNOUNCE_VOLUME, RACE_RADIO_CUE_VOLUME);
+		source.connect(gain);
+		gain.connect(context.destination);
+		source.start();
+		recordEvent('race audio cue', 'queued');
+		return true;
 	}
 
   function classifyRaceBestTime(value, personalBest, overallBest) {

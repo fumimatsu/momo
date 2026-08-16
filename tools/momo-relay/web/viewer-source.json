@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/fumimatsu/momo-fpv-viewer",
-  "sourceCommit": "e5a06d1d7d1d768c2e4f58a3a8dabe60c19af38d",
+  "sourceCommit": "9f26df9c5d91b667ca49309b537a1957e2b92485",
   "sourceDirty": false,
   "variant": "relay-pilot",
   "target": "relay-web",
@@ -10,6 +10,7 @@
     "pilot.js",
     "race-battle.js",
     "notification-controller.js",
+    "race-radio-cue.wav",
     "race-announcer.js",
     "garage.html",
     "ffb-bridge.js",
