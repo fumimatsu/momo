@@ -311,6 +311,7 @@
 	const raceRadioCueAsset = document.getElementById('raceRadioCueAsset');
 	const remoteRaceAudio = document.createElement('audio');
 	remoteRaceAudio.autoplay = true;
+	remoteRaceAudio.playsInline = true;
 	remoteRaceAudio.hidden = true;
 	remoteRaceAudio.volume = RACE_ANNOUNCE_VOLUME;
 	remoteRaceAudio.setAttribute('aria-hidden', 'true');
@@ -639,10 +640,9 @@
   let lastRaceSignalSoundKey = '';
   let selectedRaceAnnouncementVoiceName = '';
 	let remoteRaceAudioEnabled = false;
+	let remoteRaceAudioPlaybackPromise = null;
+	let remoteRaceAudioPlaybackBlocked = '';
 	const remoteRaceAudioTracker = raceAnnouncer.createRemoteAudioTracker();
-	let remoteRaceAudioPlaybackReady = false;
-	let remoteRaceAudioPlayAttempts = 0;
-	let remoteRaceAudioLastError = '';
   const receivedRaceLapHistory = new Map();
   const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
     warningGapMs: RACE_REAR_WARNING_GAP_MS,
@@ -2490,25 +2490,41 @@
 		m5AudioPlayer?.setOutputGain?.(level, rampMs);
 	}
 
+	function getRemoteRaceAudioTrack() {
+		return remoteRaceAudio.srcObject?.getAudioTracks?.()[0] || null;
+	}
+
 	function ensureRemoteRaceAudioPlayback(reason = 'retry') {
-		if (!usesRelayTransport() || !remoteRaceAudio.srcObject) {
-			return false;
+		const track = getRemoteRaceAudioTrack();
+		if (!track || track.readyState === 'ended') {
+			return Promise.resolve(false);
 		}
-		if (remoteRaceAudioPlaybackReady && !remoteRaceAudio.paused) {
-			return true;
+		if (!remoteRaceAudio.paused) {
+			remoteRaceAudioPlaybackBlocked = '';
+			return Promise.resolve(true);
 		}
-		remoteRaceAudioPlayAttempts += 1;
-		remoteRaceAudio.play().then(() => {
-			const wasReady = remoteRaceAudioPlaybackReady;
-			remoteRaceAudioPlaybackReady = true;
-			remoteRaceAudioLastError = '';
-			if (!wasReady) recordEvent('race audio output ready', reason);
-		}).catch((error) => {
-			remoteRaceAudioPlaybackReady = false;
-			remoteRaceAudioLastError = error.message || String(error);
-			recordEvent('race audio play blocked', remoteRaceAudioLastError);
-		});
-		return true;
+		if (remoteRaceAudioPlaybackPromise) {
+			return remoteRaceAudioPlaybackPromise;
+		}
+		remoteRaceAudioPlaybackPromise = Promise.resolve(remoteRaceAudio.play())
+			.then(() => {
+				remoteRaceAudioPlaybackBlocked = '';
+				recordEvent('race audio playback ready', reason);
+				return true;
+			})
+			.catch((error) => {
+				remoteRaceAudioPlaybackBlocked = error.message || String(error);
+				recordEvent('race audio play blocked', remoteRaceAudioPlaybackBlocked);
+				return false;
+			})
+			.finally(() => {
+				remoteRaceAudioPlaybackPromise = null;
+			});
+		return remoteRaceAudioPlaybackPromise;
+	}
+
+	function unlockRemoteRaceAudioPlayback() {
+		ensureRemoteRaceAudioPlayback('user gesture');
 	}
 
 	function handleRemoteRaceAudioMessage(message) {
@@ -2527,9 +2543,9 @@
 		}
 		if (payload.state === 'playing') {
 			remoteRaceAudioTracker.play(payload.eventId);
-			ensureRemoteRaceAudioPlayback('playing');
 			stopRaceAnnouncement();
 			setM5AudioDucking(Number(payload.ducking?.m5AudioGain) || 0.4, payload.ducking?.attackMs || 80);
+			ensureRemoteRaceAudioPlayback('playing event');
 			recordEvent('race audio playing', `${payload.kind || 'event'} ${payload.language || ''}`.trim());
 			return true;
 		}
@@ -5601,10 +5617,10 @@
     remoteVideo.srcObject = null;
 		remoteRaceAudio.pause();
 		remoteRaceAudio.srcObject = null;
+		remoteRaceAudioPlaybackPromise = null;
+		remoteRaceAudioPlaybackBlocked = '';
 		remoteRaceAudioEnabled = false;
 		remoteRaceAudioTracker.reset();
-		remoteRaceAudioPlaybackReady = false;
-		remoteRaceAudioLastError = '';
 		setM5AudioDucking(1, 0);
     updateUiState();
   }
@@ -6245,11 +6261,11 @@
 
     const mediaStream = new MediaStream();
     remoteVideo.srcObject = mediaStream;
-    peer.ontrack = (event) => {
+		peer.ontrack = (event) => {
 			if (event.track.kind === 'audio' && usesRelayTransport()) {
 				remoteRaceAudio.srcObject = new MediaStream([event.track]);
-				remoteRaceAudioPlaybackReady = false;
-				ensureRemoteRaceAudioPlayback('track');
+				event.track.addEventListener?.('unmute', () => ensureRemoteRaceAudioPlayback('track unmuted'));
+				ensureRemoteRaceAudioPlayback('audio track');
 				return;
 			}
       mediaStream.addTrack(event.track);
@@ -7304,7 +7320,21 @@
         q: AUDIO_FILTER_Q,
         contextState: audioContext?.state || 'none',
       },
-      m5Audio: m5AudioPlayer?.snapshot() || null,
+		m5Audio: m5AudioPlayer?.snapshot() || null,
+		raceAudio: {
+			enabled: remoteRaceAudioEnabled,
+			channel: snapshotDataChannelForCapture(raceAudioChannel),
+			paused: remoteRaceAudio.paused,
+			playbackBlocked: remoteRaceAudioPlaybackBlocked || null,
+			track: (() => {
+				const track = getRemoteRaceAudioTrack();
+				return track ? {
+					readyState: track.readyState,
+					muted: track.muted,
+					enabled: track.enabled,
+				} : null;
+			})(),
+		},
       downlink: {
         transport: usesWebSocketDownlink() ? 'websocket' : 'datachannel',
         websocketState: ws ? ['connecting', 'open', 'closing', 'closed'][ws.readyState] : 'none',
@@ -7385,13 +7415,6 @@
       rate: RACE_ANNOUNCE_RATE,
       volume: RACE_ANNOUNCE_VOLUME,
       lastKey: lastRaceLapAnnouncementKey || null,
-			remote: {
-				enabled: remoteRaceAudioEnabled,
-				hasTrack: Boolean(remoteRaceAudio.srcObject?.getAudioTracks?.().length),
-				playbackReady: remoteRaceAudioPlaybackReady && !remoteRaceAudio.paused,
-				playAttempts: remoteRaceAudioPlayAttempts,
-				lastError: remoteRaceAudioLastError || null,
-			},
     }),
     getMilestoneDiagnostics: () => ({
       key: lastRaceMilestoneKey || null,
@@ -7402,10 +7425,10 @@
     getNotificationDiagnostics: () => notificationController.getState(),
   };
   window.addEventListener('momo-race-state', (event) => setRaceState(event.detail));
-  window.addEventListener('pointerdown', unlockRaceSignalSound);
-  window.addEventListener('keydown', unlockRaceSignalSound);
-	window.addEventListener('pointerdown', () => ensureRemoteRaceAudioPlayback('pointer'));
-	window.addEventListener('keydown', () => ensureRemoteRaceAudioPlayback('keyboard'));
+	window.addEventListener('pointerdown', unlockRaceSignalSound);
+	window.addEventListener('keydown', unlockRaceSignalSound);
+	window.addEventListener('pointerdown', unlockRemoteRaceAudioPlayback);
+	window.addEventListener('keydown', unlockRemoteRaceAudioPlayback);
   window.addEventListener('pointerdown', prepareRaceAnnouncement);
   window.addEventListener('keydown', prepareRaceAnnouncement);
   window.speechSynthesis?.addEventListener?.('voiceschanged', prepareRaceAnnouncement);
