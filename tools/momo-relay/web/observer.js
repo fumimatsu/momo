@@ -1596,7 +1596,7 @@ function renderCameraTelemetry(car, telemetry) {
   const escStream = telemetry.esc;
   const esc = escStream?.state?.esc;
   const escText = esc
-    ? `ESC ${Number.isInteger(esc.rpm) ? `${esc.rpm} RPM` : '-- RPM'} ${Number.isFinite(esc.v) ? `${esc.v.toFixed(2)} V` : '-- V'} ${Number.isFinite(esc.tc) ? `${esc.tc.toFixed(0)} C` : '-- C'}${escStream.stale ? ' STALE' : ''}`
+    ? `ESC ${Number.isInteger(esc.rpm) ? `${esc.rpm} RPM` : '-- RPM'} ${Number.isFinite(esc.v) ? `${esc.v.toFixed(2)} V` : '-- V'} E${Number.isFinite(esc.tc) ? `${esc.tc.toFixed(0)} C` : '-- C'} M${Number.isFinite(esc.tm) ? `${esc.tm.toFixed(0)} C` : '-- C'}${escStream.stale ? ' STALE' : ''}`
     : 'ESC --';
   setTextIfChanged(nodes.esc, escText);
   nodes.root.dataset.active = motion ? 'true' : 'false';

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260816-esc-telemetry-v1';
+  const PILOT_BUILD_ID = '20260816-ev-cockpit-v2';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -117,9 +117,16 @@
   const AUTO_START = getBooleanParam('autoStart', SIGNALING_MODE !== 'ayame');
   // Local UI checks can exercise Drive state without connecting to a vehicle.
   const DRIVE_UI_TEST_MODE = !AUTO_START && getBooleanParam('driveUiTest', false);
+  const DRIVE_UI_TEST_ESC = DRIVE_UI_TEST_MODE && getBooleanParam('escUiTest', false);
+  const DRIVE_UI_TEST_ESC_VOLTAGE = getNumberParam('escUiTestVoltage', 7.9);
+  const DRIVE_UI_TEST_ESC_TEMPERATURE = getNumberParam('escUiTestControllerTemp', 31);
+  const DRIVE_UI_TEST_MOTOR_TEMPERATURE = getNumberParam('escUiTestMotorTemp', 29);
   const DRIVE_UI_TEST_HEALTH = DRIVE_UI_TEST_MODE
     ? getNumberParam('healthUiTest', -1)
     : -1;
+	const DRIVE_UI_TEST_STEERING = DRIVE_UI_TEST_MODE ? getSignedNumberParam('steeringUiTest', 0) : 0;
+	const DRIVE_UI_TEST_THROTTLE = DRIVE_UI_TEST_MODE ? getNumberParam('throttleUiTest', 0) : 0;
+	const DRIVE_UI_TEST_BRAKE = DRIVE_UI_TEST_MODE ? getNumberParam('brakeUiTest', 0) : 0;
 	const DRIVE_UI_TEST_FUEL = DRIVE_UI_TEST_MODE ? getNumberParam('fuelUiTest', 64) : -1;
 	const DRIVE_UI_TEST_BOOST = DRIVE_UI_TEST_MODE ? getNumberParam('boostUiTest', 100) : -1;
 	const DRIVE_UI_TEST_BOOST_STATE = DRIVE_UI_TEST_MODE
@@ -185,6 +192,25 @@
   const G_METER_STANDARD_GRAVITY_MPS2 = 9.80665;
   const G_METER_FULL_SCALE_G = Math.max(0.5, Math.min(3.0, getNumberParam('gMeterScaleG', 1.5)));
   const G_METER_DOT_RADIUS_PX = 42;
+  const VEHICLE_BATTERY_CELLS = Math.max(1, Math.min(8, getIntegerParam('batteryCells', 2)));
+  const VEHICLE_VOLTAGE_WARNING_V = Math.max(
+    0,
+    getNumberParam('batteryWarningV', VEHICLE_BATTERY_CELLS * 3.5),
+  );
+  const VEHICLE_VOLTAGE_CRITICAL_V = Math.min(
+    VEHICLE_VOLTAGE_WARNING_V,
+    Math.max(0, getNumberParam('batteryCriticalV', VEHICLE_BATTERY_CELLS * 3.3)),
+  );
+  const VEHICLE_ESC_TEMP_WARNING_C = getNumberParam('escTempWarningC', 70);
+  const VEHICLE_ESC_TEMP_CRITICAL_C = Math.max(
+    VEHICLE_ESC_TEMP_WARNING_C,
+    getNumberParam('escTempCriticalC', 85),
+  );
+  const VEHICLE_MOTOR_TEMP_WARNING_C = getNumberParam('motorTempWarningC', 80);
+  const VEHICLE_MOTOR_TEMP_CRITICAL_C = Math.max(
+    VEHICLE_MOTOR_TEMP_WARNING_C,
+    getNumberParam('motorTempCriticalC', 100),
+  );
   const RACE_BATTLE_MIN_OFFSET_PX = 30;
   const RACE_BATTLE_MAX_OFFSET_PX = 80;
   const RACE_ANNOUNCE_ENABLED = getBooleanParam('raceAnnounce', false);
@@ -326,6 +352,8 @@
   let activeFfbPreset = FFB_INITIAL_PRESET;
   const driveHud = document.getElementById('driveHud');
   const driveHudMode = document.getElementById('driveHudMode');
+  const driveHudSteeringControl = document.getElementById('driveHudSteeringControl');
+  const driveHudSteeringTrack = document.getElementById('driveHudSteeringTrack');
   const driveHudSteeringMarker = document.getElementById('driveHudSteeringMarker');
   const driveHudSteering = document.getElementById('driveHudSteering');
   const driveHudThrottle = document.getElementById('driveHudThrottle');
@@ -338,6 +366,16 @@
   const driveGmeter = document.getElementById('driveGmeter');
   const driveGmeterDot = document.getElementById('driveGmeterDot');
   const driveGmeterScale = document.getElementById('driveGmeterScale');
+  const vehicleVitals = document.getElementById('vehicleVitals');
+  const vehicleVoltageVital = document.getElementById('vehicleVoltageVital');
+  const vehicleVoltageValue = document.getElementById('vehicleVoltageValue');
+  const vehicleVoltageStatus = document.getElementById('vehicleVoltageStatus');
+  const vehicleEscTempVital = document.getElementById('vehicleEscTempVital');
+  const vehicleEscTempValue = document.getElementById('vehicleEscTempValue');
+  const vehicleEscTempStatus = document.getElementById('vehicleEscTempStatus');
+  const vehicleMotorTempVital = document.getElementById('vehicleMotorTempVital');
+  const vehicleMotorTempValue = document.getElementById('vehicleMotorTempValue');
+  const vehicleMotorTempStatus = document.getElementById('vehicleMotorTempStatus');
   const driveMetrics = document.getElementById('driveMetrics');
   const driveDamagePanel = document.getElementById('driveDamagePanel');
   const driveDamageFill = document.getElementById('driveDamageFill');
@@ -346,6 +384,7 @@
 	const vehicleResourceHp = document.getElementById('vehicleResourceHp');
 	const vehicleResourceHpFill = document.getElementById('vehicleResourceHpFill');
 	const vehicleResourceHpValue = document.getElementById('vehicleResourceHpValue');
+	const vehicleResourceHpStatus = document.getElementById('vehicleResourceHpStatus');
 	const vehicleResourceFuel = document.getElementById('vehicleResourceFuel');
 	const vehicleResourceFuelFill = document.getElementById('vehicleResourceFuelFill');
 	const vehicleResourceFuelValue = document.getElementById('vehicleResourceFuelValue');
@@ -447,6 +486,11 @@
     steering: 0,
     throttle: 0,
     brake: 0,
+  };
+  const vehicleVitalStates = {
+    voltage: 'waiting',
+    escTemperature: 'waiting',
+    motorTemperature: 'waiting',
   };
   let ayameIceServers = [];
   let audioContext = null;
@@ -709,6 +753,16 @@
     }
     const value = Number(raw);
     return Number.isFinite(value) && value >= 0 ? value : defaultValue;
+  }
+
+  function getSignedNumberParam(name, defaultValue) {
+    const params = getUrlParams();
+    const raw = params.get(name);
+    if (raw === null) {
+      return defaultValue;
+    }
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : defaultValue;
   }
 
   function getIntegerParam(name, defaultValue) {
@@ -2364,6 +2418,7 @@
 
   function updateTelemetryUi() {
     setText(telemetryState, getTelemetryStatus());
+    updateVehicleVitals();
   }
 
   function updateM5AudioUi(snapshot = null, status = null) {
@@ -2818,14 +2873,146 @@
   }
 
   function getTelemetryStatus() {
-    const esc = latestEsc?.state?.esc;
+    const escSnapshot = getCurrentEscSnapshot();
+    const esc = escSnapshot?.state?.esc;
     if (esc) {
       const rpm = Number.isInteger(esc.rpm) ? esc.rpm : '--';
       const voltage = Number.isFinite(esc.v) ? esc.v.toFixed(2) : '--';
-      const temperature = Number.isFinite(esc.tc) ? esc.tc.toFixed(0) : '--';
-      return `ESC ${rpm}RPM ${voltage}V ${temperature}C${latestEsc.stale ? ' STALE' : ''}`;
+      const escTemperature = Number.isFinite(esc.tc) ? esc.tc.toFixed(0) : '--';
+      const motorTemperature = Number.isFinite(esc.tm) ? esc.tm.toFixed(0) : '--';
+      return `ESC ${rpm}RPM ${voltage}V E${escTemperature}C M${motorTemperature}C${escSnapshot.stale ? ' STALE' : ''}`;
     }
     return lastTelemetry;
+  }
+
+  function getCurrentEscSnapshot(nowMs = performance.now()) {
+    if (DRIVE_UI_TEST_ESC) {
+      return {
+        stale: false,
+        state: {
+          esc: {
+            v: DRIVE_UI_TEST_ESC_VOLTAGE,
+            tc: DRIVE_UI_TEST_ESC_TEMPERATURE,
+            tm: DRIVE_UI_TEST_MOTOR_TEMPERATURE,
+          },
+          q: { ok: true },
+        },
+      };
+    }
+    const tracked = telemetryTracker?.getSnapshot(nowMs).primaryEsc;
+    if (tracked) latestEsc = tracked;
+    return latestEsc;
+  }
+
+  function classifyLowVital(value, warning, critical, previous, hysteresis) {
+    if (!Number.isFinite(value)) return 'unavailable';
+    if (previous === 'critical' && value <= critical + hysteresis) return 'critical';
+    if (previous === 'warning' && value <= warning + hysteresis) {
+      return value <= critical ? 'critical' : 'warning';
+    }
+    if (value <= critical) return 'critical';
+    if (value <= warning) return 'warning';
+    return 'normal';
+  }
+
+  function classifyHighVital(value, warning, critical, previous, hysteresis) {
+    if (!Number.isFinite(value)) return 'unavailable';
+    if (previous === 'critical' && value >= critical - hysteresis) return 'critical';
+    if (previous === 'warning' && value >= warning - hysteresis) {
+      return value >= critical ? 'critical' : 'warning';
+    }
+    if (value >= critical) return 'critical';
+    if (value >= warning) return 'warning';
+    return 'normal';
+  }
+
+  function renderVehicleVital(root, valueNode, statusNode, value, unit, state, digits = 0) {
+    if (!root) return;
+    root.dataset.state = state;
+    const labels = {
+      normal: 'OK',
+      warning: unit === 'V' ? 'LOW' : 'HOT',
+      critical: unit === 'V' ? 'CRIT' : 'OVER',
+      stale: 'STALE',
+      unavailable: 'N/A',
+      waiting: 'WAIT',
+    };
+    const readable = Number.isFinite(value) && !['stale', 'waiting', 'unavailable'].includes(state)
+      ? value.toFixed(digits)
+      : '--';
+    setText(valueNode, readable);
+    setText(statusNode, labels[state] || 'WAIT');
+    root.setAttribute(
+      'aria-label',
+      `${root.dataset.label || 'Vehicle telemetry'} ${readable} ${unit}, ${labels[state] || state}`,
+    );
+  }
+
+  function updateVehicleVitals(nowMs = performance.now()) {
+    if (!vehicleVitals) return;
+    const snapshot = getCurrentEscSnapshot(nowMs);
+    const esc = snapshot?.state?.esc;
+    if (!snapshot || !esc) {
+      for (const key of Object.keys(vehicleVitalStates)) vehicleVitalStates[key] = 'waiting';
+      renderVehicleVital(vehicleVoltageVital, vehicleVoltageValue, vehicleVoltageStatus, NaN, 'V', 'waiting', 1);
+      renderVehicleVital(vehicleEscTempVital, vehicleEscTempValue, vehicleEscTempStatus, NaN, 'C', 'waiting');
+      renderVehicleVital(vehicleMotorTempVital, vehicleMotorTempValue, vehicleMotorTempStatus, NaN, 'C', 'waiting');
+      return;
+    }
+    if (snapshot.stale || snapshot.state?.q?.ok === false) {
+      for (const key of Object.keys(vehicleVitalStates)) vehicleVitalStates[key] = 'stale';
+      renderVehicleVital(vehicleVoltageVital, vehicleVoltageValue, vehicleVoltageStatus, NaN, 'V', 'stale', 1);
+      renderVehicleVital(vehicleEscTempVital, vehicleEscTempValue, vehicleEscTempStatus, NaN, 'C', 'stale');
+      renderVehicleVital(vehicleMotorTempVital, vehicleMotorTempValue, vehicleMotorTempStatus, NaN, 'C', 'stale');
+      return;
+    }
+
+    vehicleVitalStates.voltage = classifyLowVital(
+      Number(esc.v),
+      VEHICLE_VOLTAGE_WARNING_V,
+      VEHICLE_VOLTAGE_CRITICAL_V,
+      vehicleVitalStates.voltage,
+      0.2,
+    );
+    vehicleVitalStates.escTemperature = classifyHighVital(
+      Number(esc.tc),
+      VEHICLE_ESC_TEMP_WARNING_C,
+      VEHICLE_ESC_TEMP_CRITICAL_C,
+      vehicleVitalStates.escTemperature,
+      3,
+    );
+    vehicleVitalStates.motorTemperature = classifyHighVital(
+      Number(esc.tm),
+      VEHICLE_MOTOR_TEMP_WARNING_C,
+      VEHICLE_MOTOR_TEMP_CRITICAL_C,
+      vehicleVitalStates.motorTemperature,
+      3,
+    );
+    renderVehicleVital(
+      vehicleVoltageVital,
+      vehicleVoltageValue,
+      vehicleVoltageStatus,
+      Number(esc.v),
+      'V',
+      vehicleVitalStates.voltage,
+      1,
+    );
+    renderVehicleVital(
+      vehicleEscTempVital,
+      vehicleEscTempValue,
+      vehicleEscTempStatus,
+      Number(esc.tc),
+      'C',
+      vehicleVitalStates.escTemperature,
+    );
+    renderVehicleVital(
+      vehicleMotorTempVital,
+      vehicleMotorTempValue,
+      vehicleMotorTempStatus,
+      Number(esc.tm),
+      'C',
+      vehicleVitalStates.motorTemperature,
+    );
   }
 
   function getDcRttStatus() {
@@ -2935,7 +3122,6 @@
 
   function applyTelemetry(message, source = 'datachannel') {
     lastTelemetry = message;
-    updateTelemetryUi();
 
     const arrivalMs = performance.now();
     const telemetryResult = telemetryTracker?.ingest(message, arrivalMs);
@@ -2943,6 +3129,7 @@
       latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
       latestEsc = telemetryTracker.getSnapshot(arrivalMs).primaryEsc || latestEsc;
     }
+    updateTelemetryUi();
     const motion = getMotionSnapshot();
     updateMotionUi(motion);
 
@@ -3168,7 +3355,9 @@
 	}
 
 	function setVehicleResourceLevel(fill, value) {
-		fill?.style.setProperty('--resource-level', String(Math.max(0, Math.min(1, value / 100))));
+		const level = Math.max(0, Math.min(1, value / 100));
+		fill?.style.setProperty('--resource-level', String(level));
+		fill?.style.setProperty('--resource-empty', `${((1 - level) * 100).toFixed(1)}%`);
 	}
 
 	function renderVehicleResourceRecoveryValues(hp, fuel) {
@@ -3317,6 +3506,12 @@
 		vehicleResourceHud.hidden = false;
 		updateVehicleResourcePosition();
 		vehicleResourceHp.dataset.state = vehicleHealth.mode;
+		setText(vehicleResourceHpStatus, {
+			healthy: 'OK',
+			damaged: 'WARN',
+			critical: 'CRIT',
+			limp: 'LIMP',
+		}[vehicleHealth.mode] || 'N/A');
 		if (impact) {
 			vehicleResourceHp.classList.remove('is-impacting');
 			void vehicleResourceHp.offsetWidth;
@@ -3483,6 +3678,11 @@
   }
 
   function updateDriveHud() {
+    if (DRIVE_UI_TEST_MODE) {
+      driveHudState.steering = Math.max(-1, Math.min(1, DRIVE_UI_TEST_STEERING));
+      driveHudState.throttle = Math.max(0, Math.min(1, DRIVE_UI_TEST_THROTTLE));
+      driveHudState.brake = Math.max(0, Math.min(1, DRIVE_UI_TEST_BRAKE));
+    }
     const steering = Math.max(-1, Math.min(1, driveHudState.steering));
     const throttle = Math.max(0, Math.min(1, driveHudState.throttle));
     const brake = Math.max(0, Math.min(1, driveHudState.brake));
@@ -3494,8 +3694,18 @@
     if (driveHudSteeringMarker) {
       driveHudSteeringMarker.style.left = `${(50 + steering * 45).toFixed(1)}%`;
     }
+    const steeringDirection = steering < -0.01 ? 'left' : steering > 0.01 ? 'right' : 'center';
+    const steeringLevel = Math.abs(steering);
+    if (driveHudSteeringControl) {
+      driveHudSteeringControl.dataset.direction = steeringDirection;
+    }
+    if (driveHudSteeringTrack) {
+      driveHudSteeringTrack.dataset.direction = steeringDirection;
+      driveHudSteeringTrack.style.setProperty('--steer-width', `${(steeringLevel * 50).toFixed(1)}%`);
+    }
     if (driveHudSteering) {
-      driveHudSteering.textContent = `${Math.round(steering * 100)}%`;
+      const directionLabel = steeringDirection === 'left' ? 'L' : steeringDirection === 'right' ? 'R' : 'C';
+      driveHudSteering.textContent = `${directionLabel} ${Math.round(steeringLevel * 100)}%`;
     }
     setDriveHudLevel(driveHudThrottle, throttle);
     setDriveHudLevel(driveHudBrake, brake);
@@ -5627,6 +5837,7 @@
   function startOsdMonitor() {
     window.setInterval(() => {
       updateTimerUi();
+      updateTelemetryUi();
       updateMotionUi();
     }, OSD_UPDATE_INTERVAL_MS);
   }

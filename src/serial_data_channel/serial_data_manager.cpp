@@ -28,13 +28,16 @@ namespace {
 constexpr uint8_t kTelemetryBinaryVersion = 3;
 constexpr uint8_t kTelemetryBinaryState = 1;
 constexpr uint8_t kTelemetryBinaryEvent = 2;
-constexpr uint8_t kTelemetryBinaryEscState = 3;
+constexpr uint8_t kTelemetryBinaryEscStateLegacy = 3;
+constexpr uint8_t kTelemetryBinaryEscState = 4;
 constexpr size_t kTelemetryBinaryMaxEncodedBytes = 64;
 constexpr uint16_t kEscMotorRpm = 1u << 0;
 constexpr uint16_t kEscMaximumMotorRpm = 1u << 1;
 constexpr uint16_t kEscVoltage = 1u << 2;
 constexpr uint16_t kEscTemperature = 1u << 3;
-constexpr uint16_t kEscDriveOutput = 1u << 4;
+constexpr uint16_t kEscLegacyDriveOutput = 1u << 4;
+constexpr uint16_t kEscMotorTemperature = 1u << 4;
+constexpr uint16_t kEscDriveOutput = 1u << 5;
 constexpr uint16_t kEscFresh = 1u << 0;
 
 uint16_t Crc16Ccitt(const uint8_t* data, size_t length) {
@@ -116,8 +119,10 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
         "TEL:{\"v\":2,\"k\":\"e\",\"src\":\"imu0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"e\":{\"n\":\"impact_candidate\",\"m\":%.1f,\"a\":[%.3f,%.3f,%.3f],\"j\":%.0f}}",
         boot, sequence, static_cast<unsigned long long>(timestamp_us), magnitude, forward,
         lateral, vertical, jerk);
-  } else if (type == kTelemetryBinaryEscState && payload.size() == 48 &&
-             payload[2] == 0 && payload[3] == 1) {
+  } else if ((type == kTelemetryBinaryEscStateLegacy ||
+              type == kTelemetryBinaryEscState) &&
+             payload.size() == 48 && payload[2] == 0 && payload[3] == 1) {
+    const bool dual_temperature = type == kTelemetryBinaryEscState;
     const uint16_t valid = ReadU16(payload, 20);
     const uint16_t status = ReadU16(payload, 22);
     std::string esc = "{";
@@ -147,17 +152,32 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
       append_decimal("v", ReadU16(payload, 32) / 1000.0, 3);
     }
     if ((valid & kEscTemperature) != 0) {
-      append_decimal("tc", ReadI16(payload, 36) / 10.0, 1);
+      append_decimal("tc", ReadI16(payload, dual_temperature ? 34 : 36) / 10.0, 1);
     }
-    if ((valid & kEscDriveOutput) != 0) append_u32("out", ReadU16(payload, 40));
+    if (dual_temperature && (valid & kEscMotorTemperature) != 0) {
+      append_decimal("tm", ReadI16(payload, 36) / 10.0, 1);
+    }
+    const uint16_t drive_output_mask =
+        dual_temperature ? kEscDriveOutput : kEscLegacyDriveOutput;
+    const size_t drive_output_offset = dual_temperature ? 38 : 40;
+    if ((valid & drive_output_mask) != 0) {
+      append_u32("out", ReadU16(payload, drive_output_offset));
+    }
     esc += '}';
-    const uint32_t poll_period_us = static_cast<uint32_t>(ReadU16(payload, 44)) * 1000u;
-    const uint16_t age_ms = ReadU16(payload, 42);
+    const size_t age_offset = dual_temperature ? 40 : 42;
+    const size_t poll_period_offset = dual_temperature ? 42 : 44;
+    const uint32_t poll_period_us =
+        static_cast<uint32_t>(ReadU16(payload, poll_period_offset)) * 1000u;
+    const uint16_t age_ms = ReadU16(payload, age_offset);
+    const char* quality_flags = dual_temperature
+                                    ? "[\"blrs4_prg\",\"dual_temp\"]"
+                                    : "[\"blrs4_prg\"]";
     written = std::snprintf(
         text, sizeof(text),
-        "TEL:{\"v\":2,\"k\":\"s\",\"src\":\"esc0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"esc\":%s,\"q\":{\"p\":%u,\"ok\":%s,\"age\":%u,\"f\":[\"blrs4_prg\"]}}",
+        "TEL:{\"v\":2,\"k\":\"s\",\"src\":\"esc0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"esc\":%s,\"q\":{\"p\":%u,\"ok\":%s,\"age\":%u,\"f\":%s}}",
         boot, sequence, static_cast<unsigned long long>(timestamp_us), esc.c_str(),
-        poll_period_us, (status & kEscFresh) != 0 ? "true" : "false", age_ms);
+        poll_period_us, (status & kEscFresh) != 0 ? "true" : "false", age_ms,
+        quality_flags);
   }
   if (written <= 0 || static_cast<size_t>(written) >= sizeof(text)) return false;
   *line = text;

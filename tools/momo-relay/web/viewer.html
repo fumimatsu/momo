@@ -714,25 +714,23 @@
     .motion-event-hud {
       position: absolute;
       top: 50%;
-      left: calc(100% + 15px);
-      z-index: 1;
-      display: grid;
-      gap: 4px;
-      width: 54px;
+      left: 50%;
+      z-index: 2;
+      width: 72px;
       color: rgba(203, 223, 232, 0.62);
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
       font-variant-numeric: tabular-nums;
       letter-spacing: 0.04em;
       pointer-events: none;
-      text-align: left;
+      text-align: center;
       text-shadow: 0 1px 2px #000000, 0 0 6px rgba(0, 0, 0, 0.9);
-      transform: translateY(-50%);
+      transform: translate(-50%, -50%);
     }
 
     .motion-event-indicator {
-      display: grid;
-      min-height: 17px;
-      padding: 2px 3px;
+      display: none;
+      min-height: 22px;
+      padding: 3px 5px;
       border: 1px solid rgba(196, 222, 233, 0.36);
       border-radius: 2px;
       background: rgba(0, 0, 0, 0.28);
@@ -750,6 +748,7 @@
     .motion-event-indicator[data-impact-class="severe"] { color: #ff4b45; }
 
     .motion-event-indicator.is-active {
+      display: grid;
       border-color: currentColor;
       opacity: 1;
       filter: brightness(1.35);
@@ -1318,38 +1317,60 @@
     }
 
     .drive-pedal {
+      --drive-color: #4de5ff;
       display: grid;
-      grid-template-rows: auto 92px auto;
+      grid-template-rows: auto 84px auto;
       justify-items: center;
-      gap: 3px;
-      color: #dceaf6;
+      gap: 4px;
+      min-width: 42px;
+      color: var(--drive-color);
       font-family: ui-monospace, "Cascadia Mono", monospace;
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.08em;
+      text-shadow: 0 0 7px color-mix(in srgb, var(--drive-color) 45%, transparent);
     }
 
     .drive-pedal-track {
       position: relative;
-      width: 20px;
-      height: 92px;
+      width: 30px;
+      height: 84px;
       overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.56);
-      border-radius: 3px;
-      background: rgba(0, 0, 0, 0.18);
-      box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.48);
+      border: 1px solid color-mix(in srgb, var(--drive-color) 58%, #dff8ff);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--drive-color) 9%, transparent), rgba(0, 0, 0, 0.5)),
+        repeating-linear-gradient(0deg, rgba(101, 142, 154, 0.2) 0 10px, transparent 10px 13px);
+      box-shadow:
+        inset 0 0 12px rgba(0, 0, 0, 0.68),
+        0 0 9px color-mix(in srgb, var(--drive-color) 22%, transparent);
+      clip-path: polygon(22% 0, 100% 0, 100% 88%, 78% 100%, 0 100%, 0 12%);
     }
 
+    .drive-pedal-track::before,
     .drive-pedal-track::after {
       position: absolute;
       right: 0;
       bottom: 0;
       left: 0;
       height: 100%;
+      content: "";
+      pointer-events: none;
+    }
+
+    .drive-pedal-track::before {
+      z-index: 2;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0 10px,
+        rgba(0, 0, 0, 0.66) 10px 13px
+      );
+    }
+
+    .drive-pedal-track::after {
+      z-index: 1;
       background: var(--drive-color);
       box-shadow: 0 0 10px var(--drive-color);
-      content: "";
-      opacity: 0.78;
+      opacity: 0.88;
       transform: scaleY(var(--drive-level, 0));
       transform-origin: bottom;
       transition: transform 40ms linear;
@@ -1358,19 +1379,23 @@
     .drive-pedal-value,
     .drive-steering-value {
       color: #ffffff;
-      font-size: 13px;
+      font-size: 12px;
       min-width: 32px;
       text-align: right;
     }
 
     .drive-pedal.throttle {
-      --drive-color: rgba(47, 220, 118, 0.92);
+      --drive-color: #4de5ff;
     }
 
     .drive-pedal.brake {
-      --drive-color: rgba(239, 74, 78, 0.92);
+      --drive-color: #ff4778;
       grid-column: 1;
       justify-self: start;
+    }
+
+    .drive-pedal.brake .drive-pedal-track {
+      clip-path: polygon(0 0, 78% 0, 100% 12%, 100% 100%, 22% 100%, 0 88%);
     }
 
     .drive-pedal.throttle {
@@ -1381,13 +1406,191 @@
     .drive-metrics {
       grid-column: 2;
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: 118px 126px;
+      align-items: center;
       justify-items: center;
+      gap: 8px;
       min-height: 118px;
     }
 
+    .vehicle-vitals {
+      display: grid;
+      width: 126px;
+      gap: 5px;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      text-shadow: 0 1px 2px #000000, 0 0 6px rgba(0, 0, 0, 0.88);
+    }
+
+    .vehicle-vital {
+      --vital-color: #4de5ff;
+      position: relative;
+      display: grid;
+      grid-template-columns: 27px 1fr auto;
+      grid-template-rows: 11px 18px;
+      align-items: center;
+      min-height: 34px;
+      padding: 3px 6px 3px 5px;
+      overflow: hidden;
+      border-left: 2px solid var(--vital-color);
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--vital-color) 16%, transparent), rgba(2, 10, 15, 0.46) 58%),
+        linear-gradient(180deg, rgba(8, 30, 39, 0.62), rgba(1, 7, 11, 0.42));
+      box-shadow: inset 0 0 12px rgba(2, 11, 16, 0.5), 0 0 8px color-mix(in srgb, var(--vital-color) 20%, transparent);
+      clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px));
+      color: var(--vital-color);
+      transition: color 180ms ease, border-color 180ms ease, filter 180ms ease;
+    }
+
+    .vehicle-vital::after {
+      position: absolute;
+      top: 0;
+      right: 15%;
+      width: 38%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--vital-color), transparent);
+      box-shadow: 0 0 6px var(--vital-color);
+      content: "";
+      opacity: 0.72;
+    }
+
+    .vehicle-vital[data-state="warning"] { --vital-color: #ffd34d; }
+    .vehicle-vital[data-state="critical"] {
+      --vital-color: #ff4778;
+      animation: vehicle-vital-critical 520ms ease-in-out infinite alternate;
+    }
+    .vehicle-vital[data-state="stale"],
+    .vehicle-vital[data-state="waiting"],
+    .vehicle-vital[data-state="unavailable"] {
+      --vital-color: #718995;
+      filter: saturate(0.45);
+    }
+
+    .vehicle-vital-icon {
+      position: relative;
+      grid-row: 1 / 3;
+      grid-column: 1;
+      display: block;
+      width: 17px;
+      height: 17px;
+      justify-self: center;
+      color: currentColor;
+      filter: drop-shadow(0 0 3px currentColor);
+    }
+
+    .vehicle-vital-icon.battery {
+      width: 18px;
+      height: 10px;
+      border: 2px solid currentColor;
+      border-radius: 2px;
+    }
+    .vehicle-vital-icon.battery::before {
+      position: absolute;
+      top: 2px;
+      right: -5px;
+      width: 3px;
+      height: 6px;
+      border-radius: 0 2px 2px 0;
+      background: currentColor;
+      content: "";
+    }
+    .vehicle-vital-icon.battery::after {
+      position: absolute;
+      inset: 2px;
+      background: currentColor;
+      content: "";
+      opacity: 0.7;
+    }
+
+    .vehicle-vital-icon.controller {
+      width: 15px;
+      height: 15px;
+      border: 2px solid currentColor;
+      border-radius: 2px;
+      background: repeating-linear-gradient(135deg, transparent 0 3px, currentColor 3px 4px, transparent 4px 7px);
+    }
+    .vehicle-vital-icon.controller::before,
+    .vehicle-vital-icon.controller::after {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      width: 3px;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+      content: "";
+    }
+    .vehicle-vital-icon.controller::before { left: -5px; }
+    .vehicle-vital-icon.controller::after { right: -5px; }
+
+    .vehicle-vital-icon.motor {
+      width: 17px;
+      height: 17px;
+      border: 2px solid currentColor;
+      border-radius: 50%;
+      background: conic-gradient(from 30deg, currentColor 0 16%, transparent 16% 33%, currentColor 33% 49%, transparent 49% 66%, currentColor 66% 82%, transparent 82% 100%);
+    }
+    .vehicle-vital-icon.motor::after {
+      position: absolute;
+      inset: 5px;
+      border-radius: 50%;
+      background: #061016;
+      box-shadow: 0 0 0 1px currentColor;
+      content: "";
+    }
+
+    .vehicle-vital-label {
+      grid-column: 2;
+      align-self: end;
+      color: color-mix(in srgb, var(--vital-color) 78%, #dff8ff);
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      line-height: 1;
+    }
+
+    .vehicle-vital-reading {
+      grid-column: 2;
+      display: inline-flex;
+      align-items: baseline;
+      align-self: start;
+      gap: 2px;
+      color: #f4fdff;
+      line-height: 1;
+    }
+    .vehicle-vital-reading output {
+      min-width: 33px;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      text-align: right;
+    }
+    .vehicle-vital-reading small {
+      color: var(--vital-color);
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .vehicle-vital-status {
+      grid-column: 3;
+      grid-row: 1 / 3;
+      align-self: center;
+      color: var(--vital-color);
+      font-size: 7px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      writing-mode: vertical-rl;
+    }
+
+    @keyframes vehicle-vital-critical {
+      from { filter: brightness(0.86); }
+      to { filter: brightness(1.36); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .vehicle-vital[data-state="critical"] { animation: none; }
+    }
+
     .drive-metrics[data-damage="active"] {
-      grid-template-columns: 118px;
+      grid-template-columns: 118px 126px;
       grid-template-rows: auto 118px;
       align-items: start;
       gap: 4px;
@@ -1833,46 +2036,75 @@
     }
 
     .drive-steering {
+      --steer-color: #4de5ff;
       display: grid;
       grid-template-columns: auto 1fr auto;
       align-items: center;
       gap: 8px;
-      color: #dceaf6;
+      color: var(--steer-color);
       font-family: ui-monospace, "Cascadia Mono", monospace;
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.08em;
+      text-shadow: 0 0 7px color-mix(in srgb, var(--steer-color) 44%, transparent);
     }
 
     .drive-steering-track {
+      --steer-width: 0%;
       position: relative;
-      height: 14px;
-      border: 1px solid rgba(219, 248, 255, 0.8);
-      border-radius: 2px;
-      background: transparent;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
+      height: 18px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--steer-color) 62%, #dff8ff);
+      background:
+        repeating-linear-gradient(90deg, transparent 0 31px, rgba(115, 197, 217, 0.22) 31px 33px),
+        linear-gradient(180deg, rgba(20, 76, 91, 0.26), rgba(0, 0, 0, 0.48));
+      box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.68), 0 0 8px rgba(77, 229, 255, 0.18);
+      clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 9px 100%, 0 50%);
     }
 
     .drive-steering-track::before {
       position: absolute;
-      top: 2px;
-      bottom: 2px;
+      z-index: 2;
+      top: 1px;
+      bottom: 1px;
       left: 50%;
-      width: 1px;
-      background: rgba(255, 255, 255, 0.72);
+      width: 2px;
+      background: #ffffff;
+      box-shadow: 0 0 8px #4de5ff;
       content: "";
     }
 
+    .drive-steering-track::after {
+      position: absolute;
+      z-index: 1;
+      top: 2px;
+      bottom: 2px;
+      width: var(--steer-width);
+      background: linear-gradient(90deg, color-mix(in srgb, var(--steer-color) 62%, transparent), var(--steer-color));
+      box-shadow: 0 0 10px var(--steer-color);
+      content: "";
+      transition: width 40ms linear;
+    }
+
+    .drive-steering-track[data-direction="right"]::after { left: 50%; }
+    .drive-steering-track[data-direction="left"]::after {
+      right: 50%;
+      background: linear-gradient(270deg, color-mix(in srgb, var(--steer-color) 62%, transparent), var(--steer-color));
+    }
+
+    .drive-steering[data-direction="left"] .drive-steering-value { text-align: left; }
+
     .drive-steering-marker {
       position: absolute;
-      top: -4px;
+      z-index: 3;
+      top: 2px;
       left: 50%;
-      width: 10px;
-      height: 20px;
-      border: 1px solid rgba(230, 252, 255, 0.95);
-      border-radius: 2px;
-      background: rgba(72, 221, 255, 0.82);
-      box-shadow: 0 0 8px rgba(72, 221, 255, 0.68);
+      width: 12px;
+      height: 12px;
+      border: 1px solid rgba(234, 253, 255, 0.96);
+      background: var(--steer-color);
+      box-shadow: 0 0 9px var(--steer-color);
+      clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
       transform: translateX(-50%);
       transition: left 40ms linear;
     }
@@ -2939,8 +3171,8 @@
       }
 
       .motion-event-hud {
-        left: calc(100% + 10px);
-        width: 50px;
+        left: 50%;
+        width: 68px;
       }
     }
 
@@ -3171,34 +3403,189 @@
       right: auto;
       bottom: auto;
       left: auto;
-      width: 420px;
+      grid-template-columns: 102px repeat(2, minmax(0, 1fr));
+      width: 430px;
       justify-self: center;
-      gap: 8px;
-      padding: 5px 8px 6px;
+      gap: 5px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
       transform: none;
     }
 
     .cockpit-cluster .vehicle-resource-row {
-      grid-template-rows: 12px 13px;
-      gap: 2px 5px;
-      min-height: 29px;
-      padding: 0 2px;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      grid-template-rows: 12px 12px;
+      gap: 3px 5px;
+      min-height: 37px;
+      padding: 4px 7px 5px 5px;
+      overflow: hidden;
+      border-left: 2px solid var(--resource-color);
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--resource-color) 15%, transparent), rgba(2, 10, 15, 0.43) 62%),
+        linear-gradient(180deg, rgba(8, 30, 39, 0.58), rgba(1, 7, 11, 0.4));
+      box-shadow: inset 0 0 11px rgba(0, 0, 0, 0.52), 0 0 7px color-mix(in srgb, var(--resource-color) 18%, transparent);
+      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
     }
 
     .cockpit-cluster .vehicle-resource-row + .vehicle-resource-row {
-      padding-left: 10px;
+      border-left: 2px solid var(--resource-color);
+      padding-left: 5px;
     }
 
     .cockpit-cluster .vehicle-resource-label {
-      font-size: 10px;
+      grid-column: 2;
+      grid-row: 1;
+      font-size: 8px;
+      letter-spacing: 0.08em;
     }
 
     .cockpit-cluster .vehicle-resource-row output {
-      font-size: 11px;
+      grid-column: 3;
+      grid-row: 1;
+      font-size: 10px;
     }
 
     .cockpit-cluster .vehicle-resource-rail {
+      grid-column: 2 / -1;
+      grid-row: 2;
+      height: 10px;
+      border: 0;
+      border-radius: 0;
+      background: rgba(0, 0, 0, 0.54);
+      clip-path: polygon(4px 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+    }
+
+    .cockpit-cluster .vehicle-resource-rail::after {
+      background: repeating-linear-gradient(90deg, transparent 0 15px, rgba(0, 0, 0, 0.42) 15px 17px);
+    }
+
+    .vehicle-resource-icon {
+      position: relative;
+      grid-column: 1;
+      grid-row: 1 / 3;
+      place-self: center;
+      width: 13px;
       height: 13px;
+      color: var(--resource-color);
+      filter: drop-shadow(0 0 4px currentColor);
+    }
+
+    .vehicle-resource-icon.fuel {
+      border-radius: 70% 50% 70% 50%;
+      background: currentColor;
+      clip-path: polygon(50% 0, 92% 50%, 83% 82%, 50% 100%, 17% 82%, 8% 50%);
+    }
+
+    .vehicle-resource-icon.boost {
+      width: 12px;
+      height: 16px;
+      background: currentColor;
+      clip-path: polygon(55% 0, 100% 0, 68% 38%, 100% 38%, 28% 100%, 42% 54%, 8% 54%);
+    }
+
+    .cockpit-cluster .vehicle-resource-damage {
+      grid-template-columns: 38px minmax(0, 1fr);
+      grid-template-rows: 13px 13px;
+      padding-right: 5px;
+    }
+
+    .cockpit-cluster .vehicle-resource-damage .vehicle-resource-label {
+      grid-column: 2;
+      grid-row: 1;
+      align-self: end;
+    }
+
+    .vehicle-resource-state {
+      grid-column: 2;
+      grid-row: 2;
+      align-self: start;
+      color: var(--resource-color);
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      line-height: 1;
+      text-shadow: 0 0 6px color-mix(in srgb, var(--resource-color) 68%, transparent);
+    }
+
+    .vehicle-damage-glyph {
+      position: relative;
+      grid-column: 1;
+      grid-row: 1 / 3;
+      width: 38px;
+      height: 27px;
+      place-self: center;
+      color: var(--resource-color);
+      filter: drop-shadow(0 0 5px color-mix(in srgb, var(--resource-color) 58%, transparent));
+    }
+
+    .vehicle-damage-glyph::before,
+    .vehicle-damage-fill::before {
+      position: absolute;
+      inset: 0;
+      background: currentColor;
+      clip-path: polygon(0 58%, 12% 50%, 25% 17%, 63% 12%, 80% 43%, 96% 51%, 100% 76%, 91% 88%, 8% 88%, 0 76%);
+      content: "";
+    }
+
+    .vehicle-damage-glyph::before {
+      color: rgba(116, 142, 151, 0.34);
+    }
+
+    .vehicle-damage-glyph::after {
+      position: absolute;
+      z-index: 2;
+      top: 19px;
+      left: 7px;
+      width: 7px;
+      height: 7px;
+      border: 1px solid rgba(235, 254, 255, 0.78);
+      border-radius: 50%;
+      background: #071015;
+      box-shadow: 18px 0 0 -1px #071015, 18px 0 0 0 rgba(235, 254, 255, 0.78);
+      content: "";
+      opacity: 0.82;
+    }
+
+    .vehicle-damage-fill {
+      --resource-empty: 0%;
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      color: var(--resource-color);
+      clip-path: inset(0 var(--resource-empty) 0 0);
+      transition: clip-path 100ms linear;
+    }
+
+    .vehicle-damage-cabin {
+      position: absolute;
+      z-index: 2;
+      top: 6px;
+      right: 10px;
+      bottom: 10px;
+      left: 14px;
+      border: 1px solid rgba(235, 254, 255, 0.72);
+      border-radius: 5px 2px 2px 1px;
+      transform: skewX(18deg);
+      box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.62);
+    }
+
+    .vehicle-damage-glyph output {
+      position: absolute;
+      z-index: 2;
+      inset: 10px 5px auto;
+      display: block;
+      color: #ffffff;
+      font-size: 8px !important;
+      line-height: 12px;
+      text-align: center;
+      text-shadow: 0 1px 2px #000000, 0 0 5px #000000;
+    }
+
+    .vehicle-resource-row[data-resource="hp"][data-state="critical"] .vehicle-damage-glyph,
+    .vehicle-resource-row[data-resource="hp"][data-state="limp"] .vehicle-damage-glyph {
+      animation: vehicle-resource-warning 520ms ease-in-out infinite alternate;
     }
 
     .cockpit-cluster .drive-hud {
@@ -3217,9 +3604,9 @@
     }
 
     .cockpit-cluster .drive-instruments {
-      grid-template-columns: 44px 130px 44px;
+      grid-template-columns: 44px 252px 44px;
       justify-content: center;
-      gap: 68px;
+      gap: 28px;
       min-height: 122px;
     }
 
@@ -3552,17 +3939,23 @@
 
       <section class="cockpit-cluster" aria-label="Vehicle and driving status">
       <section id="vehicleResourceHud" class="vehicle-resource-hud" hidden aria-label="Vehicle resources">
-        <div id="vehicleResourceHp" class="vehicle-resource-row" data-resource="hp" data-state="healthy">
+        <div id="vehicleResourceHp" class="vehicle-resource-row vehicle-resource-damage" data-resource="hp" data-state="healthy">
+          <span class="vehicle-damage-glyph" aria-hidden="true">
+            <i id="vehicleResourceHpFill" class="vehicle-damage-fill"></i>
+            <span class="vehicle-damage-cabin"></span>
+            <output id="vehicleResourceHpValue">100</output>
+          </span>
           <span class="vehicle-resource-label">DAMAGE</span>
-          <span class="vehicle-resource-rail"><i id="vehicleResourceHpFill"></i></span>
-          <output id="vehicleResourceHpValue">100</output>
+          <span id="vehicleResourceHpStatus" class="vehicle-resource-state">OK</span>
         </div>
         <div id="vehicleResourceFuel" class="vehicle-resource-row" data-resource="fuel" data-state="normal">
+          <span class="vehicle-resource-icon fuel" aria-hidden="true"></span>
           <span class="vehicle-resource-label">FUEL</span>
           <span class="vehicle-resource-rail"><i id="vehicleResourceFuelFill"></i></span>
           <output id="vehicleResourceFuelValue">100</output>
         </div>
         <div id="vehicleResourceBoost" class="vehicle-resource-row" data-resource="boost" data-state="charging">
+          <span class="vehicle-resource-icon boost" aria-hidden="true"></span>
           <span class="vehicle-resource-label">BOOST</span>
           <span class="vehicle-resource-rail"><i id="vehicleResourceBoostFill"></i></span>
           <output id="vehicleResourceBoostValue">0</output>
@@ -3613,15 +4006,35 @@
                 <span id="motionEventAnnouncement" class="visually-hidden" aria-live="polite" aria-atomic="true"></span>
               </div>
             </section>
+            <section id="vehicleVitals" class="vehicle-vitals" aria-label="Vehicle powertrain telemetry">
+              <div id="vehicleVoltageVital" class="vehicle-vital" data-state="waiting" data-label="Battery voltage">
+                <span class="vehicle-vital-icon battery" aria-hidden="true"></span>
+                <span class="vehicle-vital-label">BATTERY</span>
+                <span class="vehicle-vital-reading"><output id="vehicleVoltageValue">--</output><small>V</small></span>
+                <span id="vehicleVoltageStatus" class="vehicle-vital-status">WAIT</span>
+              </div>
+              <div id="vehicleEscTempVital" class="vehicle-vital" data-state="waiting" data-label="ESC temperature">
+                <span class="vehicle-vital-icon controller" aria-hidden="true"></span>
+                <span class="vehicle-vital-label">ESC TEMP</span>
+                <span class="vehicle-vital-reading"><output id="vehicleEscTempValue">--</output><small>°C</small></span>
+                <span id="vehicleEscTempStatus" class="vehicle-vital-status">WAIT</span>
+              </div>
+              <div id="vehicleMotorTempVital" class="vehicle-vital" data-state="waiting" data-label="Motor temperature">
+                <span class="vehicle-vital-icon motor" aria-hidden="true"></span>
+                <span class="vehicle-vital-label">MOTOR TEMP</span>
+                <span class="vehicle-vital-reading"><output id="vehicleMotorTempValue">--</output><small>°C</small></span>
+                <span id="vehicleMotorTempStatus" class="vehicle-vital-status">WAIT</span>
+              </div>
+            </section>
           </div>
           <div class="drive-pedal throttle">
             <span>THR</span><span id="driveHudThrottle" class="drive-pedal-track"></span><span id="driveHudThrottleValue" class="drive-pedal-value">0%</span>
           </div>
         </div>
-        <div class="drive-steering">
+        <div id="driveHudSteeringControl" class="drive-steering" data-direction="center">
           <span>STR</span>
-          <span class="drive-steering-track"><span id="driveHudSteeringMarker" class="drive-steering-marker"></span></span>
-          <span id="driveHudSteering" class="drive-steering-value">0%</span>
+          <span id="driveHudSteeringTrack" class="drive-steering-track" data-direction="center"><span id="driveHudSteeringMarker" class="drive-steering-marker"></span></span>
+          <span id="driveHudSteering" class="drive-steering-value">C 0%</span>
         </div>
       </section>
       </section>
@@ -3641,15 +4054,15 @@
     </div>
   </div>
 
-    <script src="../../telemetry.js?v=20260816-esc-telemetry-v1"></script>
-    <script src="../../m5-audio.js?v=20260816-esc-telemetry-v1"></script>
+    <script src="../../telemetry.js?v=20260816-ev-cockpit-v2"></script>
+    <script src="../../m5-audio.js?v=20260816-ev-cockpit-v2"></script>
     <script
-      src="./gamepad-profile.js?v=20260816-esc-telemetry-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260816-esc-telemetry-v1'"
+      src="./gamepad-profile.js?v=20260816-ev-cockpit-v2"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260816-ev-cockpit-v2'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260816-esc-telemetry-v1"></script>
-    <script src="./race-battle.js?v=20260816-esc-telemetry-v1"></script>
-    <script src="./pilot.js?v=20260816-esc-telemetry-v1"></script>
+    <script src="./ffb-bridge.js?v=20260816-ev-cockpit-v2"></script>
+    <script src="./race-battle.js?v=20260816-ev-cockpit-v2"></script>
+    <script src="./pilot.js?v=20260816-ev-cockpit-v2"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

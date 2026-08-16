@@ -200,13 +200,14 @@
     }
     const escFields = Object.keys(payload.esc);
     if (escFields.length === 0
-        || escFields.some((field) => !['rpm', 'max', 'v', 'tc', 'out'].includes(field))) {
+        || escFields.some((field) => !['rpm', 'max', 'v', 'tc', 'tm', 'out'].includes(field))) {
       return 'compact_esc_fields';
     }
     if ((hasOwn(payload.esc, 'rpm') && !isIntegerInRange(payload.esc.rpm, 0, 2000000))
         || (hasOwn(payload.esc, 'max') && !isIntegerInRange(payload.esc.max, 0, 2000000))
         || (hasOwn(payload.esc, 'v') && !isNumberInRange(payload.esc.v, 0, 100))
         || (hasOwn(payload.esc, 'tc') && !isNumberInRange(payload.esc.tc, -100, 300))
+        || (hasOwn(payload.esc, 'tm') && !isNumberInRange(payload.esc.tm, -100, 300))
         || (hasOwn(payload.esc, 'out') && !isIntegerInRange(payload.esc.out, 0, 1000))) {
       return 'compact_esc_value';
     }
