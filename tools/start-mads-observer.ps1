@@ -4,13 +4,16 @@ param(
     [string]$Device115 = '192.168.11.5',
     [string]$Device116 = '192.168.11.6',
     [string]$RelayConfigPath = '',
+    [string]$RelaySourceRegistryPath = $env:MOMO_RELAY_SOURCE_REGISTRY,
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
     [string]$AyameClientIdPrefix = 'momo-relay',
+    [string]$AyameRoomPrefix = $env:MOMO_AYAME_ROOM_PREFIX,
     [string]$OperationsAllowCidr = '127.0.0.1/32',
+    [string]$SourceAdminAllowCidr = '192.168.11.0/24',
     [string]$GarageAllowCidr = '192.168.11.0/24',
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
@@ -52,6 +55,14 @@ $resolvedRelayConfigPath = if ([string]::IsNullOrWhiteSpace($RelayConfigPath)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not (Test-Path -LiteralPath $resolvedRelayConfigPath -PathType Leaf)) {
     throw "Relay config was not found: $resolvedRelayConfigPath"
+}
+$resolvedRelaySourceRegistryPath = if ([string]::IsNullOrWhiteSpace($RelaySourceRegistryPath)) {
+    ''
+} else {
+    [System.IO.Path]::GetFullPath($RelaySourceRegistryPath.Trim())
+}
+if (-not [string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath) -and [string]::IsNullOrWhiteSpace($env:MOMO_RELAY_ADMIN_TOKEN)) {
+    throw 'MOMO_RELAY_ADMIN_TOKEN is required when RelaySourceRegistryPath is set.'
 }
 $resolvedObserverCrashDumpDirectory = if ([string]::IsNullOrWhiteSpace($ObserverCrashDumpDirectory)) {
     Join-Path $relayDirectory 'crash_dumps'
@@ -122,6 +133,7 @@ if ($relayRunning.Count -eq 0) {
     $relayArgs = @(
         '-listen', ':8090',
         '-operations-allow-cidr', $OperationsAllowCidr,
+        '-source-admin-allow-cidr', $SourceAdminAllowCidr,
         '-health-recovery-mode', $HealthRecoveryMode,
         '-fuel-drive-duration', "$($FuelDriveDurationSeconds)s",
         '-garage-allow-cidr', '127.0.0.1/32',
@@ -129,6 +141,9 @@ if ($relayRunning.Count -eq 0) {
     )
     foreach ($gameplayAllowCidrEntry in $GameplayAllowCidr) {
         $relayArgs += @('-gameplay-allow-cidr', $gameplayAllowCidrEntry)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath)) {
+        $relayArgs += @('-source-registry', $resolvedRelaySourceRegistryPath)
     }
     if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
         $relayArgs += @(
@@ -163,6 +178,16 @@ if ($relayRunning.Count -eq 0) {
     if (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not [string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
         $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
         $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AyameRoomPrefix)) {
+        if ([string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {
+            throw 'AyameRoomPrefix requires AyameSignalingUrl or MOMO_AYAME_SIGNALING_URL.'
+        }
+        if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and $ayamePilotRooms.Count -eq 0) {
+            $relayArgs += '-ayame-signaling-url', $AyameSignalingUrl.Trim()
+            $relayArgs += '-ayame-client-id-prefix', $AyameClientIdPrefix.Trim()
+        }
+        $relayArgs += '-ayame-room-prefix', $AyameRoomPrefix.Trim()
     }
     if ($ayamePilotRooms.Count -gt 0) {
         if ([string]::IsNullOrWhiteSpace($AyameSignalingUrl)) {

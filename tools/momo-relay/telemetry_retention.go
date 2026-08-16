@@ -17,9 +17,9 @@ func (server *relayServer) telemetryLogCleanupSafe(now time.Time) (bool, string)
 	if race.Connected && strings.EqualFold(strings.TrimSpace(race.Phase), "green") {
 		return false, "race_green"
 	}
-	for sourceID, source := range server.sources {
-		if source != nil && source.vehicleHealth.isActivelyDriving(now) {
-			return false, "vehicle_driving:" + sourceID
+	for _, entry := range server.sourceEntriesSnapshot() {
+		if entry.relay != nil && entry.relay.vehicleHealth.isActivelyDriving(now) {
+			return false, "vehicle_driving:" + entry.id
 		}
 	}
 	return true, "idle"

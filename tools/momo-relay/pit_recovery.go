@@ -137,7 +137,7 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 	currentPhase := server.raceContext.Phase
 	server.raceMu.Unlock()
 
-	for _, source := range server.sources {
+	for _, source := range server.sourceSnapshot() {
 		position := 0
 		gap := vehicleRaceGap{}
 		for _, standing := range envelope.Standings {
@@ -206,7 +206,7 @@ func (server *relayServer) markRaceControlDisconnected() {
 	server.raceContext.Connected = false
 	server.raceMu.Unlock()
 	now := time.Now()
-	for _, source := range server.sources {
+	for _, source := range server.sourceSnapshot() {
 		health, changed := source.vehicleHealth.markRaceDisconnected(now)
 		if changed {
 			source.driveGear.Store(int32(health.Gear))
@@ -230,7 +230,7 @@ func (server *relayServer) raceContextSnapshot() relayRaceContext {
 
 func (server *relayServer) sourceForCarID(carID string) (*relay, bool) {
 	var matched *relay
-	for _, source := range server.sources {
+	for _, source := range server.sourceSnapshot() {
 		if source.raceCarID != carID {
 			continue
 		}

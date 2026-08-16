@@ -288,10 +288,11 @@ type relay struct {
 	videoTrack *webrtc.TrackLocalStaticRTP
 	api        *webrtc.API
 
-	viewersMu sync.RWMutex
-	viewers   map[uint64]*viewer
-	nextID    atomic.Uint64
-	pilotID   uint64
+	viewersMu      sync.RWMutex
+	viewers        map[uint64]*viewer
+	nextID         atomic.Uint64
+	activeSessions atomic.Int32
+	pilotID        uint64
 
 	upstreamMu   sync.RWMutex
 	upstreamPC   *webrtc.PeerConnection
@@ -344,8 +345,13 @@ type relay struct {
 }
 
 type relayServer struct {
+	sourcesMu             sync.RWMutex
+	sourceMutationMu      sync.Mutex
 	sources               map[string]*relay
 	sourceOrder           []string
+	managedSources        map[string]*managedRelaySource
+	sourceRuntime         relaySourceRuntime
+	dynamicSourceRegistry *dynamicSourceRegistry
 	recorder              *telemetryRecorder
 	raceMu                sync.RWMutex
 	raceContext           relayRaceContext
@@ -726,6 +732,16 @@ func (r *relay) connectUpstream(ctx context.Context) error {
 		return fmt.Errorf("create upstream peer connection: %w", err)
 	}
 	defer pc.Close()
+	connectionDone := make(chan struct{})
+	defer close(connectionDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = pc.Close()
+			_ = ws.Close()
+		case <-connectionDone:
+		}
+	}()
 	generation := r.upstreamGeneration.Add(1)
 	r.lastVideoFrameUnixNano.Store(0)
 	r.lastRTPTimestamp.Store(0)
@@ -1221,12 +1237,9 @@ func displaySourceState(lifecycle sourceLifecycle, videoHealth sourceVideoHealth
 }
 
 func (server *relayServer) operationsStatusSnapshot(now time.Time) operationsStatus {
-	sources := make([]sourceOperationsState, 0, len(server.sourceOrder))
-	for _, sourceID := range server.sourceOrder {
-		source, ok := server.sources[sourceID]
-		if !ok {
-			continue
-		}
+	sourceSnapshot := server.orderedSourcesSnapshot()
+	sources := make([]sourceOperationsState, 0, len(sourceSnapshot))
+	for _, source := range sourceSnapshot {
 		sources = append(sources, source.statusSnapshot(now))
 	}
 	return operationsStatus{
@@ -1494,12 +1507,9 @@ func (r *relay) sendInitialWebDownlinkState(send func(signalMessage) error) erro
 }
 
 func (server *relayServer) pilotDevicesSnapshot(now time.Time) pilotDevicesStatus {
-	devices := make([]pilotDeviceStatus, 0, len(server.sourceOrder))
-	for _, sourceID := range server.sourceOrder {
-		source, ok := server.sources[sourceID]
-		if !ok {
-			continue
-		}
+	sourceSnapshot := server.orderedSourcesSnapshot()
+	devices := make([]pilotDeviceStatus, 0, len(sourceSnapshot))
+	for _, source := range sourceSnapshot {
 		status := source.statusSnapshot(now)
 		pilotInUse := status.Downstream.PilotLeaseReserved || status.Downstream.ConnectedPilots > 0
 		videoFPS := status.Upstream.RelayWriteAccessUnitFPS
@@ -2321,8 +2331,8 @@ func ayamePilotRetryDelay(err error) time.Duration {
 	return 3 * time.Second
 }
 
-// Ayame の room は source ごとに 1 つだけ割り当てる。ここでは映像の下流配信だけを
-// 担当する。外部操縦は deadman / neutral failsafe が未実装のため、別段階で追加する。
+// Ayame の room は source ごとに 1 つだけ割り当てる。LAN Pilot と Ayame Pilot は
+// 同じ source の Pilot lease と neutral failsafe を共有する。
 func (r *relay) startAyamePilot(ctx context.Context, signalingURL string, roomID string, clientID string, key string) {
 	go func() {
 		for {
@@ -2359,6 +2369,15 @@ func (r *relay) connectAyamePilot(ctx context.Context, signalingURL string, room
 		return fmt.Errorf("connect Ayame signaling: %w", err)
 	}
 	defer ws.Close()
+	connectionDone := make(chan struct{})
+	defer close(connectionDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ws.Close()
+		case <-connectionDone:
+		}
+	}()
 
 	var writeMu sync.Mutex
 	sendSignal := func(message signalMessage) error {
@@ -2582,11 +2601,12 @@ var wsUpgrader = websocket.Upgrader{
 
 func (server *relayServer) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	device := req.URL.Query().Get("device")
-	if device == "" && len(server.sources) == 1 {
-		for device = range server.sources {
+	if device == "" {
+		if source, ok := server.onlySource(); ok {
+			device = source.name
 		}
 	}
-	source, ok := server.sources[device]
+	source, ok := server.acquireSourceSession(device)
 	if !ok {
 		if device == "" {
 			http.Error(w, "device is required when multiple Momo sources are configured", http.StatusBadRequest)
@@ -2595,6 +2615,7 @@ func (server *relayServer) serveViewerWS(w http.ResponseWriter, req *http.Reques
 		http.Error(w, "unknown device: "+device, http.StatusNotFound)
 		return
 	}
+	defer source.activeSessions.Add(-1)
 	source.serveViewerWS(w, req)
 }
 
@@ -2981,7 +3002,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 				Present:   true,
 			})
 		}
-		for _, source := range server.sources {
+		for _, source := range server.sourceSnapshot() {
 			message, err := raceMessageForCar(data, source.raceCarID)
 			if err != nil {
 				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
@@ -2994,6 +3015,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 
 func main() {
 	var configPath string
+	var sourceRegistryPath string
 	var upstream string
 	var listen string
 	var allowObserverCommand bool
@@ -3002,6 +3024,7 @@ func main() {
 	var sources sourceFlag
 	var raceCars sourceFlag
 	var operationsAllowCIDRs sourceFlag
+	var sourceAdminAllowCIDRs sourceFlag
 	var garageAllowCIDRs sourceFlag
 	var gameplayAllowCIDRs sourceFlag
 	var raceURL string
@@ -3009,16 +3032,20 @@ func main() {
 	var ayameSignalingURL string
 	var ayameClientIDPrefix string
 	var ayameSignalingKey string
+	var ayameRoomPrefix string
 	var ayamePilotRooms sourceFlag
 	var telemetryLogDir string
 	var telemetryLogRetention time.Duration
 	var healthRecoveryModeValue string
 	var fuelDriveDuration time.Duration
+	var configuredDefinitions []relayFileSource
 	flag.StringVar(&configPath, "config", "", "JSON source configuration file; cannot be combined with -upstream, -source, -race-car, or -ayame-pilot-room")
+	flag.StringVar(&sourceRegistryPath, "source-registry", strings.TrimSpace(os.Getenv("MOMO_RELAY_SOURCE_REGISTRY")), "Relay-owned JSON registry for dynamically managed sources")
 	flag.StringVar(&upstream, "upstream", "", "Momo P2P WebSocket URL, for example ws://192.168.11.3:8080/ws")
 	flag.Var(&sources, "source", "Momo source as DEVICE=WS_URL; can be repeated")
 	flag.Var(&raceCars, "race-car", "Race Control car mapping as DEVICE=CAR_ID; can be repeated")
 	flag.Var(&operationsAllowCIDRs, "operations-allow-cidr", "CIDR allowed to read /operations.html and /api/v1/status; can be repeated (default: loopback only)")
+	flag.Var(&sourceAdminAllowCIDRs, "source-admin-allow-cidr", "CIDR allowed to manage dynamic Relay sources; Bearer token is also required (default: loopback only)")
 	flag.Var(&garageAllowCIDRs, "garage-allow-cidr", "CIDR allowed to read /garage.html and /api/v1/pilot-devices; can be repeated (default: loopback only)")
 	flag.Var(&gameplayAllowCIDRs, "gameplay-allow-cidr", "CIDR allowed to call gameplay APIs; can be repeated (default: loopback only)")
 	flag.StringVar(&listen, "listen", ":8090", "HTTP and WebSocket listen address")
@@ -3027,6 +3054,7 @@ func main() {
 	flag.StringVar(&ayameSignalingURL, "ayame-signaling-url", "", "Ayame signaling WebSocket URL for external pilot distribution")
 	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", strings.TrimSpace(os.Getenv("MOMO_AYAME_SIGNALING_KEY")), "Ayame backend signaling key for external pilot distribution; prefer MOMO_AYAME_SIGNALING_KEY")
+	flag.StringVar(&ayameRoomPrefix, "ayame-room-prefix", strings.TrimSpace(os.Getenv("MOMO_AYAME_ROOM_PREFIX")), "generate one unique Ayame Pilot room for every source that does not opt out")
 	flag.Var(&ayamePilotRooms, "ayame-pilot-room", "Ayame external pilot room as DEVICE=ROOM_ID; can be repeated")
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
 	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "retain telemetry NDJSON logs for this duration; clean every 2h while race is idle (0 disables cleanup)")
@@ -3047,6 +3075,7 @@ func main() {
 		sources = mappings.Sources
 		raceCars = mappings.RaceCars
 		ayamePilotRooms = mappings.AyamePilotRooms
+		configuredDefinitions = mappings.Definitions
 	}
 	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 || fuelDriveDuration <= 0 || telemetryLogRetention < 0 {
 		log.Fatal("-rtp-stall-timeout, -upstream-start-timeout, and -fuel-drive-duration must be positive; -telemetry-log-retention must not be negative")
@@ -3059,6 +3088,7 @@ func main() {
 		log.Fatal(err)
 	}
 	gameplayToken := strings.TrimSpace(os.Getenv("MOMO_RELAY_GAMEPLAY_TOKEN"))
+	sourceAdminToken := strings.TrimSpace(os.Getenv("MOMO_RELAY_ADMIN_TOKEN"))
 	if healthRecoveryMode.allowsPitRecovery() {
 		if gameplayToken == "" {
 			log.Fatalf("MOMO_RELAY_GAMEPLAY_TOKEN is required when -health-recovery-mode=%s", healthRecoveryMode)
@@ -3070,8 +3100,11 @@ func main() {
 	if upstream != "" {
 		sources = append(sources, "default="+upstream)
 	}
-	if len(sources) == 0 {
+	if len(sources) == 0 && strings.TrimSpace(sourceRegistryPath) == "" {
 		log.Fatal("-upstream or at least one -source is required")
+	}
+	if strings.TrimSpace(sourceRegistryPath) != "" && sourceAdminToken == "" {
+		log.Fatal("MOMO_RELAY_ADMIN_TOKEN is required when -source-registry is set")
 	}
 	operationsPolicy, err := parseOperationsAccessPolicy(operationsAllowCIDRs)
 	if err != nil {
@@ -3104,6 +3137,7 @@ func main() {
 		raceCarSources[carID] = name
 	}
 	ayameRoomBySource := make(map[string]string, len(ayamePilotRooms))
+	ayameRoomSources := make(map[string]string, len(ayamePilotRooms))
 	for _, ayameRoomValue := range ayamePilotRooms {
 		name, roomID, err := parseSource(ayameRoomValue)
 		if err != nil {
@@ -3112,10 +3146,22 @@ func main() {
 		if _, exists := ayameRoomBySource[name]; exists {
 			log.Fatalf("duplicate Ayame source mapping: %q", name)
 		}
+		if existingSource, exists := ayameRoomSources[roomID]; exists {
+			log.Fatalf("duplicate Ayame room %q for sources %q and %q", roomID, existingSource, name)
+		}
 		ayameRoomBySource[name] = roomID
+		ayameRoomSources[roomID] = name
 	}
-	if len(ayameRoomBySource) > 0 && ayameSignalingURL == "" {
-		log.Fatal("-ayame-signaling-url is required when -ayame-pilot-room is set")
+	sourceAdminPolicy, err := parseOperationsAccessPolicy(sourceAdminAllowCIDRs)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if (len(ayameRoomBySource) > 0 || strings.TrimSpace(ayameRoomPrefix) != "") && ayameSignalingURL == "" {
+		log.Fatal("-ayame-signaling-url is required when Ayame Pilot rooms are enabled")
+	}
+	dynamicRegistry, dynamicDefinitions, err := loadDynamicSourceRegistry(sourceRegistryPath)
+	if err != nil {
+		log.Fatal(err)
 	}
 	var recorder *telemetryRecorder
 	if strings.TrimSpace(telemetryLogDir) != "" {
@@ -3133,41 +3179,68 @@ func main() {
 		}()
 		log.Printf("telemetry recorder started: path=%s", recorder.Path())
 	}
+	if configuredDefinitions == nil {
+		configuredDefinitions = make([]relayFileSource, 0, len(sources))
+		configuredSourceIDs := make(map[string]struct{}, len(sources))
+		for _, sourceValue := range sources {
+			name, sourceURL, err := parseSource(sourceValue)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if _, exists := configuredSourceIDs[name]; exists {
+				log.Fatalf("duplicate source name: %q", name)
+			}
+			configuredSourceIDs[name] = struct{}{}
+			configuredDefinitions = append(configuredDefinitions, relayFileSource{
+				ID:             name,
+				URL:            sourceURL,
+				RaceCarID:      raceCarBySource[name],
+				AyamePilotRoom: ayameRoomBySource[name],
+			})
+		}
+		for name := range raceCarBySource {
+			if _, exists := configuredSourceIDs[name]; !exists {
+				log.Fatalf("Race Control source %q is not configured by -source", name)
+			}
+		}
+		for name := range ayameRoomBySource {
+			if _, exists := configuredSourceIDs[name]; !exists {
+				log.Fatalf("Ayame source %q is not configured by -source", name)
+			}
+		}
+	}
+	totalSourceCapacity := len(configuredDefinitions) + len(dynamicDefinitions)
 	serverRelay := &relayServer{
-		sources:     make(map[string]*relay, len(sources)),
-		sourceOrder: make([]string, 0, len(sources)),
-		recorder:    recorder,
-		pitEvents:   make(map[string]pitPresenceReceipt),
+		sources:               make(map[string]*relay, totalSourceCapacity),
+		sourceOrder:           make([]string, 0, totalSourceCapacity),
+		managedSources:        make(map[string]*managedRelaySource, totalSourceCapacity),
+		dynamicSourceRegistry: dynamicRegistry,
+		recorder:              recorder,
+		pitEvents:             make(map[string]pitPresenceReceipt),
+		sourceRuntime: relaySourceRuntime{
+			rootContext:          ctx,
+			allowObserverCommand: allowObserverCommand,
+			rtpStallTimeout:      rtpStallTimeout,
+			upstreamStartTimeout: upstreamStartTimeout,
+			healthRecoveryMode:   healthRecoveryMode,
+			fuelDriveDuration:    fuelDriveDuration,
+			ayameSignalingURL:    strings.TrimSpace(ayameSignalingURL),
+			ayameClientIDPrefix:  strings.TrimSpace(ayameClientIDPrefix),
+			ayameSignalingKey:    strings.TrimSpace(ayameSignalingKey),
+			ayameRoomPrefix:      strings.TrimSpace(ayameRoomPrefix),
+		},
 	}
-	for _, sourceValue := range sources {
-		name, sourceURL, err := parseSource(sourceValue)
-		if err != nil {
+	for _, definition := range configuredDefinitions {
+		if raceURL != "" && strings.TrimSpace(definition.RaceCarID) == "" {
+			log.Fatalf("Race Control is enabled but static source %q has no raceCarId mapping", definition.ID)
+		}
+		if err := serverRelay.addInitialSource(definition, false); err != nil {
 			log.Fatal(err)
 		}
-		if _, exists := serverRelay.sources[name]; exists {
-			log.Fatalf("duplicate source name: %q", name)
-		}
-		raceCarID := raceCarBySource[name]
-		if raceURL != "" && raceCarID == "" {
-			log.Fatalf("Race Control is enabled but source %q has no -race-car mapping", name)
-		}
-		relay, err := newRelay(name, sourceURL, raceCarID, allowObserverCommand,
-			rtpStallTimeout, upstreamStartTimeout, healthRecoveryMode, fuelDriveDuration)
-		if err != nil {
-			log.Fatal(err)
-		}
-		relay.recorder = recorder
-		serverRelay.sources[name] = relay
-		serverRelay.sourceOrder = append(serverRelay.sourceOrder, name)
-		relay.start(ctx)
-		if roomID := ayameRoomBySource[name]; roomID != "" {
-			clientID := strings.TrimSuffix(ayameClientIDPrefix, "-") + "-" + name
-			relay.startAyamePilot(ctx, ayameSignalingURL, roomID, clientID, ayameSignalingKey)
-		}
 	}
-	for name := range ayameRoomBySource {
-		if _, exists := serverRelay.sources[name]; !exists {
-			log.Fatalf("Ayame source %q is not configured by -source", name)
+	for _, definition := range dynamicDefinitions {
+		if err := serverRelay.addInitialSource(definition, true); err != nil {
+			log.Fatal(err)
 		}
 	}
 	serverRelay.startRaceControl(ctx, raceURL, raceViewerToken)
@@ -3187,6 +3260,8 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
+	mux.HandleFunc("/api/v1/sources", sourceAdminPolicy.wrap(sourceAdminTokenHandler(sourceAdminToken, serverRelay.serveSources)))
+	mux.HandleFunc("/api/v1/sources/", sourceAdminPolicy.wrap(sourceAdminTokenHandler(sourceAdminToken, serverRelay.serveSourceByID)))
 	mux.HandleFunc("/api/v1/race-state", serverRelay.serveRaceState)
 	mux.HandleFunc("/ws/race-state", serverRelay.serveRaceStateWS)
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
@@ -3210,6 +3285,10 @@ func main() {
 	})
 	mux.HandleFunc("/ws", serverRelay.serveViewerWS)
 	server := &http.Server{Addr: listen, Handler: mux}
-	log.Printf("Momo relay is listening on http://%s/ for sources: %s", listen, strings.Join(sources, ", "))
+	activeSourceIDs := make([]string, 0, totalSourceCapacity)
+	for _, source := range serverRelay.sourceSnapshot() {
+		activeSourceIDs = append(activeSourceIDs, source.name)
+	}
+	log.Printf("Momo relay is listening on http://%s/ for sources: %s", listen, strings.Join(activeSourceIDs, ", "))
 	log.Fatal(server.ListenAndServe())
 }

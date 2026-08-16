@@ -147,9 +147,19 @@ Relay は RTP を転送するため transcode はないが、Pi 直結 Ayame よ
 - Pi 直結 Ayame、既存 Local Relay Pilot、FFB Bridge の運用を壊さない。
 - 実機計測により、外部 Pilot の遅延・復旧時間・failsafe を記録し、運用可否を判断できる。
 
+## 現行の所有境界
+
+1. source と Ayame room の対応は Relay の静的設定または動的 source registry が持つ。
+2. room ID は source ごとに一意とし、`-ayame-room-prefix`から安定して自動生成できる。
+3. Pilot ticket は VPS authn service が発行し、運営 PC の発行スクリプトが Relay registry からroomを解決する。
+4. LAN Pilot と Ayame Pilot の排他は Ayame room lock ではなく Relay のsource別Pilot leaseが担う。
+
+動的追加、永続化、公開session brokerとの境界は
+[Relay Dynamic Source Registry Design](RELAY_DYNAMIC_SOURCE_REGISTRY_DESIGN.md)を参照する。
+
 ## 未決定事項
 
-1. source と Ayame room の命名・発行を Race Control が持つか、Relay 設定が持つか。
+1. 公開 catalog とticket代理発行を Race Control Workerへ統合するか、専用session brokerへ分けるか。
 2. 外部 Pilot を完全 reject のみとするか、映像専用 Observer を Ayame 側にも許可するか。
-3. token 発行主体を Race Control、Relay、または専用 auth service のどれにするか。
+3. Relay source availabilityをpublic control planeへ送る署名付きheartbeat契約。
 4. VPS 上の Ayame / coturn の監視、credential rotation、障害通知をどこで運用するか。

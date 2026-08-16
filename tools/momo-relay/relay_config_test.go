@@ -32,15 +32,36 @@ func TestLoadRelayConfigBuildsMappingsAndSkipsDisabledSources(t *testing.T) {
 	}
 }
 
+func TestRelayConfigExampleDefinesFourUniqueAyameSources(t *testing.T) {
+	mappings, err := loadRelayConfig("relay-config.example.json")
+	if err != nil {
+		t.Fatalf("load example config: %v", err)
+	}
+	if len(mappings.Definitions) != 4 {
+		t.Fatalf("example source count = %d", len(mappings.Definitions))
+	}
+	for index, definition := range mappings.Definitions {
+		if definition.AyamePilotEnabled == nil || !*definition.AyamePilotEnabled {
+			t.Fatalf("source %q Ayame Pilot is not enabled", definition.ID)
+		}
+		wantRoom := fmt.Sprintf("momo-relay-11-%d-ext", index+3)
+		if definition.AyamePilotRoom != wantRoom {
+			t.Fatalf("source %q room = %q, want %q", definition.ID, definition.AyamePilotRoom, wantRoom)
+		}
+	}
+}
+
 func TestLoadRelayConfigRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 	tests := map[string]string{
-		"unknown field": `{"version":1,"extra":true,"sources":[{"id":"a","url":"ws://a/ws"}]}`,
-		"wrong version": `{"version":2,"sources":[{"id":"a","url":"ws://a/ws"}]}`,
-		"duplicate id":  `{"version":1,"sources":[{"id":"a","url":"ws://a/ws"},{"id":"a","url":"ws://b/ws"}]}`,
-		"duplicate car": `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","raceCarId":"CP-1"},{"id":"b","url":"ws://b/ws","raceCarId":"CP-1"}]}`,
-		"http source":   `{"version":1,"sources":[{"id":"a","url":"http://a/ws"}]}`,
-		"all disabled":  `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","enabled":false}]}`,
-		"trailing json": `{"version":1,"sources":[{"id":"a","url":"ws://a/ws"}]} {}`,
+		"unknown field":            `{"version":1,"extra":true,"sources":[{"id":"a","url":"ws://a/ws"}]}`,
+		"wrong version":            `{"version":2,"sources":[{"id":"a","url":"ws://a/ws"}]}`,
+		"duplicate id":             `{"version":1,"sources":[{"id":"a","url":"ws://a/ws"},{"id":"a","url":"ws://b/ws"}]}`,
+		"duplicate car":            `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","raceCarId":"CP-1"},{"id":"b","url":"ws://b/ws","raceCarId":"CP-1"}]}`,
+		"duplicate room":           `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","ayamePilotRoom":"room-a"},{"id":"b","url":"ws://b/ws","ayamePilotRoom":"room-a"}]}`,
+		"disabled Ayame with room": `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","ayamePilotEnabled":false,"ayamePilotRoom":"room-a"}]}`,
+		"http source":              `{"version":1,"sources":[{"id":"a","url":"http://a/ws"}]}`,
+		"all disabled":             `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","enabled":false}]}`,
+		"trailing json":            `{"version":1,"sources":[{"id":"a","url":"ws://a/ws"}]} {}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

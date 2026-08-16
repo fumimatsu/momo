@@ -5,12 +5,32 @@
       "id": "11.3",
       "url": "ws://192.168.11.3:8080/ws",
       "raceCarId": "CP-1",
+      "ayamePilotEnabled": true,
+      "ayamePilotRoom": "momo-relay-11-3-ext",
       "enabled": true
     },
     {
       "id": "11.4",
       "url": "ws://192.168.11.4:8080/ws",
       "raceCarId": "CP-2",
+      "ayamePilotEnabled": true,
+      "ayamePilotRoom": "momo-relay-11-4-ext",
+      "enabled": true
+    },
+    {
+      "id": "11.5",
+      "url": "ws://192.168.11.5:8080/ws",
+      "raceCarId": "CP-3",
+      "ayamePilotEnabled": true,
+      "ayamePilotRoom": "momo-relay-11-5-ext",
+      "enabled": true
+    },
+    {
+      "id": "11.6",
+      "url": "ws://192.168.11.6:8080/ws",
+      "raceCarId": "CP-4",
+      "ayamePilotEnabled": true,
+      "ayamePilotRoom": "momo-relay-11-6-ext",
       "enabled": true
     }
   ]

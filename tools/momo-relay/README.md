@@ -117,8 +117,39 @@ JSONへまとめられる。雛形は`relay-config.example.json`である。
 ```
 
 `version`は現在`1`、有効source数は`1..32`である。未知の項目、重複source ID、重複car ID、
-`ws://`/`wss://`以外のURLは起動時に拒否する。`enabled: false`で予備sourceを設定に残せる。
+重複`ayamePilotRoom`、`ws://`/`wss://`以外のURLは起動時に拒否する。`enabled: false`で予備sourceを設定に残せる。
 `-config`は`-upstream`、`-source`、`-race-car`、`-ayame-pilot-room`と併用しない。
+
+## Relay 動的 source registry
+
+`-source-registry`を指定すると、Relayを再起動せずに信頼済みLANからsourceを追加できる。
+registryは静的`-config`と分離し、Relay自身が更新する。管理APIは許可CIDRとBearer tokenの両方を要求する。
+
+```powershell
+$env:MOMO_RELAY_ADMIN_TOKEN = '<random-admin-token>'
+$env:MOMO_AYAME_SIGNALING_KEY = '<backend-signaling-key>'
+
+./momo-local-relay-device-input-v15.exe `
+  -config ./relay-config.json `
+  -source-registry C:\fpv\relay-dynamic-sources.json `
+  -source-admin-allow-cidr 192.168.11.0/24 `
+  -ayame-signaling-url wss://133.88.123.51.nip.io/signaling `
+  -ayame-room-prefix momo-relay
+```
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:MOMO_RELAY_ADMIN_TOKEN" }
+$body = @{ id = 'momo-fpv-17'; url = 'ws://192.168.11.17:8080/ws'; raceCarId = 'CP-17' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://192.168.11.100:8090/api/v1/sources `
+  -Headers $headers -ContentType 'application/json' -Body $body
+```
+
+追加sourceは`garage.html`へ自動反映される。削除は動的sourceだけが対象で、レース中、Drive中、
+Pilot / Observer接続中は拒否する。外部Pilot URLは`momo-fpv/tools/vps/issue_fpv_pilot_ticket.py --source <id>`で
+protected registryからroomを解決して発行する。設計、セキュリティ境界、32台超のnode分割は
+[Relay Dynamic Source Registry Design](../../doc/RELAY_DYNAMIC_SOURCE_REGISTRY_DESIGN.md)を参照する。
+DHCPでIPが変わった車両は新しい`url`を指定して`PUT /api/v1/sources/<id>`へ再登録する。
+同一定義のPUTは接続を再作成しない。Relay admin tokenはPiへ配布しない。
 
 ## Relay負荷測定
 

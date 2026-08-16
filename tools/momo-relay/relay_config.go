@@ -20,43 +20,57 @@ type relayFileConfig struct {
 }
 
 type relayFileSource struct {
-	ID             string `json:"id"`
-	URL            string `json:"url"`
-	RaceCarID      string `json:"raceCarId,omitempty"`
-	AyamePilotRoom string `json:"ayamePilotRoom,omitempty"`
-	Enabled        *bool  `json:"enabled,omitempty"`
+	ID                string `json:"id"`
+	URL               string `json:"url"`
+	RaceCarID         string `json:"raceCarId,omitempty"`
+	AyamePilotEnabled *bool  `json:"ayamePilotEnabled,omitempty"`
+	AyamePilotRoom    string `json:"ayamePilotRoom,omitempty"`
+	Enabled           *bool  `json:"enabled,omitempty"`
 }
 
 type relayConfigMappings struct {
 	Sources         sourceFlag
 	RaceCars        sourceFlag
 	AyamePilotRooms sourceFlag
+	Definitions     []relayFileSource
 }
 
 func loadRelayConfig(path string) (relayConfigMappings, error) {
+	config, err := readRelayFileConfig(path)
+	if err != nil {
+		return relayConfigMappings{}, err
+	}
+	return relayConfigMappingsForFile(config, false)
+}
+
+func readRelayFileConfig(path string) (relayFileConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return relayConfigMappings{}, fmt.Errorf("read Relay config: %w", err)
+		return relayFileConfig{}, fmt.Errorf("read Relay config: %w", err)
 	}
 	var config relayFileConfig
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
-		return relayConfigMappings{}, fmt.Errorf("decode Relay config: %w", err)
+		return relayFileConfig{}, fmt.Errorf("decode Relay config: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return relayConfigMappings{}, fmt.Errorf("decode Relay config: multiple JSON values are not allowed")
+			return relayFileConfig{}, fmt.Errorf("decode Relay config: multiple JSON values are not allowed")
 		}
-		return relayConfigMappings{}, fmt.Errorf("decode Relay config trailing data: %w", err)
+		return relayFileConfig{}, fmt.Errorf("decode Relay config trailing data: %w", err)
 	}
 	if config.Version != relayConfigVersion {
-		return relayConfigMappings{}, fmt.Errorf("Relay config version must be %d", relayConfigVersion)
+		return relayFileConfig{}, fmt.Errorf("Relay config version must be %d", relayConfigVersion)
 	}
+	return config, nil
+}
 
+func relayConfigMappingsForFile(config relayFileConfig, allowEmpty bool) (relayConfigMappings, error) {
 	mappings := relayConfigMappings{}
 	seenIDs := make(map[string]struct{}, len(config.Sources))
 	seenRaceCars := make(map[string]string, len(config.Sources))
+	seenAyameRooms := make(map[string]string, len(config.Sources))
 	for index, source := range config.Sources {
 		enabled := source.Enabled == nil || *source.Enabled
 		id := strings.TrimSpace(source.ID)
@@ -73,6 +87,9 @@ func loadRelayConfig(path string) (relayConfigMappings, error) {
 		if !enabled {
 			continue
 		}
+		if source.AyamePilotEnabled != nil && !*source.AyamePilotEnabled && roomID != "" {
+			return relayConfigMappings{}, fmt.Errorf("source %q: ayamePilotRoom cannot be set when ayamePilotEnabled is false", id)
+		}
 		if err := validateRelaySourceURL(sourceURL); err != nil {
 			return relayConfigMappings{}, fmt.Errorf("source %q: %w", id, err)
 		}
@@ -85,10 +102,21 @@ func loadRelayConfig(path string) (relayConfigMappings, error) {
 		}
 		mappings.Sources = append(mappings.Sources, id+"="+sourceURL)
 		if roomID != "" {
+			if existing, exists := seenAyameRooms[roomID]; exists {
+				return relayConfigMappings{}, fmt.Errorf("duplicate ayamePilotRoom %q for sources %q and %q", roomID, existing, id)
+			}
+			seenAyameRooms[roomID] = id
 			mappings.AyamePilotRooms = append(mappings.AyamePilotRooms, id+"="+roomID)
 		}
+		mappings.Definitions = append(mappings.Definitions, relayFileSource{
+			ID:                id,
+			URL:               sourceURL,
+			RaceCarID:         raceCarID,
+			AyamePilotEnabled: source.AyamePilotEnabled,
+			AyamePilotRoom:    roomID,
+		})
 	}
-	if len(mappings.Sources) == 0 {
+	if len(mappings.Sources) == 0 && !allowEmpty {
 		return relayConfigMappings{}, fmt.Errorf("Relay config must contain at least one enabled source")
 	}
 	if len(mappings.Sources) > maximumConfiguredSources {
