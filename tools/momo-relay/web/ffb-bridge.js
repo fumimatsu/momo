@@ -150,7 +150,14 @@
     }
 
     sendVehicleDynamics(state) {
-      if (!this.connected || !this.acquired || !this.supportsFeature('vehicleDynamicsV1')) return false;
+      if (!this.connected || !this.acquired) return false;
+      if (this.supportsFeature('vehicleDynamicsV3')) {
+        return this.send({ ...state, type: 'setVehicleDynamics', schemaVersion: 3 });
+      }
+      if (this.supportsFeature('vehicleDynamicsV2')) {
+        return this.send({ ...state, type: 'setVehicleDynamics', schemaVersion: 2 });
+      }
+      if (!this.supportsFeature('vehicleDynamicsV1')) return false;
       return this.send({ ...state, type: 'setVehicleDynamics', schemaVersion: 1 });
     }
 

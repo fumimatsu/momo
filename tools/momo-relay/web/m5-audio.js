@@ -78,6 +78,8 @@
     constructor(options = {}) {
       this.onState = typeof options.onState === 'function' ? options.onState : () => {};
       this.context = null;
+      this.outputGain = null;
+      this.outputLevel = 1;
       this.enabled = false;
       this.bootId = '';
       this.lastSequence = null;
@@ -92,7 +94,7 @@
     }
 
     snapshot() {
-      return { enabled: this.enabled, contextState: this.context?.state || 'none', received: this.received, invalid: this.invalid, gaps: this.gaps, resets: this.resets, scheduled: this.scheduled, pending: this.pending.length };
+      return { enabled: this.enabled, contextState: this.context?.state || 'none', outputLevel: this.outputLevel, received: this.received, invalid: this.invalid, gaps: this.gaps, resets: this.resets, scheduled: this.scheduled, pending: this.pending.length };
     }
 
     getStatus() {
@@ -112,6 +114,11 @@
       const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextCtor) return false;
       this.context = this.context || new AudioContextCtor({ sampleRate: SAMPLE_RATE });
+      if (!this.outputGain) {
+        this.outputGain = this.context.createGain();
+        this.outputGain.gain.value = this.outputLevel;
+        this.outputGain.connect(this.context.destination);
+      }
       try {
         await this.context.resume();
       } catch (_) {
@@ -123,6 +130,22 @@
       this.nextPlaybackTime = 0;
       this.notify();
       return this.enabled;
+    }
+
+    setOutputGain(value, rampMs = 0) {
+      this.outputLevel = clamp(Number(value) || 0, 0, 1);
+      if (!this.outputGain || !this.context) {
+        this.notify();
+        return;
+      }
+      const now = this.context.currentTime;
+      this.outputGain.gain.cancelScheduledValues(now);
+      this.outputGain.gain.setValueAtTime(this.outputGain.gain.value, now);
+      this.outputGain.gain.linearRampToValueAtTime(
+        this.outputLevel,
+        now + Math.max(0, Number(rampMs) || 0) / 1000,
+      );
+      this.notify();
     }
 
     handle(message) {
@@ -180,7 +203,7 @@
         }
         const source = this.context.createBufferSource();
         source.buffer = buffer;
-        source.connect(this.context.destination);
+        source.connect(this.outputGain || this.context.destination);
         source.start(startAt);
         startAt += FRAME_SAMPLES / SAMPLE_RATE;
         this.scheduled += 1;

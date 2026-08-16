@@ -12,10 +12,18 @@
     "pitServiceProgress": 0.556,
     "pitRejoinProgress": 0.184
   },
+  "vehicleSpeedProfiles": {
+    "yokomo-offroad-250mm-v1": {
+      "tireRolloutMm": 250,
+      "overallGearRatio": 5.733,
+      "rpmKind": "mechanical_provisional",
+      "motorPolePairs": 1
+    }
+  },
   "cars": [
-    { "device": "11.3", "carId": "CP-1", "displayNumber": "01", "flip": true },
-    { "device": "11.4", "carId": "CP-2", "displayNumber": "02", "flip": true },
-    { "device": "11.5", "carId": "CP-3", "displayNumber": "03", "flip": true },
-    { "device": "11.6", "carId": "CP-4", "displayNumber": "04", "flip": true }
+    { "device": "11.3", "carId": "CP-1", "displayNumber": "01", "flip": true, "speedProfile": "yokomo-offroad-250mm-v1" },
+    { "device": "11.4", "carId": "CP-2", "displayNumber": "02", "flip": true, "speedProfile": "yokomo-offroad-250mm-v1" },
+    { "device": "11.5", "carId": "CP-3", "displayNumber": "03", "flip": true, "speedProfile": "yokomo-offroad-250mm-v1" },
+    { "device": "11.6", "carId": "CP-4", "displayNumber": "04", "flip": true, "speedProfile": "yokomo-offroad-250mm-v1" }
   ]
 }

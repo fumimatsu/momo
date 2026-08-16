@@ -2,6 +2,7 @@ const HEALTH_MODES = new Set(['healthy', 'damaged', 'critical', 'limp']);
 const FUEL_STATES = new Set(['normal', 'low', 'empty']);
 const BOOST_STATES = new Set(['charging', 'ready', 'active']);
 const PIT_SERVICE_STATES = new Set(['outside', 'servicing', 'complete']);
+const RPM_KINDS = new Set(['mechanical', 'mechanical_provisional', 'electrical']);
 
 function finiteNumber(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -11,6 +12,41 @@ function finiteNumber(value) {
 
 export function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+export function normalizeVehicleSpeedProfile(profile) {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+  const tireRolloutMm = finiteNumber(profile.tireRolloutMm);
+  const overallGearRatio = finiteNumber(profile.overallGearRatio);
+  const rpmKind = String(profile.rpmKind || 'mechanical_provisional').trim().toLowerCase();
+  const motorPolePairs = finiteNumber(profile.motorPolePairs ?? 1);
+  const rpmScale = finiteNumber(profile.rpmScale ?? 1);
+  const rpmToKph = finiteNumber(profile.rpmToKph ?? 0);
+  if (!RPM_KINDS.has(rpmKind)
+      || !Number.isInteger(motorPolePairs) || motorPolePairs < 1
+      || rpmScale === null || rpmScale <= 0
+      || rpmToKph === null || rpmToKph < 0
+      || (rpmToKph === 0 && (tireRolloutMm === null || tireRolloutMm <= 0
+        || overallGearRatio === null || overallGearRatio <= 0))) return null;
+  return {
+    tireRolloutMm: tireRolloutMm ?? 0,
+    overallGearRatio: overallGearRatio ?? 0,
+    rpmKind,
+    motorPolePairs,
+    rpmScale,
+    rpmToKph,
+  };
+}
+
+export function estimateVehicleSpeedKph(rpm, profile) {
+  const normalized = normalizeVehicleSpeedProfile(profile);
+  const rawRpm = finiteNumber(rpm);
+  if (!normalized || rawRpm === null) return null;
+  let mechanicalRpm = Math.abs(rawRpm) * normalized.rpmScale;
+  if (normalized.rpmKind === 'electrical') mechanicalRpm /= normalized.motorPolePairs;
+  if (normalized.rpmToKph > 0) return mechanicalRpm * normalized.rpmToKph;
+  const wheelRpm = mechanicalRpm / normalized.overallGearRatio;
+  return wheelRpm * (normalized.tireRolloutMm / 1000) * 60 / 1000;
 }
 
 export function selectVideoDevices(cars, value) {
@@ -645,6 +681,14 @@ export function normalizeObserverConfig(config) {
   if (!config || !Array.isArray(config.cars) || config.cars.length < 1 || config.cars.length > 4) {
     throw new Error('observer config requires 1 to 4 cars');
   }
+  const vehicleSpeedProfiles = {};
+  for (const [profileId, profile] of Object.entries(config.vehicleSpeedProfiles || {})) {
+    const normalized = normalizeVehicleSpeedProfile(profile);
+    if (!profileId.trim() || !normalized) {
+      throw new Error(`invalid observer vehicle speed profile: ${profileId}`);
+    }
+    vehicleSpeedProfiles[profileId.trim()] = normalized;
+  }
   const devices = new Set();
   const carIds = new Set();
   const colors = ['green', 'yellow', 'cyan', 'red'];
@@ -657,6 +701,10 @@ export function normalizeObserverConfig(config) {
     devices.add(device);
     carIds.add(carId);
     const displayNumber = String(car.displayNumber || index + 1).padStart(2, '0');
+    const speedProfileId = String(car.speedProfile || '').trim();
+    if (speedProfileId && !vehicleSpeedProfiles[speedProfileId]) {
+      throw new Error(`unknown observer vehicle speed profile at index ${index}: ${speedProfileId}`);
+    }
     return {
       device,
       carId,
@@ -666,6 +714,8 @@ export function normalizeObserverConfig(config) {
       portraitUrl: String(car.portraitUrl || '').trim(),
       flip: car.flip !== false,
       color: colors[index],
+      speedProfileId,
+      speedProfile: vehicleSpeedProfiles[speedProfileId] || null,
     };
   });
   const motion = config.motion || {};
@@ -680,6 +730,7 @@ export function normalizeObserverConfig(config) {
   const checkpointGraceMaxMs = motionNumber('checkpointGraceMaxMs', 3000, checkpointGraceMinMs, 15000);
   return {
     trackName: String(config.trackName || 'RACE CONTROL').trim(),
+    vehicleSpeedProfiles,
     cars,
     motion: {
       defaultLapMs: motionNumber('defaultLapMs', 20000, 3000, 300000),

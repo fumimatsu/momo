@@ -7,6 +7,7 @@ import {
   deriveSituations,
   displayRaceStatus,
   elapsedSinceRaceMarkerMs,
+  estimateVehicleSpeedKph,
   classifyCompletedSectorTime,
   classifyBestTime,
   estimateLapDurationMs,
@@ -40,6 +41,7 @@ const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
 const CAMERA_MOTION_SCALE_G = 1.5;
 const CAMERA_RPM_SCALE = 50_000;
+const CAMERA_SPEED_SCALE_KPH = 120;
 const CAMERA_BATTERY_WARNING_V = 7.0;
 const CAMERA_BATTERY_CRITICAL_V = 6.6;
 const CAMERA_ESC_WARNING_C = 70;
@@ -1436,8 +1438,8 @@ function createCameraTiles() {
 
     const powerCard = element('section', 'camera-instrument camera-power-card');
     powerCard.setAttribute('aria-label', 'ESC powertrain telemetry');
-    const rpmRow = element('div', 'camera-rpm');
-    const rpmLabel = element('span', '', 'RPM');
+    const rpmRow = element('div', 'camera-rpm camera-speed');
+    const rpmLabel = element('span', '', car.speedProfile ? 'EST KM/H' : 'RPM');
     const rpm = element('output', '', '--');
     const rpmTrack = element('span', 'camera-rpm-track');
     const rpmFill = element('i', 'camera-rpm-fill');
@@ -1469,6 +1471,7 @@ function createCameraTiles() {
       lateral,
       forward,
       yaw,
+      rpmLabel,
       rpm,
       rpmFill,
       voltage: voltage.value,
@@ -1791,8 +1794,15 @@ function renderCameraTelemetry(car, telemetry) {
   const escTemperature = Number.isFinite(esc?.tc) ? esc.tc : null;
   const motorTemperature = Number.isFinite(esc?.tm) ? esc.tm : null;
   const stale = Boolean(escStream?.stale);
-  setTextIfChanged(nodes.rpm, rpm === null ? '--' : rpm.toLocaleString('en-US'));
-  setMeterLevel(nodes.rpmFill, rpm === null ? 0 : rpm / CAMERA_RPM_SCALE);
+  const speedKph = rpm === null ? null : estimateVehicleSpeedKph(rpm, car.speedProfile);
+  const speedAvailable = Number.isFinite(speedKph);
+  setTextIfChanged(nodes.rpmLabel, car.speedProfile ? 'EST KM/H' : 'RPM');
+  setTextIfChanged(nodes.rpm, speedAvailable
+    ? speedKph.toFixed(1)
+    : rpm === null ? '--' : rpm.toLocaleString('en-US'));
+  setMeterLevel(nodes.rpmFill, speedAvailable
+    ? speedKph / CAMERA_SPEED_SCALE_KPH
+    : rpm === null ? 0 : rpm / CAMERA_RPM_SCALE);
   setTextIfChanged(nodes.voltage, voltage === null ? '--' : voltage.toFixed(1));
   setTextIfChanged(nodes.escTemp, escTemperature === null ? '--' : escTemperature.toFixed(0));
   setTextIfChanged(nodes.motorTemp, motorTemperature === null ? '--' : motorTemperature.toFixed(0));
@@ -1807,6 +1817,7 @@ function renderCameraTelemetry(car, telemetry) {
   nodes.root.setAttribute(
     'aria-label',
     `Telemetry ${rateHz ? `${rateHz.toFixed(0)} hertz` : 'waiting'}, `
+      + `${speedAvailable ? `estimated wheel speed ${speedKph.toFixed(1)} kilometers per hour, ` : ''}`
       + `RPM ${rpm ?? 'waiting'}, battery ${voltage ?? 'waiting'} volts, `
       + `ESC ${escTemperature ?? 'waiting'} degrees, motor ${motorTemperature ?? 'waiting'} degrees`,
   );
