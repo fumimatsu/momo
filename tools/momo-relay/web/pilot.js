@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260816-ev-cockpit-v2';
+  const PILOT_BUILD_ID = '20260816-ev-cockpit-v3';
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
   const RECONNECT_MAX_DELAY_MS = 5000;
@@ -118,6 +118,7 @@
   // Local UI checks can exercise Drive state without connecting to a vehicle.
   const DRIVE_UI_TEST_MODE = !AUTO_START && getBooleanParam('driveUiTest', false);
   const DRIVE_UI_TEST_ESC = DRIVE_UI_TEST_MODE && getBooleanParam('escUiTest', false);
+  const DRIVE_UI_TEST_ESC_RPM = Math.max(0, getIntegerParam('escUiTestRpm', 18420));
   const DRIVE_UI_TEST_ESC_VOLTAGE = getNumberParam('escUiTestVoltage', 7.9);
   const DRIVE_UI_TEST_ESC_TEMPERATURE = getNumberParam('escUiTestControllerTemp', 31);
   const DRIVE_UI_TEST_MOTOR_TEMPERATURE = getNumberParam('escUiTestMotorTemp', 29);
@@ -211,6 +212,36 @@
     VEHICLE_MOTOR_TEMP_WARNING_C,
     getNumberParam('motorTempCriticalC', 100),
   );
+  const VEHICLE_SPEED_PROFILES = Object.freeze({
+    '11.4': Object.freeze({
+      tireRolloutMm: 250,
+      overallGearRatio: 5.733,
+      rpmKind: 'mechanical_provisional',
+      motorPolePairs: 1,
+    }),
+  });
+  const VEHICLE_SPEED_DEVICE = getStringParam(['device', 'deviceId'], '').trim();
+  const VEHICLE_SPEED_DEFAULT_PROFILE = VEHICLE_SPEED_PROFILES[VEHICLE_SPEED_DEVICE] || null;
+  const VEHICLE_TIRE_ROLLOUT_MM = Math.max(
+    0,
+    getNumberParam('tireRolloutMm', VEHICLE_SPEED_DEFAULT_PROFILE?.tireRolloutMm || 0),
+  );
+  const VEHICLE_OVERALL_GEAR_RATIO = Math.max(
+    0,
+    getNumberParam('overallGearRatio', VEHICLE_SPEED_DEFAULT_PROFILE?.overallGearRatio || 0),
+  );
+  const VEHICLE_RPM_KIND = getStringParam(
+    ['rpmKind'],
+    VEHICLE_SPEED_DEFAULT_PROFILE?.rpmKind || 'mechanical_provisional',
+  ).toLowerCase();
+  const VEHICLE_MOTOR_POLE_PAIRS = Math.max(
+    1,
+    getIntegerParam('motorPolePairs', VEHICLE_SPEED_DEFAULT_PROFILE?.motorPolePairs || 1),
+  );
+  const VEHICLE_RPM_SCALE = Math.max(0.0001, getNumberParam('rpmScale', 1));
+  const VEHICLE_RPM_TO_KPH = Math.max(0, getNumberParamAllowZero('rpmToKph', 0));
+  const VEHICLE_SPEED_PROFILE_READY = VEHICLE_RPM_TO_KPH > 0
+    || (VEHICLE_TIRE_ROLLOUT_MM > 0 && VEHICLE_OVERALL_GEAR_RATIO > 0);
   const RACE_BATTLE_MIN_OFFSET_PX = 30;
   const RACE_BATTLE_MAX_OFFSET_PX = 80;
   const RACE_ANNOUNCE_ENABLED = getBooleanParam('raceAnnounce', false);
@@ -366,6 +397,12 @@
   const driveGmeter = document.getElementById('driveGmeter');
   const driveGmeterDot = document.getElementById('driveGmeterDot');
   const driveGmeterScale = document.getElementById('driveGmeterScale');
+  const vehicleStatusCluster = document.getElementById('vehicleStatusCluster');
+  const vehicleSpeedGauge = document.getElementById('vehicleSpeedGauge');
+  const vehicleSpeedLabel = document.getElementById('vehicleSpeedLabel');
+  const vehicleSpeedValue = document.getElementById('vehicleSpeedValue');
+  const vehicleSpeedUnit = document.getElementById('vehicleSpeedUnit');
+  const vehicleSpeedStatus = document.getElementById('vehicleSpeedStatus');
   const vehicleVitals = document.getElementById('vehicleVitals');
   const vehicleVoltageVital = document.getElementById('vehicleVoltageVital');
   const vehicleVoltageValue = document.getElementById('vehicleVoltageValue');
@@ -461,6 +498,8 @@
     : null;
   let latestMotion = null;
   let latestEsc = null;
+  let displayedVehicleSpeedKph = null;
+  let lastVehicleSpeedSourceAt = null;
   let vehicleHealth = null;
 	let vehicleGameplay = null;
 	let vehiclePitPresence = null;
@@ -2888,9 +2927,11 @@
   function getCurrentEscSnapshot(nowMs = performance.now()) {
     if (DRIVE_UI_TEST_ESC) {
       return {
+        lastStateAt: nowMs,
         stale: false,
         state: {
           esc: {
+            rpm: DRIVE_UI_TEST_ESC_RPM,
             v: DRIVE_UI_TEST_ESC_VOLTAGE,
             tc: DRIVE_UI_TEST_ESC_TEMPERATURE,
             tm: DRIVE_UI_TEST_MOTOR_TEMPERATURE,
@@ -2902,6 +2943,76 @@
     const tracked = telemetryTracker?.getSnapshot(nowMs).primaryEsc;
     if (tracked) latestEsc = tracked;
     return latestEsc;
+  }
+
+  function normalizeMotorMechanicalRpm(rpm) {
+    if (!Number.isFinite(rpm)) return null;
+    const scaled = Math.abs(rpm) * VEHICLE_RPM_SCALE;
+    return VEHICLE_RPM_KIND === 'electrical'
+      ? scaled / VEHICLE_MOTOR_POLE_PAIRS
+      : scaled;
+  }
+
+  function estimateVehicleSpeedKph(rpm) {
+    const mechanicalRpm = normalizeMotorMechanicalRpm(rpm);
+    if (!Number.isFinite(mechanicalRpm) || !VEHICLE_SPEED_PROFILE_READY) return null;
+    if (VEHICLE_RPM_TO_KPH > 0) return mechanicalRpm * VEHICLE_RPM_TO_KPH;
+    const wheelRpm = mechanicalRpm / VEHICLE_OVERALL_GEAR_RATIO;
+    return wheelRpm * (VEHICLE_TIRE_ROLLOUT_MM / 1000) * 60 / 1000;
+  }
+
+  function renderVehicleSpeed(snapshot, nowMs = performance.now()) {
+    if (!vehicleSpeedGauge) return;
+    const esc = snapshot?.state?.esc;
+    const rpm = Number(esc?.rpm);
+    const stale = Boolean(snapshot?.stale || snapshot?.state?.q?.ok === false);
+    if (!snapshot || !Number.isFinite(rpm)) {
+      displayedVehicleSpeedKph = null;
+      lastVehicleSpeedSourceAt = null;
+      vehicleSpeedGauge.dataset.state = stale ? 'stale' : 'waiting';
+      setText(vehicleSpeedLabel, 'EST. WHEEL SPEED');
+      setText(vehicleSpeedValue, '--');
+      setText(vehicleSpeedUnit, 'KM/H');
+      setText(vehicleSpeedStatus, stale ? 'STALE' : 'WAIT');
+      return;
+    }
+    if (stale) {
+      displayedVehicleSpeedKph = null;
+      lastVehicleSpeedSourceAt = null;
+      vehicleSpeedGauge.dataset.state = 'stale';
+      setText(vehicleSpeedLabel, 'EST. WHEEL SPEED');
+      setText(vehicleSpeedValue, '--');
+      setText(vehicleSpeedUnit, 'KM/H');
+      setText(vehicleSpeedStatus, 'STALE');
+      return;
+    }
+
+    const targetKph = estimateVehicleSpeedKph(rpm);
+    if (!Number.isFinite(targetKph)) {
+      const mechanicalRpm = normalizeMotorMechanicalRpm(rpm);
+      vehicleSpeedGauge.dataset.state = 'profile-required';
+      setText(vehicleSpeedLabel, 'MOTOR SPEED');
+      setText(vehicleSpeedValue, Math.round(mechanicalRpm).toLocaleString('en-US'));
+      setText(vehicleSpeedUnit, 'RPM');
+      setText(vehicleSpeedStatus, 'PROFILE');
+      vehicleSpeedGauge.setAttribute('aria-label', `Motor speed ${Math.round(mechanicalRpm)} RPM, vehicle speed profile required`);
+      return;
+    }
+
+    const sourceAt = Number.isFinite(snapshot.lastStateAt) ? snapshot.lastStateAt : nowMs;
+    if (lastVehicleSpeedSourceAt !== sourceAt) {
+      displayedVehicleSpeedKph = Number.isFinite(displayedVehicleSpeedKph)
+        ? displayedVehicleSpeedKph + (targetKph - displayedVehicleSpeedKph) * 0.58
+        : targetKph;
+      lastVehicleSpeedSourceAt = sourceAt;
+    }
+    const shownKph = Math.max(0, displayedVehicleSpeedKph ?? targetKph);
+    vehicleSpeedGauge.dataset.state = 'active';
+    setText(vehicleSpeedLabel, 'EST. WHEEL SPEED');
+    setText(vehicleSpeedValue, Math.round(shownKph).toString());
+    setText(vehicleSpeedUnit, 'KM/H');
+    setText(vehicleSpeedStatus, 'EST');
+    vehicleSpeedGauge.setAttribute('aria-label', `Estimated wheel speed ${shownKph.toFixed(1)} kilometers per hour`);
   }
 
   function classifyLowVital(value, warning, critical, previous, hysteresis) {
@@ -2951,6 +3062,7 @@
   function updateVehicleVitals(nowMs = performance.now()) {
     if (!vehicleVitals) return;
     const snapshot = getCurrentEscSnapshot(nowMs);
+    renderVehicleSpeed(snapshot, nowMs);
     const esc = snapshot?.state?.esc;
     if (!snapshot || !esc) {
       for (const key of Object.keys(vehicleVitalStates)) vehicleVitalStates[key] = 'waiting';
@@ -3666,6 +3778,9 @@
     if (driveHud) {
       driveHud.hidden = !driveUiVisible;
     }
+    if (vehicleStatusCluster) {
+      vehicleStatusCluster.hidden = !driveUiVisible;
+    }
     updateDriveHud();
     updateOsdScale();
   }
@@ -3674,7 +3789,11 @@
     if (!element) {
       return;
     }
-    element.style.setProperty('--drive-level', String(Math.max(0, Math.min(1, value))));
+    const level = Math.max(0, Math.min(1, value));
+    element.style.setProperty('--drive-level', String(level));
+    if (element.classList.contains('drive-pedal-fill')) {
+      element.style.strokeDashoffset = (100 - level * 100).toFixed(2);
+    }
   }
 
   function updateDriveHud() {

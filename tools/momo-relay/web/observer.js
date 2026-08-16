@@ -38,6 +38,14 @@ const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
+const CAMERA_MOTION_SCALE_G = 1.5;
+const CAMERA_RPM_SCALE = 50_000;
+const CAMERA_BATTERY_WARNING_V = 7.0;
+const CAMERA_BATTERY_CRITICAL_V = 6.6;
+const CAMERA_ESC_WARNING_C = 70;
+const CAMERA_ESC_CRITICAL_C = 85;
+const CAMERA_MOTOR_WARNING_C = 80;
+const CAMERA_MOTOR_CRITICAL_C = 100;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
 const MARKER_RENDER_OFFSETS = [[-16, -16], [16, -16], [-16, 16], [16, 16]];
 const CAR_EFFECTS = Object.freeze({
@@ -80,6 +88,7 @@ const cameraTitleNodesByCar = new Map();
 const cameraEffectNodesByCar = new Map();
 const leaderboardNodesByCar = new Map();
 const telemetryNodesByCar = new Map();
+const healthNodesByCar = new Map();
 const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
 const pitMotionByCar = new Map();
@@ -1246,6 +1255,8 @@ function renderAll() {
   if (!observerConfig) return;
   renderHeader();
   renderCameraTitles();
+  renderCameraHealthDisplays();
+  renderTelemetryDisplays();
   renderLeaderboard();
   renderSectorRows();
   renderTimingRows();
@@ -1263,12 +1274,115 @@ function renderCameraTitles() {
   }
 }
 
+function clamp01(value) {
+  return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
+}
+
+function setMeterLevel(fill, level) {
+  if (fill) fill.style.transform = `scaleX(${clamp01(level).toFixed(3)})`;
+}
+
+function setInstrumentState(node, state) {
+  if (node && node.dataset.state !== state) node.dataset.state = state;
+}
+
+function classifyLowInstrument(value, warning, critical) {
+  if (!Number.isFinite(value)) return 'waiting';
+  if (value <= critical) return 'critical';
+  if (value <= warning) return 'warning';
+  return 'normal';
+}
+
+function classifyHighInstrument(value, warning, critical) {
+  if (!Number.isFinite(value)) return 'waiting';
+  if (value >= critical) return 'critical';
+  if (value >= warning) return 'warning';
+  return 'normal';
+}
+
+function createCameraVital(kind, label, unit) {
+  const root = element('div', `camera-vital camera-vital-${kind}`);
+  root.dataset.state = 'waiting';
+  const icon = element('i', 'camera-vital-icon');
+  icon.setAttribute('aria-hidden', 'true');
+  const copy = element('span', 'camera-vital-copy');
+  copy.append(element('small', '', label));
+  const reading = element('strong');
+  const value = element('output', '', '--');
+  reading.append(value, element('em', '', unit));
+  copy.append(reading);
+  root.append(icon, copy);
+  return { root, value };
+}
+
+function createCameraResource(kind, label) {
+  const root = element('div', `camera-resource camera-resource-${kind}`);
+  root.dataset.state = 'waiting';
+  const icon = element('i', 'camera-resource-icon');
+  icon.setAttribute('aria-hidden', 'true');
+  const name = element('span', 'camera-resource-label', label);
+  const track = element('span', 'camera-resource-track');
+  const fill = element('i', 'camera-resource-fill');
+  track.append(fill);
+  const value = element('output', '', 'WAIT');
+  root.append(icon, name, track, value);
+  return { root, fill, value };
+}
+
+function renderCameraHealth(car, health = healthByCar.get(car.carId)) {
+  const nodes = healthNodesByCar.get(car.carId);
+  if (!nodes) return;
+  if (!health) {
+    for (const resource of [nodes.damage, nodes.fuel, nodes.boost]) {
+      setInstrumentState(resource.root, 'waiting');
+      setMeterLevel(resource.fill, 0);
+      setTextIfChanged(resource.value, 'WAIT');
+    }
+    setTextIfChanged(nodes.gear, 'G--');
+    return;
+  }
+
+  const hp = Number(health.hp);
+  const damage = Number.isFinite(hp) ? Math.max(0, Math.min(100, 100 - hp)) : null;
+  const damageState = health.mode === 'critical' || health.mode === 'limp' || damage >= 60
+    ? 'critical' : health.mode === 'damaged' || damage >= 30 ? 'warning' : 'normal';
+  setInstrumentState(nodes.damage.root, damage === null ? 'waiting' : damageState);
+  setMeterLevel(nodes.damage.fill, damage === null ? 0 : damage / 100);
+  setTextIfChanged(nodes.damage.value, damage === null ? 'WAIT' : `${Math.round(damage)}%`);
+
+  const fuel = Number(health.fuel);
+  const fuelState = health.fuelState === 'empty' ? 'critical'
+    : health.fuelState === 'low' ? 'warning' : Number.isFinite(fuel) ? 'normal' : 'waiting';
+  setInstrumentState(nodes.fuel.root, fuelState);
+  setMeterLevel(nodes.fuel.fill, Number.isFinite(fuel) ? fuel / 100 : 0);
+  setTextIfChanged(nodes.fuel.value, fuelState === 'critical' ? 'EMPTY'
+    : Number.isFinite(fuel) ? `${Math.round(fuel)}%` : 'WAIT');
+
+  const boost = Number(health.boost);
+  const boostState = health.boostState === 'active' ? 'active'
+    : health.boostState === 'ready' ? 'ready' : Number.isFinite(boost) ? 'charging' : 'waiting';
+  setInstrumentState(nodes.boost.root, boostState);
+  setMeterLevel(nodes.boost.fill, Number.isFinite(boost) ? boost / 100 : 0);
+  const boostText = boostState === 'active' && Number.isFinite(health.boostRemainingMs)
+    ? `${(health.boostRemainingMs / 1000).toFixed(1)}s`
+    : boostState === 'ready' ? 'READY' : Number.isFinite(boost) ? `${Math.round(boost)}%` : 'WAIT';
+  setTextIfChanged(nodes.boost.value, boostText);
+  setTextIfChanged(nodes.gear, Number.isInteger(health.gear) ? `G${health.gear}` : 'G--');
+}
+
+function renderCameraHealthDisplays() {
+  if (!observerConfig) return;
+  for (const car of observerConfig.cars) renderCameraHealth(car);
+}
+
 function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
   cameraTitleNodesByCar.clear();
   cameraEffectNodesByCar.clear();
   telemetryNodesByCar.clear();
+  healthNodesByCar.clear();
   controlNodesByCar.clear();
+  renderedTelemetryByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
     const tile = element('article', `camera-tile camera-${car.color}`);
     const head = element('div', 'camera-head');
@@ -1294,17 +1408,81 @@ function createCameraTiles() {
     videoState.id = `video-state-${car.carId}`;
     const eventFlash = element('strong', 'camera-event-flash');
     eventFlash.hidden = true;
-    const telemetry = element('div', 'camera-telemetry');
-    telemetry.id = `camera-telemetry-${car.carId}`;
-    const rate = element('strong', 'telemetry-rate', 'TEL --');
-    const lateral = element('span', 'telemetry-lateral', 'LAT -- G');
-    const forward = element('span', 'telemetry-forward', 'FWD -- G');
-    const yaw = element('span', 'telemetry-yaw', 'YAW --');
-    const loss = element('span', 'telemetry-loss', 'LOSS --');
-    const esc = element('span', 'telemetry-esc', 'ESC --');
-    telemetry.append(rate, lateral, forward, yaw, loss, esc);
+    const dashboard = element('div', 'camera-dashboard');
+    dashboard.id = `camera-dashboard-${car.carId}`;
+    dashboard.dataset.active = 'false';
+
+    const motionCard = element('section', 'camera-instrument camera-motion-card');
+    motionCard.setAttribute('aria-label', 'Vehicle acceleration and yaw');
+    const motionStatus = element('div', 'camera-motion-status');
+    const rate = element('strong', 'telemetry-rate', '--Hz');
+    const loss = element('span', 'telemetry-loss', 'L--');
+    motionStatus.append(rate, loss);
+    const motionScope = element('div', 'camera-motion-scope');
+    motionScope.setAttribute('aria-hidden', 'true');
+    motionScope.append(
+      element('i', 'camera-motion-ring'),
+      element('i', 'camera-motion-axis horizontal'),
+      element('i', 'camera-motion-axis vertical'),
+    );
+    const motionDot = element('b', 'camera-motion-dot');
+    motionScope.append(motionDot);
+    const motionValues = element('div', 'camera-motion-values');
+    const lateral = element('span', 'telemetry-lateral', 'L --');
+    const forward = element('span', 'telemetry-forward', 'F --');
+    const yaw = element('span', 'telemetry-yaw', 'Y --');
+    motionValues.append(lateral, forward, yaw);
+    motionCard.append(motionStatus, motionScope, motionValues);
+
+    const powerCard = element('section', 'camera-instrument camera-power-card');
+    powerCard.setAttribute('aria-label', 'ESC powertrain telemetry');
+    const rpmRow = element('div', 'camera-rpm');
+    const rpmLabel = element('span', '', 'RPM');
+    const rpm = element('output', '', '--');
+    const rpmTrack = element('span', 'camera-rpm-track');
+    const rpmFill = element('i', 'camera-rpm-fill');
+    rpmTrack.append(rpmFill);
+    rpmRow.append(rpmLabel, rpm, rpmTrack);
+    const vitalRow = element('div', 'camera-vitals');
+    const voltage = createCameraVital('battery', 'BAT', 'V');
+    const escTemp = createCameraVital('esc', 'ESC', '°');
+    const motorTemp = createCameraVital('motor', 'MTR', '°');
+    vitalRow.append(voltage.root, escTemp.root, motorTemp.root);
+    powerCard.append(rpmRow, vitalRow);
+
+    const resourceCard = element('section', 'camera-instrument camera-resource-card');
+    resourceCard.setAttribute('aria-label', 'Damage, fuel and boost status');
+    const resourceHead = element('div', 'camera-resource-head');
+    resourceHead.append(element('span', '', 'VEHICLE'), element('strong', 'camera-gear', 'G--'));
+    const damage = createCameraResource('damage', 'DMG');
+    const fuel = createCameraResource('fuel', 'FUEL');
+    const boost = createCameraResource('boost', 'BOOST');
+    resourceCard.append(resourceHead, damage.root, fuel.root, boost.root);
+
+    dashboard.append(motionCard, powerCard, resourceCard);
     telemetryNodesByCar.set(car.carId, {
-      root: telemetry, rate, lateral, forward, yaw, loss, esc,
+      root: dashboard,
+      rate,
+      loss,
+      motionScope,
+      motionDot,
+      lateral,
+      forward,
+      yaw,
+      rpm,
+      rpmFill,
+      voltage: voltage.value,
+      voltageRoot: voltage.root,
+      escTemp: escTemp.value,
+      escTempRoot: escTemp.root,
+      motorTemp: motorTemp.value,
+      motorTempRoot: motorTemp.root,
+    });
+    healthNodesByCar.set(car.carId, {
+      gear: resourceHead.lastChild,
+      damage,
+      fuel,
+      boost,
     });
     const controls = element('div', 'camera-controls');
     controls.dataset.active = 'false';
@@ -1321,7 +1499,7 @@ function createCameraTiles() {
     brakeMeter.append(brakeTrack, element('em', '', 'B'));
     controls.append(brakeMeter, throttleMeter);
     controlNodesByCar.set(car.carId, { root: controls, throttle: throttleFill, brake: brakeFill });
-    feed.append(video, telemetry, controls, videoState, eventFlash);
+    feed.append(video, dashboard, controls, videoState, eventFlash);
     tile.append(head, feed);
     cameraEffectNodesByCar.set(car.carId, { root: tile, badge: eventFlash });
     applyCarEffect(car.carId);
@@ -1502,7 +1680,8 @@ function handleHealth(car, health) {
 	const next = health.fuel === undefined && previous?.fuel !== undefined ? { ...previous, ...health } : health;
 	if (previous?.hp === next.hp && previous?.speedCap === next.speedCap && previous?.mode === next.mode
 		&& previous?.fuel === next.fuel && previous?.boost === next.boost
-		&& previous?.boostState === next.boostState && previous?.gear === next.gear) return;
+		&& previous?.fuelState === next.fuelState && previous?.boostState === next.boostState
+		&& previous?.boostRemainingMs === next.boostRemainingMs && previous?.gear === next.gear) return;
   healthByCar.set(car.carId, next);
   if (previous?.boostState !== next.boostState) {
     if (next.boostState === 'ready') triggerCarEffect(car.carId, 'boost-ready');
@@ -1512,6 +1691,7 @@ function handleHealth(car, health) {
     if (next.fuelState === 'low') triggerCarEffect(car.carId, 'fuel-low');
     if (next.fuelState === 'empty') triggerCarEffect(car.carId, 'fuel-empty');
   }
+  renderCameraHealth(car, next);
   renderLeaderboard();
   renderSituations();
 }
@@ -1588,18 +1768,48 @@ function renderCameraTelemetry(car, telemetry) {
   const motion = feature?.motion;
   const periodUs = feature?.periodUs || telemetry.primary?.periodUs;
   const rateHz = Number.isFinite(periodUs) && periodUs > 0 ? 1000000 / periodUs : null;
-  setTextIfChanged(nodes.rate, rateHz ? `TEL ${rateHz.toFixed(1)} Hz` : 'TEL --');
-  setTextIfChanged(nodes.lateral, `LAT ${signed(motion?.lateralMps2 / 9.80665)} G`);
-  setTextIfChanged(nodes.forward, `FWD ${signed(motion?.forwardMps2 / 9.80665)} G`);
-  setTextIfChanged(nodes.yaw, `YAW ${signed(motion?.yawRateRadPerSec)} rad/s`);
-  setTextIfChanged(nodes.loss, `LOSS ${telemetry.counters?.missing ?? 0}`);
+  const missing = telemetry.counters?.missing;
+  const lateralG = Number.isFinite(motion?.lateralMps2) ? motion.lateralMps2 / 9.80665 : null;
+  const forwardG = Number.isFinite(motion?.forwardMps2) ? motion.forwardMps2 / 9.80665 : null;
+  setTextIfChanged(nodes.rate, rateHz ? `${rateHz.toFixed(0)}Hz` : '--Hz');
+  setTextIfChanged(nodes.loss, Number.isInteger(missing) ? `L${missing}` : 'L--');
+  setTextIfChanged(nodes.lateral, `L ${signed(lateralG, 1)}`);
+  setTextIfChanged(nodes.forward, `F ${signed(forwardG, 1)}`);
+  setTextIfChanged(nodes.yaw, `Y ${signed(motion?.yawRateRadPerSec, 1)}`);
+  const scopeX = Number.isFinite(lateralG)
+    ? 50 + Math.max(-1, Math.min(1, lateralG / CAMERA_MOTION_SCALE_G)) * 39 : 50;
+  const scopeY = Number.isFinite(forwardG)
+    ? 50 - Math.max(-1, Math.min(1, forwardG / CAMERA_MOTION_SCALE_G)) * 39 : 50;
+  nodes.motionDot.style.left = `${scopeX.toFixed(1)}%`;
+  nodes.motionDot.style.top = `${scopeY.toFixed(1)}%`;
+  nodes.motionScope.dataset.active = motion ? 'true' : 'false';
+
   const escStream = telemetry.esc;
   const esc = escStream?.state?.esc;
-  const escText = esc
-    ? `ESC ${Number.isInteger(esc.rpm) ? `${esc.rpm} RPM` : '-- RPM'} ${Number.isFinite(esc.v) ? `${esc.v.toFixed(2)} V` : '-- V'} E${Number.isFinite(esc.tc) ? `${esc.tc.toFixed(0)} C` : '-- C'} M${Number.isFinite(esc.tm) ? `${esc.tm.toFixed(0)} C` : '-- C'}${escStream.stale ? ' STALE' : ''}`
-    : 'ESC --';
-  setTextIfChanged(nodes.esc, escText);
-  nodes.root.dataset.active = motion ? 'true' : 'false';
+  const rpm = Number.isInteger(esc?.rpm) ? esc.rpm : null;
+  const voltage = Number.isFinite(esc?.v) ? esc.v : null;
+  const escTemperature = Number.isFinite(esc?.tc) ? esc.tc : null;
+  const motorTemperature = Number.isFinite(esc?.tm) ? esc.tm : null;
+  const stale = Boolean(escStream?.stale);
+  setTextIfChanged(nodes.rpm, rpm === null ? '--' : rpm.toLocaleString('en-US'));
+  setMeterLevel(nodes.rpmFill, rpm === null ? 0 : rpm / CAMERA_RPM_SCALE);
+  setTextIfChanged(nodes.voltage, voltage === null ? '--' : voltage.toFixed(1));
+  setTextIfChanged(nodes.escTemp, escTemperature === null ? '--' : escTemperature.toFixed(0));
+  setTextIfChanged(nodes.motorTemp, motorTemperature === null ? '--' : motorTemperature.toFixed(0));
+  setInstrumentState(nodes.voltageRoot, stale ? 'stale'
+    : classifyLowInstrument(voltage, CAMERA_BATTERY_WARNING_V, CAMERA_BATTERY_CRITICAL_V));
+  setInstrumentState(nodes.escTempRoot, stale ? 'stale'
+    : classifyHighInstrument(escTemperature, CAMERA_ESC_WARNING_C, CAMERA_ESC_CRITICAL_C));
+  setInstrumentState(nodes.motorTempRoot, stale ? 'stale'
+    : classifyHighInstrument(motorTemperature, CAMERA_MOTOR_WARNING_C, CAMERA_MOTOR_CRITICAL_C));
+  nodes.root.dataset.active = motion || esc ? 'true' : 'false';
+  nodes.root.dataset.stale = stale ? 'true' : 'false';
+  nodes.root.setAttribute(
+    'aria-label',
+    `Telemetry ${rateHz ? `${rateHz.toFixed(0)} hertz` : 'waiting'}, `
+      + `RPM ${rpm ?? 'waiting'}, battery ${voltage ?? 'waiting'} volts, `
+      + `ESC ${escTemperature ?? 'waiting'} degrees, motor ${motorTemperature ?? 'waiting'} degrees`,
+  );
 }
 
 function handleTelemetry(car, telemetry) {
@@ -1672,6 +1882,35 @@ function seedObserverUiTest() {
 			...fixture,
 			speedCap: fixture.hp >= 70 ? 0.9 + ((fixture.hp - 70) / 300) : 0.7,
 			mode: fixture.hp < 70 ? 'damaged' : 'healthy',
+		});
+		telemetryByCar.set(car.carId, {
+			primary: { periodUs: 33_333 },
+			motion: {
+				periodUs: 33_333,
+				motion: {
+					lateralMps2: [3.4, -6.8, 1.1, -2.7][index] || 0,
+					forwardMps2: [1.8, -2.5, 4.2, -5.8][index] || 0,
+					yawRateRadPerSec: [0.7, -1.4, 0.3, -0.9][index] || 0,
+				},
+			},
+			counters: { missing: [0, 2, 5, 12][index] || 0 },
+			esc: {
+				stale: false,
+				state: {
+					esc: {
+						rpm: [18_420, 31_850, 24_300, 8_900][index] || 0,
+						v: [7.8, 7.1, 7.5, 6.5][index] || 0,
+						tc: [42, 68, 77, 88][index] || 0,
+						tm: [48, 74, 86, 104][index] || 0,
+					},
+				},
+			},
+		});
+		controlByCar.set(car.carId, {
+			steering: 0,
+			throttle: [0.52, 0.88, 0.36, 0][index] || 0,
+			brake: [0, 0, 0.28, 0.64][index] || 0,
+			receivedAt: Number.POSITIVE_INFINITY,
 		});
 	});
 	raceReceivedAt = performance.now();
