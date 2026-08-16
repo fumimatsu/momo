@@ -2,8 +2,8 @@
 
 ## Status
 
-- 状態: foundation-measured
-- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較を実装。Marker Observer本体とAuto Directorは未着手
+- 状態: legacy-adapter-implemented
+- 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較、録画4入力のGPU Marker Observer producer、MADSYSTEM Legacy Adapterに加え、Native Observer Video Sinkのlive I420 Y平面バッチを実装。Reliable marker eventは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
 
@@ -274,6 +274,13 @@ Marker ObserverはSDL合成やBGRA共有フレームを経由せず、WebRTCのV
 復号済みフレームを直接受ける。可能な場合はI420のY平面をグレースケール入力として利用し、
 色変換と全画面コピーを避ける。
 
+2026-08-14のlive integrationでは、既存Native Observerのsource managerとdecoderを再利用し、
+Video Sinkから固定4sourceの960x528 Y平面を`Local\MomoObserverLumaV1`へtriple bufferで公開する。
+GPU workerは有効なY平面を1回のCUDA batchへ転送し、結果だけをLegacy Adapter IPCへ書く。
+表示用`Local\MomoObserverFrameV1`も同じSinkから生成するため、MADSYSTEM表示とMarker認識がRelayへ
+別々に接続・復号することはない。次の分離段階ではこの契約を保ったまま、Native nodeから
+GPU detectorを直接呼び出すか、ローカルworkerを独立サービスとして維持するかを負荷と障害分離で決める。
+
 各sourceの処理待ちフレームは最新1枚だけとする。検出処理が追い付かない場合は古いフレームを捨て、
 キューを蓄積して検出時刻が遅れることを防ぐ。
 
@@ -287,6 +294,111 @@ Marker ObserverはSDL合成やBGRA共有フレームを経由せず、WebRTCのV
 
 checkpointを見られる最短時間が40ms未満の場合は50 Hz検出も比較する。固定値だけで判断せず、
 実走録画からmarker visible durationの分布を取得し、25 Hzで連続認識条件を満たすことを確認する。
+
+### 50 Hz live経路の現状
+
+2026-08-14のi7-8700 / Intel UHD 630 / RTX 3060環境では、4台の入力映像自体は各50 FPSを維持したが、
+Relay、Native Observer、MADSYSTEM External、GPU Marker Workerを同居させた検出結果の公開は約17.5 Hz、
+処理p95は約89 msだった。対象プロセスは合計約6.24 CPU core、12 logical CPUの約52%を使用し、RTXは
+平均約30%、最大41%だった。GPUが飽和する前に、Intel decodeから共有Y平面、Python、RTXへのhost copyと
+同期が上限になっている。
+
+同じ4映像のwarmed replayは単独条件で49.55 Hzに到達した一方、full live stackとの同居時は17.716 Hz
+だった。このため、50 Hz node上限を「RTX 3060なら4台」と固定してはならない。別PCではfull stack条件と
+Marker専用node条件を分けて測り、最低20%の余力を残した台数を採用する。
+
+CPU-onlyで4台が必要な検出周期と連続認識条件を満たす環境は、小規模運用の有効なfallbackである。
+GPU経路の目的は4台だけを置き換えることではなく、映像受信を一本化し、Marker nodeを追加して台数を
+水平拡張できる境界を作ることにある。当面は次の方針とする。
+
+- 1から4台でCPU-onlyが25 Hz以上と余力20%以上を満たす場合は、実績ある経路を選択できる
+- 50 Hzが必要なコースでは、GPU経路をMarker専用PCで再測定する
+- Relay、MADSYSTEM、Program表示を同じMarker nodeへ同居させた結果を専用node容量へ流用しない
+- 5台以上は1プロセスへの追加より、source groupを分割したMarker node追加を優先する
+- GPU 0/1の番号ではなくadapter名、LUID、decode engine、CUDA deviceを試験記録へ残す
+
+### Relay直接受信のMarker Node
+
+ここでいう「Relay直接受信」はWebRTCをNative処理から外す意味ではない。Relayの映像を受けるには
+PeerConnection、H.264 decode、I420 frame受領の実装が必ず必要である。Python `aiortc`やsourceごとの
+FFmpeg subprocessへ置き換えると、software decode、process間copy、再接続実装が増え、4から8台の
+安定化には逆効果となる。現行の表示用`p2p-recv-multi`を経由せず、専用のNative Marker Receiverが
+Relayへ直接接続する構成を採用する。
+
+```text
+Relay
+  -> Dedicated Marker Receiver / WebRTC + hardware decode
+  -> source別 latest I420 Y plane / queue depth 1
+  -> GPU worker group
+       profile A: 4 source x 50 Hz
+       profile B: 8 source x 25 Hz
+  -> Local\MomoMarkerObservationsV1
+```
+
+Dedicated Marker ReceiverはSDL grid、BGRA合成、音声再生、共有FHD出力を持たない。sourceごとに
+独立した接続状態、sequence、frame age、reconnect backoffを管理し、1台停止時も他sourceのbatchを
+止めない。decode後は最新Y planeだけを保持し、古いframeをqueueしない。GPU workerは4 source単位の
+固定workspaceを基本とし、5から8台は2 groupへ分離する。1つのglobal batchへ8台を強制的に束ねると、
+遅い1台の再接続とframe到着jitterが全車のpublicationを落とすため採用しない。
+
+現行`p2p-recv-multi`と`Local\MomoObserverLumaV1`はsource上限4をcompile-time固定しており、
+8台化の土台にはしない。Marker observation IPCは最大32 sourceを保持できるため維持する。
+移行は次の順に行う。
+
+1. 現行Native Observer + GPU workerの4 source 50 Hzを10分、1時間soakする。
+2. Dedicated Marker Receiverへ同じ4 sourceを接続し、source sequence、frame age、marker parityをshadow比較する。
+3. 6、8 sourceを追加し、まず25 Hzで各source coverage 95%以上を確認する。
+4. 8 source 50 Hzは別profileとして測る。4 source groupを2つ同一GPUで逐次実行した結果を、
+   8 source 50 Hzの合格根拠にはしない。
+5. 8 sourceで余力20%を満たさない場合は、検出周期を黙って落とさずMarker Nodeを2台へ分割する。
+
+RTX 4060 Laptop GPUの現行live経路は4 source 50 Hzの60秒gateを48.067 Hz、cycle p95 17.568 msで
+一度通過したが、同じ経路の再測定は45.133 Hz、cycle p95 20.830 msで失敗した。GPU clockが
+2250 MHzから660から840 MHzへ自動低下する条件では、Native headless最適化後も20秒測定が
+47.350 Hz、cycle p95 18.166 msとなりrate gateを僅かに下回った。その後candidate filterを単一CUDA
+kernelへ融合し、60秒で49.183 Hz、cycle p95 13.771 ms、4 source coverage 100%を達成した。短時間gateは
+通過したが10分 / 1時間soakは未実施であり、8 source 50 Hzの余力を示す結果ではない。8台の現実的な初期運用profileは1 node 25 Hz、
+または2 Marker Nodeによる4台ずつ50 Hzとし、同一GPU上の2 workerは実測前提とする。
+
+### 50 Hz live経路の負荷分解
+
+現行経路は、Python workerがRelayへ別途接続する構成ではない。Native Observerが
+sourceごとのWebRTC受信と復号を1回だけ行い、同じVideo SinkからMADSYSTEM表示用BGRAと
+marker検出用Y平面を公開する。GPU workerは`Local\MomoObserverLumaV1`だけを読み、
+Relay接続、WebRTC復号、BGRA変換を重複させない。
+
+ソース調査で確認した現行の処理は次のとおり。
+
+- Native `Sink::OnFrame`はI420のY平面を960x528へscaleし、同じsourceのBGRA映像も生成する
+- Native `WriteSharedLuma`は50 Hzで固定4source bufferをzero fillし、有効sourceを複製した後、
+  固定長の4平面をtriple bufferへ一括`memcpy`する
+- Python `SharedLumaReader.read_latest`は検出cycleごとにNumPy配列を生成し、選択sourceを
+  共有メモリから複製する
+- `batch.y_planes[valid_indices]`はadvanced indexingによる追加hostコピーとなり、
+  `cp.asarray`がpageable host memoryからCUDA deviceへ転送する
+- GPU detectorはcandidate count、ID、valid mask、cornerを個別に`cp.asnumpy`し、sourceごとに
+  decode kernelを起動するため、host同期とkernel launchが複数回発生する
+- host/device入力、candidate、decode結果の一部はcycleごとに再確保される
+
+現行reportの`processingMs`は、`read_latest`完了後からmarker結果取得までを計測する。
+共有メモリ読取コピーとobservation IPC出力は含まず、有効source抽出、H2D転送、
+GPU検出、D2H転送、CUDA同期を1つの値に含む。したがって、現時点の証拠では
+Python interpreter単体、PCIe転送、GPU kernelのいずれか1つに原因を限定できない。
+
+最初の修正は機能変更ではなく、次のstage別計測とする。
+
+1. shared-memory readとhost copy
+2. valid-source selection
+3. H2D copy、CUDA EventによるGPU kernel、D2H copy
+4. observation整形とIPC write
+5. Native側Y平面生成、shared write、Sink lock待ち
+
+計測後は、NumPy/CuPy bufferの再利用、advanced indexingの除去、pinned host memoryと
+asynchronous H2D、D2H結果の一括転送、source間decodeの完全batch化の順に比較する。
+NativeへのCUDA統合は、これらの小さい変更で50 Hzと運用余力を満たせない場合の
+後続案とする。Intel decodeとNVIDIA CUDAを併用するPCでは、Native統合だけで
+cross-adapter host transferが消えるとは限らない。追跡は
+`docs/issues/2026-08-14-live-luma-50hz-bottleneck.md`で行う。
 
 ### プロセスとsource管理
 
@@ -359,6 +471,16 @@ checkpointの通過確定とPIT presenceでは状態遷移の意味が異なる�
 Marker Observerは画像解釈だけを行い、マーカーイベントから周回、順位、区間タイムを作る処理は
 Timing Engineへ分離する。移行初期はMADSYSTEMをTiming Engineとして利用し、外部marker eventを
 既存のcheckpoint処理へ渡すLegacy Adapterを追加する。
+
+2026-08-14にLegacy Adapterの最初の段階を実装した。この段階ではqualified eventではなく、
+sourceごとの毎frame観測を`Local\MomoMarkerObservationsV1`のbounded ringへ出力する。MADSYSTEMは
+`internal`、`shadow`、`external`を切り替えられ、`external`でも既存の連続認識、消失、PIT、
+パイロット割当、Race Control送信をそのまま使用する。詳細と検証順は
+[Marker Observer Legacy Adapter Guide](MARKER_OBSERVER_LEGACY_ADAPTER_GUIDE.md)を参照する。
+
+この順序により、live WebRTC受信と通過判定移管を同時変更せず、まず検出器の差だけを比較できる。
+次段階は録画producerをRelay/WebRTC source managerへ置き換えることであり、その後に通過確定を
+Reliable eventへ移す。Native Observerの合成映像共有はMADSYSTEMの映像演出用として当面残す。
 
 将来のTiming Engineは次を担当する。
 

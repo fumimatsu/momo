@@ -1,2 +1,4 @@
 PyNvVideoCodec==2.2.0
 nvidia-cuda-runtime-cu12==12.9.79; platform_system == "Windows"
+nvidia-cuda-nvrtc-cu12==12.9.86; platform_system == "Windows"
+cupy-cuda12x==14.1.1

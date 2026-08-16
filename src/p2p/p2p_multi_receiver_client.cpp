@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <utility>
@@ -31,6 +32,7 @@ P2PMultiReceiverClient::P2PMultiReceiverClient(
       renderer_(renderer),
       config_(std::move(config)) {
   audio_mixer_ = std::make_shared<ObserverAudioMixer>();
+  config_.audio_gain = audio_mixer_->SetMasterGain(config_.audio_gain);
   audio_overlay_timer_ = std::make_unique<boost::asio::steady_timer>(ioc_);
   for (const P2PMultiReceiverSource& source : config_.sources) {
     Source entry;
@@ -116,6 +118,8 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
     return;
   }
 
+  const int volume_percent = static_cast<int>(
+      std::lround(audio_mixer_->GetMasterGain() * 100.0));
   for (const Source& source : sources_) {
     if (!source.audio_receiver) {
       continue;
@@ -157,6 +161,7 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
          << "QUEUED " << std::fixed << std::setprecision(0) << queued_ms
          << "ms  " << (diagnostics.playback_started ? "PLAY" : "BUFFER")
          << "  UNDERRUN " << diagnostics.queue_underflows
+         << "\nVOL " << volume_percent << "%  KEY +/-"
          << "\nKEY 0 MIX / 1-4 SOLO / [ ] SOLO";
     if (!diagnostics.initialization_error.empty()) {
       text << "\nERR " << diagnostics.initialization_error;
@@ -180,6 +185,28 @@ void P2PMultiReceiverClient::UpdateAudioOverlay() {
 bool P2PMultiReceiverClient::HandleAudioKey(int key) {
   if (sources_.empty()) {
     return false;
+  }
+
+  // SDL may report the unshifted semicolon key for "+" on Japanese
+  // keyboard layouts, so accept it as the volume-up key as well.
+  if (key == SDLK_PLUS || key == SDLK_EQUALS || key == SDLK_SEMICOLON ||
+      key == SDLK_KP_PLUS) {
+    config_.audio_gain = audio_mixer_->AdjustMasterGain(0.1);
+    RTC_LOG(LS_INFO) << "Observer audio master gain: "
+                     << static_cast<int>(
+                            std::lround(config_.audio_gain * 100.0))
+                     << "%";
+    UpdateAudioOverlay();
+    return true;
+  }
+  if (key == SDLK_MINUS || key == SDLK_KP_MINUS) {
+    config_.audio_gain = audio_mixer_->AdjustMasterGain(-0.1);
+    RTC_LOG(LS_INFO) << "Observer audio master gain: "
+                     << static_cast<int>(
+                            std::lround(config_.audio_gain * 100.0))
+                     << "%";
+    UpdateAudioOverlay();
+    return true;
   }
 
   size_t selected_index = static_cast<size_t>(-1);

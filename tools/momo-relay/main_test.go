@@ -15,8 +15,50 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
+
+func TestClassifyDownstreamRTCPRequestsRecovery(t *testing.T) {
+	requestKeyframe, nackRequests := classifyDownstreamRTCP([]rtcp.Packet{
+		&rtcp.ReceiverReport{},
+		&rtcp.TransportLayerNack{},
+		&rtcp.TransportLayerNack{},
+		&rtcp.PictureLossIndication{},
+	})
+	if !requestKeyframe {
+		t.Fatal("PLI did not request an upstream keyframe")
+	}
+	if nackRequests != 2 {
+		t.Fatalf("NACK requests = %d, want 2", nackRequests)
+	}
+}
+
+func TestClassifyDownstreamRTCPForwardsFIR(t *testing.T) {
+	requestKeyframe, nackRequests := classifyDownstreamRTCP([]rtcp.Packet{
+		&rtcp.FullIntraRequest{},
+	})
+	if !requestKeyframe || nackRequests != 0 {
+		t.Fatalf("FIR classification = keyframe:%t nack:%d", requestKeyframe, nackRequests)
+	}
+}
+
+func TestH264CodecAdvertisesPacketLossFeedback(t *testing.T) {
+	want := map[webrtc.RTCPFeedback]bool{
+		{Type: "nack"}:                   false,
+		{Type: "nack", Parameter: "pli"}: false,
+	}
+	for _, feedback := range h264Codec.RTCPFeedback {
+		if _, exists := want[feedback]; exists {
+			want[feedback] = true
+		}
+	}
+	for feedback, found := range want {
+		if !found {
+			t.Fatalf("H264 RTCP feedback missing: %#v", feedback)
+		}
+	}
+}
 
 func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
 	message, err := raceMessageForCar([]byte(`{"type":"race_state","version":2,"standings":[]}`), "CP-2")
@@ -83,7 +125,7 @@ func TestConnectAyamePilotClassifiesPeerBye(t *testing.T) {
 }
 
 func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
-	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":4,"status":"racing","intervalToAheadMs":1200}]}`)
+	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200}]}`)
 	message, err := raceMessageForCar(state, "CP-2")
 	if err != nil {
 		t.Fatalf("raceMessageForCar returned an error: %v", err)
@@ -93,8 +135,9 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 		Sequence  int    `json:"sequence"`
 		ViewerID  string `json:"viewerCarId"`
 		Standings []struct {
-			CarID             string `json:"carId"`
-			IntervalToAheadMs *int   `json:"intervalToAheadMs"`
+			CarID              string `json:"carId"`
+			LappingCarBehindID string `json:"lappingCarBehindId"`
+			LappingGapMs       *int   `json:"lappingGapMs"`
 		} `json:"standings"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "RACE:")), &payload); err != nil {
@@ -103,7 +146,11 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 	if payload.RaceRunID != "rr_123" || payload.Sequence != 17 || payload.ViewerID != "CP-2" {
 		t.Fatalf("race identity = %#v, want run rr_123 sequence 17 viewer CP-2", payload)
 	}
-	if len(payload.Standings) != 2 || payload.Standings[0].CarID != "CP-1" || payload.Standings[1].IntervalToAheadMs == nil || *payload.Standings[1].IntervalToAheadMs != 1200 {
+	if len(payload.Standings) != 2 ||
+		payload.Standings[0].CarID != "CP-1" ||
+		payload.Standings[1].LappingCarBehindID != "CP-1" ||
+		payload.Standings[1].LappingGapMs == nil ||
+		*payload.Standings[1].LappingGapMs != 1200 {
 		t.Fatalf("standings = %#v, want preserved timing values", payload.Standings)
 	}
 }
@@ -143,6 +190,39 @@ func TestRaceMessageForCarPreservesCanonicalFixture(t *testing.T) {
 func TestRaceMessageForCarRejectsEmptyCarID(t *testing.T) {
 	if _, err := raceMessageForCar([]byte(`{"type":"race_state","version":2}`), ""); err == nil {
 		t.Fatal("raceMessageForCar accepted an empty car ID")
+	}
+}
+
+func TestUnwrapRaceStateMessage(t *testing.T) {
+	raw := []byte(`{"type":"race_state","version":2,"raceId":"race-test"}`)
+	tests := []struct {
+		name    string
+		input   []byte
+		present bool
+		want    string
+	}{
+		{name: "Race Control raw state", input: raw, present: true, want: string(raw)},
+		{
+			name:    "Relay race stream wrapper",
+			input:   []byte(`{"type":"race-state","data":"RACE:{\"type\":\"race_state\",\"version\":2,\"raceId\":\"race-test\"}"}`),
+			present: true,
+			want:    string(raw),
+		},
+		{name: "Relay heartbeat", input: []byte(`{"type":"race-heartbeat"}`), present: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, present, err := unwrapRaceStateMessage(test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if present != test.present {
+				t.Fatalf("present = %v, want %v", present, test.present)
+			}
+			if string(got) != test.want {
+				t.Fatalf("payload = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

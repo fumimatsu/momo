@@ -49,6 +49,9 @@ struct MomoArgs {
   int window_height = 480;
   bool fullscreen = false;
   std::string shared_frame_name = "Local\\MomoObserverFrameV1";
+  std::string shared_luma_name = "";
+  bool shared_output_headless = false;
+  int shared_output_fps = 50;
   bool flip_vertical = false;
   bool flip_horizontal = false;
   std::string serial_device = "";
@@ -89,6 +92,7 @@ struct MomoArgs {
   std::vector<std::string> p2p_multi_receiver_sources;
   std::vector<std::string> p2p_multi_receiver_source_flips;
   std::string p2p_multi_receiver_audio_source;
+  double p2p_multi_receiver_audio_gain = 1.0;
   std::string p2p_pilot_endpoint = "ws://127.0.0.1:8090/ws?role=pilot";
   std::string p2p_pilot_input_config = "input.json";
   std::string p2p_pilot_label = "";

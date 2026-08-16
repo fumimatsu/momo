@@ -40,12 +40,24 @@ if ($IncludeNvCodec) {
 import os
 import pathlib
 import sys
-cuda_root = pathlib.Path(sys.prefix) / "Lib" / "site-packages" / "nvidia" / "cuda_runtime"
-if os.name == "nt" and cuda_root.is_dir():
-    os.environ["CUDA_PATH"] = str(cuda_root)
-    os.add_dll_directory(str(cuda_root / "bin"))
+package_root = pathlib.Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
+cuda_root = package_root / "cuda_runtime"
+dll_handles = []
+if os.name == "nt":
+    if cuda_root.is_dir():
+        os.environ["CUDA_PATH"] = str(cuda_root)
+    for component in ("cuda_runtime", "cuda_nvrtc"):
+        binary_directory = package_root / component / "bin"
+        if binary_directory.is_dir():
+            dll_handles.append(os.add_dll_directory(str(binary_directory)))
+            os.environ["PATH"] = str(binary_directory) + os.pathsep + os.environ.get("PATH", "")
 import PyNvVideoCodec
-print("PyNvVideoCodec=ready")
+import cupy
+kernel = cupy.RawKernel('extern "C" __global__ void probe(int* value) { value[0] = 7; }', 'probe')
+value = cupy.zeros(1, dtype=cupy.int32)
+kernel((1,), (1,), (value,))
+assert int(value.get()[0]) == 7
+print(f"PyNvVideoCodec=ready CuPy={cupy.__version__} NVRTC=ready")
 '@
     $nvcodecVersion = & $venvPython -c $nvcodecProbe
     if ($LASTEXITCODE -ne 0) { throw "PyNvVideoCodec import validation failed" }

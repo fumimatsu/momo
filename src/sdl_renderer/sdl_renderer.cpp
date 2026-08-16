@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstring>
 #include <iomanip>
+#include <mutex>
 #include <sstream>
 
 #if defined(_WIN32)
@@ -15,6 +16,8 @@
 #include <api/video/i420_buffer.h>
 #include <rtc_base/logging.h>
 #include <third_party/libyuv/include/libyuv/convert_from.h>
+#include <third_party/libyuv/include/libyuv/planar_functions.h>
+#include <third_party/libyuv/include/libyuv/scale.h>
 #include <third_party/libyuv/include/libyuv/video_common.h>
 
 #if defined(USE_OPENCV_ARUCO)
@@ -23,8 +26,6 @@
 
 #define STD_ASPECT 1.33
 #define WIDE_ASPECT 1.78
-#define FRAME_INTERVAL (1000 / 50)
-
 namespace {
 
 constexpr int kSharedFrameWidth = 1920;
@@ -38,6 +39,17 @@ constexpr int kSharedSourceVerticalOffset =
     (kSharedSlotHeight - kSharedSourceHeight) / 2;
 constexpr uint32_t kSharedFrameMagic = 0x3146504d;  // "MFP1"
 constexpr uint32_t kSharedFramePixelFormat = 0x41524742;  // "BGRA"
+
+constexpr int kSharedLumaWidth = 960;
+constexpr int kSharedLumaHeight = 528;
+constexpr int kSharedLumaStride = kSharedLumaWidth;
+constexpr int kSharedLumaBufferCount = 3;
+constexpr int kSharedLumaMaxSources = 4;
+constexpr size_t kSharedLumaSourceIdSize = 32;
+constexpr size_t kSharedLumaPlaneSize =
+    static_cast<size_t>(kSharedLumaStride) * kSharedLumaHeight;
+constexpr uint32_t kSharedLumaMagic = 0x31594c4d;        // "MLY1"
+constexpr uint32_t kSharedLumaPixelFormat = 0x30303859;  // "Y800"
 
 #if defined(_WIN32)
 struct SharedFrameHeader {
@@ -56,6 +68,41 @@ struct SharedFrameHeader {
   uint8_t reserved_tail[8];
 };
 static_assert(sizeof(SharedFrameHeader) == 64);
+
+struct SharedLumaHeader {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t header_size;
+  uint32_t width;
+  uint32_t height;
+  uint32_t stride;
+  uint32_t pixel_format;
+  uint32_t buffer_count;
+  uint32_t max_sources;
+  uint32_t source_count;
+  volatile LONG active_buffer;
+  volatile LONG64 sequence;
+  volatile LONG64 timestamp_ns;
+  uint8_t reserved_tail[8];
+};
+static_assert(sizeof(SharedLumaHeader) == 64);
+
+struct SharedLumaSourceMetadata {
+  uint64_t source_sequence;
+  int64_t timestamp_ns;
+  uint32_t flags;
+  uint32_t reserved;
+};
+static_assert(sizeof(SharedLumaSourceMetadata) == 24);
+
+constexpr size_t kSharedLumaSourceTableSize =
+    kSharedLumaMaxSources * kSharedLumaSourceIdSize;
+constexpr size_t kSharedLumaMetadataSize =
+    kSharedLumaMaxSources * sizeof(SharedLumaSourceMetadata);
+constexpr size_t kSharedLumaBufferSize =
+    kSharedLumaMetadataSize + kSharedLumaMaxSources * kSharedLumaPlaneSize;
+constexpr size_t kSharedLumaPrefixSize =
+    sizeof(SharedLumaHeader) + kSharedLumaSourceTableSize;
 
 std::wstring Utf8ToWide(const std::string& value) {
   if (value.empty()) {
@@ -85,6 +132,21 @@ class SharedFrameWriter {
       return;
     }
 
+    const std::wstring producer_mutex_name = wide_name + L"-Producer";
+    producer_mutex_ = CreateMutexW(nullptr, FALSE, producer_mutex_name.c_str());
+    if (producer_mutex_ == nullptr) {
+      RTC_LOG(LS_ERROR) << "CreateMutexW for shared frame failed: "
+                        << GetLastError();
+      return;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+      RTC_LOG(LS_ERROR) << "Shared frame mapping already has another writer: "
+                        << name;
+      CloseHandle(producer_mutex_);
+      producer_mutex_ = nullptr;
+      return;
+    }
+
     const size_t mapping_size =
         sizeof(SharedFrameHeader) +
         static_cast<size_t>(kSharedFrameStride) * kSharedFrameHeight *
@@ -96,13 +158,8 @@ class SharedFrameWriter {
                                   wide_name.c_str());
     if (mapping_ == nullptr) {
       RTC_LOG(LS_ERROR) << "CreateFileMappingW failed: " << GetLastError();
-      return;
-    }
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-      RTC_LOG(LS_ERROR) << "Shared frame mapping already has another writer: "
-                        << name;
-      CloseHandle(mapping_);
-      mapping_ = nullptr;
+      CloseHandle(producer_mutex_);
+      producer_mutex_ = nullptr;
       return;
     }
     view_ = static_cast<uint8_t*>(
@@ -111,6 +168,8 @@ class SharedFrameWriter {
       RTC_LOG(LS_ERROR) << "MapViewOfFile failed: " << GetLastError();
       CloseHandle(mapping_);
       mapping_ = nullptr;
+      CloseHandle(producer_mutex_);
+      producer_mutex_ = nullptr;
       return;
     }
 
@@ -139,6 +198,9 @@ class SharedFrameWriter {
     }
     if (mapping_ != nullptr) {
       CloseHandle(mapping_);
+    }
+    if (producer_mutex_ != nullptr) {
+      CloseHandle(producer_mutex_);
     }
 #endif
   }
@@ -180,14 +242,184 @@ class SharedFrameWriter {
  private:
 #if defined(_WIN32)
   HANDLE mapping_ = nullptr;
+  HANDLE producer_mutex_ = nullptr;
   uint8_t* view_ = nullptr;
   LONG next_buffer_ = 0;
 #endif
 };
 
+class SharedLumaWriter {
+ public:
+  explicit SharedLumaWriter(const std::string& name) {
+#if defined(_WIN32)
+    const std::wstring wide_name = Utf8ToWide(name);
+    if (wide_name.empty()) {
+      RTC_LOG(LS_ERROR) << "Shared luma mapping name is invalid";
+      return;
+    }
+    const std::wstring producer_mutex_name = wide_name + L"-Producer";
+    producer_mutex_ = CreateMutexW(nullptr, FALSE, producer_mutex_name.c_str());
+    if (producer_mutex_ == nullptr) {
+      RTC_LOG(LS_ERROR) << "CreateMutexW for shared luma failed: "
+                        << GetLastError();
+      return;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+      RTC_LOG(LS_ERROR) << "Shared luma mapping already has another writer: "
+                        << name;
+      CloseHandle(producer_mutex_);
+      producer_mutex_ = nullptr;
+      return;
+    }
+    const size_t mapping_size =
+        kSharedLumaPrefixSize + kSharedLumaBufferCount * kSharedLumaBufferSize;
+    mapping_ =
+        CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                           static_cast<DWORD>(mapping_size >> 32),
+                           static_cast<DWORD>(mapping_size), wide_name.c_str());
+    if (mapping_ == nullptr) {
+      RTC_LOG(LS_ERROR) << "CreateFileMappingW for luma failed: "
+                        << GetLastError();
+      CloseHandle(producer_mutex_);
+      producer_mutex_ = nullptr;
+      return;
+    }
+    view_ = static_cast<uint8_t*>(
+        MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, mapping_size));
+    if (view_ == nullptr) {
+      RTC_LOG(LS_ERROR) << "MapViewOfFile for luma failed: " << GetLastError();
+      CloseHandle(mapping_);
+      mapping_ = nullptr;
+      CloseHandle(producer_mutex_);
+      producer_mutex_ = nullptr;
+      return;
+    }
+
+    std::memset(view_, 0, mapping_size);
+    auto* header = reinterpret_cast<SharedLumaHeader*>(view_);
+    header->magic = kSharedLumaMagic;
+    header->version = 1;
+    header->header_size = sizeof(*header);
+    header->width = kSharedLumaWidth;
+    header->height = kSharedLumaHeight;
+    header->stride = kSharedLumaStride;
+    header->pixel_format = kSharedLumaPixelFormat;
+    header->buffer_count = kSharedLumaBufferCount;
+    header->max_sources = kSharedLumaMaxSources;
+    RTC_LOG(LS_INFO) << "Shared luma writer opened: " << name << " "
+                     << kSharedLumaWidth << "x" << kSharedLumaHeight;
+#else
+    RTC_LOG(LS_WARNING) << "Shared luma output is only supported on Windows";
+    static_cast<void>(name);
+#endif
+  }
+
+  ~SharedLumaWriter() {
+#if defined(_WIN32)
+    if (view_ != nullptr) {
+      UnmapViewOfFile(view_);
+    }
+    if (mapping_ != nullptr) {
+      CloseHandle(mapping_);
+    }
+    if (producer_mutex_ != nullptr) {
+      CloseHandle(producer_mutex_);
+    }
+#endif
+  }
+
+  bool IsOpen() const {
+#if defined(_WIN32)
+    return view_ != nullptr;
+#else
+    return false;
+#endif
+  }
+
+  void ConfigureSources(const std::vector<std::string>& source_names) {
+#if defined(_WIN32)
+    if (view_ == nullptr) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    auto* header = reinterpret_cast<SharedLumaHeader*>(view_);
+    InterlockedIncrement64(&header->sequence);
+    uint8_t* source_table = view_ + sizeof(SharedLumaHeader);
+    std::memset(source_table, 0, kSharedLumaSourceTableSize);
+    const size_t source_count = std::min(
+        source_names.size(), static_cast<size_t>(kSharedLumaMaxSources));
+    for (size_t index = 0; index < source_count; ++index) {
+      const std::string& source_name = source_names[index];
+      const size_t copy_size =
+          std::min(source_name.size(), kSharedLumaSourceIdSize - 1);
+      std::memcpy(source_table + index * kSharedLumaSourceIdSize,
+                  source_name.data(), copy_size);
+    }
+    header->source_count = static_cast<uint32_t>(source_count);
+    MemoryBarrier();
+    InterlockedIncrement64(&header->sequence);
+#else
+    static_cast<void>(source_names);
+#endif
+  }
+
+  void Write(const uint8_t* planes,
+             size_t size,
+             const std::array<uint64_t, kSharedLumaMaxSources>& sequences,
+             const std::array<int64_t, kSharedLumaMaxSources>& timestamps,
+             const std::array<uint32_t, kSharedLumaMaxSources>& flags,
+             int64_t timestamp_ns) {
+#if defined(_WIN32)
+    if (view_ == nullptr ||
+        size != kSharedLumaMaxSources * kSharedLumaPlaneSize) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    auto* header = reinterpret_cast<SharedLumaHeader*>(view_);
+    InterlockedIncrement64(&header->sequence);
+    uint8_t* buffer = view_ + kSharedLumaPrefixSize +
+                      static_cast<size_t>(next_buffer_) * kSharedLumaBufferSize;
+    auto* metadata = reinterpret_cast<SharedLumaSourceMetadata*>(buffer);
+    for (size_t index = 0; index < kSharedLumaMaxSources; ++index) {
+      metadata[index].source_sequence = sequences[index];
+      metadata[index].timestamp_ns = timestamps[index];
+      metadata[index].flags = flags[index];
+      metadata[index].reserved = 0;
+    }
+    std::memcpy(buffer + kSharedLumaMetadataSize, planes, size);
+    header->timestamp_ns = timestamp_ns;
+    MemoryBarrier();
+    InterlockedExchange(&header->active_buffer, next_buffer_);
+    MemoryBarrier();
+    InterlockedIncrement64(&header->sequence);
+    next_buffer_ = (next_buffer_ + 1) % kSharedLumaBufferCount;
+#else
+    static_cast<void>(planes);
+    static_cast<void>(size);
+    static_cast<void>(sequences);
+    static_cast<void>(timestamps);
+    static_cast<void>(flags);
+    static_cast<void>(timestamp_ns);
+#endif
+  }
+
+ private:
+#if defined(_WIN32)
+  HANDLE mapping_ = nullptr;
+  HANDLE producer_mutex_ = nullptr;
+  uint8_t* view_ = nullptr;
+  LONG next_buffer_ = 0;
+  std::mutex write_mutex_;
+#endif
+};
+
 SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
                          bool enable_aruco, bool flip_vertical,
-                         bool flip_horizontal, std::string shared_frame_name)
+                         bool flip_horizontal,
+                         std::string shared_frame_name,
+                         std::string shared_luma_name,
+                         bool shared_output_headless,
+                         int shared_output_fps)
     : running_(true),
       window_(nullptr),
       renderer_(nullptr),
@@ -198,7 +430,9 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
       height_(height),
       rows_(1),
       cols_(1),
-      enable_aruco_(enable_aruco) {
+      enable_aruco_(enable_aruco),
+      shared_output_headless_(shared_output_headless),
+      shared_output_fps_(std::max(1, shared_output_fps)) {
 #if !defined(USE_OPENCV_ARUCO)
   if (enable_aruco_) {
     RTC_LOG(LS_ERROR) << "ArUco detection was requested, but this build does "
@@ -216,6 +450,14 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
       shared_frame_writer_.reset();
     }
   }
+  if (!shared_luma_name.empty()) {
+    shared_luma_writer_ = std::make_unique<SharedLumaWriter>(shared_luma_name);
+    if (shared_luma_writer_->IsOpen()) {
+      shared_luma_buffer_.resize(kSharedLumaMaxSources * kSharedLumaPlaneSize);
+    } else {
+      shared_luma_writer_.reset();
+    }
+  }
   // 映像表示はジョイスティック機能に依存させない。配布先の SDL が
   // joystick backend を含まない場合でも、Pilot の映像 Viewer 自体は
   // 起動して状態を表示できる必要がある。
@@ -224,8 +466,12 @@ SDLRenderer::SDLRenderer(int width, int height, bool fullscreen,
     return;
   }
 
+  SDL_WindowFlags window_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+  if (shared_output_headless_) {
+    window_flags |= SDL_WINDOW_HIDDEN;
+  }
   window_ = SDL_CreateWindow("Momo WebRTC Native Client", width_, height_,
-                             SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+                             window_flags);
   if (window_ == nullptr) {
     RTC_LOG(LS_ERROR) << __FUNCTION__ << ": SDL_CreateWindow failed "
                       << SDL_GetError();
@@ -353,67 +599,75 @@ int SDLRenderer::RenderThread() {
   SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
 
   uint32_t start_time, duration;
+  const uint32_t frame_interval_ms =
+      std::max(1U, 1000U / static_cast<uint32_t>(shared_output_fps_));
   while (running_) {
     start_time = SDL_GetTicks();
     {
       webrtc::MutexLock lock(&sinks_lock_);
-      SDL_RenderClear(renderer_);
-      for (const VideoTrackSinkVector::value_type& sinks : sinks_) {
-        Sink* sink = sinks.second.get();
+      if (!shared_output_headless_) {
+        SDL_RenderClear(renderer_);
+        for (const VideoTrackSinkVector::value_type& sinks : sinks_) {
+          Sink* sink = sinks.second.get();
 
-        webrtc::MutexLock frame_lock(sink->GetMutex());
+          webrtc::MutexLock frame_lock(sink->GetMutex());
 
-        if (!sink->GetOutlineChanged())
-          continue;
+          if (!sink->GetOutlineChanged())
+            continue;
 
-        int width = sink->GetFrameWidth();
-        int height = sink->GetFrameHeight();
+          int width = sink->GetFrameWidth();
+          int height = sink->GetFrameHeight();
 
-        if (width == 0 || height == 0)
-          continue;
+          if (width == 0 || height == 0)
+            continue;
 
-        SDL_Surface* surface =
-            SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ARGB8888,
-                                  sink->GetImage(), width * 4);
-        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-        SDL_DestroySurface(surface);
+          SDL_Surface* surface =
+              SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ARGB8888,
+                                    sink->GetImage(), width * 4);
+          SDL_Texture* texture =
+              SDL_CreateTextureFromSurface(renderer_, surface);
+          SDL_DestroySurface(surface);
 
-        SDL_FRect image_rect = {0, 0, (float)width, (float)height};
-        SDL_FRect draw_rect = {
-            (float)sink->GetOffsetX(), (float)sink->GetOffsetY(),
-            (float)sink->GetWidth(), (float)sink->GetHeight()};
+          SDL_FRect image_rect = {0, 0, (float)width, (float)height};
+          SDL_FRect draw_rect = {
+              (float)sink->GetOffsetX(), (float)sink->GetOffsetY(),
+              (float)sink->GetWidth(), (float)sink->GetHeight()};
 
-        // ArUco モードでは Sink 側で先に映像を反転してから文字やマーカーを
-        // 描画しているため、ここでは再反転しない。
-        bool flip_vertical = flip_vertical_.load();
-        bool flip_horizontal = flip_horizontal_.load();
-        GetEffectiveFlip(sink->GetSourceName(), &flip_vertical,
-                         &flip_horizontal);
-        const SDL_FlipMode flip = enable_aruco_
-                                      ? SDL_FLIP_NONE
-                                      : static_cast<SDL_FlipMode>(
-                                            (flip_vertical
-                                                 ? SDL_FLIP_VERTICAL
-                                                 : SDL_FLIP_NONE) |
-                                            (flip_horizontal
-                                                 ? SDL_FLIP_HORIZONTAL
-                                                 : SDL_FLIP_NONE));
-        SDL_RenderTextureRotated(renderer_, texture, &image_rect, &draw_rect,
-                                 0, nullptr, flip);
+          // ArUco モードでは Sink 側で先に映像を反転してから文字やマーカーを
+          // 描画しているため、ここでは再反転しない。
+          bool flip_vertical = flip_vertical_.load();
+          bool flip_horizontal = flip_horizontal_.load();
+          GetEffectiveFlip(sink->GetSourceName(), &flip_vertical,
+                           &flip_horizontal);
+          const SDL_FlipMode flip = enable_aruco_
+                                        ? SDL_FLIP_NONE
+                                        : static_cast<SDL_FlipMode>(
+                                              (flip_vertical
+                                                   ? SDL_FLIP_VERTICAL
+                                                   : SDL_FLIP_NONE) |
+                                              (flip_horizontal
+                                                   ? SDL_FLIP_HORIZONTAL
+                                                   : SDL_FLIP_NONE));
+          SDL_RenderTextureRotated(renderer_, texture, &image_rect, &draw_rect,
+                                   0, nullptr, flip);
 
-        SDL_DestroyTexture(texture);
+          SDL_DestroyTexture(texture);
+        }
       }
       WriteSharedFrame();
-      RenderSourceOverlay();
-      SDL_RenderPresent(renderer_);
+      WriteSharedLuma();
+      if (!shared_output_headless_) {
+        RenderSourceOverlay();
+        SDL_RenderPresent(renderer_);
+      }
 
       if (dispatch_) {
         dispatch_(std::bind(&SDLRenderer::PollEvent, this));
       }
     }
     duration = SDL_GetTicks() - start_time;
-    if (duration < FRAME_INTERVAL) {
-      SDL_Delay(FRAME_INTERVAL - duration);
+    if (duration < frame_interval_ms) {
+      SDL_Delay(frame_interval_ms - duration);
     }
   }
 
@@ -442,6 +696,8 @@ SDLRenderer::Sink::Sink(SDLRenderer* renderer,
       height_(0),
       source_width_(0),
       source_height_(0),
+      source_sequence_(0),
+      source_timestamp_unix_ns_(0),
       fps_window_start_(std::chrono::steady_clock::now()),
       last_frame_time_(std::chrono::steady_clock::time_point::min()),
       fps_window_frame_count_(0),
@@ -455,7 +711,9 @@ SDLRenderer::Sink::Sink(SDLRenderer* renderer,
 #else
   static_cast<void>(enable_aruco);
 #endif
-  track_->AddOrUpdateSink(this, webrtc::VideoSinkWants());
+  webrtc::VideoSinkWants wants;
+  wants.max_framerate_fps = renderer_->shared_output_fps_;
+  track_->AddOrUpdateSink(this, wants);
 }
 
 SDLRenderer::Sink::~Sink() {
@@ -496,11 +754,27 @@ void SDLRenderer::Sink::OnFrame(const webrtc::VideoFrame& frame) {
     source_height_ = source_buffer->height();
     source_image_.reset(new uint8_t[source_width_ * source_height_ * 4]);
   }
+  if (renderer_->shared_luma_writer_ != nullptr) {
+    source_luma_.resize(kSharedLumaPlaneSize);
+    libyuv::ScalePlane(source_buffer->DataY(), source_buffer->StrideY(),
+                       source_buffer->width(), source_buffer->height(),
+                       source_luma_.data(), kSharedLumaStride, kSharedLumaWidth,
+                       kSharedLumaHeight, libyuv::kFilterNone);
+    source_sequence_ = frame_count;
+    const auto received_at =
+        std::chrono::system_clock::now().time_since_epoch();
+    source_timestamp_unix_ns_ =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(received_at)
+            .count();
+  }
   libyuv::ConvertFromI420(
       source_buffer->DataY(), source_buffer->StrideY(), source_buffer->DataU(),
       source_buffer->StrideU(), source_buffer->DataV(), source_buffer->StrideV(),
       source_image_.get(), source_width_ * 4, source_width_, source_height_,
       libyuv::FOURCC_ARGB);
+  if (renderer_->shared_output_headless_) {
+    return;
+  }
   if (outline_changed_ || frame.width() != input_width_ ||
       frame.height() != input_height_) {
     int width, height;
@@ -675,6 +949,36 @@ bool SDLRenderer::Sink::CopySourceTo(uint8_t* destination,
   return true;
 }
 
+bool SDLRenderer::Sink::CopyLumaTo(uint8_t* destination,
+                                   int destination_stride,
+                                   int destination_width,
+                                   int destination_height,
+                                   bool flip_vertical,
+                                   bool flip_horizontal,
+                                   uint64_t* source_sequence,
+                                   int64_t* timestamp_unix_ns) const {
+  if (source_luma_.empty() || destination_width != kSharedLumaWidth ||
+      destination_height != kSharedLumaHeight) {
+    return false;
+  }
+  const uint8_t* source = source_luma_.data();
+  int source_stride = kSharedLumaStride;
+  if (flip_vertical) {
+    source += static_cast<size_t>(destination_height - 1) * kSharedLumaStride;
+    source_stride = -source_stride;
+  }
+  if (flip_horizontal) {
+    libyuv::MirrorPlane(source, source_stride, destination, destination_stride,
+                        destination_width, destination_height);
+  } else {
+    libyuv::CopyPlane(source, source_stride, destination, destination_stride,
+                      destination_width, destination_height);
+  }
+  *source_sequence = source_sequence_;
+  *timestamp_unix_ns = source_timestamp_unix_ns_;
+  return true;
+}
+
 void SDLRenderer::SetOutlines() {
   if (!fixed_slots_.empty()) {
     const int slot_count = fixed_slots_.size();
@@ -765,6 +1069,9 @@ void SDLRenderer::ConfigureFixedSlots(
   fixed_slots_.clear();
   for (const std::string& source_name : source_names) {
     fixed_slots_.push_back({source_name, SourceState::kConnecting});
+  }
+  if (shared_luma_writer_ != nullptr) {
+    shared_luma_writer_->ConfigureSources(source_names);
   }
   SetOutlines();
 }
@@ -942,6 +1249,49 @@ void SDLRenderer::WriteSharedFrame() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
   shared_frame_writer_->Write(shared_frame_buffer_.data(),
                               shared_frame_buffer_.size(), timestamp_ns);
+}
+
+void SDLRenderer::WriteSharedLuma() {
+  if (shared_luma_writer_ == nullptr || shared_luma_buffer_.empty()) {
+    return;
+  }
+
+  std::fill(shared_luma_buffer_.begin(), shared_luma_buffer_.end(), 0);
+  std::array<uint64_t, kSharedLumaMaxSources> source_sequences{};
+  std::array<int64_t, kSharedLumaMaxSources> source_timestamps{};
+  std::array<uint32_t, kSharedLumaMaxSources> source_flags{};
+  const auto now = std::chrono::steady_clock::now();
+  const int slot_count =
+      std::min(static_cast<int>(fixed_slots_.size()), kSharedLumaMaxSources);
+  for (int slot_index = 0; slot_index < slot_count; ++slot_index) {
+    Sink* sink = FindSinkForSource(fixed_slots_[slot_index].name);
+    if (sink == nullptr) {
+      continue;
+    }
+    webrtc::MutexLock frame_lock(sink->GetMutex());
+    if (!sink->IsReceiving(now)) {
+      continue;
+    }
+    bool flip_vertical = flip_vertical_.load();
+    bool flip_horizontal = flip_horizontal_.load();
+    GetEffectiveFlip(fixed_slots_[slot_index].name, &flip_vertical,
+                     &flip_horizontal);
+    if (sink->CopyLumaTo(
+            shared_luma_buffer_.data() +
+                static_cast<size_t>(slot_index) * kSharedLumaPlaneSize,
+            kSharedLumaStride, kSharedLumaWidth, kSharedLumaHeight,
+            flip_vertical, flip_horizontal, &source_sequences[slot_index],
+            &source_timestamps[slot_index])) {
+      source_flags[slot_index] = 1;
+    }
+  }
+
+  const auto batch_time = std::chrono::system_clock::now().time_since_epoch();
+  const int64_t batch_timestamp_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(batch_time).count();
+  shared_luma_writer_->Write(
+      shared_luma_buffer_.data(), shared_luma_buffer_.size(), source_sequences,
+      source_timestamps, source_flags, batch_timestamp_ns);
 }
 
 void SDLRenderer::RenderSourceRawTelemetryGraph(

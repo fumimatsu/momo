@@ -64,12 +64,18 @@
         "currentLapMs": { "type": "integer", "minimum": 0 },
         "intervalToAheadMs": { "type": "integer", "minimum": 0 },
         "lapDeltaToAhead": { "type": "integer", "minimum": 1 },
+        "lappingCarBehindId": { "type": "string", "minLength": 1 },
+        "lappingGapMs": { "type": "integer", "minimum": 1 },
         "currentSector": { "type": "integer", "minimum": 1, "maximum": 6 },
         "sectorCount": { "type": "integer", "minimum": 1, "maximum": 6 },
         "lastMarkerIndex": { "type": "integer", "minimum": 0, "maximum": 5 },
         "lastMarkerRaceMs": { "type": "integer", "minimum": 0 },
         "sectorTimes": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/sectorTime" } }
-      }
+      },
+      "allOf": [
+        { "if": { "required": ["lappingCarBehindId"] }, "then": { "required": ["lappingGapMs"] } },
+        { "if": { "required": ["lappingGapMs"] }, "then": { "required": ["lappingCarBehindId"] } }
+      ]
     },
     "lapSectorTime": {
       "type": "object",

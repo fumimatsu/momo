@@ -317,7 +317,13 @@ int main(int argc, char* argv[]) {
                                        args.flip_horizontal,
                                        use_p2p_multi_receiver
                                            ? args.shared_frame_name
-                                           : ""));
+                                           : "",
+                                       use_p2p_multi_receiver
+                                           ? args.shared_luma_name
+                                           : "",
+                                       use_p2p_multi_receiver &&
+                                           args.shared_output_headless,
+                                       args.shared_output_fps));
   }
 
   std::unique_ptr<RTCManager> rtc_manager(new RTCManager(
@@ -460,6 +466,7 @@ int main(int argc, char* argv[]) {
       P2PMultiReceiverClientConfig config;
       config.no_google_stun = args.no_google_stun;
       config.audio_source = args.p2p_multi_receiver_audio_source;
+      config.audio_gain = args.p2p_multi_receiver_audio_gain;
       sdl_renderer->ConfigureSourceFlips(
           args.p2p_multi_receiver_source_flips);
       for (const std::string& source : args.p2p_multi_receiver_sources) {

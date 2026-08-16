@@ -221,6 +221,22 @@ CPU基準と直接NVDECを同じframe indexで比較する場合は、次を実�
   -InputPath ../.artifacts/aruco-input/cpu-shadow-upright-h264.mp4 -FrameCount 1500
 ```
 
+GPU上でcandidate抽出から`DICT_4X4_50`のID判定まで行うPoCは次で検証する。CPU OpenCVへの
+画像転送は比較用oracleだけで、GPU検出経路はdevice NV12からallowlist済みIDまでhost画像を
+経由しない。
+
+```powershell
+../Validate-GpuArucoId.ps1 `
+  -InputPath ../.artifacts/aruco-input/cpu-shadow-upright-h264.mp4 `
+  -FrameCount 1500 -ExpectedMarkerIds 1,2,3
+../Validate-GpuArucoDetector.ps1 `
+  -InputPath ../.artifacts/aruco-input/cpu-shadow-upright-h264.mp4 `
+  -FrameCount 1500 -ExpectedMarkerIds 1,2,3
+```
+
+これは1 sourceのalgorithm PoCであり、複数sourceの本番上限ではない。詳細と現時点の測定値は
+[GPU ArUco Implementation Plan](../../doc/GPU_ARUCO_IMPLEMENTATION_PLAN.md)を参照する。
+
 direct NVDECの短時間上限と運用候補を分ける。短時間でCPU 60%直前まで通る台数をそのまま採用せず、
 20%以上のCPU余力を残す候補台数で10分、次に1時間を通してからnode設定へ反映する。
 
@@ -473,3 +489,15 @@ APIは既定でloopbackだけを許可する。MADSYSTEMを別PCで動かす場�
 Relay自身はHTTPのTLSを終端しない。平文tokenを信頼できないネットワークへ流してはならない。
 
 Pi 直結 UI は別配布物である。実ファイル名は `fpv-viewer.html` / `fpv-viewer.js`、URL は `#audioControls=0` のように hash を使う。Relay の `pilot.html` と混同してはならない。
+CPU OpenCVとGPU-only ArUcoの同条件比較には次を使う。
+
+```powershell
+.\tools\Compare-CpuGpuArucoCapacity.ps1 `
+  -InputPath <normalized-h264.mp4> -SourceCounts 1,4,8,12,16 `
+  -DurationSeconds 30 -DetectionHz 50
+```
+
+比較レポートは同一IDの物理マーカー検出数とpresenceフレーム数を別々に保持する。GPU実装で
+重複IDを1件へ正規化してはならない。
+既定のGPU backendは`nvcodec-gpu-batch`で、複数sourceのthreshold、connected component、
+quad抽出を1回のCUDA batchとして処理する。

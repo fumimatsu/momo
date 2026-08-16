@@ -158,6 +158,16 @@ void Util::ParseArgs(int argc,
   app.add_option("--shared-frame-name", args.shared_frame_name,
                  "Windows shared-memory mapping name for p2p-recv-multi "
                  "(1920x1080 BGRA, triple buffered)");
+  app.add_option("--shared-luma-name", args.shared_luma_name,
+                 "Windows shared-memory mapping name for p2p-recv-multi "
+                 "marker input (four 960x528 Y planes, triple buffered)");
+  app.add_flag("--shared-output-headless", args.shared_output_headless,
+               "Publish p2p-recv-multi shared outputs without drawing the "
+               "Native Observer window");
+  app.add_option("--shared-output-fps", args.shared_output_fps,
+                 "Maximum receive and publish rate for p2p-recv-multi shared "
+                 "outputs")
+      ->check(CLI::Range(1, MAX_FRAMERATE));
   app.add_flag("--fullscreen", args.fullscreen,
                "Use fullscreen window for videos (if SDL is available)");
   app.add_flag("--version", version, "Show version information");
@@ -332,6 +342,11 @@ void Util::ParseArgs(int argc,
       ->add_option("--audio-source", args.p2p_multi_receiver_audio_source,
                    "Play M5 AUD telemetry from one source name or all")
       ->default_val("");
+  p2p_multi_receiver_app
+      ->add_option("--audio-gain", args.p2p_multi_receiver_audio_gain,
+                   "Observer audio master gain (0.5-3.0)")
+      ->default_val(1.0)
+      ->check(CLI::Range(0.5, 3.0));
   p2p_multi_receiver_app->add_flag("--flip-vertical", args.flip_vertical,
                                    "Flip every received video vertically");
   p2p_multi_receiver_app->add_flag("--flip-horizontal", args.flip_horizontal,

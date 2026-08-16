@@ -5,7 +5,10 @@
 Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須である。無効な SDL3 をリンクすると、画面上で `INIT ERR` と `SDL not built with audio support` が出て再生できない。
 
 ```powershell
-.\tools\start-mads-observer.ps1 -ObserverAudioSource all -RestartObserver
+.\tools\start-mads-observer.ps1 `
+  -ObserverAudioSource all `
+  -ObserverAudioGain 1.5 `
+  -RestartObserver
 ```
 
 - `--audio-source all` は `AUD:` が届いている全 Source を同時再生する。
@@ -13,6 +16,9 @@ Windows Native Observer をビルドする SDL3 は `SDL_AUDIO=ON` が必須で�
 - `--audio-source` を指定しなければ Windows への音声再生を行わない。起動スクリプトの既定値は `all` である。
 - `AUD:1` の 8 kHz IMA ADPCM を Native Observer が PCM に復元し、Windows の既定再生デバイスへ出力する。
 - 各 Source は 120 ms のジッターバッファを持つ。全 Source の PCM は再生コールバックで平均化し、音割れを防いでから 1 本の SDL 音声ストリームへ出力する。
+- `--audio-gain` は Observer 内部の master gain で、`0.5` ～ `3.0` を指定できる。Momo 単体の既定値は `1.0`、起動スクリプトの既定値は `1.5` である。
+- `+` / `-` キーで master gain を 10% ずつ変更する。日本語配列の `Shift + ;` も `+` として扱う。範囲は 50% ～ 300% で、現在値を各音声対象枠の OSD に表示する。
+- gain 適用後に 16 bit PCM 範囲へクランプする。gain を上げると M5 マイクのノイズも増え、上限付近では音が飽和する。
 - 未接続または音声がない Source は無音になる。重複・逆順パケットは再バッファせず破棄する。
 - `0` キーで全 Source、`1` ～ `4` または `[` `]` キーで 1 台のソロ再生へ切り替える。
 
