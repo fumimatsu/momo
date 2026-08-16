@@ -48,6 +48,7 @@ const (
 	gameplayWebSocketQueueSize   = 128
 	observerTelemetryInterval    = time.Second / 15
 	maxTelemetryStateSources     = 16
+	fuelCommandCapability        = "fuel_command_v1"
 	raceStreamPingInterval       = 5 * time.Second
 	raceStreamPongWait           = 15 * time.Second
 	raceStreamWriteTimeout       = 5 * time.Second
@@ -318,6 +319,7 @@ type relay struct {
 	telemetryBinaryTEL     atomic.Uint64
 	telemetryBinaryAudio   atomic.Uint64
 	telemetryOther         atomic.Uint64
+	fuelCommandGeneration  atomic.Uint64
 	frameRate              frameRateWindow
 	vehicleHealth          *vehicleHealth
 	pitPresence            *pitPresenceState
@@ -1810,6 +1812,9 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
 		}
 		message = normalized
+		if r.upstreamGeneration.Load() == generation && telemetryHasCapability(raw, fuelCommandCapability) {
+			r.fuelCommandGeneration.Store(generation)
+		}
 		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, time.Now())
 		if event != nil {
 			r.publishVehicleEvent(*event)
@@ -1830,6 +1835,39 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 		r.telemetryOther.Add(1)
 	}
 	r.broadcastTelemetry(message)
+}
+
+func telemetryHasCapability(message string, capability string) bool {
+	if capability == "" || !strings.HasPrefix(message, "TEL:") {
+		return false
+	}
+	var payload struct {
+		Version int    `json:"v"`
+		Kind    string `json:"k"`
+		Source  string `json:"src"`
+		Quality struct {
+			Flags []string `json:"f"`
+		} `json:"q"`
+		LegacyQuality struct {
+			Flags []string `json:"flags"`
+		} `json:"qual"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(message, "TEL:"))), &payload); err != nil ||
+		payload.Kind != "s" || payload.Source != "imu0" {
+		return false
+	}
+	flags := payload.Quality.Flags
+	if payload.Version == 1 {
+		flags = payload.LegacyQuality.Flags
+	} else if payload.Version != 2 {
+		return false
+	}
+	for _, flag := range flags {
+		if flag == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *relay) broadcastVehicleHealth(health vehicleHealthSnapshot) {
@@ -2091,6 +2129,28 @@ func commandWithFuelPercent(message string, fuel float64) string {
 	return strings.Join(parts, ",") + lineEnding
 }
 
+func commandWithoutFuelPercent(message string) string {
+	if _, _, ok := parseDriveCommand(message); !ok {
+		return message
+	}
+	body := strings.TrimRight(message, "\r\n")
+	lineEnding := message[len(body):]
+	parts := strings.Split(body, ",")
+	filtered := parts[:0]
+	for _, part := range parts {
+		if strings.HasPrefix(strings.TrimSpace(part), "F:") {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	return strings.Join(filtered, ",") + lineEnding
+}
+
+func (r *relay) supportsFuelCommand() bool {
+	generation := r.upstreamGeneration.Load()
+	return generation != 0 && r.fuelCommandGeneration.Load() == generation
+}
+
 func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMessage) error {
 	if message.IsString {
 		return channel.SendText(string(message.Data))
@@ -2118,7 +2178,12 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	if message.IsString {
 		limited := r.vehicleHealth.limitCommand(string(message.Data), now)
 		health = r.vehicleHealth.snapshot(now)
-		forwarded.Data = []byte(commandWithFuelPercent(limited, health.Fuel))
+		if r.supportsFuelCommand() {
+			limited = commandWithFuelPercent(limited, health.Fuel)
+		} else {
+			limited = commandWithoutFuelPercent(limited)
+		}
+		forwarded.Data = []byte(limited)
 	}
 	if err := sendDataChannel(upstream, forwarded); err != nil {
 		log.Printf("forward command from viewer %d to Momo: %v", client.id, err)

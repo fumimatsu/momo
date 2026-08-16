@@ -463,9 +463,11 @@ Fuel 0でもPITへ戻れるよう前進PWMを1590、後退PWMを対称の1410へ
 `GEAR:4`の直接指定は拒否し、G4終了時はRelayがG3へ戻す。
 
 Relayは旧client向けの`VHS:1`を維持し、HP、Fuel、Boost、実効gearをJSONの`VGS:1`でも配信する。
-車両へ転送するRC commandにはRelay正本のFuel残量を`F:0..100`として追加する。通常形は
+M5StickS3 telemetryが現在のupstream接続世代で`fuel_command_v1` capabilityを通知した場合だけ、
+車両へ転送するRC commandへRelay正本のFuel残量を`F:0..100`として追加する。通常形は
 `S:1500,T:1800,F:75`で、`S`と`T`のPWM契約は変えない。`F`はM5StickS3の車体灯表示専用で、
-PWM、failsafe、Fuel消費計算には使用しない。Relayを経由しないDirect接続は従来どおり`S`と`T`だけで動作する。
+PWM、failsafe、Fuel消費計算には使用しない。capabilityがない旧firmwareには`F`を送らず、受信した`F`も除去する。
+upstream再接続時はcapabilityを再確認する。Relayを経由しないDirect接続は従来どおり`S`と`T`だけで動作する。
 
 APIは既定でloopbackだけを許可する。MADSYSTEMを別PCで動かす場合は `-GameplayAllowCidr` を明示できるが、
 Relay自身はHTTPのTLSを終端しない。平文tokenを信頼できないネットワークへ流してはならない。

@@ -922,6 +922,69 @@ func TestCommandWithFuelPercentPreservesDriveLineContract(t *testing.T) {
 	}
 }
 
+func TestCommandWithoutFuelPercentPreservesLegacyDriveContract(t *testing.T) {
+	for _, item := range []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{"without-fuel", "S:1500,T:1800\n", "S:1500,T:1800\n"},
+		{"remove-fuel", "S:1500,F:90,T:1800\r\n", "S:1500,T:1800\r\n"},
+		{"non-drive", "PING:1,F:90\n", "PING:1,F:90\n"},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			if got := commandWithoutFuelPercent(item.message); got != item.want {
+				t.Fatalf("commandWithoutFuelPercent() = %q, want %q", got, item.want)
+			}
+		})
+	}
+}
+
+func TestTelemetryFuelCommandCapability(t *testing.T) {
+	for _, item := range []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{"compact", `TEL:{"v":2,"k":"s","src":"imu0","q":{"f":["flu_axes","fuel_command_v1"]}}`, true},
+		{"legacy", `TEL:{"v":1,"k":"s","src":"imu0","qual":{"flags":["flu_axes","fuel_command_v1"]}}`, true},
+		{"old-firmware", `TEL:{"v":2,"k":"s","src":"imu0","q":{"f":["flu_axes"]}}`, false},
+		{"event", `TEL:{"v":2,"k":"e","src":"imu0","q":{"f":["fuel_command_v1"]}}`, false},
+		{"wrong-source", `TEL:{"v":2,"k":"s","src":"esc0","q":{"f":["fuel_command_v1"]}}`, false},
+		{"invalid", `TEL:{`, false},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			if got := telemetryHasCapability(item.message, fuelCommandCapability); got != item.want {
+				t.Fatalf("telemetryHasCapability() = %t, want %t", got, item.want)
+			}
+		})
+	}
+}
+
+func TestFuelCommandCapabilityIsBoundToUpstreamGeneration(t *testing.T) {
+	source := newStatusTestRelay("11.5", "CP-3")
+	source.upstreamGeneration.Store(4)
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(`TEL:{"v":2,"k":"s","src":"imu0","q":{"p":33333,"f":["flu_axes","fuel_command_v1"]}}`),
+		IsString: true,
+	}, 4)
+	if !source.supportsFuelCommand() {
+		t.Fatal("current upstream generation did not enable Fuel command support")
+	}
+
+	source.upstreamGeneration.Store(5)
+	if source.supportsFuelCommand() {
+		t.Fatal("Fuel command support leaked into a new upstream generation")
+	}
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(`TEL:{"v":2,"k":"s","src":"imu0","q":{"p":33333,"f":["flu_axes","fuel_command_v1"]}}`),
+		IsString: true,
+	}, 4)
+	if source.supportsFuelCommand() {
+		t.Fatal("stale upstream telemetry enabled Fuel command support")
+	}
+}
+
 func TestTelemetryDeliveryLogIsRateLimitedPerViewer(t *testing.T) {
 	client := &viewer{id: 7, role: "pilot"}
 	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)
