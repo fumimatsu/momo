@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260816-relay-tts-track-steering-v3';
+  const PILOT_BUILD_ID = '20260817-race-audio-playback-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -640,6 +640,9 @@
   let selectedRaceAnnouncementVoiceName = '';
 	let remoteRaceAudioEnabled = false;
 	const remoteRaceAudioTracker = raceAnnouncer.createRemoteAudioTracker();
+	let remoteRaceAudioPlaybackReady = false;
+	let remoteRaceAudioPlayAttempts = 0;
+	let remoteRaceAudioLastError = '';
   const receivedRaceLapHistory = new Map();
   const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
     warningGapMs: RACE_REAR_WARNING_GAP_MS,
@@ -2487,6 +2490,27 @@
 		m5AudioPlayer?.setOutputGain?.(level, rampMs);
 	}
 
+	function ensureRemoteRaceAudioPlayback(reason = 'retry') {
+		if (!usesRelayTransport() || !remoteRaceAudio.srcObject) {
+			return false;
+		}
+		if (remoteRaceAudioPlaybackReady && !remoteRaceAudio.paused) {
+			return true;
+		}
+		remoteRaceAudioPlayAttempts += 1;
+		remoteRaceAudio.play().then(() => {
+			const wasReady = remoteRaceAudioPlaybackReady;
+			remoteRaceAudioPlaybackReady = true;
+			remoteRaceAudioLastError = '';
+			if (!wasReady) recordEvent('race audio output ready', reason);
+		}).catch((error) => {
+			remoteRaceAudioPlaybackReady = false;
+			remoteRaceAudioLastError = error.message || String(error);
+			recordEvent('race audio play blocked', remoteRaceAudioLastError);
+		});
+		return true;
+	}
+
 	function handleRemoteRaceAudioMessage(message) {
 		const payload = raceAnnouncer.parseRemoteMessage(message);
 		if (!payload) return false;
@@ -2503,6 +2527,7 @@
 		}
 		if (payload.state === 'playing') {
 			remoteRaceAudioTracker.play(payload.eventId);
+			ensureRemoteRaceAudioPlayback('playing');
 			stopRaceAnnouncement();
 			setM5AudioDucking(Number(payload.ducking?.m5AudioGain) || 0.4, payload.ducking?.attackMs || 80);
 			recordEvent('race audio playing', `${payload.kind || 'event'} ${payload.language || ''}`.trim());
@@ -5578,6 +5603,8 @@
 		remoteRaceAudio.srcObject = null;
 		remoteRaceAudioEnabled = false;
 		remoteRaceAudioTracker.reset();
+		remoteRaceAudioPlaybackReady = false;
+		remoteRaceAudioLastError = '';
 		setM5AudioDucking(1, 0);
     updateUiState();
   }
@@ -6221,7 +6248,8 @@
     peer.ontrack = (event) => {
 			if (event.track.kind === 'audio' && usesRelayTransport()) {
 				remoteRaceAudio.srcObject = new MediaStream([event.track]);
-				remoteRaceAudio.play().catch((error) => recordEvent('race audio play blocked', error.message || String(error)));
+				remoteRaceAudioPlaybackReady = false;
+				ensureRemoteRaceAudioPlayback('track');
 				return;
 			}
       mediaStream.addTrack(event.track);
@@ -7357,6 +7385,13 @@
       rate: RACE_ANNOUNCE_RATE,
       volume: RACE_ANNOUNCE_VOLUME,
       lastKey: lastRaceLapAnnouncementKey || null,
+			remote: {
+				enabled: remoteRaceAudioEnabled,
+				hasTrack: Boolean(remoteRaceAudio.srcObject?.getAudioTracks?.().length),
+				playbackReady: remoteRaceAudioPlaybackReady && !remoteRaceAudio.paused,
+				playAttempts: remoteRaceAudioPlayAttempts,
+				lastError: remoteRaceAudioLastError || null,
+			},
     }),
     getMilestoneDiagnostics: () => ({
       key: lastRaceMilestoneKey || null,
@@ -7369,6 +7404,8 @@
   window.addEventListener('momo-race-state', (event) => setRaceState(event.detail));
   window.addEventListener('pointerdown', unlockRaceSignalSound);
   window.addEventListener('keydown', unlockRaceSignalSound);
+	window.addEventListener('pointerdown', () => ensureRemoteRaceAudioPlayback('pointer'));
+	window.addEventListener('keydown', () => ensureRemoteRaceAudioPlayback('keyboard'));
   window.addEventListener('pointerdown', prepareRaceAnnouncement);
   window.addEventListener('keydown', prepareRaceAnnouncement);
   window.speechSynthesis?.addEventListener?.('voiceschanged', prepareRaceAnnouncement);
