@@ -900,6 +900,28 @@ func TestCommandAuditAddsGearWithoutChangingUpstreamMessage(t *testing.T) {
 	}
 }
 
+func TestCommandWithFuelPercentPreservesDriveLineContract(t *testing.T) {
+	for _, item := range []struct {
+		name    string
+		message string
+		fuel    float64
+		want    string
+	}{
+		{"full", "S:1500,T:1800\n", 100, "S:1500,T:1800,F:100\n"},
+		{"rounded", "S:1400,T:1500\r\n", 43.6, "S:1400,T:1500,F:44\r\n"},
+		{"lower-clamped", "S:1500,T:1500", -1, "S:1500,T:1500,F:0"},
+		{"upper-clamped", "S:1500,T:1500", 101, "S:1500,T:1500,F:100"},
+		{"relay-authoritative", "S:1500,T:1500,F:90\n", 25, "S:1500,T:1500,F:25\n"},
+		{"non-drive", "PING:1\n", 50, "PING:1\n"},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			if got := commandWithFuelPercent(item.message, item.fuel); got != item.want {
+				t.Fatalf("commandWithFuelPercent() = %q, want %q", got, item.want)
+			}
+		})
+	}
+}
+
 func TestTelemetryDeliveryLogIsRateLimitedPerViewer(t *testing.T) {
 	client := &viewer{id: 7, role: "pilot"}
 	base := time.Date(2026, 8, 11, 14, 0, 0, 0, time.UTC)

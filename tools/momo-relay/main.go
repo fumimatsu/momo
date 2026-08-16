@@ -2064,6 +2064,33 @@ func commandAuditWithGear(message webrtc.DataChannelMessage, gear int32) webrtc.
 	return message
 }
 
+func commandWithFuelPercent(message string, fuel float64) string {
+	if _, _, ok := parseDriveCommand(message); !ok {
+		return message
+	}
+	lineEnding := ""
+	body := strings.TrimRight(message, "\r\n")
+	lineEnding = message[len(body):]
+	fuelPercent := int(math.Round(math.Max(0, math.Min(vehicleFuelMaximum, fuel))))
+	fuelField := fmt.Sprintf("F:%d", fuelPercent)
+	parts := strings.Split(body, ",")
+	found := false
+	for index, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if !strings.HasPrefix(trimmed, "F:") {
+			continue
+		}
+		leading := part[:len(part)-len(strings.TrimLeft(part, " \t"))]
+		trailing := part[len(strings.TrimRight(part, " \t")):]
+		parts[index] = leading + fuelField + trailing
+		found = true
+	}
+	if !found {
+		parts = append(parts, fuelField)
+	}
+	return strings.Join(parts, ",") + lineEnding
+}
+
 func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMessage) error {
 	if message.IsString {
 		return channel.SendText(string(message.Data))
@@ -2087,8 +2114,11 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	}
 	forwarded := message
 	now := time.Now()
+	health := r.vehicleHealth.snapshot(now)
 	if message.IsString {
-		forwarded.Data = []byte(r.vehicleHealth.limitCommand(string(message.Data), now))
+		limited := r.vehicleHealth.limitCommand(string(message.Data), now)
+		health = r.vehicleHealth.snapshot(now)
+		forwarded.Data = []byte(commandWithFuelPercent(limited, health.Fuel))
 	}
 	if err := sendDataChannel(upstream, forwarded); err != nil {
 		log.Printf("forward command from viewer %d to Momo: %v", client.id, err)
@@ -2097,7 +2127,6 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	client.lastCommandUnixNano.Store(time.Now().UnixNano())
 	// 表示用にはダメージ制限前のペダル入力を返す。車両へ送る forwarded は
 	// 引き続き制限後の値なので、走行性能の制御には影響しない。
-	health := r.vehicleHealth.snapshot(now)
 	r.driveGear.Store(int32(health.Gear))
 	r.recordDriveInput(client.id, message, forwarded, health, now)
 	r.broadcastCommand(commandAuditWithGear(message, int32(health.Gear)))
