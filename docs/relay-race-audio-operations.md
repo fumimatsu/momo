@@ -88,6 +88,110 @@ New-NetFirewallRule `
   -Profile Any
 ```
 
+## `11.100` で TTS service と Relay を同居させる
+
+常用構成では TTS service を `11.100` へ置く。loopback の `127.0.0.1:18090` だけに bind すれば、
+LAN 向け firewall rule、TTS host の固定 IP、別 PC の稼働維持が不要になる。
+
+### 初回セットアップ
+
+`11.100` の更新済み `momo` repository で実行する。model は Git に含まれないため、repository の pull
+だけでは起動できない。
+
+```powershell
+cd C:\src\momo\tools\race-audio-service
+uv sync --group dev
+.\download-kokoro-models.ps1
+```
+
+token は Git 管理外へ 1 回だけ生成する。TTS service と Relay は同じ token file を読む。
+
+```powershell
+$secretDirectory = Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets'
+$tokenFile = Join-Path $secretDirectory 'race-audio-service-token.txt'
+New-Item -ItemType Directory -Force -Path $secretDirectory | Out-Null
+if (-not (Test-Path -LiteralPath $tokenFile)) {
+  $token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+  [IO.File]::WriteAllText($tokenFile, $token)
+}
+```
+
+token file は Relay を起動する Windows user と SYSTEM だけが読める ACL にする。token 値を command line、
+log、repository へ書かない。
+
+```powershell
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+& icacls.exe $secretDirectory `
+  '/inheritance:r' `
+  '/grant:r' `
+  "${user}:(OI)(CI)F" `
+  '*S-1-5-18:(OI)(CI)F'
+& icacls.exe $tokenFile `
+  '/inheritance:r' `
+  '/grant:r' `
+  "${user}:F" `
+  '*S-1-5-18:F'
+```
+
+### TTS service の起動
+
+動作確認中は foreground で起動する。
+
+```powershell
+cd C:\src\momo\tools\race-audio-service
+$tokenFile = Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets\race-audio-service-token.txt'
+$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
+uv run python .\race_audio_service.py `
+  --listen 127.0.0.1:18090 `
+  --engine kokoro
+```
+
+通常運用で terminal を占有しない場合は hidden process として起動する。
+
+```powershell
+$serviceDirectory = 'C:\src\momo\tools\race-audio-service'
+$runtimeDirectory = Join-Path $env:LOCALAPPDATA 'MomoFPV'
+$logDirectory = Join-Path $runtimeDirectory 'logs'
+$tokenFile = Join-Path $runtimeDirectory 'secrets\race-audio-service-token.txt'
+New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
+$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
+$process = Start-Process `
+  -FilePath (Get-Command uv).Source `
+  -ArgumentList 'run','python','.\race_audio_service.py','--listen','127.0.0.1:18090','--engine','kokoro' `
+  -WorkingDirectory $serviceDirectory `
+  -WindowStyle Hidden `
+  -RedirectStandardOutput (Join-Path $logDirectory 'race-audio-service.stdout.log') `
+  -RedirectStandardError (Join-Path $logDirectory 'race-audio-service.stderr.log') `
+  -PassThru
+Remove-Item Env:MOMO_RACE_AUDIO_SERVICE_TOKEN
+[IO.File]::WriteAllText(
+  (Join-Path $runtimeDirectory 'race-audio-service.pid'),
+  [string]$process.Id
+)
+```
+
+Kokoro の model load と warmup に数秒かかる。Relay より先に health check を通す。
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:18090/healthz
+```
+
+### 同居 Relay の起動
+
+Relay を起動する PowerShell で同じ token file を読み、service URL を loopback にする。
+
+```powershell
+$tokenFile = Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets\race-audio-service-token.txt'
+$env:MOMO_RACE_AUDIO_SERVICE_URL = 'http://127.0.0.1:18090'
+$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
+```
+
+この environment を設定した同じ PowerShell から、通常の Relay 起動コマンドまたは
+`tools/start-mads-observer.ps1` を実行する。Relay 起動後に environment を設定しても反映されない。
+
+現在の hidden process 起動は Windows 再起動後に自動復帰しない。本番常用前に Task Scheduler または
+Windows service として TTS の起動、health check、Relay の順序を固定する。
+
 ## Relay の適用
 
 `11.100` へ同じ token を安全な経路で渡し、Relay を起動する PowerShell process の environment に設定する。

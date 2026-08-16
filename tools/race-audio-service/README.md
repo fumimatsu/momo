@@ -7,6 +7,8 @@ Relay と別 PC で動かす場合は、LAN 内で Relay から到達できる�
 ## Production setup
 
 初期本番構成は英語だけを配信し、Kokoro `am_michael` を使う。
+`11.100` へ TTS service と Relay を同居させる手順は
+[`../../docs/relay-race-audio-operations.md`](../../docs/relay-race-audio-operations.md) を参照する。
 
 ```powershell
 cd C:\src\momo\tools\race-audio-service
