@@ -93,7 +93,7 @@ Cache-Control: no-store
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "serverTime": "2026-07-22T12:00:00Z",
   "raceStream": {
     "subscribers": 1,
@@ -115,6 +115,14 @@ Cache-Control: no-store
       "state": "STREAMING",
       "lifecycle": "connected",
       "videoHealth": "receiving",
+      "drive": {
+        "enabled": true,
+        "revision": 3,
+        "sessionId": "ds_...",
+        "changedAt": "2026-08-17T12:00:00Z",
+        "reason": "viewer drive on",
+        "ownerViewerId": 7
+      },
       "upstream": {
         "peerState": "connected",
         "serialOpen": true,
@@ -157,6 +165,7 @@ Cache-Control: no-store
 ```
 
 API に Viewer の氏名、remote port、認証情報、DataChannel 本文、Race token を含めない。
+`drive.ownerViewerId`は接続診断用の一時IDで、人のパイロット識別には使用しない。
 送信先の識別に必要なremote hostだけを含める。このためOperations endpointは引き続き管理CIDR内に限定する。
 `lastErrorCode` は `upstream_signaling_failed`、`upstream_peer_failed`、`upstream_rtp_stalled` のような固定値だけにし、
 URL・IP・token を含み得る生の `err.Error()` を返さない。

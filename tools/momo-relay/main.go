@@ -361,6 +361,11 @@ type relay struct {
 	driveGear           atomic.Int32
 	driveInputLogMu     sync.Mutex
 	lastDriveInputLogAt time.Time
+	driveStateMu        sync.RWMutex
+	driveRevision       uint64
+	driveSessionID      string
+	driveChangedAt      time.Time
+	driveReason         string
 }
 
 type relayServer struct {
@@ -545,11 +550,21 @@ type sourceOperationsState struct {
 	State         string                       `json:"state"`
 	Lifecycle     string                       `json:"lifecycle"`
 	VideoHealth   string                       `json:"videoHealth"`
+	Drive         driveOperationsState         `json:"drive"`
 	VehicleHealth vehicleHealthOperationsState `json:"vehicleHealth"`
 	Upstream      upstreamOperationsState      `json:"upstream"`
 	Telemetry     telemetryOperationsState     `json:"telemetry"`
 	Downstream    downstreamOperationsState    `json:"downstream"`
 	Recovery      recoveryOperationsState      `json:"recovery"`
+}
+
+type driveOperationsState struct {
+	Enabled       bool       `json:"enabled"`
+	Revision      uint64     `json:"revision"`
+	SessionID     string     `json:"sessionId,omitempty"`
+	ChangedAt     *time.Time `json:"changedAt,omitempty"`
+	Reason        string     `json:"reason,omitempty"`
+	OwnerViewerID uint64     `json:"ownerViewerId,omitempty"`
 }
 
 type upstreamOperationsState struct {
@@ -1109,6 +1124,7 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		State:       displaySourceState(lifecycle, videoHealth),
 		Lifecycle:   lifecycle.String(),
 		VideoHealth: videoHealth.String(),
+		Drive:       r.driveStatusSnapshot(),
 		VehicleHealth: vehicleHealthOperationsState{
 			HP:               health.HP,
 			SpeedCap:         health.SpeedCap,
@@ -1282,7 +1298,7 @@ func (server *relayServer) operationsStatusSnapshot(now time.Time) operationsSta
 		sources = append(sources, source.statusSnapshot(now))
 	}
 	return operationsStatus{
-		Version:    2,
+		Version:    3,
 		ServerTime: now.UTC(),
 		RaceStream: server.raceStreamStatusSnapshot(),
 		Sources:    sources,
@@ -2475,33 +2491,71 @@ func (r *relay) isCurrentPilot(id uint64) bool {
 }
 
 func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
+	r.driveStateMu.Lock()
 	if enabled {
 		ownerID := r.driveOwnerID.Load()
 		if ownerID != 0 && ownerID != pilotID {
+			r.driveStateMu.Unlock()
 			log.Printf("drop drive on from viewer %d: current owner is %d", pilotID, ownerID)
 			return
 		}
 		r.driveOwnerID.Store(pilotID)
-		if r.driveLoggingEnabled.Swap(true) {
+		if r.driveLoggingEnabled.Load() {
+			r.driveStateMu.Unlock()
 			return
 		}
+		r.driveLoggingEnabled.Store(true)
 	} else {
 		ownerID := r.driveOwnerID.Load()
 		if ownerID != 0 && ownerID != pilotID {
+			r.driveStateMu.Unlock()
 			return
 		}
 		if ownerID == pilotID {
 			r.driveOwnerID.CompareAndSwap(pilotID, 0)
 		}
-		if !r.driveLoggingEnabled.Swap(false) {
+		if !r.driveLoggingEnabled.Load() {
+			r.driveStateMu.Unlock()
 			return
 		}
+		r.driveLoggingEnabled.Store(false)
 	}
+	now := time.Now()
+	r.driveRevision++
+	if enabled {
+		sessionID, err := newRelaySessionID(now)
+		if err != nil {
+			log.Printf("source %q: generate drive session ID: %v", r.name, err)
+			sessionID = fmt.Sprintf("%s-%d", now.UTC().Format("20060102T150405.000000000Z"), r.driveRevision)
+		}
+		r.driveSessionID = "ds_" + sessionID
+	}
+	r.driveChangedAt = now.UTC()
+	r.driveReason = reason
+	r.driveStateMu.Unlock()
 	r.boostRegen.reset()
 	if r.recorder != nil {
 		r.recorder.RecordDriveState(r.name, r.raceCarID, pilotID, enabled, reason)
 	}
-	r.broadcastVehicleGameplay(r.vehicleHealth.setDriveEnabled(enabled, time.Now()))
+	r.broadcastVehicleGameplay(r.vehicleHealth.setDriveEnabled(enabled, now))
+}
+
+func (r *relay) driveStatusSnapshot() driveOperationsState {
+	r.driveStateMu.RLock()
+	defer r.driveStateMu.RUnlock()
+	var changedAt *time.Time
+	if !r.driveChangedAt.IsZero() {
+		value := r.driveChangedAt
+		changedAt = &value
+	}
+	return driveOperationsState{
+		Enabled:       r.driveLoggingEnabled.Load(),
+		Revision:      r.driveRevision,
+		SessionID:     r.driveSessionID,
+		ChangedAt:     changedAt,
+		Reason:        r.driveReason,
+		OwnerViewerID: r.driveOwnerID.Load(),
+	}
 }
 
 func (r *relay) sendNeutralToUpstream(reason string) {

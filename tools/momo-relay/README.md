@@ -140,8 +140,10 @@ Relay 起動時に管理 LAN の CIDR を明示する。
 Windows Firewall も同じ管理用サブネットだけに制限する。Relay、Pi、Observer をインターネットへ
 公開するための機能ではない。
 
-API version 2ではsourceごとの集計に加え、接続clientごとのremote host、Pilot/Observer、
-web/native client、WebSocket/DataChannel、最終Telemetry送出age、drop/errorを表示する。
+API version 3ではversion 2の接続診断に加え、sourceごとの`drive.enabled`、`revision`、
+`sessionId`、`changedAt`、`reason`を返す。`ownerViewerId`は現在のViewer接続を診断するための
+一時IDであり、人のパイロットIDとして扱わない。実際のON/OFF遷移だけがrevisionを増やし、
+OFFからONになるたびに新しいsessionIdを発行する。
 送信先port、token、payloadは返さない。
 
 ## Relay source設定ファイル
