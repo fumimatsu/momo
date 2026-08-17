@@ -60,6 +60,55 @@ func TestNormalizeSourceDefinitionDefaultsAyameAndAllowsOptOut(t *testing.T) {
 	}
 }
 
+func TestNormalizeVenueSourceDisablesPilotAndDefaultsDisplayName(t *testing.T) {
+	runtime := relaySourceRuntime{
+		ayameSignalingURL: "wss://ayame.example/signaling",
+		ayameRoomPrefix:   "momo-relay",
+	}
+	normalized, err := normalizeSourceDefinition(relayFileSource{
+		ID:         "venue-main",
+		URL:        "ws://192.168.11.20:8080/ws",
+		SourceKind: relaySourceKindVenue,
+	}, runtime, true)
+	if err != nil {
+		t.Fatalf("normalize venue error = %v", err)
+	}
+	if normalized.SourceKind != relaySourceKindVenue || normalized.DisplayName != "venue-main" {
+		t.Fatalf("normalized venue identity = %#v", normalized)
+	}
+	if normalized.AyamePilotEnabled == nil || *normalized.AyamePilotEnabled || normalized.AyamePilotRoom != "" {
+		t.Fatalf("venue pilot state = %#v", normalized)
+	}
+	if _, err := normalizeSourceDefinition(relayFileSource{
+		ID:         "venue-main",
+		URL:        "ws://192.168.11.20:8080/ws",
+		SourceKind: relaySourceKindVenue,
+		RaceCarID:  "CP-1",
+	}, runtime, true); sourceManagementErrorCode(err) != "invalid_venue_race_car" {
+		t.Fatalf("venue race mapping error = %v", err)
+	}
+}
+
+func TestDynamicVenueSourceViewHasNoPilotPath(t *testing.T) {
+	server := newDynamicSourceTestServer(t)
+	created, err := server.addDynamicSource(relayFileSource{
+		ID:          "venue-main",
+		URL:         "ws://192.168.11.20:8080/ws",
+		SourceKind:  relaySourceKindVenue,
+		DisplayName: "TRACK CAM",
+	})
+	if err != nil {
+		t.Fatalf("add venue source error = %v", err)
+	}
+	if created.SourceKind != relaySourceKindVenue || created.DisplayName != "TRACK CAM" || created.LocalPilotPath != "" {
+		t.Fatalf("venue source view = %#v", created)
+	}
+	_, loaded, err := loadDynamicSourceRegistry(server.dynamicSourceRegistry.path)
+	if err != nil || len(loaded) != 1 || loaded[0].SourceKind != relaySourceKindVenue {
+		t.Fatalf("persisted venue = %#v error=%v", loaded, err)
+	}
+}
+
 func TestDynamicSourceRegistryRoundTripAndBackupRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "relay-sources.json")
 	registry := &dynamicSourceRegistry{path: path}

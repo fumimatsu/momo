@@ -725,7 +725,8 @@ class GpuArucoDetector:
         )
         finish_stage("candidateFilterGpuMs")
 
-        cp.cuda.get_current_stream().synchronize()
+        if profile_events is not None:
+            cp.cuda.get_current_stream().synchronize()
         count_copy_started = time.perf_counter()
         candidate_counts = cp.asnumpy(candidate_counts_device).astype(np.int64)
         if host_timings is not None:
@@ -939,9 +940,10 @@ class GpuArucoDetector:
         timings: dict[str, float] | None = None,
     ) -> list[GpuDetectionResult]:
         cp = self.cp
-        input_started = time.perf_counter()
+        profiling = timings is not None
+        input_started = time.perf_counter() if profiling else 0.0
         gray_batch = cp.asarray(gray_batch, dtype=cp.uint8)
-        if timings is not None:
+        if profiling:
             timings["detectorInputWallMs"] = (
                 time.perf_counter() - input_started
             ) * 1000.0
@@ -949,26 +951,32 @@ class GpuArucoDetector:
             raise ValueError("gray_batch must have shape (batch, height, width)")
         batch_size = int(gray_batch.shape[0])
 
-        candidate_started = cp.cuda.Event()
-        candidate_finished = cp.cuda.Event()
-        candidate_started.record()
-        candidate_profile_events = [] if timings is not None else None
-        candidate_host_timings: dict[str, float] = {}
+        candidate_started = cp.cuda.Event() if profiling else None
+        candidate_finished = cp.cuda.Event() if profiling else None
+        if profiling:
+            candidate_started.record()
+        candidate_profile_events = [] if profiling else None
+        candidate_host_timings: dict[str, float] | None = {} if profiling else None
         corners, candidate_counts = self._extract_candidate_corners_batch(
             gray_batch,
             candidate_profile_events,
             candidate_host_timings,
         )
-        candidate_finished.record()
-        candidate_finished.synchronize()
-        candidate_gpu_ms = cp.cuda.get_elapsed_time(candidate_started, candidate_finished)
-        if timings is not None:
+        candidate_gpu_ms = 0.0
+        d2h_ms = 0.0
+        if profiling:
+            candidate_finished.record()
+            candidate_finished.synchronize()
+            candidate_gpu_ms = cp.cuda.get_elapsed_time(
+                candidate_started,
+                candidate_finished,
+            )
             for name, started, finished in candidate_profile_events:
                 timings[name] = cp.cuda.get_elapsed_time(started, finished)
             timings.update(candidate_host_timings)
-        d2h_ms = candidate_host_timings["candidateCountD2hMs"]
+            d2h_ms = candidate_host_timings["candidateCountD2hMs"]
         if len(corners) == 0:
-            if timings is not None:
+            if profiling:
                 timings["candidateGpuMs"] = candidate_gpu_ms
                 timings["decodeGpuMs"] = 0.0
                 timings["gpuKernelMs"] = candidate_gpu_ms
@@ -979,9 +987,10 @@ class GpuArucoDetector:
                 for _ in range(batch_size)
             ]
 
-        decode_started = cp.cuda.Event()
-        decode_finished = cp.cuda.Event()
-        decode_started.record()
+        decode_started = cp.cuda.Event() if profiling else None
+        decode_finished = cp.cuda.Event() if profiling else None
+        if profiling:
+            decode_started.record()
         homographies = self._homographies_from_corners(corners)
         decoded_parts = []
         offset = 0
@@ -997,19 +1006,22 @@ class GpuArucoDetector:
         valid = all_ids >= 0
         if self.allowed_ids_device is not None:
             valid &= cp.isin(all_ids, self.allowed_ids_device)
-        decode_finished.record()
-        decode_finished.synchronize()
-        decode_gpu_ms = cp.cuda.get_elapsed_time(decode_started, decode_finished)
+        decode_gpu_ms = 0.0
+        if profiling:
+            decode_finished.record()
+            decode_finished.synchronize()
+            decode_gpu_ms = cp.cuda.get_elapsed_time(decode_started, decode_finished)
 
-        result_copy_started = time.perf_counter()
+        result_copy_started = time.perf_counter() if profiling else 0.0
         ids_host = cp.asnumpy(all_ids)
         valid_host = cp.asnumpy(valid)
         corners_host = cp.asnumpy(corners)
-        d2h_ms += (time.perf_counter() - result_copy_started) * 1000.0
+        if profiling:
+            d2h_ms += (time.perf_counter() - result_copy_started) * 1000.0
         height = int(gray_batch.shape[1])
         width = int(gray_batch.shape[2])
 
-        format_started = time.perf_counter()
+        format_started = time.perf_counter() if profiling else 0.0
         results = []
         offset = 0
         for candidate_count in candidate_counts:
@@ -1029,7 +1041,7 @@ class GpuArucoDetector:
                 )
             )
             offset = next_offset
-        if timings is not None:
+        if profiling:
             timings["candidateGpuMs"] = candidate_gpu_ms
             timings["decodeGpuMs"] = decode_gpu_ms
             timings["gpuKernelMs"] = candidate_gpu_ms + decode_gpu_ms

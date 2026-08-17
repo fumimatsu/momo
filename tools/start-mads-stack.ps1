@@ -12,6 +12,8 @@ param(
     [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
     [ValidateRange(0, 8760)]
     [int]$TelemetryLogRetentionHours = 24,
+    [ValidateSet('legacy', 'off')]
+    [string]$ObserverVisualOutput = 'legacy',
     [switch]$OpenAdmin,
     [switch]$KeepOpenOnError
 )
@@ -143,6 +145,7 @@ try {
         FuelDriveDurationSeconds = $FuelDriveDurationSeconds
         TelemetryLogDirectory = $TelemetryLogDirectory
         TelemetryLogRetentionHours = $TelemetryLogRetentionHours
+        ObserverVisualOutput = $ObserverVisualOutput
     }
     if ($rebuildRelay) {
         $launchParameters.RebuildRelay = $true

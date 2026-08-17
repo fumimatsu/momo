@@ -62,6 +62,8 @@ type sourceManagementSnapshot struct {
 type sourceDefinitionView struct {
 	ID                string `json:"id"`
 	URL               string `json:"url"`
+	SourceKind        string `json:"sourceKind"`
+	DisplayName       string `json:"displayName,omitempty"`
 	RaceCarID         string `json:"raceCarId,omitempty"`
 	AyamePilotEnabled bool   `json:"ayamePilotEnabled"`
 	AyamePilotRoom    string `json:"ayamePilotRoom,omitempty"`
@@ -90,11 +92,15 @@ func relayBoolPointer(value bool) *bool {
 func normalizeSourceDefinition(definition relayFileSource, runtime relaySourceRuntime, dynamic bool) (relayFileSource, error) {
 	definition.ID = strings.TrimSpace(definition.ID)
 	definition.URL = strings.TrimSpace(definition.URL)
+	definition.DisplayName = strings.TrimSpace(definition.DisplayName)
 	definition.RaceCarID = strings.TrimSpace(definition.RaceCarID)
 	definition.AyamePilotRoom = strings.TrimSpace(definition.AyamePilotRoom)
 	definition.Enabled = nil
 	if definition.ID == "" || strings.Contains(definition.ID, "=") {
 		return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_source_id", "source id must be non-empty and must not contain '='")
+	}
+	if definition.DisplayName == "" {
+		definition.DisplayName = definition.ID
 	}
 	if dynamic && !dynamicSourceIDPattern.MatchString(definition.ID) {
 		return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_source_id", "dynamic source id must match %s", dynamicSourceIDPattern.String())
@@ -102,8 +108,24 @@ func normalizeSourceDefinition(definition relayFileSource, runtime relaySourceRu
 	if err := validateRelaySourceURL(definition.URL); err != nil {
 		return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_source_url", "source %q: %v", definition.ID, err)
 	}
+	sourceKind, err := normalizeRelaySourceKind(definition.SourceKind)
+	if err != nil {
+		return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_source_kind", "source %q: %v", definition.ID, err)
+	}
+	definition.SourceKind = sourceKind
 	if strings.Contains(definition.RaceCarID, "=") {
 		return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_race_car_id", "raceCarId must not contain '='")
+	}
+	if sourceKind == relaySourceKindVenue {
+		if definition.RaceCarID != "" {
+			return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_venue_race_car", "venue source cannot define raceCarId")
+		}
+		if definition.AyamePilotRoom != "" || definition.AyamePilotEnabled != nil && *definition.AyamePilotEnabled {
+			return relayFileSource{}, sourceError(http.StatusBadRequest, "invalid_venue_pilot", "venue source cannot enable Ayame Pilot")
+		}
+		definition.AyamePilotEnabled = relayBoolPointer(false)
+		definition.AyamePilotRoom = ""
+		return definition, nil
 	}
 
 	ayameEnabled := definition.AyamePilotRoom != "" || strings.TrimSpace(runtime.ayameRoomPrefix) != ""
@@ -377,8 +399,12 @@ func (server *relayServer) prepareManagedSource(definition relayFileSource, dyna
 	if err != nil {
 		return nil, sourceError(http.StatusInternalServerError, "source_initialization_failed", "initialize source %q: %v", normalized.ID, err)
 	}
+	source.sourceKind = normalized.SourceKind
+	source.displayName = normalized.DisplayName
 	source.recorder = server.recorder
-	source.raceAudio = newRaceAudioSource(source, server.sourceRuntime.raceAudioService)
+	if normalized.SourceKind == relaySourceKindVehicle {
+		source.raceAudio = newRaceAudioSource(source, server.sourceRuntime.raceAudioService)
+	}
 	return &managedRelaySource{
 		relay:      source,
 		definition: normalized,
@@ -627,14 +653,20 @@ func (r *relay) shutdown(reason string) {
 func managedSourceView(managed *managedRelaySource) sourceDefinitionView {
 	definition := managed.definition
 	ayameEnabled := definition.AyamePilotEnabled != nil && *definition.AyamePilotEnabled
+	localPilotPath := ""
+	if definition.SourceKind == relaySourceKindVehicle {
+		localPilotPath = "/pilot.html?device=" + url.QueryEscape(definition.ID) + "&carId=" + url.QueryEscape(definition.RaceCarID)
+	}
 	return sourceDefinitionView{
 		ID:                definition.ID,
 		URL:               definition.URL,
+		SourceKind:        definition.SourceKind,
+		DisplayName:       definition.DisplayName,
 		RaceCarID:         definition.RaceCarID,
 		AyamePilotEnabled: ayameEnabled,
 		AyamePilotRoom:    definition.AyamePilotRoom,
 		Dynamic:           managed.dynamic,
-		LocalPilotPath:    "/pilot.html?device=" + url.QueryEscape(definition.ID) + "&carId=" + url.QueryEscape(definition.RaceCarID),
+		LocalPilotPath:    localPilotPath,
 	}
 }
 

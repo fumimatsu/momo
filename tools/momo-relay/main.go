@@ -294,6 +294,8 @@ func pruneFrameTimes(samples []time.Time, now time.Time) []time.Time {
 type relay struct {
 	name                 string
 	upstreamURL          string
+	sourceKind           string
+	displayName          string
 	raceCarID            string
 	allowObserverCommand bool
 	recorder             *telemetryRecorder
@@ -546,6 +548,8 @@ type pilotDeviceStatus struct {
 
 type sourceOperationsState struct {
 	ID            string                       `json:"id"`
+	SourceKind    string                       `json:"sourceKind"`
+	DisplayName   string                       `json:"displayName,omitempty"`
 	RaceCarID     string                       `json:"raceCarId,omitempty"`
 	State         string                       `json:"state"`
 	Lifecycle     string                       `json:"lifecycle"`
@@ -670,6 +674,8 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 	relay := &relay{
 		name:                 name,
 		upstreamURL:          upstreamURL,
+		sourceKind:           relaySourceKindVehicle,
+		displayName:          name,
 		raceCarID:            raceCarID,
 		allowObserverCommand: allowObserverCommand,
 		videoTrack:           videoTrack,
@@ -1093,6 +1099,10 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 	peerState, _ := r.upstreamPeerState.Load().(string)
 	lastError, _ := r.lastErrorCode.Load().(string)
 	lastFrame := r.lastVideoFrameUnixNano.Load()
+	displayName := strings.TrimSpace(r.displayName)
+	if displayName == "" {
+		displayName = r.name
+	}
 	var lastRtpAgeMs *int64
 	if lastFrame != 0 {
 		age := now.Sub(time.Unix(0, lastFrame)).Milliseconds()
@@ -1120,6 +1130,8 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 
 	return sourceOperationsState{
 		ID:          r.name,
+		SourceKind:  effectiveRelaySourceKind(r.sourceKind),
+		DisplayName: displayName,
 		RaceCarID:   r.raceCarID,
 		State:       displaySourceState(lifecycle, videoHealth),
 		Lifecycle:   lifecycle.String(),
@@ -1565,6 +1577,9 @@ func (server *relayServer) pilotDevicesSnapshot(now time.Time) pilotDevicesStatu
 	sourceSnapshot := server.orderedSourcesSnapshot()
 	devices := make([]pilotDeviceStatus, 0, len(sourceSnapshot))
 	for _, source := range sourceSnapshot {
+		if effectiveRelaySourceKind(source.sourceKind) != relaySourceKindVehicle {
+			continue
+		}
 		status := source.statusSnapshot(now)
 		pilotInUse := status.Downstream.PilotLeaseReserved || status.Downstream.ConnectedPilots > 0
 		videoFPS := status.Upstream.RelayWriteAccessUnitFPS
@@ -2248,8 +2263,13 @@ func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMess
 	return channel.Send(message.Data)
 }
 
+func (r *relay) viewerCommandAllowed(client *viewer) bool {
+	return effectiveRelaySourceKind(r.sourceKind) == relaySourceKindVehicle &&
+		(client.role == "pilot" || r.allowObserverCommand)
+}
+
 func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage) {
-	if client.role != "pilot" && !r.allowObserverCommand {
+	if !r.viewerCommandAllowed(client) {
 		log.Printf("drop command from observer viewer %d", client.id)
 		return
 	}
@@ -2920,6 +2940,10 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	if role != "pilot" {
 		role = "observer"
 	}
+	if role == "pilot" && effectiveRelaySourceKind(r.sourceKind) != relaySourceKindVehicle {
+		http.Error(w, "pilot connections are not available for source kind "+effectiveRelaySourceKind(r.sourceKind), http.StatusForbidden)
+		return
+	}
 	clientKind := req.URL.Query().Get("client")
 	if clientKind != "web-observer" && clientKind != "web-pilot" {
 		clientKind = ""
@@ -3340,6 +3364,9 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 		}
 		server.observeRaceContext(envelope, time.Now())
 		for _, source := range server.sourceSnapshot() {
+			if effectiveRelaySourceKind(source.sourceKind) != relaySourceKindVehicle {
+				continue
+			}
 			message, err := raceMessageForCar(payload, source.raceCarID)
 			if err != nil {
 				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
@@ -3552,6 +3579,8 @@ func main() {
 			configuredDefinitions = append(configuredDefinitions, relayFileSource{
 				ID:             name,
 				URL:            sourceURL,
+				SourceKind:     relaySourceKindVehicle,
+				DisplayName:    name,
 				RaceCarID:      raceCarBySource[name],
 				AyamePilotRoom: ayameRoomBySource[name],
 			})
@@ -3590,7 +3619,7 @@ func main() {
 		},
 	}
 	for _, definition := range configuredDefinitions {
-		if raceURL != "" && strings.TrimSpace(definition.RaceCarID) == "" {
+		if raceURL != "" && effectiveRelaySourceKind(definition.SourceKind) == relaySourceKindVehicle && strings.TrimSpace(definition.RaceCarID) == "" {
 			log.Fatalf("Race Control is enabled but static source %q has no raceCarId mapping", definition.ID)
 		}
 		if err := serverRelay.addInitialSource(definition, false); err != nil {

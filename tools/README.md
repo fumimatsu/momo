@@ -149,6 +149,18 @@ Set-Location C:\src\momo
   -RestartObserver
 ```
 
+MADSYSTEMの合成映像を使わず、GPU Marker Observer用Y-planeだけを公開する場合は
+`-ObserverVisualOutput off`を追加する。Relay受信、復号、marker observationは継続する。
+
+```powershell
+.\tools\start-mads-observer.ps1 `
+  -SkipRelay `
+  -ObserverRelayWebSocketUrl 'ws://192.168.11.100:8090/ws' `
+  -ObserverVisualOutput off `
+  -ObserverSharedOutputFps 50 `
+  -RestartObserver
+```
+
 この構成では Pilot、Observer、MADSYSTEM の PIT API を本番 Relay に集約する。
 MADSYSTEM の `relayGameplayBaseUrl` も同じ Relay の HTTP URL にする。
 本番 Relay 側では MADSYSTEM PC の固定 IP を Gameplay API の許可 CIDR に追加する。

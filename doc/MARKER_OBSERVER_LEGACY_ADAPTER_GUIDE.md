@@ -16,9 +16,10 @@ Relay source x 4
   -> existing checkpoint, PIT, pilot assignment, and Race Control publisher paths
 ```
 
-The existing `Local\MomoObserverFrameV1` composite video mapping remains independent and
-continues to supply MADSYSTEM visuals. Marker observation IPC does not carry video and does
-not create or modify a control DataChannel.
+The existing `Local\MomoObserverFrameV1` composite video mapping is an optional transition
+path for MADSYSTEM visuals. Marker observation IPC does not carry video and does not create
+or modify a control DataChannel. Normal marker processing requires only
+`Local\MomoObserverLumaV1` and `Local\MomoMarkerObservationsV1`.
 
 This slice consumes live Relay/WebRTC sources but does not emit qualified checkpoint or PIT
 events. MADSYSTEM still owns temporal confirmation, passage semantics, lap/sector state,
@@ -54,9 +55,10 @@ with the same ID remain separate observations.
 
 ## Live Y-plane producer
 
-`start-mads-observer.ps1` starts Native Observer with both mappings. The Native process owns
-the Relay/WebRTC connection and decoder exactly once per source. Its Video Sink copies the
-decoded I420 Y plane into a fixed four-source triple buffer before any BGRA conversion:
+`start-mads-observer.ps1` defaults to `-ObserverVisualOutput legacy` and starts Native
+Observer with both mappings. The Native process owns the Relay/WebRTC connection and decoder
+exactly once per source. Its Video Sink copies the decoded I420 Y plane into a fixed
+four-source triple buffer before any BGRA conversion:
 
 ```powershell
 .\tools\start-mads-observer.ps1 -ObserverHeadless
@@ -64,6 +66,19 @@ decoded I420 Y plane into a fixed four-source triple buffer before any BGRA conv
   -DetectionHz 50 `
   -OutputPath .\tools\.artifacts\marker-observer\live-luma.json
 ```
+
+When MADSYSTEM no longer needs the composite video for presentation, start the same receive
+and marker path without creating `Local\MomoObserverFrameV1`:
+
+```powershell
+.\tools\start-mads-observer.ps1 `
+  -ObserverVisualOutput off `
+  -RestartObserver
+```
+
+`off` keeps Relay/WebRTC receive, decode, Y-plane publication, and MMO1 marker observations
+active. It omits `--shared-frame-name` and forces Native Observer headless so the BGRA
+conversion, shared frame publication, and preview window are not part of the operating path.
 
 To validate a feature build without replacing the operational binary, pass its full path
 with `start-mads-observer.ps1 -ObserverExecutable <path> -RestartObserver`.
@@ -78,11 +93,18 @@ per-source receive timestamp/sequence/valid flag, and a batch seqlock. A slow de
 old frames rather than accumulating latency. It is independent from the BGRA mapping used
 for MADSYSTEM visuals.
 
-`-ObserverHeadless` suppresses only the duplicate Native Observer window draw. WebRTC
-receive/decode, BGRA visual publication, Y-plane publication, and MADSYSTEM display remain
-active. Use it when the same GPU runs the detector or when the Native preview is redundant.
-On the 2026-08-14 validation PC, Native decode used a different GPU LUID from CUDA detection,
-so headless mode did not remove the detector bottleneck by itself.
+GPU stage profiling defaults to `-ProfilingMode sampled`: detection, cycle time, drops, and
+source age remain frame-rate data, while CUDA Events and stage-specific synchronization run
+once per second. Use `off` to disable stage profiling, or `full` only for bounded performance
+comparisons that require per-frame stage percentiles.
+
+With `-ObserverVisualOutput legacy`, `-ObserverHeadless` suppresses only the duplicate Native
+Observer window draw. WebRTC receive/decode, BGRA visual publication, Y-plane publication,
+and MADSYSTEM display remain active. Use it when the same GPU runs the detector or when the
+Native preview is redundant. Use `-ObserverVisualOutput off`, not `-ObserverHeadless` alone,
+to remove the BGRA visual path. On the 2026-08-14 validation PC, Native decode used a
+different GPU LUID from CUDA detection, so headless mode did not remove the detector
+bottleneck by itself.
 
 ### GPU placement observed on the validation PC
 
@@ -155,6 +177,7 @@ and record adapter names rather than Task Manager GPU numbers.
 .\tools\Run-GpuMarkerObserverLuma.ps1 `
   -DetectionHz 50 `
   -DurationSeconds 60 `
+  -ProfilingMode full `
   -PythonExecutable .\tools\.artifacts\aruco-venv-gpu-313\Scripts\python.exe `
   -OutputPath .\tools\.artifacts\marker-observer\live-four-source.json
 ```

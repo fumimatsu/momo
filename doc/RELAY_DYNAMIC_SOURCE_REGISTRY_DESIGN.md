@@ -94,6 +94,8 @@ Content-Type: application/json
 {
   "id": "momo-fpv-17",
   "url": "ws://192.168.11.17:8080/ws",
+  "sourceKind": "vehicle",
+  "displayName": "CAR 17",
   "raceCarId": "CP-17"
 }
 ```
@@ -101,8 +103,12 @@ Content-Type: application/json
 管理 API は operator PC または信頼済み管理 service から呼び、`url` を明示する。Relay admin token を Pi へ
 配布して自己登録させてはならない。1 台の侵害で他 source の一覧、更新、削除まで可能になるためである。
 
-追加は Race Control phase が `green` の間は拒否する。登録後は上流 Momo と Ayame room への接続を開始し、
-LAN Garage に自動表示する。
+`sourceKind`は`vehicle`または`venue`で、省略時は`vehicle`とする。`displayName`は省略時にsource IDとなる。
+`venue`は俯瞰カメラ等のread-only映像sourceであり、`raceCarId`、Ayame Pilot、Pilot WebSocket、Garage、
+車両別Race Control stateの対象にしない。Program Observer等がObserver roleで映像を選択する。
+
+追加は Race Control phase が `green` の間は拒否する。登録後は上流 Momo への接続を開始する。
+`vehicle`だけがAyame Pilot roomとLAN Garageの対象になる。
 
 ### 再登録と IP 更新
 
@@ -113,6 +119,8 @@ Content-Type: application/json
 
 {
   "url": "ws://192.168.11.117:8080/ws",
+  "sourceKind": "vehicle",
+  "displayName": "CAR 17",
   "raceCarId": "CP-17"
 }
 ```

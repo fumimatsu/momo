@@ -162,6 +162,11 @@ JSONへまとめられる。雛形は`relay-config.example.json`である。
 重複`ayamePilotRoom`、`ws://`/`wss://`以外のURLは起動時に拒否する。`enabled: false`で予備sourceを設定に残せる。
 `-config`は`-upstream`、`-source`、`-race-car`、`-ayame-pilot-room`と併用しない。
 
+`sourceKind`は`vehicle`または`venue`で、省略時は後方互換のため`vehicle`となる。`displayName`は
+運用画面用で、省略時はsource IDを使用する。`venue`は俯瞰カメラなどのread-only映像sourceであり、
+`raceCarId`、Ayame Pilot、Pilot WebSocket、Garage選択、車両別Race Control stateを持たない。
+Observer roleからの映像購読だけを許可する。
+
 ## Relay 動的 source registry
 
 `-source-registry`を指定すると、Relayを再起動せずに信頼済みLANからsourceを追加できる。
@@ -182,6 +187,22 @@ $env:MOMO_AYAME_SIGNALING_KEY = '<backend-signaling-key>'
 ```powershell
 $headers = @{ Authorization = "Bearer $env:MOMO_RELAY_ADMIN_TOKEN" }
 $body = @{ id = 'momo-fpv-17'; url = 'ws://192.168.11.17:8080/ws'; raceCarId = 'CP-17' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://192.168.11.100:8090/api/v1/sources `
+  -Headers $headers -ContentType 'application/json' -Body $body
+```
+
+俯瞰カメラのcontrol-plane登録は次の形になる。現行RelayのH.264 capabilityはlevel 3.1であり、
+FHD 30 FPSの実映像投入にはlevel 4.0対応とHDMI capture実機検証が別途必要である。また現行Relayは
+通常のWebRTC音声trackをfan-outしないため、この登録だけで会場音は配信されない。
+
+```powershell
+$body = @{
+  id = 'venue-main'
+  url = 'ws://192.168.11.20:8080/ws'
+  sourceKind = 'venue'
+  displayName = 'TRACK CAM'
+  ayamePilotEnabled = $false
+} | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri http://192.168.11.100:8090/api/v1/sources `
   -Headers $headers -ContentType 'application/json' -Body $body
 ```

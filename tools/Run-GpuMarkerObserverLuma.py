@@ -51,6 +51,10 @@ SHARED_LUMA_VALID = 1
 RESERVED_MARKER_IDS = frozenset({17, 34, 37})
 DEFAULT_ALLOWED_MARKER_IDS = frozenset(set(range(50)) - RESERVED_MARKER_IDS)
 METRICS_WINDOW_SECONDS = 60
+INITIAL_DUPLICATE_POLL_SECONDS = 0.0005
+MAX_DUPLICATE_POLL_SECONDS = 0.005
+PROFILING_MODES = ("off", "sampled", "full")
+DEFAULT_PROFILING_SAMPLE_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,38 @@ class LumaBatch:
     timestamp_unix_ns: int
     sources: list[LumaSource]
     y_planes: np.ndarray
+
+
+def source_state_signature(sources: Iterable[LumaSource]) -> tuple[tuple[int, bool], ...]:
+    return tuple((source.source_sequence, source.video_valid) for source in sources)
+
+
+def duplicate_poll_delay_seconds(attempt: int, frame_interval: float) -> float:
+    if attempt < 0:
+        raise ValueError("attempt must not be negative")
+    maximum = min(MAX_DUPLICATE_POLL_SECONDS, max(frame_interval / 4.0, 0.0))
+    if maximum <= 0.0:
+        return 0.0
+    return min(maximum, INITIAL_DUPLICATE_POLL_SECONDS * (2 ** min(attempt, 8)))
+
+
+def select_profile_frame(
+    mode: str,
+    now: float,
+    next_sample_at: float,
+    sample_interval: float,
+) -> tuple[bool, float]:
+    if mode == "off":
+        return False, next_sample_at
+    if mode == "full":
+        return True, next_sample_at
+    if mode != "sampled":
+        raise ValueError(f"unsupported profiling mode: {mode}")
+    if sample_interval <= 0.0:
+        raise ValueError("profiling sample interval must be positive")
+    if now < next_sample_at:
+        return False, next_sample_at
+    return True, now + sample_interval
 
 
 def parse_marker_ids(value: str) -> frozenset[int]:
@@ -379,6 +415,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-source-coverage", type=float, default=0.95)
     parser.add_argument("--maximum-cycle-p95-ms", type=float, default=20.0)
     parser.add_argument(
+        "--profiling-mode",
+        choices=PROFILING_MODES,
+        default="sampled",
+        help="GPU stage profiling: off, sampled (production default), or full.",
+    )
+    parser.add_argument(
+        "--profiling-sample-interval-seconds",
+        type=float,
+        default=DEFAULT_PROFILING_SAMPLE_INTERVAL_SECONDS,
+        help="Detailed GPU profiling interval used by sampled mode.",
+    )
+    parser.add_argument(
         "--allowed-marker-ids",
         type=parse_marker_ids,
         default=DEFAULT_ALLOWED_MARKER_IDS,
@@ -421,6 +469,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--minimum-source-coverage must be in (0, 1]")
     if args.maximum_cycle_p95_ms <= 0:
         parser.error("--maximum-cycle-p95-ms must be positive")
+    if args.profiling_sample_interval_seconds <= 0:
+        parser.error("--profiling-sample-interval-seconds must be positive")
 
     detector = GpuArucoDetector(allowed_marker_ids=args.allowed_marker_ids)
     cp = detector.cp
@@ -432,6 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     marker_instances = 0
     skipped_unstable_batches = 0
     skipped_duplicate_batches = 0
+    profiled_batches = 0
     last_shared_sequence = 0
     measured_started_at = time.monotonic()
     frame_interval = 1.0 / args.detection_hz
@@ -484,13 +535,15 @@ def main(argv: list[str] | None = None) -> int:
 
             device_planes.set(warmup_batch.y_planes)
             for _ in range(2):
-                warmup_timings: dict[str, float] = {}
-                detector.detect_batch(device_planes, warmup_timings)
+                detector.detect_batch(device_planes)
                 cp.cuda.Stream.null.synchronize()
             last_shared_sequence = warmup_batch.sequence
+            last_source_state = source_state_signature(warmup_batch.sources)
+            duplicate_poll_attempt = 0
 
             measured_started_at = time.monotonic()
             next_detection_at = measured_started_at
+            next_profile_at = measured_started_at
             last_status_at = measured_started_at
             published_per_source = [0] * len(slot_indices)
             last_marker_ids: list[list[int]] = [[] for _ in slot_indices]
@@ -501,7 +554,8 @@ def main(argv: list[str] | None = None) -> int:
             ) as writer:
                 print(
                     f"Live Marker Observer Y-plane: input={args.input_mapping_name} "
-                    f"output={args.output_mapping_name} sources=" + ",".join(source_ids),
+                    f"output={args.output_mapping_name} profiling={args.profiling_mode} "
+                    "sources=" + ",".join(source_ids),
                     flush=True,
                 )
                 while (
@@ -522,61 +576,119 @@ def main(argv: list[str] | None = None) -> int:
                         or current_sequence == last_shared_sequence
                     ):
                         skipped_duplicate_batches += 1
-                        time.sleep(0.0005)
+                        time.sleep(
+                            duplicate_poll_delay_seconds(
+                                duplicate_poll_attempt,
+                                frame_interval,
+                            )
+                        )
+                        duplicate_poll_attempt += 1
                         continue
                     read_started = time.perf_counter()
                     batch = reader.read_latest(slot_indices, host_planes)
                     read_ms = (time.perf_counter() - read_started) * 1000.0
                     if batch is None:
                         skipped_unstable_batches += 1
-                        time.sleep(0.0005)
+                        time.sleep(
+                            duplicate_poll_delay_seconds(
+                                duplicate_poll_attempt,
+                                frame_interval,
+                            )
+                        )
+                        duplicate_poll_attempt += 1
                         continue
                     if batch.sequence == last_shared_sequence:
                         skipped_duplicate_batches += 1
-                        time.sleep(0.0005)
+                        time.sleep(
+                            duplicate_poll_delay_seconds(
+                                duplicate_poll_attempt,
+                                frame_interval,
+                            )
+                        )
+                        duplicate_poll_attempt += 1
                         continue
                     last_shared_sequence = batch.sequence
-                    add_stage("sharedReadHostCopyMs", read_ms)
-                    add_stage("scheduleLateMs", max(0.0, (now - scheduled_at) * 1000.0))
+                    current_source_state = source_state_signature(batch.sources)
+                    if current_source_state == last_source_state:
+                        skipped_duplicate_batches += 1
+                        time.sleep(
+                            duplicate_poll_delay_seconds(
+                                duplicate_poll_attempt,
+                                frame_interval,
+                            )
+                        )
+                        duplicate_poll_attempt += 1
+                        continue
+                    last_source_state = current_source_state
+                    duplicate_poll_attempt = 0
+                    profile_frame, next_profile_at = select_profile_frame(
+                        args.profiling_mode,
+                        now,
+                        next_profile_at,
+                        args.profiling_sample_interval_seconds,
+                    )
+                    if profile_frame:
+                        profiled_batches += 1
+                        add_stage("sharedReadHostCopyMs", read_ms)
+                        add_stage(
+                            "scheduleLateMs",
+                            max(0.0, (now - scheduled_at) * 1000.0),
+                        )
 
                     processing_started = time.perf_counter()
-                    selection_started = time.perf_counter()
+                    selection_started = time.perf_counter() if profile_frame else 0.0
                     valid_indices = [
                         index for index, source in enumerate(batch.sources) if source.video_valid
                     ]
-                    add_stage(
-                        "sourceSelectionMs",
-                        (time.perf_counter() - selection_started) * 1000.0,
-                    )
+                    if profile_frame:
+                        add_stage(
+                            "sourceSelectionMs",
+                            (time.perf_counter() - selection_started) * 1000.0,
+                        )
 
                     results_by_index = {}
                     if valid_indices:
-                        h2d_started = time.perf_counter()
-                        h2d_event_started = cp.cuda.Event()
-                        h2d_event_finished = cp.cuda.Event()
-                        h2d_event_started.record()
-                        device_planes.set(batch.y_planes)
-                        h2d_event_finished.record()
-                        h2d_event_finished.synchronize()
-                        add_stage("h2dWallMs", (time.perf_counter() - h2d_started) * 1000.0)
-                        add_stage(
-                            "h2dGpuMs",
-                            cp.cuda.get_elapsed_time(h2d_event_started, h2d_event_finished),
-                        )
+                        h2d_started = time.perf_counter() if profile_frame else 0.0
+                        if profile_frame:
+                            h2d_event_started = cp.cuda.Event()
+                            h2d_event_finished = cp.cuda.Event()
+                            h2d_event_started.record()
+                            device_planes.set(batch.y_planes)
+                            h2d_event_finished.record()
+                            h2d_event_finished.synchronize()
+                            add_stage(
+                                "h2dWallMs",
+                                (time.perf_counter() - h2d_started) * 1000.0,
+                            )
+                            add_stage(
+                                "h2dGpuMs",
+                                cp.cuda.get_elapsed_time(
+                                    h2d_event_started,
+                                    h2d_event_finished,
+                                ),
+                            )
+                        else:
+                            device_planes.set(batch.y_planes)
 
-                        detector_timings: dict[str, float] = {}
-                        detect_started = time.perf_counter()
+                        detector_timings: dict[str, float] | None = (
+                            {} if profile_frame else None
+                        )
+                        detect_started = time.perf_counter() if profile_frame else 0.0
                         results = detector.detect_batch(device_planes, detector_timings)
-                        add_stage("detectWallMs", (time.perf_counter() - detect_started) * 1000.0)
-                        for name, value in detector_timings.items():
-                            add_stage(name, value)
+                        if profile_frame:
+                            add_stage(
+                                "detectWallMs",
+                                (time.perf_counter() - detect_started) * 1000.0,
+                            )
+                            for name, value in detector_timings.items():
+                                add_stage(name, value)
                         results_by_index = {
                             index: results[index] for index in valid_indices
                         }
                     detected_at_unix_ns = time.time_ns()
                     processing_ms.append((time.perf_counter() - processing_started) * 1000.0)
 
-                    observation_started = time.perf_counter()
+                    observation_started = time.perf_counter() if profile_frame else 0.0
                     observations = []
                     for source_position, source in enumerate(batch.sources):
                         result = results_by_index.get(source_position)
@@ -622,13 +734,18 @@ def main(argv: list[str] | None = None) -> int:
                                 detections=detections,
                             )
                         )
-                    add_stage(
-                        "observationFormatMs",
-                        (time.perf_counter() - observation_started) * 1000.0,
-                    )
-                    ipc_started = time.perf_counter()
+                    if profile_frame:
+                        add_stage(
+                            "observationFormatMs",
+                            (time.perf_counter() - observation_started) * 1000.0,
+                        )
+                    ipc_started = time.perf_counter() if profile_frame else 0.0
                     writer.write(detected_at_unix_ns, observations)
-                    add_stage("ipcWriteMs", (time.perf_counter() - ipc_started) * 1000.0)
+                    if profile_frame:
+                        add_stage(
+                            "ipcWriteMs",
+                            (time.perf_counter() - ipc_started) * 1000.0,
+                        )
                     add_stage("cycleMs", (time.perf_counter() - cycle_started) * 1000.0)
                     published_batches += 1
                     next_detection_at = max(
@@ -695,6 +812,11 @@ def main(argv: list[str] | None = None) -> int:
         "publishedBatches": published_batches,
         "publicationRateHz": round(publication_rate, 3),
         "metricsWindowSeconds": METRICS_WINDOW_SECONDS,
+        "profiling": {
+            "mode": args.profiling_mode,
+            "sampleIntervalSeconds": args.profiling_sample_interval_seconds,
+            "profiledBatches": profiled_batches,
+        },
         "processingMsP50": round(processing_ms.percentile(50), 3),
         "processingMsP95": round(processing_ms.percentile(95), 3),
         "processingMsP99": round(processing_ms.percentile(99), 3),

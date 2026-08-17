@@ -96,6 +96,7 @@ class SDLRenderer : public VideoTrackReceiver {
     int GetOffsetY();
     int GetFrameWidth();
     int GetFrameHeight();
+    uint64_t GetImageSequence();
     int GetWidth();
     int GetHeight();
     uint8_t* GetImage();
@@ -129,6 +130,7 @@ class SDLRenderer : public VideoTrackReceiver {
     int input_height_;
     bool scaled_;
     std::unique_ptr<uint8_t[]> image_;
+    uint64_t image_sequence_;
     std::unique_ptr<uint8_t[]> source_image_;
     std::vector<uint8_t> source_luma_;
     uint64_t source_sequence_;
@@ -178,7 +180,14 @@ class SDLRenderer : public VideoTrackReceiver {
   typedef std::vector<
       std::pair<webrtc::VideoTrackInterface*, std::unique_ptr<Sink> > >
       VideoTrackSinkVector;
+  struct CachedTexture {
+    SDL_Texture* texture = nullptr;
+    int width = 0;
+    int height = 0;
+    uint64_t image_sequence = 0;
+  };
   VideoTrackSinkVector sinks_;
+  std::unordered_map<Sink*, CachedTexture> cached_textures_;
   std::atomic<bool> running_;
   SDL_Thread* thread_;
   SDL_Window* window_;

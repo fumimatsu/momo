@@ -65,6 +65,15 @@ class GpuArucoDetectorTest(unittest.TestCase):
         results = detector.detect_batch(detector.cp.asarray(np.stack(canvases)))
         self.assertEqual([[1, 1], [2]], [sorted(result.marker_ids) for result in results])
 
+        timings = {}
+        profiled = detector.detect_batch(
+            detector.cp.asarray(np.stack(canvases)),
+            timings,
+        )
+        self.assertEqual([[1, 1], [2]], [sorted(result.marker_ids) for result in profiled])
+        self.assertGreater(timings["candidateGpuMs"], 0.0)
+        self.assertIn("decodeGpuMs", timings)
+
     def test_gpu_detector_finds_all_dict_4x4_50_ids_including_16(self):
         try:
             detector = MODULE.GpuArucoDetector(allowed_marker_ids=range(50))

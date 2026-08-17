@@ -1,5 +1,9 @@
 # MADSYSTEM Unity 連携実装ガイド
 
+> `Local\MomoObserverFrameV1`はMADSYSTEM映像演出を残す移行用経路である。
+> `start-mads-observer.ps1 -ObserverVisualOutput off`ではこのmappingを作成せず、Marker Observer用の
+> `Local\MomoObserverLumaV1`だけを公開する。この文書は`legacy` modeのBGRA契約を説明する。
+
 ## 目的と前提
 
 この文書は、Momo Multi Observer が Windows 共有メモリへ出力する合成フレームを、Unity の MADSYSTEM で取り込む実装者向けの契約である。

@@ -607,6 +607,22 @@ int SDLRenderer::RenderThread() {
       webrtc::MutexLock lock(&sinks_lock_);
       if (!shared_output_headless_) {
         SDL_RenderClear(renderer_);
+        for (auto texture = cached_textures_.begin();
+             texture != cached_textures_.end();) {
+          const bool track_exists = std::any_of(
+              sinks_.begin(), sinks_.end(),
+              [&texture](const VideoTrackSinkVector::value_type& sink) {
+                return sink.second.get() == texture->first;
+              });
+          if (track_exists) {
+            ++texture;
+            continue;
+          }
+          if (texture->second.texture != nullptr) {
+            SDL_DestroyTexture(texture->second.texture);
+          }
+          texture = cached_textures_.erase(texture);
+        }
         for (const VideoTrackSinkVector::value_type& sinks : sinks_) {
           Sink* sink = sinks.second.get();
 
@@ -617,16 +633,42 @@ int SDLRenderer::RenderThread() {
 
           int width = sink->GetFrameWidth();
           int height = sink->GetFrameHeight();
+          const uint64_t image_sequence = sink->GetImageSequence();
 
-          if (width == 0 || height == 0)
+          if (width == 0 || height == 0 || image_sequence == 0)
             continue;
 
-          SDL_Surface* surface =
-              SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_ARGB8888,
-                                    sink->GetImage(), width * 4);
-          SDL_Texture* texture =
-              SDL_CreateTextureFromSurface(renderer_, surface);
-          SDL_DestroySurface(surface);
+          CachedTexture& cached = cached_textures_[sink];
+          bool texture_created = false;
+          if (cached.texture == nullptr || cached.width != width ||
+              cached.height != height) {
+            if (cached.texture != nullptr) {
+              SDL_DestroyTexture(cached.texture);
+            }
+            cached.texture = SDL_CreateTexture(
+                renderer_, SDL_PIXELFORMAT_ARGB8888,
+                SDL_TEXTUREACCESS_STREAMING, width, height);
+            cached.width = width;
+            cached.height = height;
+            cached.image_sequence = 0;
+            texture_created = true;
+          }
+          if (cached.texture == nullptr) {
+            RTC_LOG(LS_ERROR) << __FUNCTION__
+                              << ": SDL_CreateTexture failed "
+                              << SDL_GetError();
+            continue;
+          }
+          if (texture_created || cached.image_sequence != image_sequence) {
+            if (!SDL_UpdateTexture(cached.texture, nullptr, sink->GetImage(),
+                                   width * 4)) {
+              RTC_LOG(LS_ERROR) << __FUNCTION__
+                                << ": SDL_UpdateTexture failed "
+                                << SDL_GetError();
+              continue;
+            }
+            cached.image_sequence = image_sequence;
+          }
 
           SDL_FRect image_rect = {0, 0, (float)width, (float)height};
           SDL_FRect draw_rect = {
@@ -648,10 +690,8 @@ int SDLRenderer::RenderThread() {
                                               (flip_horizontal
                                                    ? SDL_FLIP_HORIZONTAL
                                                    : SDL_FLIP_NONE));
-          SDL_RenderTextureRotated(renderer_, texture, &image_rect, &draw_rect,
-                                   0, nullptr, flip);
-
-          SDL_DestroyTexture(texture);
+          SDL_RenderTextureRotated(renderer_, cached.texture, &image_rect,
+                                   &draw_rect, 0, nullptr, flip);
         }
       }
       WriteSharedFrame();
@@ -671,6 +711,12 @@ int SDLRenderer::RenderThread() {
     }
   }
 
+  for (auto& cached : cached_textures_) {
+    if (cached.second.texture != nullptr) {
+      SDL_DestroyTexture(cached.second.texture);
+    }
+  }
+  cached_textures_.clear();
   SDL_DestroyRenderer(renderer_);
   renderer_ = nullptr;
 
@@ -692,6 +738,7 @@ SDLRenderer::Sink::Sink(SDLRenderer* renderer,
       input_width_(0),
       input_height_(0),
       scaled_(false),
+      image_sequence_(0),
       width_(0),
       height_(0),
       source_width_(0),
@@ -752,7 +799,11 @@ void SDLRenderer::Sink::OnFrame(const webrtc::VideoFrame& frame) {
       source_buffer->height() != source_height_) {
     source_width_ = source_buffer->width();
     source_height_ = source_buffer->height();
-    source_image_.reset(new uint8_t[source_width_ * source_height_ * 4]);
+    if (renderer_->shared_frame_writer_ != nullptr) {
+      source_image_.reset(new uint8_t[source_width_ * source_height_ * 4]);
+    } else {
+      source_image_.reset();
+    }
   }
   if (renderer_->shared_luma_writer_ != nullptr) {
     source_luma_.resize(kSharedLumaPlaneSize);
@@ -767,11 +818,14 @@ void SDLRenderer::Sink::OnFrame(const webrtc::VideoFrame& frame) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(received_at)
             .count();
   }
-  libyuv::ConvertFromI420(
-      source_buffer->DataY(), source_buffer->StrideY(), source_buffer->DataU(),
-      source_buffer->StrideU(), source_buffer->DataV(), source_buffer->StrideV(),
-      source_image_.get(), source_width_ * 4, source_width_, source_height_,
-      libyuv::FOURCC_ARGB);
+  if (renderer_->shared_frame_writer_ != nullptr) {
+    libyuv::ConvertFromI420(
+        source_buffer->DataY(), source_buffer->StrideY(),
+        source_buffer->DataU(), source_buffer->StrideU(),
+        source_buffer->DataV(), source_buffer->StrideV(), source_image_.get(),
+        source_width_ * 4, source_width_, source_height_,
+        libyuv::FOURCC_ARGB);
+  }
   if (renderer_->shared_output_headless_) {
     return;
   }
@@ -841,6 +895,7 @@ void SDLRenderer::Sink::OnFrame(const webrtc::VideoFrame& frame) {
 #if defined(USE_OPENCV_ARUCO)
   }
 #endif
+  image_sequence_ = frame_count;
 }
 
 void SDLRenderer::Sink::SetOutlineRect(int x, int y, int width, int height) {
@@ -880,6 +935,10 @@ int SDLRenderer::Sink::GetFrameWidth() {
 
 int SDLRenderer::Sink::GetFrameHeight() {
   return scaled_ ? height_ : input_height_;
+}
+
+uint64_t SDLRenderer::Sink::GetImageSequence() {
+  return image_sequence_;
 }
 
 int SDLRenderer::Sink::GetWidth() {

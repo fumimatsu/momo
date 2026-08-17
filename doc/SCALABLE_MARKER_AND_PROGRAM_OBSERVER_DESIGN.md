@@ -3,6 +3,7 @@
 ## Status
 
 - 状態: legacy-adapter-implemented
+- Program video issue: [Venue camera and Program Director](../docs/issues/2026-08-17-venue-camera-program-director.md)
 - 実装: Relayの設定、診断、負荷・障害計測、Web Observer選択購読、実映像ArUco capacity測定、PyNvVideoCodec direct NVDEC比較、録画4入力のGPU Marker Observer producer、MADSYSTEM Legacy Adapterに加え、Native Observer Video Sinkのlive I420 Y平面バッチを実装。Reliable marker eventは未着手
 - 対象: Momo Multi Observer / Local Relay / MADSYSTEM / Race Control / Web Observer
 - 目的: マーカー検出を MADSYSTEM から独立させ、車両数を固定せずに追加できる構成と、観客向け映像を少数の注目車両へ切り替える構成を定義する
@@ -36,7 +37,8 @@ MADSYSTEM計測は維持しつつ、Relay側から段階的に固定台数前提
 1. 車両を固定配列へ追加せず、source登録によって1台ずつ増減できる。
 2. マーカー検出のために全車映像を合成、描画、共有メモリ転送しない。
 3. 1台の検出ノードの能力を超えた場合、別PCへsourceを分配できる。
-4. 観客向けには、上位、接戦、PIT、重大イベントなどから選ばれた2から4台だけを映像化する。
+4. 観客向けにはRelayへ独立接続した俯瞰カメラを基準映像とし、上位、接戦、PIT、重大イベントなどから
+   選ばれた1から2台の車載映像をmainまたはwipeへ切り替える。
 5. MADSYSTEMから段階的に画像認識と計時責務を移し、現行運用を一度に置換しない。
 6. Marker Observer、Program Observerのどちらも操縦用DataChannelを作成しない。
 
@@ -174,6 +176,7 @@ course allowlistだけでなく通過debounceでもevent化を防ぐ。direct NV
 ```mermaid
 flowchart LR
   Cars["Vehicle Momo x N"] --> Relay["Local Relay"]
+  Venue["HDMI Capture / Venue Camera Momo"] --> Relay
   Relay --> MarkerA["Marker Observer Node A"]
   Relay --> MarkerB["Marker Observer Node B"]
   MarkerA --> Events["Reliable Marker Event Ingest"]
@@ -197,7 +200,7 @@ flowchart LR
 | --- | --- | --- |
 | Detection Plane | 全車 | checkpoint / PITなどのmarker event |
 | Race Data Plane | 全車 | 周回、順位、セクター、HP、PIT状態 |
-| Program Video Plane | 選択した2から4台 | 観客向け映像 |
+| Program Video Plane | 俯瞰1 source + 選択した車載1から2 source | 観客向け映像 |
 
 ## 推奨配置
 
@@ -209,6 +212,7 @@ Relayの中継とArUco検出を同じ上限で考えない。RelayはこのPCで
 ```mermaid
 flowchart LR
   Cars["Vehicle Momo 1..32"] --> Gateway["Relay Gateway"]
+  Venue["Venue Camera Momo"] --> Gateway
   Gateway --> DetectA["Marker Node A / max 8"]
   Gateway --> DetectB["Marker Node B / max 8"]
   Gateway --> DetectC["Marker Node C / max 8"]
@@ -218,7 +222,7 @@ flowchart LR
   DetectC --> Timing
   DetectD --> Timing
   Timing --> Control["Race Control"]
-  Gateway --> Program["Program Observer / active + warm max 4"]
+  Gateway --> Program["Program Observer / venue pinned + vehicle active/warm max 4"]
   Control --> Program
   Control --> Web["Web Observer"]
 ```
@@ -226,7 +230,8 @@ flowchart LR
 - Relay Gatewayは映像を再encodeせず、接続・fan-out・Telemetry/Event中継と診断に限定する。
 - Marker Nodeは1 node最大8 source、software fallbackでは6 sourceとし、担当を静的設定する。
 - Race Control / Timingは映像を復号せず、確定eventとrace stateだけを扱う。
-- Program Observerはactive + warmの最大4映像だけを復号し、全車を常時接続しない。
+- Program Observerは俯瞰を常時activeとし、選択車載とwarm候補を含む最大4映像だけを復号する。
+  全車を常時接続しない。
 - MADSYSTEMをTiming Engineとして使う移行期間は、検出nodeと別PCに置く。
 - 自動failoverは同一markerの二重確定対策が完成するまで行わず、standby nodeへ手動で再割当する。
 
@@ -380,13 +385,14 @@ kernelへ融合し、60秒で49.183 Hz、cycle p95 13.771 ms、4 source coverage
 ### 50 Hz live経路の負荷分解
 
 現行経路は、Python workerがRelayへ別途接続する構成ではない。Native Observerが
-sourceごとのWebRTC受信と復号を1回だけ行い、同じVideo SinkからMADSYSTEM表示用BGRAと
-marker検出用Y平面を公開する。GPU workerは`Local\MomoObserverLumaV1`だけを読み、
-Relay接続、WebRTC復号、BGRA変換を重複させない。
+sourceごとのWebRTC受信と復号を1回だけ行い、marker検出用Y平面を公開する。既定の
+`ObserverVisualOutput=legacy`ではMADSYSTEM表示用BGRAも同じVideo Sinkから公開するが、
+`off`ではBGRA変換と共有出力を行わない。GPU workerは`Local\MomoObserverLumaV1`だけを読み、
+Relay接続とWebRTC復号を重複させない。
 
-ソース調査で確認した現行の処理は次のとおり。
+最適化着手時のソース調査で確認した処理は次のとおり。後続変更で一部は解消済みである。
 
-- Native `Sink::OnFrame`はI420のY平面を960x528へscaleし、同じsourceのBGRA映像も生成する
+- Native `Sink::OnFrame`はI420のY平面を960x528へscaleし、legacy modeでは同じsourceのBGRA映像も生成する
 - Native `WriteSharedLuma`は50 Hzで固定4source bufferをzero fillし、有効sourceを複製した後、
   固定長の4平面をtriple bufferへ一括`memcpy`する
 - Python `SharedLumaReader.read_latest`は検出cycleごとにNumPy配列を生成し、選択sourceを
@@ -521,15 +527,45 @@ Race Controlは引き続きrun、sequence、snapshot検証、保存、配信を�
 Program Observerは観客向け映像だけを作る。全車を1画面へ並べず、Auto Directorまたは手動操作で
 選択された少数sourceだけを接続、復号、表示する。
 
+俯瞰カメラも車載映像と同じRelay WebRTC sourceとして扱う。USB HDMI CaptureをProgram PCの
+browserから直接開く構成は採用せず、capture deviceを入力にしたMomo publisherを独立起動し、
+Relayが通常のread-only Observer接続としてfan-outする。これによりProgram Observerを別PCへ移しても
+映像入力構成を変更せず、切り替えはRelay source IDの選択だけで完結する。
+
+source roleは次の2種類とする。
+
+| source kind | 例 | race mapping | 用途 |
+| --- | --- | --- | --- |
+| `vehicle` | `momo-fpv-01` | `raceCarId`あり | 車載映像、Telemetry、marker、操縦 |
+| `venue` | `venue-main` | `raceCarId`なし | 俯瞰映像。操縦、marker、timing対象外。音声は別契約 |
+
+既存sourceは後方互換のため`sourceKind`省略時に`vehicle`として扱う。`venue` sourceは
+DRIVE参加、active roster、Marker Node assignment、PIT/HP、Pilot ticketの対象にしない。
+Relayのsource registryとOperations APIは`sourceKind`と表示名を返し、Program Observerが
+車両と俯瞰を文字列命名規則ではなく型で区別できるようにする。
+
+Relay configと動的source registryは次の形を受理し、fixture testで固定する。
+
+```json
+{
+  "id": "venue-main",
+  "url": "ws://192.168.11.20:8080/ws",
+  "sourceKind": "venue",
+  "displayName": "TRACK CAM",
+  "ayamePilotEnabled": false
+}
+```
+
 想定レイアウトは次のとおり。
 
 | mode | 表示 |
 | --- | --- |
-| Leader | 先頭車両を全画面表示 |
-| Battle | 接近する前後2台を左右分割またはmain + PinP表示 |
-| Incident | 衝突や大きなダメージが発生した車両を一時表示 |
-| Pit | PIT滞在車両をPinP表示 |
-| Manual | オペレーターが指定した車両を固定表示 |
+| Track | 俯瞰映像を全画面表示する既定状態 |
+| Leader | 先頭車両を全画面表示し、俯瞰をPinP表示 |
+| Battle | 俯瞰をmainとし、接近する前後2台をwipe表示。必要なら片方をmainへ切り替える |
+| Incident | 俯瞰で状況を維持しながら、衝突や大きなダメージ対象を一時wipe表示 |
+| Pit | 俯瞰をmainとし、PIT滞在車両をwipe表示 |
+| Manual | オペレーターがsourceとlayoutを固定表示 |
 | Grid | スタート前など限定的に最大4台を表示 |
 
 Program Observerは既存Multi Observerの2x2固定レイアウトを拡張するのではなく、source選択と
@@ -539,11 +575,12 @@ Program Observerは既存Multi Observerの2x2固定レイアウトを拡張す�
 
 切り替え時に新規WebRTC接続とkeyframe待ちが発生するため、表示中sourceだけでなく次候補を少数保持する。
 
-- active: 現在表示中の1から2 source
-- warm: 次候補の最大2 source
+- pinned active: `venue-main` 1 source。通常は切断しない
+- active vehicle: 現在表示中の0から2 source
+- warm vehicle: 次候補の最大1 source
 - cold: それ以外。未接続または停止状態
 
-初期候補は合計4接続とするが、切り替え遅延とPC負荷を実測して変更する。20台すべてをwarmにしない。
+初期候補は俯瞰を含む合計4接続とするが、切り替え遅延とPC負荷を実測して変更する。20台すべてをwarmにしない。
 source切り替え時はRelayへkeyframe要求が届くこと、切断済みsourceがrendererに残らないことを確認する。
 
 初期基盤としてWeb Observerに`videoDevices=11.3,11.5`を追加した。これは指定sourceだけの
@@ -556,6 +593,10 @@ Telemetry、vehicle eventもsourceごとのsignaling WebSocketに同居するた
 
 Auto Directorはrace_state、PIT状態、確定イベントを入力にしてProgram Observerへ表示候補を送る。
 映像や画像認識は扱わない。
+
+Directorの出力は単一の車両IDではなく、`layoutMode`、`mainSourceId`、`wipeSourceIds[]`、
+`reason`、`holdUntil`を持つProgram selectionとする。通常時は`Track / venue-main`へ戻り、
+レース状況がある時だけ車載映像を追加またはmainへ昇格させる。
 
 ### 選択候補
 
@@ -579,7 +620,8 @@ manual lock
   > severe incident / finish
   > critical battle
   > warning battle / pit
-  > leader
+  > leader onboard
+  > track overview
 ```
 
 自動切り替えにはminimum dwell、candidate hold、cooldownを設ける。チェックポイントごとに候補が
@@ -594,6 +636,11 @@ manual lock
 将来Marker Observerから通過イベントを直接受けると、MADSYSTEMのtiming snapshotを待つより早く
 候補更新できる。ただし、確定順位と差はTiming Engine / Race Controlの値を優先する。
 
+俯瞰映像が切断した場合は黒画面を維持せず、現在のleader onboard、次にmanual指定車両へfallbackする。
+俯瞰復帰時は即座に画面を戻さず、現在のminimum dwell終了後にTrackへ戻す。現行Relayは通常の上流
+WebRTC音声trackをfan-outしないため、会場音とonboard音声の選択・crossfadeは未実装である。音声を扱う場合は
+venue音声ingest、Relay audio契約、または固定Program PCのOBS音声入力を別途決め、複数音声を同時再生しない。
+
 ## Web Observerとの関係
 
 Web Observerは映像を全車分表示せず、全車の次の状態を一覧、コース図、タイム履歴で表示する。
@@ -604,7 +651,7 @@ Web Observerは映像を全車分表示せず、全車の次の状態を一覧�
 - connection health
 - Auto Directorが現在選択している車両と選択理由
 
-Program Observerの手動選択UIはWeb Observerまたは専用Director UIに置ける。ただし、観客向けブラウザへ
+Program Observerの手動選択UIはWeb Observerの運用画面へ置く。観客向けProgram画面へ
 Race Control command tokenやRelay gameplay tokenを渡さない。選択操作は権限を分けたDirector APIへ送る。
 
 ## Relayへの影響
@@ -612,6 +659,13 @@ Race Control command tokenやRelay gameplay tokenを渡さない。選択操作�
 Relayは既存どおり1本の上流映像を複数のread-only Observerへfan-outする。Marker Observer追加によって
 車載PiからRelayへの上り映像は増やさない。一方で、RelayからDetector Nodeへのローカル下り帯域と
 PeerConnection数はsource数に比例して増えるため、次を計測する。
+
+俯瞰カメラも通常の上流sourceとしてRelayへ1本追加する。Relayは映像合成を行わず、`venue` sourceを
+Race Control、Garage、Ayame Pilot、Pilot接続へ割り当てない。Marker Node assignmentはRelay外の設定でも
+`sourceKind=venue`を除外する。Program Observerは他sourceと同じObserver signalingで購読する。
+MADSYSTEM向け`Local\MomoObserverFrameV1`は移行用の別経路であり、Program映像の入力やfallbackには使わない。
+現行RelayのH.264 capabilityはlevel 3.1で、FHD 30 FPSにはlevel 4.0対応が必要である。俯瞰映像の実機検証は
+HDMI capture、Momo publisher、Relay、別PC Observerを通した後続作業とし、今回のcontrol-plane実装とは分ける。
 
 - sourceごとのoutbound bitrate
 - Packet forwarding CPU
@@ -660,10 +714,10 @@ Marker Observerを20台対応にしても、race data contractが4台固定な�
 
 | repository | 将来の担当 |
 | --- | --- |
-| `momo` | Marker Observer、Program Observer、WebRTC source管理、frame sampling、decoder診断 |
+| `momo` | Marker Observer、venueを含むWebRTC source管理、frame sampling、decoder診断 |
 | `momo-race-control` | active roster、timing snapshot検証、race state配信、Director入力となる確定状態 |
 | `momo-race-timing` | Race Operations Coordinator、marker event、通過確定、Timing Engine、完全snapshot生成 |
-| `momo-fpv-viewer` | Web Observerの全車状態、Director UI、Program選択状態表示 |
+| `momo-fpv-viewer` | Web Observerの全車状態、Program Observer画面、Director UI、Program選択状態表示 |
 | `MADSYSTEM` | 固定4台の既存計時、External Observation互換、pilot割当provider、比較とrollback |
 | `momo-fpv` | Raspberry Pi運用、車載映像品質、実走録画、導入・検証手順 |
 
@@ -714,9 +768,10 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 
 ### Phase 5: Program Observer and Auto Director
 
-- 1source全画面と2source Battle表示を実装する
-- manual lockとleader fallbackを実装する
-- active + warm接続プールを実装する
+- HDMI captureをMomo publisherへ入力し、`venue-main`としてRelay source registryへ登録する
+- Track全画面、Track + 2 onboard Battle wipe、Onboard main + Track PinPを実装する
+- manual lock、track fallback、leader fallbackを実装する
+- venue pinned + vehicle active/warm接続プールを実装する
 - Battle、PIT、incident、finishの自動選択を段階的に追加する
 - Web Observerへ現在の選択理由とmanual操作を追加する
 
@@ -748,10 +803,13 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 
 ### Program video
 
+- `venue` sourceがcar roster、Marker Node、DRIVE、Pilot ticketへ混入しない
+- `venue`のsource schema、Operations表示、Pilot拒否をfixture testで確認できる
+- FHD 30 FPS俯瞰映像をRelay経由で別PCへ表示する実機試験はlevel 4.0対応後に行う
 - manual source切り替えが計時と操縦へ影響しない
 - warm sourceへの切り替え時間を測定できる
 - Battle候補が変化してもminimum dwell中は不用意に切り替えない
-- Auto Director停止時に安全な固定表示へfallbackする
+- Auto Director停止時は俯瞰固定、俯瞰停止時はleader onboardへfallbackする
 - Program Observerが全車分の映像接続を常時維持しない
 
 ## 未決事項
@@ -763,10 +821,13 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 4. MADSYSTEM Legacy Adapterは現行MMO1 per-frame共有メモリを比較用に維持する。qualified eventを
    MADSYSTEMへ追加送信しない。
 5. Phase 1は完全snapshotの設定ファイル再読込を採用。本番のactive roster/assignment配信APIは未決。
-6. Program Observerの出力をSDL window、browser、OBS sourceのどれにするか。
-7. Auto Directorのmanual UIをWeb Observerへ置くか、専用画面にするか。
+6. 初期Program Observer出力はRelay配信のbrowser画面とし、配信・録画はOBS Browser Sourceで取り込む。
+   将来、同一完成映像を複数配信先へfan-outする時だけserver-side Program outputを再検討する。
+7. Auto Directorの状態表示とmanual UIはWeb Observer運用画面へ置き、観客向けProgram画面と権限を分ける。
 8. 複数Detector Nodeの時計同期とframe timestampの扱い。
 9. 20台運用時のrace standings上限とlap history保持量。
+10. 俯瞰FHD 30 FPS向けH.264 level 4.0の適用範囲と、車載level 3.1との混在方法。
+11. 会場音をRelayへ載せるか、固定Program PCのOBS入力として分離するか。
 
 ## 着手条件
 

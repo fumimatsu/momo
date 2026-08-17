@@ -12,6 +12,8 @@ import (
 const (
 	relayConfigVersion       = 1
 	maximumConfiguredSources = 32
+	relaySourceKindVehicle   = "vehicle"
+	relaySourceKindVenue     = "venue"
 )
 
 type relayFileConfig struct {
@@ -22,6 +24,8 @@ type relayFileConfig struct {
 type relayFileSource struct {
 	ID                string `json:"id"`
 	URL               string `json:"url"`
+	SourceKind        string `json:"sourceKind,omitempty"`
+	DisplayName       string `json:"displayName,omitempty"`
 	RaceCarID         string `json:"raceCarId,omitempty"`
 	AyamePilotEnabled *bool  `json:"ayamePilotEnabled,omitempty"`
 	AyamePilotRoom    string `json:"ayamePilotRoom,omitempty"`
@@ -75,6 +79,7 @@ func relayConfigMappingsForFile(config relayFileConfig, allowEmpty bool) (relayC
 		enabled := source.Enabled == nil || *source.Enabled
 		id := strings.TrimSpace(source.ID)
 		sourceURL := strings.TrimSpace(source.URL)
+		displayName := strings.TrimSpace(source.DisplayName)
 		raceCarID := strings.TrimSpace(source.RaceCarID)
 		roomID := strings.TrimSpace(source.AyamePilotRoom)
 		if id == "" || strings.Contains(id, "=") {
@@ -86,6 +91,18 @@ func relayConfigMappingsForFile(config relayFileConfig, allowEmpty bool) (relayC
 		seenIDs[id] = struct{}{}
 		if !enabled {
 			continue
+		}
+		sourceKind, err := normalizeRelaySourceKind(source.SourceKind)
+		if err != nil {
+			return relayConfigMappings{}, fmt.Errorf("source %q: %w", id, err)
+		}
+		if sourceKind == relaySourceKindVenue {
+			if raceCarID != "" {
+				return relayConfigMappings{}, fmt.Errorf("source %q: venue source cannot define raceCarId", id)
+			}
+			if roomID != "" || source.AyamePilotEnabled != nil && *source.AyamePilotEnabled {
+				return relayConfigMappings{}, fmt.Errorf("source %q: venue source cannot enable Ayame Pilot", id)
+			}
 		}
 		if source.AyamePilotEnabled != nil && !*source.AyamePilotEnabled && roomID != "" {
 			return relayConfigMappings{}, fmt.Errorf("source %q: ayamePilotRoom cannot be set when ayamePilotEnabled is false", id)
@@ -111,6 +128,8 @@ func relayConfigMappingsForFile(config relayFileConfig, allowEmpty bool) (relayC
 		mappings.Definitions = append(mappings.Definitions, relayFileSource{
 			ID:                id,
 			URL:               sourceURL,
+			SourceKind:        sourceKind,
+			DisplayName:       displayName,
 			RaceCarID:         raceCarID,
 			AyamePilotEnabled: source.AyamePilotEnabled,
 			AyamePilotRoom:    roomID,
@@ -123,6 +142,24 @@ func relayConfigMappingsForFile(config relayFileConfig, allowEmpty bool) (relayC
 		return relayConfigMappings{}, fmt.Errorf("Relay config has %d enabled sources; maximum is %d", len(mappings.Sources), maximumConfiguredSources)
 	}
 	return mappings, nil
+}
+
+func normalizeRelaySourceKind(value string) (string, error) {
+	kind := strings.ToLower(strings.TrimSpace(value))
+	if kind == "" {
+		return relaySourceKindVehicle, nil
+	}
+	if kind != relaySourceKindVehicle && kind != relaySourceKindVenue {
+		return "", fmt.Errorf("sourceKind must be %q or %q", relaySourceKindVehicle, relaySourceKindVenue)
+	}
+	return kind, nil
+}
+
+func effectiveRelaySourceKind(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), relaySourceKindVenue) {
+		return relaySourceKindVenue
+	}
+	return relaySourceKindVehicle
 }
 
 func validateRelaySourceURL(value string) error {

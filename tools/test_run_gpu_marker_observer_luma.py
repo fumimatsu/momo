@@ -37,6 +37,63 @@ class GpuMarkerObserverLumaTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not configured"):
             MODULE.select_source_slots(["11.5"], ["11.6"])
 
+    def test_source_state_signature_includes_sequence_and_video_validity(self):
+        sources = [
+            MODULE.LumaSource("11.3", 0, 10, 100, True),
+            MODULE.LumaSource("11.4", 1, 20, 200, False),
+        ]
+
+        self.assertEqual(((10, True), (20, False)), MODULE.source_state_signature(sources))
+
+    def test_duplicate_poll_delay_backs_off_without_exceeding_five_ms(self):
+        delays = [
+            MODULE.duplicate_poll_delay_seconds(attempt, 0.02)
+            for attempt in range(6)
+        ]
+
+        self.assertEqual([0.0005, 0.001, 0.002, 0.004, 0.005, 0.005], delays)
+
+    def test_duplicate_poll_delay_respects_quarter_frame_interval(self):
+        self.assertEqual(0.0025, MODULE.duplicate_poll_delay_seconds(8, 0.01))
+
+    def test_duplicate_poll_delay_rejects_negative_attempt(self):
+        with self.assertRaisesRegex(ValueError, "attempt must not be negative"):
+            MODULE.duplicate_poll_delay_seconds(-1, 0.02)
+
+    def test_sampled_profiling_profiles_only_when_due(self):
+        selected, next_sample = MODULE.select_profile_frame("sampled", 10.0, 10.0, 1.0)
+        skipped, unchanged = MODULE.select_profile_frame(
+            "sampled",
+            10.5,
+            next_sample,
+            1.0,
+        )
+
+        self.assertTrue(selected)
+        self.assertEqual(11.0, next_sample)
+        self.assertFalse(skipped)
+        self.assertEqual(next_sample, unchanged)
+
+    def test_full_and_off_profiling_do_not_move_sample_deadline(self):
+        self.assertEqual(
+            (True, 20.0),
+            MODULE.select_profile_frame("full", 10.0, 20.0, 1.0),
+        )
+        self.assertEqual(
+            (False, 20.0),
+            MODULE.select_profile_frame("off", 30.0, 20.0, 1.0),
+        )
+
+    def test_sampled_profiling_rejects_non_positive_interval(self):
+        with self.assertRaisesRegex(ValueError, "interval must be positive"):
+            MODULE.select_profile_frame("sampled", 10.0, 10.0, 0.0)
+
+    def test_parser_uses_sampled_profiling_by_default(self):
+        args = MODULE.build_parser().parse_args([])
+
+        self.assertEqual("sampled", args.profiling_mode)
+        self.assertEqual(1.0, args.profiling_sample_interval_seconds)
+
     def test_run_requires_four_live_sources_at_target_rate(self):
         accepted = MODULE.evaluate_run(500, [500, 500, 500, 500], 49.8, 50, 18.0)
         self.assertTrue(accepted["passed"])

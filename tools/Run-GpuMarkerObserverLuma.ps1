@@ -10,6 +10,8 @@ param(
     [ValidateRange(0.01, 1.0)][double]$MinimumRateRatio = 0.95,
     [ValidateRange(0.01, 1.0)][double]$MinimumSourceCoverage = 0.95,
     [ValidateRange(0.1, 1000.0)][double]$MaximumCycleP95Ms = 20.0,
+    [ValidateSet('off', 'sampled', 'full')][string]$ProfilingMode = 'sampled',
+    [ValidateRange(0.01, 3600.0)][double]$ProfilingSampleIntervalSeconds = 1.0,
     [string]$AllowedMarkerIds = '',
     [string]$OutputPath = '',
     [string]$PythonExecutable = ''
@@ -42,7 +44,9 @@ $arguments = @(
     '--required-source-count', $RequiredSourceCount,
     '--minimum-rate-ratio', $MinimumRateRatio,
     '--minimum-source-coverage', $MinimumSourceCoverage,
-    '--maximum-cycle-p95-ms', $MaximumCycleP95Ms
+    '--maximum-cycle-p95-ms', $MaximumCycleP95Ms,
+    '--profiling-mode', $ProfilingMode,
+    '--profiling-sample-interval-seconds', $ProfilingSampleIntervalSeconds
 )
 foreach ($sourceId in $SourceIds) {
     $arguments += @('--source-id', $sourceId)

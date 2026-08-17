@@ -30,6 +30,32 @@ func TestLoadRelayConfigBuildsMappingsAndSkipsDisabledSources(t *testing.T) {
 	if got := strings.Join(mappings.AyamePilotRooms, ","); got != "11.3=room-3" {
 		t.Fatalf("Ayame rooms = %q", got)
 	}
+	if mappings.Definitions[0].SourceKind != relaySourceKindVehicle {
+		t.Fatalf("default source kind = %q", mappings.Definitions[0].SourceKind)
+	}
+}
+
+func TestLoadRelayConfigAcceptsVenueWithoutRaceOrPilotMapping(t *testing.T) {
+	path := writeRelayConfigTestFile(t, `{
+  "version": 1,
+  "sources": [
+    {"id":"venue-main","url":"ws://192.168.11.20:8080/ws","sourceKind":"venue","displayName":"TRACK CAM","ayamePilotEnabled":false}
+  ]
+}`)
+	mappings, err := loadRelayConfig(path)
+	if err != nil {
+		t.Fatalf("loadRelayConfig() error = %v", err)
+	}
+	if len(mappings.Definitions) != 1 {
+		t.Fatalf("definitions = %#v", mappings.Definitions)
+	}
+	definition := mappings.Definitions[0]
+	if definition.SourceKind != relaySourceKindVenue || definition.DisplayName != "TRACK CAM" || definition.RaceCarID != "" {
+		t.Fatalf("venue definition = %#v", definition)
+	}
+	if len(mappings.RaceCars) != 0 || len(mappings.AyamePilotRooms) != 0 {
+		t.Fatalf("venue mappings include race or pilot routes: %#v", mappings)
+	}
 }
 
 func TestRelayConfigExampleDefinesFourUniqueAyameSources(t *testing.T) {
@@ -59,6 +85,9 @@ func TestLoadRelayConfigRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 		"duplicate car":            `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","raceCarId":"CP-1"},{"id":"b","url":"ws://b/ws","raceCarId":"CP-1"}]}`,
 		"duplicate room":           `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","ayamePilotRoom":"room-a"},{"id":"b","url":"ws://b/ws","ayamePilotRoom":"room-a"}]}`,
 		"disabled Ayame with room": `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","ayamePilotEnabled":false,"ayamePilotRoom":"room-a"}]}`,
+		"unknown source kind":      `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","sourceKind":"camera"}]}`,
+		"venue race car":           `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","sourceKind":"venue","raceCarId":"CP-1"}]}`,
+		"venue Ayame pilot":        `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","sourceKind":"venue","ayamePilotEnabled":true}]}`,
 		"http source":              `{"version":1,"sources":[{"id":"a","url":"http://a/ws"}]}`,
 		"all disabled":             `{"version":1,"sources":[{"id":"a","url":"ws://a/ws","enabled":false}]}`,
 		"trailing json":            `{"version":1,"sources":[{"id":"a","url":"ws://a/ws"}]} {}`,

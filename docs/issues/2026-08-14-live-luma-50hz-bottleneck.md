@@ -5,9 +5,10 @@ Status: doing
 ## Context
 
 The live Marker Observer no longer duplicates Relay/WebRTC input. Native Observer owns one
-connection and decoder per source, publishes a fixed four-source I420 Y-plane batch through
-`Local\MomoObserverLumaV1`, and keeps `Local\MomoObserverFrameV1` for MADSYSTEM visuals.
-The Python/CuPy worker reads only the Y-plane mapping and publishes marker observations.
+connection and decoder per source and publishes a fixed four-source I420 Y-plane batch
+through `Local\MomoObserverLumaV1`. `Local\MomoObserverFrameV1` remains an optional
+MADSYSTEM visual path. The Python/CuPy worker reads only the Y-plane mapping and publishes
+marker observations.
 
 On the i7-8700 / Intel UHD 630 / RTX 3060 validation PC, four Relay inputs remained at
 50 FPS while the complete Relay, Native Observer, MADSYSTEM External, and GPU worker stack
@@ -53,7 +54,8 @@ class validation PCs.
 
 - Run `python -m unittest tools.test_run_gpu_marker_observer_luma` in the repository GPU
   environment.
-- Run a bounded `Run-GpuMarkerObserverLuma.ps1` report for one through four live sources.
+- Run a bounded `Run-GpuMarkerObserverLuma.ps1 -ProfilingMode full` report for one through
+  four live sources when comparing per-frame stage percentiles.
 - Repeat the four-source replay both alone and while Relay, Native Observer, and MADSYSTEM
   External are active.
 - Compare per-stage p50/p95/p99 values before and after each optimization; change one
@@ -143,7 +145,8 @@ baselineに含まれていた初回実画像CUDA compileは、実フレームを
 共有メモリread用host batch、CUDA device input、candidate抽出用の固定workspaceを再利用し、
 全sourceが有効な通常経路からadvanced-indexing copyを除去した。pageable `cp.asarray`はpinned batchからの
 preallocated device input `set`へ変更した。schedulerはduplicate frameを読んだ時に次の20ms slotを
-消費せず、最新frame到着までbounded retryする。
+消費せず、最新frame到着までbounded retryする。無入力時の固定0.5ms pollは、初回0.5msから最大5msの
+段階的backoffへ変更し、通常の50Hz近傍の追従性を残しながら待機中のpoll回数を抑える。
 
 baselineから最終結果までpublicationは3.284 Hz増え、cycle p95は3.429 ms減った。shared read p95は
 1.398 msから0.452 ms、H2D wall p95は0.976 msから0.568 msへ減った。最終測定は2,884 batchを公開し、
@@ -185,6 +188,24 @@ Native P1として、`--shared-output-headless`ではMADSYSTEM共有BGRAとshare
 表示専用の2回目scale / BGRA変換を停止した。HV反転のshared lumaコピーはscalar per-pixel loopから
 libyuv `MirrorPlane`へ変更した。Windows CUDA無効ビルドは成功した。この変更はNative側CPUとSink lockを
 減らすが、RTX上のcandidate処理時間を直接短縮するものではない。
+
+追加のNative経路では、SDL preview用textureをframeごとに生成・破棄せず、trackと解像度ごとに再利用する。
+また`--shared-luma-name`と`--shared-output-headless`だけを指定し、`--shared-frame-name`を省略した場合を
+luma-only運用とする。この経路ではMADSYSTEM用BGRA source bufferとI420からARGBへの変換を行わない。
+`start-mads-observer.ps1`の既定`-ObserverVisualOutput legacy`はMADSYSTEM表示を維持するため、
+shared BGRAとlumaの両方を指定する。`-ObserverVisualOutput off`は`--shared-frame-name`を省略して
+lumaだけを公開し、Native previewも停止する。これによりMADSYSTEMの映像演出を使わない運用では、
+Relay受信、復号、MMO1 marker observationを維持したままBGRA変換と共有出力を経路から外せる。
+
+GPU工程別profilingは`off`、`sampled`、`full`へ分離した。通常運用の既定は`sampled`で、検出と
+cycle/drop/source age集計は全frameで維持しながら、CUDA Eventと工程別同期は既定1秒ごとの1 frameだけで
+実施する。`full`は性能比較専用、`off`はGPU工程別計測を完全に停止する。検出結果をhostへ戻すための
+D2H同期はどのmodeでも必要だが、計測専用のEvent生成と追加synchronizeは非profile frameでは実行しない。
+
+同一GPU上の合成4 source、256x256、ID 1条件を100 cycleずつ測定し、`off`と`full`で全sourceの
+検出結果が一致した。`off`はmedian 2.249 ms / p95 3.440 ms、`full`はmedian 2.474 ms /
+p95 4.129 msだった。この短い合成測定は同期削減の局所確認であり、960x528 live 4 sourceの
+10分soakを置き換えない。
 
 ## 本番 Relay 集約構成の再確認
 

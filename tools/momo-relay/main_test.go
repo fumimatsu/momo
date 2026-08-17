@@ -480,6 +480,9 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 	if len(response.Sources) != 1 || response.Sources[0].State != "WAITING" {
 		t.Fatalf("status sources = %#v, want one waiting source", response.Sources)
 	}
+	if response.Sources[0].SourceKind != relaySourceKindVehicle || response.Sources[0].DisplayName != "11.3" {
+		t.Fatalf("status source identity = %#v", response.Sources[0])
+	}
 	if response.Sources[0].Upstream.LastRtpAgeMs != nil {
 		t.Fatal("lastRtpAgeMs must be null before the first RTP frame")
 	}
@@ -602,9 +605,13 @@ func TestPilotDevicesAPIExposesOnlyPilotSelectionState(t *testing.T) {
 	inUse.lifecycle.Store(int32(sourceConnected))
 	inUse.videoHealth.Store(int32(videoReceiving))
 	inUse.pilotID = 42
+	venue := newStatusTestRelay("venue-main", "")
+	venue.sourceKind = relaySourceKindVenue
+	venue.lifecycle.Store(int32(sourceConnected))
+	venue.videoHealth.Store(int32(videoReceiving))
 	server := &relayServer{
-		sources:     map[string]*relay{"11.3": ready, "11.4": inUse},
-		sourceOrder: []string{"11.3", "11.4"},
+		sources:     map[string]*relay{"11.3": ready, "11.4": inUse, "venue-main": venue},
+		sourceOrder: []string{"11.3", "11.4", "venue-main"},
 	}
 	policy, err := parseOperationsAccessPolicy([]string{"192.168.11.0/24"})
 	if err != nil {
@@ -642,6 +649,40 @@ func TestPilotDevicesAPIExposesOnlyPilotSelectionState(t *testing.T) {
 	handler(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("non-LAN pilot devices = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestVenueSourceRejectsPilotBeforeWebSocketUpgrade(t *testing.T) {
+	venue := newStatusTestRelay("venue-main", "")
+	venue.sourceKind = relaySourceKindVenue
+	request := httptest.NewRequest(http.MethodGet, "http://relay.test/ws?role=pilot", nil)
+	response := httptest.NewRecorder()
+
+	venue.serveViewerWS(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("venue pilot status = %d body=%s", response.Code, response.Body.String())
+	}
+	if venue.pilotID != 0 {
+		t.Fatalf("venue reserved pilot id %d", venue.pilotID)
+	}
+}
+
+func TestVenueSourceNeverAllowsViewerCommands(t *testing.T) {
+	venue := newStatusTestRelay("venue-main", "")
+	venue.sourceKind = relaySourceKindVenue
+	venue.allowObserverCommand = true
+	if venue.viewerCommandAllowed(&viewer{role: "observer"}) {
+		t.Fatal("venue observer command must be rejected even when observer commands are globally enabled")
+	}
+	if venue.viewerCommandAllowed(&viewer{role: "pilot"}) {
+		t.Fatal("venue pilot command must be rejected")
+	}
+
+	vehicle := newStatusTestRelay("11.3", "CP-1")
+	vehicle.allowObserverCommand = true
+	if !vehicle.viewerCommandAllowed(&viewer{role: "observer"}) {
+		t.Fatal("vehicle observer command should follow the global observer command setting")
 	}
 }
 

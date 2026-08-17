@@ -33,7 +33,10 @@ param(
     [string]$ObserverAudioSource = 'all',
     [ValidateRange(0.5, 3.0)]
     [double]$ObserverAudioGain = 1.5,
+    [string]$ObserverFrameMappingName = 'Local\MomoObserverFrameV1',
     [string]$ObserverLumaMappingName = 'Local\MomoObserverLumaV1',
+    [ValidateSet('legacy', 'off')]
+    [string]$ObserverVisualOutput = 'legacy',
     [string]$ObserverRelayWebSocketUrl = 'ws://127.0.0.1:8090/ws',
     [ValidateRange(1, 60)]
     [int]$ObserverSharedOutputFps = 25,
@@ -57,6 +60,12 @@ if ($SkipRelay -and ($RestartRelay -or $RebuildRelay)) {
 if ([string]::IsNullOrWhiteSpace($ObserverRelayWebSocketUrl)) {
     throw 'ObserverRelayWebSocketUrl must not be empty.'
 }
+if ([string]::IsNullOrWhiteSpace($ObserverLumaMappingName)) {
+    throw 'ObserverLumaMappingName must not be empty.'
+}
+if ($ObserverVisualOutput -eq 'legacy' -and [string]::IsNullOrWhiteSpace($ObserverFrameMappingName)) {
+    throw 'ObserverFrameMappingName must not be empty when ObserverVisualOutput is legacy.'
+}
 $observerRelayEndpoint = $ObserverRelayWebSocketUrl.Trim()
 $observerRelayUri = $null
 if (-not [Uri]::TryCreate($observerRelayEndpoint, [UriKind]::Absolute, [ref]$observerRelayUri) `
@@ -73,6 +82,10 @@ $expectedObserverAudioSource = if ([string]::IsNullOrWhiteSpace($ObserverAudioSo
 } else {
     "--audio-source $($ObserverAudioSource.Trim())"
 }
+$expectedObserverLumaOutput = "--shared-luma-name $($ObserverLumaMappingName.Trim())"
+$expectedObserverFrameOutput = "--shared-frame-name $($ObserverFrameMappingName.Trim())"
+$expectedObserverSharedOutputFps = "--shared-output-fps $ObserverSharedOutputFps"
+$expectedObserverHeadless = $ObserverHeadless -or $ObserverVisualOutput -eq 'off'
 
 if (-not $SkipRelay -and $HealthRecoveryMode -in @('pit-marker', 'hybrid')) {
     if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_GAMEPLAY_TOKEN)) {
@@ -292,9 +305,19 @@ $observerMatching = @($observerRunning | Where-Object {
     } else {
         $_.CommandLine.Contains($expectedObserverAudioSource)
     }
+    $frameOutputMatches = if ($ObserverVisualOutput -eq 'legacy') {
+        $_.CommandLine.Contains($expectedObserverFrameOutput)
+    } else {
+        -not $_.CommandLine.Contains('--shared-frame-name')
+    }
+    $headlessMatches = $_.CommandLine.Contains('--shared-output-headless') -eq $expectedObserverHeadless
     $_.CommandLine.Contains($expectedObserverSource) -and
         $_.CommandLine.Contains($expectedObserverAudioGain) -and
-        $audioSourceMatches
+        $_.CommandLine.Contains($expectedObserverLumaOutput) -and
+        $_.CommandLine.Contains($expectedObserverSharedOutputFps) -and
+        $audioSourceMatches -and
+        $frameOutputMatches -and
+        $headlessMatches
 })
 if ($RestartObserver -and $observerRunning.Count -gt 0) {
     foreach ($process in $observerRunning) {
@@ -309,8 +332,7 @@ elseif ($observerRunning.Count -gt 0 -and $observerMatching.Count -ne $observerR
 if ($observerRunning.Count -eq 0) {
     $observerArgs = @(
         '--use-sdl', '--window-width', '1280', '--window-height', '720',
-        '--shared-frame-name', 'Local\MomoObserverFrameV1',
-        '--shared-luma-name', $ObserverLumaMappingName,
+        '--shared-luma-name', $ObserverLumaMappingName.Trim(),
         '--shared-output-fps', $ObserverSharedOutputFps,
         'p2p-recv-multi',
         '--source', "11.3=$observerRelayEndpoint$($observerRelayQuerySeparator)role=observer&device=11.3",
@@ -322,7 +344,10 @@ if ($observerRunning.Count -eq 0) {
         '--source', "11.6=$observerRelayEndpoint$($observerRelayQuerySeparator)role=observer&device=11.6",
         '--source-flip', '11.6=HV'
     )
-    if ($ObserverHeadless) {
+    if ($ObserverVisualOutput -eq 'legacy') {
+        $observerArgs = @('--shared-frame-name', $ObserverFrameMappingName.Trim()) + $observerArgs
+    }
+    if ($expectedObserverHeadless) {
         $observerArgs = @('--shared-output-headless') + $observerArgs
     }
     if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
@@ -330,12 +355,17 @@ if ($observerRunning.Count -eq 0) {
     }
     $observerArgs += '--audio-gain', $observerAudioGainArgument
     $observerHash = (Get-FileHash -LiteralPath $observerExe -Algorithm SHA256).Hash
-    Add-Content -LiteralPath (Join-Path $relayLogDirectory 'observer-unity.launch.log') -Value "$(Get-Date -Format o) start sha256=$observerHash crash_dumps=$resolvedObserverCrashDumpDirectory"
+    Add-Content -LiteralPath (Join-Path $relayLogDirectory 'observer-unity.launch.log') -Value "$(Get-Date -Format o) start sha256=$observerHash crash_dumps=$resolvedObserverCrashDumpDirectory visual_output=$ObserverVisualOutput"
     Start-Process -FilePath $observerExe -ArgumentList $observerArgs `
         -WorkingDirectory $relayDirectory `
         -RedirectStandardOutput (Join-Path $relayLogDirectory 'observer-unity.stdout.log') `
         -RedirectStandardError (Join-Path $relayLogDirectory 'observer-unity.stderr.log') | Out-Null
-    Write-Host 'Observer started: Local\MomoObserverFrameV1'
+    if ($ObserverVisualOutput -eq 'legacy') {
+        Write-Host "Observer visual output: $($ObserverFrameMappingName.Trim())"
+    } else {
+        Write-Host 'Observer visual output: off (luma-only)'
+    }
+    Write-Host "Observer marker luma: $($ObserverLumaMappingName.Trim())"
     Write-Host "Observer logs: $relayLogDirectory\webrtc_logs_*"
     Write-Host "Observer crash dumps: $resolvedObserverCrashDumpDirectory"
     if (-not [string]::IsNullOrWhiteSpace($ObserverAudioSource)) {
