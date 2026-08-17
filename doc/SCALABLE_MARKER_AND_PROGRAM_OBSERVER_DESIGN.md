@@ -49,9 +49,26 @@ MADSYSTEM計測は維持しつつ、Relay側から段階的に固定台数前提
 | --- | --- | --- | --- |
 | 1. 4/8/12/16/24/32台負荷試験 | 実測済み | 擬似Momo、WebRTC Viewer、Pilotを含むmatrixを自動実行し、32台まで測定した | 実機複数台と別PC間の長時間測定を行う |
 | 2. 合格基準 | 暫定定義 | CPU、メモリ増加、source/streaming数、RTP age、ingress FPS、Race WS error、Telemetry dropを機械判定する | Pilot RTTとMarker検出遅延を測定項目へ追加する |
-| 3. 接続単位の運用診断 | 実装 | Operations API v2に送信先host、role、client種別、transport、最終送出時刻、drop/errorを追加する | 接続履歴とアラート保持が必要か実運用で判断する |
+| 3. 接続単位の運用診断 | 実装 | Operations API v3に送信先host、role、client種別、transport、最終送出時刻、drop/error、DRIVE状態を追加する | 接続履歴とアラート保持が必要か実運用で判断する |
 | 4. Relay設定ファイル | 実装 | `-config relay-config.json`、`1..32`の安全上限、重複・未知項目・URLの厳格検証を追加する | active rosterとの照合と無停止reloadを別設計する |
 | 5. 映像選択購読 | 初期実装 | Web Observerの`videoDevices`指定時だけ対象WebRTCを作る。未指定は従来どおり全台 | Race/Telemetryを映像接続から分離し、active + warm poolとDirector APIを実装する |
+
+### 2026-08-17 Dynamic roster Phase 1
+
+独立Timing Engineはprivate repository `fumimatsu/momo-race-timing`でPhase 1 shadow実装を開始した。
+`sourceId -> carId`のrun rosterと、`sourceId -> detectorId`のMarker Node assignmentを分離し、
+完全snapshotと単調増加revisionで更新する。
+
+- MMO1 v1の32 sourceは1 mapping / 1 Marker Nodeの上限とする
+- Timing Engineは複数mappingを集約し、32台超のrosterを検証できる
+- run中の`sourceId -> carId`変更は禁止する
+- roster lock後は参加車追加・削除を禁止するが、障害対応のdetector再割当は許可する
+- detector再割当時は対象sourceの保留中passage候補だけを破棄する
+- Phase 1はローカル設定reloadとJSONL shadow出力だけで、Race Controlへ書き込まない
+
+正本契約は同repositoryの`docs/DYNAMIC_SOURCE_ROSTER_MARKER_CONTRACT.md`とする。現行Native Observerの
+live shared-Luma 4 source制限、Relay processの32 source設定上限、Race Controlの4台allowlistは別の
+実装制約として残っており、Timing Engineが複数mappingを扱えることだけで本番32台対応とはみなさない。
 
 ### 暫定合格基準
 
@@ -375,6 +392,10 @@ software / hardware decoderごとの同時source数を実測する。Marker Obse
 
 ## Marker Event Contract Draft
 
+以下は初期draftである。`raceRunId`、roster/assignment revision、明示的な`sourceEpoch`、
+同一`eventId`再送時のduplicate/conflict規則を含む更新版は
+`momo-race-timing/docs/DYNAMIC_SOURCE_ROSTER_MARKER_CONTRACT.md`を正本とする。
+
 検出結果は低頻度で取りこぼしたくないため、非信頼UDPではなく認証付きHTTPまたはReliable WebSocketを使う。
 初期実装では既存outboxパターンを再利用しやすいHTTP ingestを優先する。
 
@@ -426,8 +447,8 @@ checkpointの通過確定とPIT presenceでは状態遷移の意味が異なる�
 ## Timing Engine
 
 Marker Observerは画像解釈だけを行い、マーカーイベントから周回、順位、区間タイムを作る処理は
-Timing Engineへ分離する。移行初期はMADSYSTEMをTiming Engineとして利用し、外部marker eventを
-既存のcheckpoint処理へ渡すLegacy Adapterを追加する。
+専用Timing Engineへ分離する。MADSYSTEMは移行中の本番計時と比較基準として残すが、動的roster、
+source割当、4台超対応を追加しない。
 
 2026-08-14にLegacy Adapterの最初の段階を実装した。この段階ではqualified eventではなく、
 sourceごとの毎frame観測を`Local\MomoMarkerObservationsV1`のbounded ringへ出力する。MADSYSTEMは
@@ -437,7 +458,8 @@ sourceごとの毎frame観測を`Local\MomoMarkerObservationsV1`のbounded ring�
 
 この順序により、live WebRTC受信と通過判定移管を同時変更せず、まず検出器の差だけを比較できる。
 次段階は録画producerをRelay/WebRTC source managerへ置き換えることであり、その後に通過確定を
-Reliable eventへ移す。Native Observerの合成映像共有はMADSYSTEMの映像演出用として当面残す。
+Reliable eventとしてTiming Engineのshadow stateへ渡す。Native Observerの合成映像共有と
+MADSYSTEMの既存External Marker Observation経路は比較、映像演出、rollback用として当面残す。
 
 将来のTiming Engineは次を担当する。
 
@@ -564,12 +586,12 @@ Marker Observerを20台対応にしても、race data contractが4台固定な�
 - Race Controlの`TIMING_CAR_IDS`固定allowlistをactive race roster検証へ変更する
 - standings最大4台を設定可能な上限へ変更する
 - `carId`をopaque stringとして扱い、表示上のcar numberと分離する
-- MADSYSTEMの`raceControlCarIds`、Timer固定参照、Player配列上限を調査する
+- MADSYSTEMの固定4台境界は拡張せず、外部Timing Engineへの移行比較とrollback条件を固定する
 - Relay、Viewer、Web Observerのレイアウトとbounded historyを20台で検証する
 - `sourceId -> carId -> driverId`をrace run開始時に固定し、途中で無断変更しない
 
-台数上限は無制限にせず、最初は`1..32`など明示的な安全上限を契約として定める。実際の本番上限は
-性能試験結果から決定する。
+台数上限は無制限にしない。Phase 1では`maxActiveCars`を明示し、MMO1の`1..32`は1 mapping単位の
+上限とする。32台超は複数Marker Nodeへ分割し、実際の本番上限は性能試験結果から決定する。
 
 ## 障害時の扱い
 
@@ -597,8 +619,9 @@ Marker Observerを20台対応にしても、race data contractが4台固定な�
 | --- | --- |
 | `momo` | Marker Observer、Program Observer、WebRTC source管理、frame sampling、decoder診断 |
 | `momo-race-control` | active roster、timing snapshot検証、race state配信、Director入力となる確定状態 |
+| `momo-race-timing` | Race Operations Coordinator、marker event、通過確定、Timing Engine、完全snapshot生成 |
 | `momo-fpv-viewer` | Web Observerの全車状態、Director UI、Program選択状態表示 |
-| `MADSYSTEM` | Legacy marker event adapter、移行中のTiming Engine、最終的には管理UI中心 |
+| `MADSYSTEM` | 固定4台の既存計時、External Observation互換、pilot割当provider、比較とrollback |
 | `momo-fpv` | Raspberry Pi運用、車載映像品質、実走録画、導入・検証手順 |
 
 Marker Observerを`momo`リポジトリ内の新サブコマンドとして開始するか、別リポジトリへ分離するかは
@@ -613,7 +636,7 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 - sourceごとの復号FPS、検出FPS、CPU、メモリ、marker visible durationを測定する
 - 現行MADSYSTEM判定を比較対象として固定する
 - Relay設定を`relay-config.json`へ移し、source/car対応を起動時に厳格検証する
-- Operations API v2でsourceごとの下流clientとtransportを記録する
+- Operations API v3でsourceごとの下流client、transport、DRIVE状態を記録する
 - `Measure-RelayScale.ps1`で4、8、12、16台を同じ閾値で測定し、CSVとJSONを保存する
 - Web Observerの静的選択購読で、全台接続時と2台選択時のCPU、メモリ、帯域差を測定する
 
@@ -624,12 +647,12 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 - 録画入力と実機1台でMADSYSTEM結果と比較する
 - eventは外部送信せず診断ログへ保存する
 
-### Phase 2: Legacy Adapter
+### Phase 2: Reliable Marker Event Shadow
 
-- Marker ObserverからReliable marker eventを送信する
-- MADSYSTEMへ外部marker event inputを追加する
-- MADSYSTEMの画像認識と外部イベントをshadow比較する
-- 一致確認後、MADSYSTEMのArUco処理だけを停止する
+- Marker Observerのqualified eventをimmutableなReliable Marker Eventへ変換する
+- event ID、digest、明示的なsource epoch、bounded outboxを実装する
+- Timing Engineへshadow入力し、MADSYSTEMのcheckpoint/PIT結果と比較する
+- Race Controlへのauthoritative timing送信は無効のまま維持する
 
 ### Phase 3: Dynamic Multi Source
 
@@ -638,11 +661,12 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 - node capacityと`maxSourcesPerNode`を実測で決める
 - source追加、削除、切断、再接続を他source無停止で検証する
 
-### Phase 4: Timing Engine Extraction
+### Phase 4: Timing Authority Cutover
 
 - checkpoint順序、lap、sector、intervalをMADSYSTEM外へ移す
 - Race Controlへ完全timing snapshotを送る
-- MADSYSTEMを管理UIと互換adapterへ縮小する
+- run単位でTiming publisherを一つだけ選び、MADSYSTEMへのrollbackを検証する
+- MADSYSTEMを管理UI、pilot provider、互換adapterへ縮小する
 - active rosterとcarId契約を4台固定から変更する
 
 ### Phase 5: Program Observer and Auto Director
@@ -691,9 +715,11 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 
 1. Marker Observerを`momo`の新サブコマンドとするか、独立サービスにするか。
 2. Windows検出PCで利用するH.264 decoderと、1nodeあたりの実測source上限。
-3. marker event ingestをRace Control、専用Timing Engine、Local Gatewayのどこに置くか。
-4. MADSYSTEM Legacy Adapterの入力をHTTP、Reliable WebSocket、ローカルIPCのどれにするか。
-5. source追加を設定ファイル再読込、管理API、active roster同期のどれで行うか。
+3. marker event ingestは専用Timing Engineへ置く方針。最初はtransport adapter、event ID、digest、
+   bounded outboxをlocal shadowで固定し、本番endpointと認証はその後に決める。
+4. MADSYSTEM Legacy Adapterは現行MMO1 per-frame共有メモリを比較用に維持する。qualified eventを
+   MADSYSTEMへ追加送信しない。
+5. Phase 1は完全snapshotの設定ファイル再読込を採用。本番のactive roster/assignment配信APIは未決。
 6. Program Observerの出力をSDL window、browser、OBS sourceのどれにするか。
 7. Auto Directorのmanual UIをWeb Observerへ置くか、専用画面にするか。
 8. 複数Detector Nodeの時計同期とframe timestampの扱い。
@@ -706,6 +732,24 @@ PoC後に決める。最初は既存のP2P receiver、decoder選択、Video Sink
 - 現行4台の実走録画とmarker判定ログが保存されている
 - Marker Observer PoC用の1source接続手順が固定されている
 - sourceId、carId、driverIdの識別責務が合意されている
-- marker eventの受信先と認証境界が合意されている
-- MADSYSTEM外部event adapterで既存計時を維持できる見通しがある
+- Timing Engine shadow eventのenvelope、idempotency、outbox境界が合意されている
+- MADSYSTEMの既存External Observation経路で本番計時とrollbackを維持できる
 - Detector Node負荷がPilot操縦経路へ影響しない測定方法がある
+
+## Dynamic roster Phase 1-A
+
+動的参加では、`sourceId/carId`で表す車体、Relayが保持する`DRIVE`参加意思、replaceable providerが
+返すパイロット割当、Race Controlがrun開始時に固定するRace Entryを別の状態として扱う。最初の
+1から4台ではMADSYSTEM設定を読む薄いproviderを利用できるが、coordinator自体はMADSYSTEM外に置く。
+車体の電源ON/OFFやViewer connection IDをパイロット識別には使わない。
+
+- `DRIVE ON`: 次レースの参加候補
+- `DRIVE OFF`: 次レースの候補外。降車の確定情報ではない
+- レース中: rosterは固定し、OFFや切断でも現runから削除しない
+- レース間: DRIVEがONのままでも、最新のpilot provider割当で次runを固定する
+- 現行4台固定運用: 変更せず維持する
+- dynamic mode: `rosterRevision`を指定したrunだけ明示的に有効化する
+- 4台超: MADSYSTEM配列を増やさず、Race Operations/Timing/Observer側で拡張する
+
+詳細契約と段階的な実装順は
+`momo-race-timing/docs/DRIVE_ROSTER_PHASE1A_IMPLEMENTATION_PLAN.md`を正とする。

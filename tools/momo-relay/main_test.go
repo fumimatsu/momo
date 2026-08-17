@@ -346,8 +346,8 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode status response: %v", err)
 	}
-	if response.Version != 2 {
-		t.Fatalf("status version = %d, want 2", response.Version)
+	if response.Version != 3 {
+		t.Fatalf("status version = %d, want 3", response.Version)
 	}
 	if len(response.Sources) != 1 || response.Sources[0].State != "WAITING" {
 		t.Fatalf("status sources = %#v, want one waiting source", response.Sources)
@@ -373,6 +373,39 @@ func TestOperationsStatusAPIIsReadOnlyAndDoesNotExposeRawErrors(t *testing.T) {
 	handler(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("non-loopback status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestDriveOperationsStateTracksTransitionsAndSessions(t *testing.T) {
+	source := newStatusTestRelay("11.3", "CP-1")
+
+	initial := source.driveStatusSnapshot()
+	if initial.Enabled || initial.Revision != 0 || initial.SessionID != "" || initial.ChangedAt != nil {
+		t.Fatalf("initial drive state = %#v", initial)
+	}
+
+	source.setDriveLogging(7, true, "viewer drive on")
+	firstOn := source.driveStatusSnapshot()
+	if !firstOn.Enabled || firstOn.Revision != 1 || firstOn.SessionID == "" || firstOn.OwnerViewerID != 7 || firstOn.ChangedAt == nil {
+		t.Fatalf("first drive on = %#v", firstOn)
+	}
+
+	source.setDriveLogging(7, true, "duplicate")
+	duplicate := source.driveStatusSnapshot()
+	if duplicate.Revision != firstOn.Revision || duplicate.SessionID != firstOn.SessionID || duplicate.Reason != firstOn.Reason {
+		t.Fatalf("duplicate drive on changed state: before=%#v after=%#v", firstOn, duplicate)
+	}
+
+	source.setDriveLogging(7, false, "viewer drive off")
+	firstOff := source.driveStatusSnapshot()
+	if firstOff.Enabled || firstOff.Revision != 2 || firstOff.SessionID != firstOn.SessionID || firstOff.OwnerViewerID != 0 {
+		t.Fatalf("drive off = %#v", firstOff)
+	}
+
+	source.setDriveLogging(8, true, "next pilot drive on")
+	secondOn := source.driveStatusSnapshot()
+	if !secondOn.Enabled || secondOn.Revision != 3 || secondOn.SessionID == firstOn.SessionID || secondOn.OwnerViewerID != 8 {
+		t.Fatalf("second drive on = %#v", secondOn)
 	}
 }
 
@@ -1009,7 +1042,14 @@ func TestEmbeddedWebPilotAssetsAreComplete(t *testing.T) {
 }
 
 func newStatusTestRelay(name string, carID string) *relay {
-	source := &relay{name: name, raceCarID: carID, rtpStallTimeout: 5 * time.Second, upstreamStartTimeout: 20 * time.Second}
+	source := &relay{
+		name:                 name,
+		raceCarID:            carID,
+		rtpStallTimeout:      5 * time.Second,
+		upstreamStartTimeout: 20 * time.Second,
+		viewers:              make(map[uint64]*viewer),
+		vehicleHealth:        newVehicleHealth(time.Now()),
+	}
 	source.lifecycle.Store(int32(sourceWaiting))
 	source.videoHealth.Store(int32(videoNotStarted))
 	source.upstreamPeerState.Store("new")
