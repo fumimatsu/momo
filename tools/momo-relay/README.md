@@ -47,10 +47,29 @@ Relayは各`-source`の上流Momoから受信した`TEL:` text messageとPilot�
 1本のNDJSONへ記録できる。Relay Pilotが信頼性ありの`momo-drive` channelで`DRIVE:1`を送った
 sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断で直ちに止める。走行入力は50Hzの
 操縦経路を待たせないよう10Hzを上限に`drive_input`として保存する。各sampleにはsteering、要求・制限後の
-power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率、アクセル変動量を含める。Viewerの
+power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率、アクセル変動量を含める。Boostは
+状態、使用残時間、充電可否、満充電基準時間とその計算に使った前車差・周回差も保存し、出力制限は
+gear、damage、fuel emptyの理由を保存する。`brake`は中立PWMより下の制動／バック入力を表す。
+アクセルを大きく戻した通常減速は、同時刻の`esc0`回転数と組み合わせて完全オフと部分リフトを判定する。Viewerの
 接続有無に依存しないため、車体座標、重力除去、軸符号を走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
 `race_state`、`raceRunId`、phase、flag、sequenceに加え、Relayが確定した`vehicle_event`も記録する。
 `vehicle_event`には衝撃クラス、強度、jerk、軸、ダメージ適用結果、抑制理由、適用前後HPを含む。
+Race Controlの`lastMarkerIndex`が進んだ時は、周回、マーカー番号、レース経過時刻、sector情報を
+`course_marker`として1回だけ正規化する。同じ周回・同じマーカーのtiming correctionでは重複を作らず、
+`drive_input`には現在の`lap`と`lastMarkerIndex`だけを付けるため、マーカー増設後もミニセクター単位で結合できる。
+
+回生BOOSTは、まず実ゲージを変更しないShadow Modeで計測する。直近600 msに30%以上のアクセルと
+1200 RPM以上の駆動があり、アクセルが直近ピークから20%以上戻り、RPMの二乗差が最大回転エネルギー比の2%以上
+減った時に1イベントを開始する。これにより`throttle=0`の完全オフだけでなく、S字で1.0から0.4へ戻すような
+部分リフトも判定する。ESC回転数は直近3 sampleの中央値を使い、ゼロ停止、回転数の再上昇、または3秒で区間を閉じる。
+結果は`boost_regen_probe`へアルゴリズム版、`full_lift`／`partial_lift`、アクセル低下量、終了理由、開始／最低／終了RPM、強度、
+前車差による倍率、仮に加算するBOOST量、実際のBOOST増分、周回／マーカー位置とともに保存する。
+本導入候補は従来の常時充電を35%へ抑え、回転エネルギー比1.0あたり30ポイント、1イベント最大8ポイントとする。
+Shadow Mode中はこの設定を`targetPassiveScale`、`pointsPerEnergy`、`eventChargeCap`として各レコードへ記録するが、
+常時充電量と実ゲージは変更しない。
+PIT、BOOST使用中／満充電、燃料切れ、強い衝突の直後、明示ブレーキ／バック、ESC欠損・品質不良は
+`eligible=false`と`suppressionReason`を残す。除外時も候補量を残すため、閾値と誤検出率を走行ログから比較してから
+実ゲージへ反映できる。
 
 記録は明示指定時だけ有効にする。既定では無効で、容量を消費しない。
 
@@ -65,7 +84,7 @@ power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率
 常に除外し、安全条件を満たさない回は次の確認まで延期する。保持期間は`-telemetry-log-retention 48h`のように
 変更でき、`0`で自動削除を無効にできる。
 
-出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`drive_input`、`telemetry`、`vehicle_event`、
+出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`drive_input`、`telemetry`、`course_marker`、`boost_regen_probe`、`vehicle_event`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
 `telemetry` には Relay 受信 UTC 時刻、Relay 開始からの単調経過時間、車両を示す `sourceId`、
 送信ストリームを示す `telemetrySource`、`carId`、上流接続 generation、`TEL:` 全文を含める。
@@ -80,13 +99,27 @@ Get-Content $log -Tail 500 | ForEach-Object { $_ | ConvertFrom-Json } |
   Select-Object -Last 10
 ```
 
+Shadow Mode走行後は、回生候補数、除外理由、仮加算量を次で集計できる。
+
+```powershell
+$regen = Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json } |
+  Where-Object { $_.type -eq 'boost_regen_probe' }
+$regen | Group-Object {
+  if ($_.boostRegenProbe.eligible) { 'eligible' } else { $_.boostRegenProbe.suppressionReason }
+} | Select-Object Name, Count
+$regen | Where-Object { $_.boostRegenProbe.eligible } |
+  ForEach-Object { $_.boostRegenProbe } |
+  Measure-Object -Property chargePreview -Sum -Average -Maximum
+```
+
 記録対象は `DRIVE:1` の車両だけである。停止中に ESC の到達だけを確認する場合は Relay の status と
 Viewer の debug OSD を使い、走行ログを採る場合は Pilot を DRIVE ON にする。
 
 記録キューは有限で、満杯時はログsampleをdropして終了レコードの`queueDrops`へ数える。ファイルI/Oが
 映像、RC command、Telemetry中継を待たせることはない。4台を30Hz、1 message最大256 bytesで送る場合、
 wire上の生データ量は約111MB/時間であり、NDJSONのメタデータ込みでは約150MB/時間を見込む。4台が同時走行する
-最悪条件では`drive_input`が約95MB/時間加わる。Relayの強制終了時は
+最悪条件ではBOOST、出力制限、マーカー位置を含む`drive_input`が約125MB/時間加わる。`course_marker`と
+`boost_regen_probe`は通過時／アクセルオフ区間の終了時だけなので、この見積もりへの影響は無視できる。Relayの強制終了時は
 終了レコードが無いことがあるが、1秒ごとにflushするため最後の完全なNDJSON行までは解析できる。
 
 ## Operations Dashboard

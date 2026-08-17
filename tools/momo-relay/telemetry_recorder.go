@@ -33,35 +33,49 @@ type telemetryRaceContext struct {
 }
 
 type telemetryRecorderStats struct {
-	TelemetryRecords    uint64 `json:"telemetryRecords"`
-	RaceStateRecords    uint64 `json:"raceStateRecords"`
-	DriveStateRecords   uint64 `json:"driveStateRecords"`
-	DriveInputRecords   uint64 `json:"driveInputRecords"`
-	VehicleEventRecords uint64 `json:"vehicleEventRecords"`
-	QueueDrops          uint64 `json:"queueDrops"`
-	WriteErrors         uint64 `json:"writeErrors"`
+	TelemetryRecords       uint64 `json:"telemetryRecords"`
+	RaceStateRecords       uint64 `json:"raceStateRecords"`
+	DriveStateRecords      uint64 `json:"driveStateRecords"`
+	DriveInputRecords      uint64 `json:"driveInputRecords"`
+	CourseMarkerRecords    uint64 `json:"courseMarkerRecords"`
+	BoostRegenProbeRecords uint64 `json:"boostRegenProbeRecords"`
+	VehicleEventRecords    uint64 `json:"vehicleEventRecords"`
+	QueueDrops             uint64 `json:"queueDrops"`
+	WriteErrors            uint64 `json:"writeErrors"`
 }
 
 type driveInputLogSample struct {
-	SteeringPWM        int     `json:"steeringPwm"`
-	Steering           float64 `json:"steering"`
-	RequestedPowerPWM  int     `json:"requestedPowerPwm"`
-	EffectivePowerPWM  int     `json:"effectivePowerPwm"`
-	Throttle           float64 `json:"throttle"`
-	Brake              float64 `json:"brake"`
-	EffectiveThrottle  float64 `json:"effectiveThrottle"`
-	EffectiveBrake     float64 `json:"effectiveBrake"`
-	Gear               int     `json:"gear"`
-	DriveEnabled       bool    `json:"driveEnabled"`
-	HP                 float64 `json:"hp"`
-	Fuel               float64 `json:"fuel"`
-	Boost              float64 `json:"boost"`
-	Position           int     `json:"position"`
-	FieldSize          int     `json:"fieldSize"`
-	FuelRatePerSecond  float64 `json:"fuelRatePerSecond"`
-	FuelRateMultiplier float64 `json:"fuelRateMultiplier"`
-	ThrottleVariation  float64 `json:"throttleVariationPerSecond"`
-	SessionType        string  `json:"sessionType"`
+	SteeringPWM         int      `json:"steeringPwm"`
+	Steering            float64  `json:"steering"`
+	RequestedPowerPWM   int      `json:"requestedPowerPwm"`
+	EffectivePowerPWM   int      `json:"effectivePowerPwm"`
+	Throttle            float64  `json:"throttle"`
+	Brake               float64  `json:"brake"`
+	EffectiveThrottle   float64  `json:"effectiveThrottle"`
+	EffectiveBrake      float64  `json:"effectiveBrake"`
+	Gear                int      `json:"gear"`
+	DriveEnabled        bool     `json:"driveEnabled"`
+	HP                  float64  `json:"hp"`
+	SpeedCap            float64  `json:"speedCap"`
+	Fuel                float64  `json:"fuel"`
+	Boost               float64  `json:"boost"`
+	BoostState          string   `json:"boostState"`
+	BoostRemainingMS    int64    `json:"boostRemainingMs,omitempty"`
+	BoostChargeEligible bool     `json:"boostChargeEligible"`
+	BoostChargeMS       int64    `json:"boostChargeMs"`
+	Position            int      `json:"position"`
+	FieldSize           int      `json:"fieldSize"`
+	RaceGapKnown        bool     `json:"raceGapKnown"`
+	GapToAheadMS        *int64   `json:"gapToAheadMs,omitempty"`
+	LapDeltaToAhead     *int     `json:"lapDeltaToAhead,omitempty"`
+	OutputLimited       bool     `json:"outputLimited"`
+	OutputLimitReasons  []string `json:"outputLimitReasons,omitempty"`
+	Lap                 int      `json:"lap,omitempty"`
+	LastMarkerIndex     *int     `json:"lastMarkerIndex,omitempty"`
+	FuelRatePerSecond   float64  `json:"fuelRatePerSecond"`
+	FuelRateMultiplier  float64  `json:"fuelRateMultiplier"`
+	ThrottleVariation   float64  `json:"throttleVariationPerSecond"`
+	SessionType         string   `json:"sessionType"`
 }
 
 type telemetryLogRecord struct {
@@ -85,6 +99,8 @@ type telemetryLogRecord struct {
 	DriveReason     string                  `json:"driveReason,omitempty"`
 	PilotID         uint64                  `json:"pilotId,omitempty"`
 	DriveInput      *driveInputLogSample    `json:"driveInput,omitempty"`
+	CourseMarker    *courseMarkerLogSample  `json:"courseMarker,omitempty"`
+	BoostRegenProbe *boostRegenLogSample    `json:"boostRegenProbe,omitempty"`
 	VehicleEvent    *vehicleImpactEvent     `json:"vehicleEvent,omitempty"`
 	Stats           *telemetryRecorderStats `json:"stats,omitempty"`
 }
@@ -106,13 +122,15 @@ type telemetryRecorder struct {
 
 	raceContext atomic.Value // telemetryRaceContext
 
-	telemetryRecords    atomic.Uint64
-	raceStateRecords    atomic.Uint64
-	driveStateRecords   atomic.Uint64
-	driveInputRecords   atomic.Uint64
-	vehicleEventRecords atomic.Uint64
-	queueDrops          atomic.Uint64
-	writeErrors         atomic.Uint64
+	telemetryRecords       atomic.Uint64
+	raceStateRecords       atomic.Uint64
+	driveStateRecords      atomic.Uint64
+	driveInputRecords      atomic.Uint64
+	courseMarkerRecords    atomic.Uint64
+	boostRegenProbeRecords atomic.Uint64
+	vehicleEventRecords    atomic.Uint64
+	queueDrops             atomic.Uint64
+	writeErrors            atomic.Uint64
 
 	errorMu      sync.Mutex
 	lastWriteErr error
@@ -342,6 +360,54 @@ func (r *telemetryRecorder) RecordDriveInput(sourceID string, carID string, pilo
 	}
 }
 
+func (r *telemetryRecorder) RecordCourseMarker(sourceID string, carID string, sample courseMarkerLogSample, context telemetryRaceContext) {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	nowUTC := now.UTC()
+	elapsedUs := time.Since(r.startedAt).Microseconds()
+	sampleCopy := sample
+	record := telemetryLogRecord{
+		Type:            "course_marker",
+		SchemaVersion:   telemetryLogSchemaVersion,
+		RelaySessionID:  r.sessionID,
+		RelayReceivedAt: &nowUTC,
+		RelayElapsedUs:  &elapsedUs,
+		SourceID:        sourceID,
+		CarID:           carID,
+		CourseMarker:    &sampleCopy,
+	}
+	r.appendRaceContext(&record, context)
+	if r.enqueue(record) {
+		r.courseMarkerRecords.Add(1)
+	}
+}
+
+func (r *telemetryRecorder) RecordBoostRegenProbe(sourceID string, carID string, sample boostRegenLogSample) {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	nowUTC := now.UTC()
+	elapsedUs := time.Since(r.startedAt).Microseconds()
+	sampleCopy := sample
+	record := telemetryLogRecord{
+		Type:            "boost_regen_probe",
+		SchemaVersion:   telemetryLogSchemaVersion,
+		RelaySessionID:  r.sessionID,
+		RelayReceivedAt: &nowUTC,
+		RelayElapsedUs:  &elapsedUs,
+		SourceID:        sourceID,
+		CarID:           carID,
+		BoostRegenProbe: &sampleCopy,
+	}
+	r.appendRaceContext(&record, r.currentRaceContext())
+	if r.enqueue(record) {
+		r.boostRegenProbeRecords.Add(1)
+	}
+}
+
 func (r *telemetryRecorder) RecordVehicleEvent(sourceID string, carID string, event vehicleImpactEvent) {
 	if r == nil {
 		return
@@ -399,13 +465,15 @@ func (r *telemetryRecorder) enqueue(record telemetryLogRecord) bool {
 
 func (r *telemetryRecorder) Stats() telemetryRecorderStats {
 	return telemetryRecorderStats{
-		TelemetryRecords:    r.telemetryRecords.Load(),
-		RaceStateRecords:    r.raceStateRecords.Load(),
-		DriveStateRecords:   r.driveStateRecords.Load(),
-		DriveInputRecords:   r.driveInputRecords.Load(),
-		VehicleEventRecords: r.vehicleEventRecords.Load(),
-		QueueDrops:          r.queueDrops.Load(),
-		WriteErrors:         r.writeErrors.Load(),
+		TelemetryRecords:       r.telemetryRecords.Load(),
+		RaceStateRecords:       r.raceStateRecords.Load(),
+		DriveStateRecords:      r.driveStateRecords.Load(),
+		DriveInputRecords:      r.driveInputRecords.Load(),
+		CourseMarkerRecords:    r.courseMarkerRecords.Load(),
+		BoostRegenProbeRecords: r.boostRegenProbeRecords.Load(),
+		VehicleEventRecords:    r.vehicleEventRecords.Load(),
+		QueueDrops:             r.queueDrops.Load(),
+		WriteErrors:            r.writeErrors.Load(),
 	}
 }
 

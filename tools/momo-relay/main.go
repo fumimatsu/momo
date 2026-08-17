@@ -351,8 +351,10 @@ type relay struct {
 	lastInputTimestamp    uint32
 	lastTimestampStep     uint32
 
-	raceStateMu sync.RWMutex
-	raceState   string
+	raceStateMu    sync.RWMutex
+	raceState      string
+	courseProgress courseProgressTracker
+	boostRegen     boostRegenProbe
 
 	driveLoggingEnabled atomic.Bool
 	driveOwnerID        atomic.Uint64
@@ -410,6 +412,10 @@ type raceStateStanding struct {
 	Status            string `json:"status"`
 	IntervalToAheadMS *int64 `json:"intervalToAheadMs"`
 	LapDeltaToAhead   *int   `json:"lapDeltaToAhead"`
+	CurrentSector     int    `json:"currentSector"`
+	SectorCount       int    `json:"sectorCount"`
+	LastMarkerIndex   *int   `json:"lastMarkerIndex"`
+	LastMarkerRaceMS  *int64 `json:"lastMarkerRaceMs"`
 }
 
 type sourceFlag []string
@@ -1866,6 +1872,7 @@ func normalizeTelemetryMessage(message webrtc.DataChannelMessage) (webrtc.DataCh
 func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, generation uint64) {
 	normalized, raw, isTEL, wasBinaryTEL := normalizeTelemetryMessage(message)
 	if isTEL {
+		now := time.Now()
 		if wasBinaryTEL {
 			r.telemetryBinaryTEL.Add(1)
 		} else {
@@ -1878,7 +1885,8 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 		if r.upstreamGeneration.Load() == generation && telemetryHasCapability(raw, fuelCommandCapability) {
 			r.fuelCommandGeneration.Store(generation)
 		}
-		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, time.Now())
+		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, now)
+		r.observeBoostRegenTelemetry(raw, health, event, now)
 		if event != nil {
 			r.publishVehicleEvent(*event)
 		} else if isLegacyImpactEvent(raw) {
@@ -2259,6 +2267,9 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 	// 表示用にはダメージ制限前のペダル入力を返す。車両へ送る forwarded は
 	// 引き続き制限後の値なので、走行性能の制御には影響しない。
 	r.driveGear.Store(int32(health.Gear))
+	if message.IsString {
+		r.observeBoostRegenDriveCommand(string(message.Data), health, now)
+	}
 	r.recordDriveInput(client.id, message, forwarded, health, now)
 	r.broadcastCommand(commandAuditWithGear(message, int32(health.Gear)))
 }
@@ -2287,26 +2298,41 @@ func (r *relay) recordDriveInput(pilotID uint64, requested webrtc.DataChannelMes
 	}
 	throttle, brake := normalizeDrivePower(requestedPowerPWM, health.Gear)
 	effectiveThrottle, effectiveBrake := normalizeDrivePower(effectivePowerPWM, health.Gear)
+	outputLimitReasons := driveOutputLimitReasons(requestedPowerPWM, effectivePowerPWM, health)
+	boostChargeEligible := health.BoostState == "charging" && health.Fuel > 0 && r.vehicleHealth.isActivelyDriving(now)
+	courseProgress := r.courseProgress.snapshot()
 	r.recorder.RecordDriveInput(r.name, r.raceCarID, pilotID, driveInputLogSample{
-		SteeringPWM:        steeringPWM,
-		Steering:           clampFloat(float64(steeringPWM-1500)/500, -1, 1),
-		RequestedPowerPWM:  requestedPowerPWM,
-		EffectivePowerPWM:  effectivePowerPWM,
-		Throttle:           throttle,
-		Brake:              brake,
-		EffectiveThrottle:  effectiveThrottle,
-		EffectiveBrake:     effectiveBrake,
-		Gear:               health.Gear,
-		DriveEnabled:       r.driveLoggingEnabled.Load(),
-		HP:                 health.HP,
-		Fuel:               health.Fuel,
-		Boost:              health.Boost,
-		Position:           health.Position,
-		FieldSize:          health.FieldSize,
-		FuelRatePerSecond:  health.FuelRatePerSec,
-		FuelRateMultiplier: health.FuelRateMultiplier,
-		ThrottleVariation:  health.ThrottleVariation,
-		SessionType:        health.SessionType,
+		SteeringPWM:         steeringPWM,
+		Steering:            clampFloat(float64(steeringPWM-1500)/500, -1, 1),
+		RequestedPowerPWM:   requestedPowerPWM,
+		EffectivePowerPWM:   effectivePowerPWM,
+		Throttle:            throttle,
+		Brake:               brake,
+		EffectiveThrottle:   effectiveThrottle,
+		EffectiveBrake:      effectiveBrake,
+		Gear:                health.Gear,
+		DriveEnabled:        r.driveLoggingEnabled.Load(),
+		HP:                  health.HP,
+		SpeedCap:            health.SpeedCap,
+		Fuel:                health.Fuel,
+		Boost:               health.Boost,
+		BoostState:          health.BoostState,
+		BoostRemainingMS:    health.BoostRemainingMS,
+		BoostChargeEligible: boostChargeEligible,
+		BoostChargeMS:       health.BoostChargeMS,
+		Position:            health.Position,
+		FieldSize:           health.FieldSize,
+		RaceGapKnown:        health.RaceGapKnown,
+		GapToAheadMS:        health.GapToAheadMS,
+		LapDeltaToAhead:     health.LapDeltaToAhead,
+		OutputLimited:       requestedPowerPWM != effectivePowerPWM,
+		OutputLimitReasons:  outputLimitReasons,
+		Lap:                 courseProgress.Lap,
+		LastMarkerIndex:     courseProgress.LastMarkerIndex,
+		FuelRatePerSecond:   health.FuelRatePerSec,
+		FuelRateMultiplier:  health.FuelRateMultiplier,
+		ThrottleVariation:   health.ThrottleVariation,
+		SessionType:         health.SessionType,
 	})
 }
 
@@ -2337,6 +2363,45 @@ func normalizeDrivePower(pwm int, gear int) (float64, float64) {
 	}
 	minimum := vehicleGearBrakeMinimum(gear)
 	return 0, clampFloat(float64(1500-pwm)/float64(1500-minimum), 0, 1)
+}
+
+func driveOutputLimitReasons(requestedPWM int, effectivePWM int, health vehicleHealthSnapshot) []string {
+	if requestedPWM == effectivePWM {
+		return nil
+	}
+
+	reasons := make([]string, 0, 3)
+	expectedPWM := requestedPWM
+	if requestedPWM > 1500 {
+		gearLimitedPWM := minInt(expectedPWM, vehicleGearForwardMaximum(health.Gear))
+		if gearLimitedPWM != expectedPWM {
+			reasons = append(reasons, "gear_cap")
+		}
+		expectedPWM = gearLimitedPWM
+
+		damageLimitedPWM := 1500 + int(math.Round(float64(expectedPWM-1500)*health.SpeedCap))
+		if damageLimitedPWM != expectedPWM {
+			reasons = append(reasons, "damage_cap")
+		}
+		expectedPWM = damageLimitedPWM
+
+		fuelLimitedPWM := minInt(expectedPWM, vehicleFuelEmptyForwardPWM)
+		if effectivePWM == fuelLimitedPWM && fuelLimitedPWM != expectedPWM {
+			reasons = append(reasons, "fuel_empty")
+			expectedPWM = fuelLimitedPWM
+		}
+	} else if requestedPWM < 1500 {
+		fuelLimitedPWM := maxInt(requestedPWM, vehicleFuelEmptyReversePWM)
+		if effectivePWM == fuelLimitedPWM && fuelLimitedPWM != requestedPWM {
+			reasons = append(reasons, "fuel_empty")
+			expectedPWM = fuelLimitedPWM
+		}
+	}
+
+	if expectedPWM != effectivePWM || len(reasons) == 0 {
+		reasons = append(reasons, "other")
+	}
+	return reasons
 }
 
 func clampFloat(value float64, minimum float64, maximum float64) float64 {
@@ -2432,6 +2497,7 @@ func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
 			return
 		}
 	}
+	r.boostRegen.reset()
 	if r.recorder != nil {
 		r.recorder.RecordDriveState(r.name, r.raceCarID, pilotID, enabled, reason)
 	}
@@ -3208,7 +3274,6 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			continue
 		}
 		server.publishGlobalRaceState("RACE:" + string(payload))
-		server.observeRaceContext(envelope, time.Now())
 		if server.recorder != nil {
 			server.recorder.RecordRaceState(string(payload), telemetryRaceContext{
 				RaceID:    envelope.RaceID,
@@ -3219,6 +3284,7 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 				Present:   true,
 			})
 		}
+		server.observeRaceContext(envelope, time.Now())
 		for _, source := range server.sourceSnapshot() {
 			message, err := raceMessageForCar(payload, source.raceCarID)
 			if err != nil {
@@ -3412,8 +3478,8 @@ func main() {
 				log.Printf("close telemetry recorder: %v", err)
 			}
 			stats := recorder.Stats()
-			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d driveState=%d driveInput=%d vehicleEvents=%d queueDrops=%d writeErrors=%d",
-				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.DriveStateRecords, stats.DriveInputRecords, stats.VehicleEventRecords, stats.QueueDrops, stats.WriteErrors)
+			log.Printf("telemetry recorder stopped: path=%s telemetry=%d raceState=%d driveState=%d driveInput=%d courseMarkers=%d boostRegenProbes=%d vehicleEvents=%d queueDrops=%d writeErrors=%d",
+				recorder.Path(), stats.TelemetryRecords, stats.RaceStateRecords, stats.DriveStateRecords, stats.DriveInputRecords, stats.CourseMarkerRecords, stats.BoostRegenProbeRecords, stats.VehicleEventRecords, stats.QueueDrops, stats.WriteErrors)
 		}()
 		log.Printf("telemetry recorder started: path=%s", recorder.Path())
 	}

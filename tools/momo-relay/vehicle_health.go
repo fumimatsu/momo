@@ -816,6 +816,15 @@ func (health *vehicleHealth) isActivelyDriving(now time.Time) bool {
 	return health.isActivelyDrivingLocked(now)
 }
 
+func (health *vehicleHealth) isPitPresent() bool {
+	if health == nil {
+		return false
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	return health.pitPresent
+}
+
 func (health *vehicleHealth) raceGameplayActiveLocked() bool {
 	// Race Control state is checkpoint-driven and can be quiet for several seconds.
 	// WebSocket disconnect handling owns liveness; message age must not stop gameplay.

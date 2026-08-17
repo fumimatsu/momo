@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -26,11 +27,21 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		Sequence:  0,
 		Present:   true,
 	})
+	recorder.RecordCourseMarker("11.3", "CP-1", courseMarkerLogSample{
+		EventID: "rr_123:CP-1:course_marker:2:1", Lap: 2, MarkerIndex: 1,
+		MarkerRaceMS: 30000, CurrentSector: 2, SectorCount: 3,
+	}, telemetryRaceContext{RaceID: "race-test", RaceRunID: "rr_123", Phase: "countdown", Flag: "none", Sequence: 0, Present: true})
 	recorder.RecordTelemetry("11.3", "CP-1", 7, `TEL:{"v":1,"src":"imu0","seq":4}`)
+	gapToAheadMS := int64(3200)
+	lastMarkerIndex := 1
 	recorder.RecordDriveInput("11.3", "CP-1", 9, driveInputLogSample{
 		SteeringPWM: 1420, Steering: -0.16, RequestedPowerPWM: 1800, EffectivePowerPWM: 1700,
 		Throttle: 1, EffectiveThrottle: 2.0 / 3.0, Gear: 3, DriveEnabled: true,
-		HP: 80, Fuel: 45, Boost: 12, Position: 2, FieldSize: 4, FuelRatePerSecond: 0.5,
+		HP: 80, SpeedCap: 0.8, Fuel: 45, Boost: 12, BoostState: "charging",
+		BoostChargeEligible: true, BoostChargeMS: 24000, Position: 2, FieldSize: 4,
+		RaceGapKnown: true, GapToAheadMS: &gapToAheadMS, OutputLimited: true,
+		OutputLimitReasons: []string{"damage_cap"}, Lap: 2, LastMarkerIndex: &lastMarkerIndex,
+		FuelRatePerSecond:  0.5,
 		FuelRateMultiplier: 1.3, ThrottleVariation: 1.2,
 		SessionType: "race",
 	})
@@ -55,8 +66,8 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	}
 
 	records := readTelemetryLogRecords(t, recorder.Path())
-	if len(records) != 6 {
-		t.Fatalf("record count = %d, want 6", len(records))
+	if len(records) != 7 {
+		t.Fatalf("record count = %d, want 7", len(records))
 	}
 	if records[0].Type != "relay_session" || records[0].RelayStartedAt == nil {
 		t.Fatalf("header = %#v, want relay_session with start time", records[0])
@@ -64,26 +75,29 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[1].Type != "race_state" || records[1].RaceRunID != "rr_123" || records[1].RaceSequence == nil || *records[1].RaceSequence != 0 {
 		t.Fatalf("race record = %#v, want race run rr_123 sequence 0", records[1])
 	}
-	if records[2].Type != "telemetry" || records[2].SourceID != "11.3" || records[2].TelemetrySource != "imu0" || records[2].CarID != "CP-1" || records[2].UpstreamGen != 7 {
-		t.Fatalf("telemetry identity = %#v", records[2])
+	if records[2].Type != "course_marker" || records[2].CourseMarker == nil || records[2].CourseMarker.EventID != "rr_123:CP-1:course_marker:2:1" || records[2].CourseMarker.MarkerRaceMS != 30000 {
+		t.Fatalf("course marker = %#v", records[2])
 	}
-	if records[2].Raw != `TEL:{"v":1,"src":"imu0","seq":4}` || records[2].RelayReceivedAt == nil || records[2].RelayElapsedUs == nil {
-		t.Fatalf("telemetry payload/timestamp = %#v", records[2])
+	if records[3].Type != "telemetry" || records[3].SourceID != "11.3" || records[3].TelemetrySource != "imu0" || records[3].CarID != "CP-1" || records[3].UpstreamGen != 7 {
+		t.Fatalf("telemetry identity = %#v", records[3])
 	}
-	if records[2].RaceRunID != "rr_123" || records[2].RacePhase != "countdown" {
-		t.Fatalf("telemetry race context = %#v", records[2])
+	if records[3].Raw != `TEL:{"v":1,"src":"imu0","seq":4}` || records[3].RelayReceivedAt == nil || records[3].RelayElapsedUs == nil {
+		t.Fatalf("telemetry payload/timestamp = %#v", records[3])
 	}
-	if records[3].Type != "drive_input" || records[3].DriveInput == nil || records[3].DriveInput.SteeringPWM != 1420 || records[3].DriveInput.EffectivePowerPWM != 1700 || records[3].DriveInput.FuelRateMultiplier != 1.3 || records[3].DriveInput.ThrottleVariation != 1.2 || records[3].PilotID != 9 {
-		t.Fatalf("drive input = %#v", records[3])
+	if records[3].RaceRunID != "rr_123" || records[3].RacePhase != "countdown" {
+		t.Fatalf("telemetry race context = %#v", records[3])
 	}
-	if records[4].Type != "vehicle_event" || records[4].VehicleEvent == nil || records[4].VehicleEvent.EventID != "impact-1" || records[4].VehicleEvent.SuppressionReason != "boost_active" {
-		t.Fatalf("vehicle event = %#v", records[4])
+	if records[4].Type != "drive_input" || records[4].DriveInput == nil || records[4].DriveInput.SteeringPWM != 1420 || records[4].DriveInput.EffectivePowerPWM != 1700 || records[4].DriveInput.FuelRateMultiplier != 1.3 || records[4].DriveInput.ThrottleVariation != 1.2 || records[4].DriveInput.BoostState != "charging" || !records[4].DriveInput.BoostChargeEligible || records[4].DriveInput.BoostChargeMS != 24000 || records[4].DriveInput.GapToAheadMS == nil || *records[4].DriveInput.GapToAheadMS != 3200 || !records[4].DriveInput.OutputLimited || len(records[4].DriveInput.OutputLimitReasons) != 1 || records[4].DriveInput.OutputLimitReasons[0] != "damage_cap" || records[4].DriveInput.Lap != 2 || records[4].DriveInput.LastMarkerIndex == nil || *records[4].DriveInput.LastMarkerIndex != 1 || records[4].PilotID != 9 {
+		t.Fatalf("drive input = %#v", records[4])
 	}
-	if records[4].SourceID != "11.3" || records[4].CarID != "CP-1" || records[4].RaceRunID != "rr_123" {
-		t.Fatalf("vehicle event context = %#v", records[4])
+	if records[5].Type != "vehicle_event" || records[5].VehicleEvent == nil || records[5].VehicleEvent.EventID != "impact-1" || records[5].VehicleEvent.SuppressionReason != "boost_active" {
+		t.Fatalf("vehicle event = %#v", records[5])
 	}
-	if records[5].Type != "relay_session_end" || records[5].Stats == nil || records[5].Stats.TelemetryRecords != 1 || records[5].Stats.RaceStateRecords != 1 || records[5].Stats.DriveInputRecords != 1 || records[5].Stats.VehicleEventRecords != 1 {
-		t.Fatalf("footer = %#v, want final stats", records[5])
+	if records[5].SourceID != "11.3" || records[5].CarID != "CP-1" || records[5].RaceRunID != "rr_123" {
+		t.Fatalf("vehicle event context = %#v", records[5])
+	}
+	if records[6].Type != "relay_session_end" || records[6].Stats == nil || records[6].Stats.TelemetryRecords != 1 || records[6].Stats.RaceStateRecords != 1 || records[6].Stats.DriveInputRecords != 1 || records[6].Stats.CourseMarkerRecords != 1 || records[6].Stats.VehicleEventRecords != 1 {
+		t.Fatalf("footer = %#v, want final stats", records[6])
 	}
 }
 
@@ -102,6 +116,58 @@ func TestTelemetryPayloadSourceSeparatesVehicleAndESCStream(t *testing.T) {
 	}
 }
 
+func TestTelemetryRecorderWritesBoostRegenProbe(t *testing.T) {
+	recorder, err := newTelemetryRecorderWithQueue(t.TempDir(), 8)
+	if err != nil {
+		t.Fatalf("newTelemetryRecorderWithQueue() error = %v", err)
+	}
+	recorder.RecordRaceState(`{"type":"race_state","raceRunId":"rr_regen","phase":"green"}`, telemetryRaceContext{
+		RaceRunID: "rr_regen",
+		Phase:     "green",
+		Present:   true,
+	})
+	recorder.RecordBoostRegenProbe("11.4", "CP-2", boostRegenLogSample{
+		EventID:            "11.4:CP-2:regen_shadow:boot:8",
+		Mode:               "shadow",
+		AlgorithmVersion:   boostRegenAlgorithmVersion,
+		Trigger:            "partial_lift",
+		EndReason:          "rpm_recovery",
+		StartRPM:           6000,
+		MinimumRPM:         2000,
+		StartThrottle:      1,
+		MinimumThrottle:    0.4,
+		EndThrottle:        0.8,
+		ThrottleDrop:       0.6,
+		EnergyFraction:     0.5,
+		GapMultiplier:      1.2,
+		TargetPassiveScale: boostRegenTargetPassiveScale,
+		PointsPerEnergy:    boostRegenPointsPerEnergy,
+		EventChargeCap:     boostRegenMaximumEventPoints,
+		ChargePreview:      6,
+		Eligible:           true,
+		ActualBoostDelta:   1.5,
+	})
+	if err := recorder.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	records := readTelemetryLogRecords(t, recorder.Path())
+	if len(records) != 4 {
+		t.Fatalf("record count = %d, want 4", len(records))
+	}
+	record := records[2]
+	if record.Type != "boost_regen_probe" || record.SourceID != "11.4" || record.CarID != "CP-2" || record.RaceRunID != "rr_regen" || record.RacePhase != "green" || record.BoostRegenProbe == nil {
+		t.Fatalf("regen record = %#v", record)
+	}
+	if record.BoostRegenProbe.EventID != "11.4:CP-2:regen_shadow:boot:8" || record.BoostRegenProbe.Mode != "shadow" || record.BoostRegenProbe.AlgorithmVersion != boostRegenAlgorithmVersion || record.BoostRegenProbe.Trigger != "partial_lift" || record.BoostRegenProbe.EndReason != "rpm_recovery" || record.BoostRegenProbe.ThrottleDrop != 0.6 || !record.BoostRegenProbe.Eligible || record.BoostRegenProbe.TargetPassiveScale != boostRegenTargetPassiveScale || record.BoostRegenProbe.PointsPerEnergy != boostRegenPointsPerEnergy || record.BoostRegenProbe.EventChargeCap != boostRegenMaximumEventPoints || record.BoostRegenProbe.ChargePreview != 6 {
+		t.Fatalf("regen payload = %#v", record.BoostRegenProbe)
+	}
+	footer := records[3]
+	if footer.Stats == nil || footer.Stats.BoostRegenProbeRecords != 1 {
+		t.Fatalf("footer stats = %#v", footer.Stats)
+	}
+}
+
 func TestParseAndNormalizeDriveCommand(t *testing.T) {
 	steering, power, ok := parseDriveCommand("S:1250,T:1800\n")
 	if !ok || steering != 1250 || power != 1800 {
@@ -114,6 +180,31 @@ func TestParseAndNormalizeDriveCommand(t *testing.T) {
 	throttle, brake = normalizeDrivePower(1200, 3)
 	if throttle != 0 || math.Abs(brake-1) > 0.000001 {
 		t.Fatalf("normalized brake = throttle %.3f brake %.3f", throttle, brake)
+	}
+}
+
+func TestDriveOutputLimitReasons(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested int
+		effective int
+		health    vehicleHealthSnapshot
+		want      []string
+	}{
+		{name: "unlimited", requested: 1800, effective: 1800, health: vehicleHealthSnapshot{Gear: 3, SpeedCap: 1}},
+		{name: "gear", requested: 2000, effective: 1800, health: vehicleHealthSnapshot{Gear: 3, SpeedCap: 1}, want: []string{"gear_cap"}},
+		{name: "damage", requested: 1800, effective: 1740, health: vehicleHealthSnapshot{Gear: 3, SpeedCap: 0.8}, want: []string{"damage_cap"}},
+		{name: "empty fuel forward", requested: 1800, effective: vehicleFuelEmptyForwardPWM, health: vehicleHealthSnapshot{Gear: 3, SpeedCap: 1}, want: []string{"fuel_empty"}},
+		{name: "empty fuel reverse", requested: 1000, effective: vehicleFuelEmptyReversePWM, health: vehicleHealthSnapshot{Gear: 3, SpeedCap: 1}, want: []string{"fuel_empty"}},
+		{name: "gear damage and fuel", requested: 2000, effective: vehicleFuelEmptyForwardPWM, health: vehicleHealthSnapshot{Gear: 3, SpeedCap: 0.8}, want: []string{"gear_cap", "damage_cap", "fuel_empty"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := driveOutputLimitReasons(test.requested, test.effective, test.health)
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("driveOutputLimitReasons() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

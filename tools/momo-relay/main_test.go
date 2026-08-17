@@ -336,6 +336,7 @@ func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 		t.Fatalf("partial sector timing changed in Relay: %#v", sector)
 	}
 
+	expectedMarkerByCar := map[string]int{"CP-1": 2, "CP-2": 1}
 	for _, source := range []*relay{first, second} {
 		var state struct {
 			ViewerCarID string `json:"viewerCarId"`
@@ -347,6 +348,10 @@ func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 		}
 		if state.ViewerCarID != source.raceCarID || state.RaceRunID != "rr_contract_fixture" {
 			t.Fatalf("source %s race state = %#v", source.name, state)
+		}
+		progress := source.courseProgress.snapshot()
+		if progress.RaceRunID != "rr_contract_fixture" || progress.Lap != 2 || progress.LastMarkerIndex == nil || *progress.LastMarkerIndex != expectedMarkerByCar[source.raceCarID] {
+			t.Fatalf("source %s course progress = %#v", source.name, progress)
 		}
 	}
 

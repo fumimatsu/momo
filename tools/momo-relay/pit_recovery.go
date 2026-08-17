@@ -136,11 +136,21 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 	currentRunID := server.raceContext.RaceRunID
 	currentPhase := server.raceContext.Phase
 	server.raceMu.Unlock()
+	logContext := telemetryRaceContext{
+		RaceID:    envelope.RaceID,
+		RaceRunID: envelope.RaceRunID,
+		Phase:     envelope.Phase,
+		Flag:      envelope.Flag,
+		Sequence:  envelope.Sequence,
+		Present:   true,
+	}
 
 	for _, source := range server.sourceSnapshot() {
 		position := 0
 		gap := vehicleRaceGap{}
-		for _, standing := range envelope.Standings {
+		var progressStanding *raceStateStanding
+		for index := range envelope.Standings {
+			standing := &envelope.Standings[index]
 			if standing.CarID == source.raceCarID {
 				position = standing.Position
 				gap = vehicleRaceGap{
@@ -148,9 +158,11 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 					IntervalToAheadMS: nonNegativeInt64Value(standing.IntervalToAheadMS),
 					LapDeltaToAhead:   nonNegativeIntValue(standing.LapDeltaToAhead),
 				}
+				progressStanding = standing
 				break
 			}
 		}
+		source.observeCourseProgress(logContext, progressStanding)
 		health, changed := source.vehicleHealth.observeRaceStateWithGap(
 			true,
 			currentRunID,
