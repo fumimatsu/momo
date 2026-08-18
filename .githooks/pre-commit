@@ -1,0 +1,15 @@
+#!/bin/sh
+
+if git diff --cached --quiet -- tools/momo-relay/web; then
+  exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+cd "$repo_root" || exit 1
+
+if ! command -v pwsh >/dev/null 2>&1; then
+  echo "Relay Viewer distribution verification requires pwsh." >&2
+  exit 1
+fi
+
+pwsh -NoProfile -File tools/sync-relay-viewer.ps1 -CheckOnly -CheckIndex

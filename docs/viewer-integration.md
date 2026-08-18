@@ -33,6 +33,14 @@ stale file を削除する。記録にない運用ファイルは削除しない
 
 同期前に配布コピーが `viewer-source.json` の記録済み commit と異なる場合も、同期スクリプトは中断する。Relay client の変更は先に Viewer 正本へ移植してコミットする。移植済みの乖離を初回同期で置換する場合だけ、`-AllowDistributionDrift` を明示する。
 
+配布コピーを変更する commit では、ローカル hook が `tools/sync-relay-viewer.ps1 -CheckOnly` を実行する。初回だけ次を実行して、リポジトリ管理下の hook を有効化する。
+
+```powershell
+pwsh -NoProfile -File tools/Install-RepositoryHooks.ps1
+```
+
+`-CheckOnly` は、`viewer-source.json` の source commit、配布 manifest のファイル一覧、各配布ファイルの Git blob が一致しない場合に失敗する。pre-commit では `-CheckIndex` も使い、作業ツリーではなく commit 対象の staged blob を検証する。Viewer 正本を変更せずに `tools/momo-relay/web/` の管理対象だけを編集した commit は通さない。
+
 `relay-web` 配布定義への初回移行では、`viewer.html` 互換エントリと PWA アイコンが新たに配布対象へ加わるため、既存コピーとの差分を確認した上で一度だけ `tools/sync-relay-viewer.ps1 -AllowDistributionDrift` を使う。以後の通常同期ではこのオプションを付けない。
 
 FFB は Viewer PC のネイティブ bridge の責務である。Pi、Relay、ブラウザに DirectInput 実装を入れない。ブラウザ側は bridge が必要とする telemetry 契約だけを維持する。

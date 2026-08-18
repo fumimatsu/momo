@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const telemetry = require('./telemetry.js');
 
@@ -51,4 +53,9 @@ test('surface roughness stays quiet at rest and reacts independently from impact
   snapshot = extractor.ingest(state(50, 9, 6), 50 * 33.333);
   assert.equal(snapshot.impact, true);
   assert.ok(snapshot.surfaceRoughness < beforeImpact);
+});
+
+test('browser telemetry does not own Native FFB longitudinal load mixing', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'telemetry.js'), 'utf8');
+  assert.doesNotMatch(source, /\bderiveFfbLongitudinalLoad\b/);
 });

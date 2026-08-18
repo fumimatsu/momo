@@ -1,11 +1,17 @@
 param(
     [string]$ViewerRepository = (Join-Path (Split-Path -Parent $PSScriptRoot) '..\momo-fpv-viewer'),
     [switch]$AllowDirtySource,
-    [switch]$AllowDistributionDrift
+    [switch]$AllowDistributionDrift,
+    [switch]$CheckOnly,
+    [switch]$CheckIndex
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($CheckIndex -and -not $CheckOnly) {
+    throw 'CheckIndex can be used only with CheckOnly.'
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $viewerRoot = (Resolve-Path -LiteralPath $ViewerRepository).Path
@@ -31,16 +37,26 @@ function Get-RecordedDistributionDrift {
         [string]$ViewerRoot,
         [string]$RepositoryRoot,
         [string]$DistributionRoot,
-        [array]$Files
+        [array]$Files,
+        [switch]$UseIndex
     )
 
     $metadataPath = Join-Path $DistributionRoot 'viewer-source.json'
-    if (-not (Test-Path -LiteralPath $metadataPath)) {
-        return @()
-    }
-
     try {
-        $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+        if ($UseIndex) {
+            $metadataRelativePath = [System.IO.Path]::GetRelativePath($RepositoryRoot, $metadataPath) -replace '\\', '/'
+            $metadataJson = @(& git -C $RepositoryRoot show ":$metadataRelativePath" 2>$null)
+            if ($LASTEXITCODE -ne 0) {
+                return @('viewer-source.json is missing from the Git index')
+            }
+            $metadata = ($metadataJson -join "`n") | ConvertFrom-Json
+        }
+        else {
+            if (-not (Test-Path -LiteralPath $metadataPath)) {
+                return @('viewer-source.json is missing')
+            }
+            $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+        }
     }
     catch {
         return @('viewer-source.json cannot be parsed')
@@ -52,6 +68,9 @@ function Get-RecordedDistributionDrift {
     if ([bool]$metadata.sourceDirty -or [string]::IsNullOrWhiteSpace([string]$metadata.sourceCommit)) {
         return @('viewer-source.json does not identify a clean source commit')
     }
+    if ($metadata.variant -ne 'relay-pilot' -or $metadata.target -ne 'relay-web') {
+        return @('viewer-source.json has an unexpected variant or target')
+    }
 
     $sourceByDestination = @{}
     foreach ($file in $Files) {
@@ -59,17 +78,25 @@ function Get-RecordedDistributionDrift {
     }
 
     $driftedFiles = [System.Collections.Generic.List[string]]::new()
-    foreach ($recordedFile in @($metadata.files)) {
-        $destination = [string]$recordedFile
-        if ([string]::IsNullOrWhiteSpace($destination)) {
-            continue
+    $recordedFiles = @($metadata.files | ForEach-Object { ([string]$_ -replace '/', '\') })
+    $duplicateFiles = @($recordedFiles | Group-Object | Where-Object Count -GT 1 | ForEach-Object Name)
+    foreach ($duplicateFile in $duplicateFiles) {
+        $driftedFiles.Add("$duplicateFile (duplicated in viewer-source.json)")
+    }
+    foreach ($destination in $sourceByDestination.Keys) {
+        if ($destination -notin $recordedFiles) {
+            $driftedFiles.Add("$destination (missing from viewer-source.json)")
         }
-        $source = if ($sourceByDestination.ContainsKey($destination)) {
-            $sourceByDestination[$destination]
+    }
+    foreach ($recordedFile in $recordedFiles) {
+        if (-not $sourceByDestination.ContainsKey($recordedFile)) {
+            $driftedFiles.Add("$recordedFile (not defined by the relay-web manifest)")
         }
-        else {
-            $destination
-        }
+    }
+
+    foreach ($file in $Files) {
+        $destination = [string]$file.Destination
+        $source = [string]$file.Source
         $sourcePath = $source -replace '\\', '/'
         $recordedBlob = @(& git -C $ViewerRoot rev-parse "$($metadata.sourceCommit):$sourcePath" 2>$null)
         if ($LASTEXITCODE -ne 0 -or $recordedBlob.Count -ne 1) {
@@ -79,11 +106,19 @@ function Get-RecordedDistributionDrift {
 
         $destinationPath = Join-Path $DistributionRoot $destination
         if (-not (Test-Path -LiteralPath $destinationPath)) {
-            $driftedFiles.Add("$destination (missing from distribution)")
-            continue
+            if (-not $UseIndex) {
+                $driftedFiles.Add("$destination (missing from distribution)")
+                continue
+            }
         }
 
-        $destinationBlob = @(& git -C $RepositoryRoot hash-object $destinationPath 2>$null)
+        $destinationBlob = @(if ($UseIndex) {
+                $destinationRelativePath = [System.IO.Path]::GetRelativePath($RepositoryRoot, $destinationPath) -replace '\\', '/'
+                & git -C $RepositoryRoot rev-parse ":$destinationRelativePath" 2>$null
+            }
+            else {
+                & git -C $RepositoryRoot hash-object $destinationPath 2>$null
+            })
         if ($LASTEXITCODE -ne 0 -or $destinationBlob.Count -ne 1 -or $recordedBlob[0].Trim() -ne $destinationBlob[0].Trim()) {
             $driftedFiles.Add($destination)
         }
@@ -147,13 +182,19 @@ if ($dirty.Count -gt 0 -and -not $AllowDirtySource) {
     throw 'Viewer repository has uncommitted changes. Commit the Relay Variant before synchronizing, or use -AllowDirtySource only for investigation.'
 }
 
-$distributionDrift = @(Get-RecordedDistributionDrift -ViewerRoot $viewerRoot -RepositoryRoot $repoRoot -DistributionRoot $destinationDirectory -Files $sourceFiles)
+$distributionDrift = @(Get-RecordedDistributionDrift -ViewerRoot $viewerRoot -RepositoryRoot $repoRoot -DistributionRoot $destinationDirectory -Files $sourceFiles -UseIndex:$CheckIndex)
 if ($distributionDrift.Count -gt 0) {
     $description = $distributionDrift -join ', '
     if (-not $AllowDistributionDrift) {
         throw "Relay distribution differs from the recorded Viewer source: $description. Port the changes to momo-fpv-viewer and commit them before synchronizing. Use -AllowDistributionDrift only to replace a known, already-migrated distribution copy."
     }
     Write-Warning "Replacing known Relay distribution drift: $description"
+}
+
+if ($CheckOnly) {
+    $scope = if ($CheckIndex) { 'Git index' } else { 'working tree' }
+    Write-Host "Verified Relay Viewer distribution in $scope"
+    return
 }
 
 $commit = (& git -C $viewerRoot rev-parse HEAD).Trim()
