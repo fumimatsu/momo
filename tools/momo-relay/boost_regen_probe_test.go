@@ -1,10 +1,44 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
 )
+
+func TestRelayAppliesCompletedBoostRegenToVehicleState(t *testing.T) {
+	base := time.Date(2026, 8, 18, 1, 2, 3, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.setDriveEnabled(true, base)
+	relay := &relay{name: "11.4", raceCarID: "CP-2", vehicleHealth: health}
+	relay.driveLoggingEnabled.Store(true)
+
+	for sequence := uint64(1); sequence <= 3; sequence++ {
+		at := base.Add(time.Duration(sequence) * 100 * time.Millisecond)
+		snapshot := health.snapshot(at)
+		relay.observeBoostRegenDriveCommand("S:1500,T:1600", snapshot, at)
+		if _, applied := relay.observeBoostRegenTelemetry(boostRegenTestRaw(sequence, 6000), snapshot, nil, at); applied {
+			t.Fatalf("arming sample %d applied regen", sequence)
+		}
+	}
+
+	appliedCount := 0
+	for index, rpm := range []int{6000, 4000, 2000, 0, 0} {
+		sequence := uint64(index + 4)
+		at := base.Add(time.Duration(sequence) * 100 * time.Millisecond)
+		snapshot := health.snapshot(at)
+		relay.observeBoostRegenDriveCommand("S:1500,T:1500", snapshot, at)
+		if _, applied := relay.observeBoostRegenTelemetry(boostRegenTestRaw(sequence, rpm), snapshot, nil, at); applied {
+			appliedCount++
+		}
+	}
+
+	result := health.snapshot(base.Add(800 * time.Millisecond))
+	if appliedCount != 1 || result.Boost != boostRegenMaximumEventPoints || result.BoostState != "charging" {
+		t.Fatalf("live regen result = %#v, applied count=%d", result, appliedCount)
+	}
+}
 
 func TestParseBoostRegenESCSample(t *testing.T) {
 	raw := `TEL:{"v":2,"k":"s","src":"esc0","boot":"esc-boot","seq":42,"t_us":4200000,"esc":{"rpm":5200,"max":8000,"out":73},"q":{"p":100000,"ok":true,"age":0}}`
@@ -25,7 +59,7 @@ func TestParseBoostRegenESCSample(t *testing.T) {
 	}
 }
 
-func TestBoostRegenProbeProducesShadowCandidateWithoutChangingBoost(t *testing.T) {
+func TestBoostRegenProbeProducesLiveCandidateWithoutApplyingItDirectly(t *testing.T) {
 	probe := &boostRegenProbe{}
 	base := time.Date(2026, 8, 17, 1, 2, 3, 0, time.UTC)
 	marker := 4
@@ -46,7 +80,7 @@ func TestBoostRegenProbeProducesShadowCandidateWithoutChangingBoost(t *testing.T
 	if completed == nil {
 		t.Fatal("coast episode did not complete")
 	}
-	if completed.Mode != "shadow" || completed.AlgorithmVersion != boostRegenAlgorithmVersion || completed.EndReason != "rpm_zero" || !completed.Eligible || completed.SuppressionReason != "" {
+	if completed.Mode != "live" || completed.AlgorithmVersion != boostRegenAlgorithmVersion || completed.EndReason != "rpm_zero" || !completed.Eligible || completed.SuppressionReason != "" {
 		t.Fatalf("eligibility = %#v", completed)
 	}
 	if completed.Trigger != "full_lift" || completed.StartThrottle != 1 || completed.MinimumThrottle != 0 || completed.EndThrottle != 0 || completed.ThrottleDrop != 1 {
@@ -59,15 +93,15 @@ func TestBoostRegenProbeProducesShadowCandidateWithoutChangingBoost(t *testing.T
 		t.Fatalf("energy preview = %#v", completed)
 	}
 	if completed.TargetPassiveScale != boostRegenTargetPassiveScale || completed.PointsPerEnergy != boostRegenPointsPerEnergy || completed.EventChargeCap != boostRegenMaximumEventPoints {
-		t.Fatalf("Shadow Mode settings = %#v", completed)
+		t.Fatalf("live settings = %#v", completed)
 	}
-	if completed.BoostStart != 20 || completed.BoostEnd != 20 || completed.ActualBoostDelta != 0 {
-		t.Fatalf("Shadow Mode changed or misreported BOOST = %#v", completed)
+	if completed.BoostStart != 20 || completed.BoostEnd != 20 || completed.BoostAfter != 20 || completed.ChargeApplied != 0 || completed.ActualBoostDelta != 0 {
+		t.Fatalf("probe directly changed or misreported BOOST = %#v", completed)
 	}
 	if completed.Lap != 3 || completed.LastMarkerIndex == nil || *completed.LastMarkerIndex != marker {
 		t.Fatalf("course position = %#v", completed)
 	}
-	if completed.EventID != "11.4:CP-2:regen_shadow:esc-boot:4" {
+	if completed.EventID != "11.4:CP-2:regen_live:esc-boot:4" {
 		t.Fatalf("event ID = %q", completed.EventID)
 	}
 }
@@ -162,9 +196,68 @@ func TestBoostRegenProbeCapturesPartialLiftInSSection(t *testing.T) {
 	if completed.StartRPM != 5100 || completed.MinimumRPM != 4200 || completed.StartThrottle != 1 || completed.MinimumThrottle != 0.4 || completed.ThrottleDrop != 0.6 {
 		t.Fatalf("partial-lift summary = %#v", completed)
 	}
+	if completed.LongestLiftSamples < boostRegenMinimumLiftSamples || completed.MinimumLiftSamples != boostRegenMinimumLiftSamples {
+		t.Fatalf("partial-lift confirmation = %#v", completed)
+	}
 	wantEnergy := (5100.0*5100.0 - 4200.0*4200.0) / (8000.0 * 8000.0)
 	if math.Abs(completed.EnergyFraction-wantEnergy) > 0.0001 {
 		t.Fatalf("energy fraction = %.4f, want %.4f", completed.EnergyFraction, wantEnergy)
+	}
+}
+
+func TestBoostRegenProbeSuppressesShortLiftAtCompletion(t *testing.T) {
+	base := time.Date(2026, 8, 18, 7, 0, 0, 0, time.UTC)
+	probe := &boostRegenProbe{
+		drive: boostRegenDriveObservation{ObservedAt: base.Add(300 * time.Millisecond), Throttle: 1},
+		episode: &boostRegenEpisode{
+			startedAt:          base,
+			boot:               "esc-boot",
+			startSequence:      10,
+			endSequence:        13,
+			startRPM:           6000,
+			minimumRPM:         4000,
+			endRPM:             4200,
+			maximumRPM:         8000,
+			samples:            4,
+			gapMultiplier:      1,
+			startThrottle:      1,
+			minimumThrottle:    0.7,
+			longestLiftSamples: 1,
+		},
+	}
+	completed := probe.finishEpisodeLocked(boostRegenObservationContext{
+		SourceID: "11.4",
+		CarID:    "CP-2",
+		Health: vehicleHealthSnapshot{
+			Boost:         20,
+			BoostState:    "charging",
+			Fuel:          100,
+			BoostChargeMS: vehicleBoostFallbackCharge.Milliseconds(),
+		},
+	}, base.Add(300*time.Millisecond), "rpm_recovery")
+	if completed == nil || completed.Eligible || completed.SuppressionReason != "short_lift" {
+		t.Fatalf("short lift result = %#v", completed)
+	}
+	if completed.LongestLiftSamples != 1 || completed.MinimumLiftSamples != boostRegenMinimumLiftSamples || completed.ChargePreview <= 0 {
+		t.Fatalf("short lift diagnostics = %#v", completed)
+	}
+}
+
+func TestBoostRegenLiftSampleCountsTracksConsecutiveLift(t *testing.T) {
+	history := []boostRegenHistorySample{
+		{throttle: 1},
+		{throttle: 0.75},
+		{throttle: 1},
+		{throttle: 0.70},
+	}
+	current, longest := boostRegenLiftSampleCounts(history, 0.65, 1)
+	if current != 2 || longest != 2 {
+		t.Fatalf("lift counts = current %d, longest %d; want 2, 2", current, longest)
+	}
+
+	current, longest = boostRegenLiftSampleCounts(history, 1, 1)
+	if current != 0 || longest != 1 {
+		t.Fatalf("reset lift counts = current %d, longest %d; want 0, 1", current, longest)
 	}
 }
 
@@ -277,4 +370,8 @@ func boostRegenTestSample(sequence uint64, rpm int) boostRegenESCSample {
 		PeriodUS:   100000,
 		QualityOK:  true,
 	}
+}
+
+func boostRegenTestRaw(sequence uint64, rpm int) string {
+	return fmt.Sprintf(`TEL:{"v":2,"k":"s","src":"esc0","boot":"esc-boot","seq":%d,"t_us":%d,"esc":{"rpm":%d,"max":8000},"q":{"p":100000,"ok":true,"age":0}}`, sequence, sequence*100000, rpm)
 }

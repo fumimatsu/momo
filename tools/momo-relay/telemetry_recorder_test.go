@@ -38,7 +38,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		SteeringPWM: 1420, Steering: -0.16, RequestedPowerPWM: 1800, EffectivePowerPWM: 1700,
 		Throttle: 1, EffectiveThrottle: 2.0 / 3.0, Gear: 3, DriveEnabled: true,
 		HP: 80, SpeedCap: 0.8, Fuel: 45, Boost: 12, BoostState: "charging",
-		BoostChargeEligible: true, BoostChargeMS: 24000, Position: 2, FieldSize: 4,
+		BoostChargeEligible: true, BoostChargeMS: 24000, BoostPassiveScale: vehicleBoostPassiveChargeScale, Position: 2, FieldSize: 4,
 		RaceGapKnown: true, GapToAheadMS: &gapToAheadMS, OutputLimited: true,
 		OutputLimitReasons: []string{"damage_cap"}, Lap: 2, LastMarkerIndex: &lastMarkerIndex,
 		FuelRatePerSecond:  0.5,
@@ -87,7 +87,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[3].RaceRunID != "rr_123" || records[3].RacePhase != "countdown" {
 		t.Fatalf("telemetry race context = %#v", records[3])
 	}
-	if records[4].Type != "drive_input" || records[4].DriveInput == nil || records[4].DriveInput.SteeringPWM != 1420 || records[4].DriveInput.EffectivePowerPWM != 1700 || records[4].DriveInput.FuelRateMultiplier != 1.3 || records[4].DriveInput.ThrottleVariation != 1.2 || records[4].DriveInput.BoostState != "charging" || !records[4].DriveInput.BoostChargeEligible || records[4].DriveInput.BoostChargeMS != 24000 || records[4].DriveInput.GapToAheadMS == nil || *records[4].DriveInput.GapToAheadMS != 3200 || !records[4].DriveInput.OutputLimited || len(records[4].DriveInput.OutputLimitReasons) != 1 || records[4].DriveInput.OutputLimitReasons[0] != "damage_cap" || records[4].DriveInput.Lap != 2 || records[4].DriveInput.LastMarkerIndex == nil || *records[4].DriveInput.LastMarkerIndex != 1 || records[4].PilotID != 9 {
+	if records[4].Type != "drive_input" || records[4].DriveInput == nil || records[4].DriveInput.SteeringPWM != 1420 || records[4].DriveInput.EffectivePowerPWM != 1700 || records[4].DriveInput.FuelRateMultiplier != 1.3 || records[4].DriveInput.ThrottleVariation != 1.2 || records[4].DriveInput.BoostState != "charging" || !records[4].DriveInput.BoostChargeEligible || records[4].DriveInput.BoostChargeMS != 24000 || records[4].DriveInput.BoostPassiveScale != vehicleBoostPassiveChargeScale || records[4].DriveInput.GapToAheadMS == nil || *records[4].DriveInput.GapToAheadMS != 3200 || !records[4].DriveInput.OutputLimited || len(records[4].DriveInput.OutputLimitReasons) != 1 || records[4].DriveInput.OutputLimitReasons[0] != "damage_cap" || records[4].DriveInput.Lap != 2 || records[4].DriveInput.LastMarkerIndex == nil || *records[4].DriveInput.LastMarkerIndex != 1 || records[4].PilotID != 9 {
 		t.Fatalf("drive input = %#v", records[4])
 	}
 	if records[5].Type != "vehicle_event" || records[5].VehicleEvent == nil || records[5].VehicleEvent.EventID != "impact-1" || records[5].VehicleEvent.SuppressionReason != "boost_active" {
@@ -127,8 +127,8 @@ func TestTelemetryRecorderWritesBoostRegenProbe(t *testing.T) {
 		Present:   true,
 	})
 	recorder.RecordBoostRegenProbe("11.4", "CP-2", boostRegenLogSample{
-		EventID:            "11.4:CP-2:regen_shadow:boot:8",
-		Mode:               "shadow",
+		EventID:            "11.4:CP-2:regen_live:boot:8",
+		Mode:               "live",
 		AlgorithmVersion:   boostRegenAlgorithmVersion,
 		Trigger:            "partial_lift",
 		EndReason:          "rpm_recovery",
@@ -138,13 +138,17 @@ func TestTelemetryRecorderWritesBoostRegenProbe(t *testing.T) {
 		MinimumThrottle:    0.4,
 		EndThrottle:        0.8,
 		ThrottleDrop:       0.6,
+		LongestLiftSamples: 4,
+		MinimumLiftSamples: boostRegenMinimumLiftSamples,
 		EnergyFraction:     0.5,
 		GapMultiplier:      1.2,
 		TargetPassiveScale: boostRegenTargetPassiveScale,
 		PointsPerEnergy:    boostRegenPointsPerEnergy,
 		EventChargeCap:     boostRegenMaximumEventPoints,
 		ChargePreview:      6,
+		ChargeApplied:      6,
 		Eligible:           true,
+		BoostAfter:         26,
 		ActualBoostDelta:   1.5,
 	})
 	if err := recorder.Close(); err != nil {
@@ -159,7 +163,7 @@ func TestTelemetryRecorderWritesBoostRegenProbe(t *testing.T) {
 	if record.Type != "boost_regen_probe" || record.SourceID != "11.4" || record.CarID != "CP-2" || record.RaceRunID != "rr_regen" || record.RacePhase != "green" || record.BoostRegenProbe == nil {
 		t.Fatalf("regen record = %#v", record)
 	}
-	if record.BoostRegenProbe.EventID != "11.4:CP-2:regen_shadow:boot:8" || record.BoostRegenProbe.Mode != "shadow" || record.BoostRegenProbe.AlgorithmVersion != boostRegenAlgorithmVersion || record.BoostRegenProbe.Trigger != "partial_lift" || record.BoostRegenProbe.EndReason != "rpm_recovery" || record.BoostRegenProbe.ThrottleDrop != 0.6 || !record.BoostRegenProbe.Eligible || record.BoostRegenProbe.TargetPassiveScale != boostRegenTargetPassiveScale || record.BoostRegenProbe.PointsPerEnergy != boostRegenPointsPerEnergy || record.BoostRegenProbe.EventChargeCap != boostRegenMaximumEventPoints || record.BoostRegenProbe.ChargePreview != 6 {
+	if record.BoostRegenProbe.EventID != "11.4:CP-2:regen_live:boot:8" || record.BoostRegenProbe.Mode != "live" || record.BoostRegenProbe.AlgorithmVersion != boostRegenAlgorithmVersion || record.BoostRegenProbe.Trigger != "partial_lift" || record.BoostRegenProbe.EndReason != "rpm_recovery" || record.BoostRegenProbe.ThrottleDrop != 0.6 || record.BoostRegenProbe.LongestLiftSamples != 4 || record.BoostRegenProbe.MinimumLiftSamples != boostRegenMinimumLiftSamples || !record.BoostRegenProbe.Eligible || record.BoostRegenProbe.TargetPassiveScale != boostRegenTargetPassiveScale || record.BoostRegenProbe.PointsPerEnergy != boostRegenPointsPerEnergy || record.BoostRegenProbe.EventChargeCap != boostRegenMaximumEventPoints || record.BoostRegenProbe.ChargePreview != 6 || record.BoostRegenProbe.ChargeApplied != 6 || record.BoostRegenProbe.BoostAfter != 26 {
 		t.Fatalf("regen payload = %#v", record.BoostRegenProbe)
 	}
 	footer := records[3]

@@ -22,17 +22,17 @@ const (
 	boostRegenThrottleArmMinimum = 0.30
 	boostRegenThrottleDrop       = 0.20
 	boostRegenMinimumEnergy      = 0.02
+	boostRegenMinimumLiftSamples = 2
 	boostRegenRPMRecovery        = 200
 	boostRegenRecoverySamples    = 2
-	boostRegenTargetPassiveScale = 0.35
-	boostRegenPointsPerEnergy    = 30.0
-	boostRegenMaximumEventPoints = 8.0
-	boostRegenAlgorithmVersion   = 2
+	boostRegenTargetPassiveScale = vehicleBoostPassiveChargeScale
+	boostRegenPointsPerEnergy    = 50.0
+	boostRegenMaximumEventPoints = 15.0
+	boostRegenAlgorithmVersion   = 4
 )
 
-// boostRegenProbe evaluates regenerative BOOST candidates without changing vehicle state.
-// The first production phase is deliberately log-only so track data can set the final
-// thresholds before passive BOOST charging is reduced.
+// boostRegenProbe evaluates regenerative BOOST episodes. A completed eligible episode
+// is applied to the Relay-owned vehicle state by observeBoostRegenTelemetry.
 type boostRegenProbe struct {
 	mu sync.Mutex
 
@@ -87,25 +87,27 @@ type boostRegenHistorySample struct {
 }
 
 type boostRegenEpisode struct {
-	startedAt         time.Time
-	boot              string
-	startSequence     uint64
-	endSequence       uint64
-	startRPM          int
-	minimumRPM        int
-	endRPM            int
-	maximumRPM        int
-	samples           int
-	zeroSamples       int
-	gapMultiplier     float64
-	boostStart        float64
-	lap               int
-	lastMarkerIndex   *int
-	trigger           string
-	startThrottle     float64
-	minimumThrottle   float64
-	recoverySamples   int
-	suppressionReason string
+	startedAt          time.Time
+	boot               string
+	startSequence      uint64
+	endSequence        uint64
+	startRPM           int
+	minimumRPM         int
+	endRPM             int
+	maximumRPM         int
+	samples            int
+	zeroSamples        int
+	gapMultiplier      float64
+	boostStart         float64
+	lap                int
+	lastMarkerIndex    *int
+	trigger            string
+	startThrottle      float64
+	minimumThrottle    float64
+	liftSamples        int
+	longestLiftSamples int
+	recoverySamples    int
+	suppressionReason  string
 }
 
 type boostRegenLogSample struct {
@@ -129,6 +131,8 @@ type boostRegenLogSample struct {
 	MinimumThrottle    float64 `json:"minimumThrottle"`
 	EndThrottle        float64 `json:"endThrottle"`
 	ThrottleDrop       float64 `json:"throttleDrop"`
+	LongestLiftSamples int     `json:"longestLiftSamples"`
+	MinimumLiftSamples int     `json:"minimumLiftSamples"`
 	EnergyFraction     float64 `json:"energyFraction"`
 	Intensity          string  `json:"intensity"`
 	GapMultiplier      float64 `json:"gapMultiplier"`
@@ -136,10 +140,12 @@ type boostRegenLogSample struct {
 	PointsPerEnergy    float64 `json:"pointsPerEnergy"`
 	EventChargeCap     float64 `json:"eventChargeCap"`
 	ChargePreview      float64 `json:"chargePreview"`
+	ChargeApplied      float64 `json:"chargeApplied"`
 	Eligible           bool    `json:"eligible"`
 	SuppressionReason  string  `json:"suppressionReason,omitempty"`
 	BoostStart         float64 `json:"boostStart"`
 	BoostEnd           float64 `json:"boostEnd"`
+	BoostAfter         float64 `json:"boostAfter"`
 	ActualBoostDelta   float64 `json:"actualBoostDelta"`
 	Lap                int     `json:"lap,omitempty"`
 	LastMarkerIndex    *int    `json:"lastMarkerIndex,omitempty"`
@@ -161,16 +167,16 @@ func (r *relay) observeBoostRegenDriveCommand(raw string, health vehicleHealthSn
 	})
 }
 
-func (r *relay) observeBoostRegenTelemetry(raw string, health vehicleHealthSnapshot, impact *vehicleImpactEvent, now time.Time) {
+func (r *relay) observeBoostRegenTelemetry(raw string, health vehicleHealthSnapshot, impact *vehicleImpactEvent, now time.Time) (vehicleHealthSnapshot, bool) {
 	if r == nil || !r.driveLoggingEnabled.Load() {
-		return
+		return health, false
 	}
 	if impact != nil {
 		r.boostRegen.observeImpact(now, *impact)
 	}
 	sample, ok := parseBoostRegenESCSample(raw)
 	if !ok {
-		return
+		return health, false
 	}
 	completed := r.boostRegen.observeESC(sample, boostRegenObservationContext{
 		SourceID:   r.name,
@@ -179,9 +185,23 @@ func (r *relay) observeBoostRegenTelemetry(raw string, health vehicleHealthSnaps
 		PitPresent: r.vehicleHealth.isPitPresent(),
 		Course:     r.courseProgress.snapshot(),
 	}, now)
-	if completed != nil && r.recorder != nil {
+	if completed == nil {
+		return health, false
+	}
+	if completed.Eligible {
+		applied := r.vehicleHealth.applyBoostRegen(completed.ChargePreview, now)
+		completed.ChargeApplied = roundBoostRegen(applied.AppliedAmount, 3)
+		completed.BoostAfter = roundBoostRegen(applied.Snapshot.Boost, 3)
+		health = applied.Snapshot
+		if applied.SuppressionReason != "" {
+			completed.Eligible = false
+			completed.SuppressionReason = applied.SuppressionReason
+		}
+	}
+	if r.recorder != nil {
 		r.recorder.RecordBoostRegenProbe(r.name, r.raceCarID, *completed)
 	}
+	return health, completed.ChargeApplied > 0
 }
 
 func parseBoostRegenESCSample(raw string) (boostRegenESCSample, bool) {
@@ -334,6 +354,7 @@ func (probe *boostRegenProbe) observeESC(sample boostRegenESCSample, context boo
 		probe.episode.minimumRPM = minInt(probe.episode.minimumRPM, probe.filteredRPM)
 		probe.episode.maximumRPM = maxInt(probe.episode.maximumRPM, sample.MaximumRPM)
 		probe.episode.minimumThrottle = math.Min(probe.episode.minimumThrottle, probe.drive.Throttle)
+		probe.episode.observeLift(probe.drive.Throttle)
 		probe.episode.samples++
 		if probe.filteredRPM > previousRPM {
 			probe.episode.recoverySamples++
@@ -377,28 +398,31 @@ func (probe *boostRegenProbe) observeESC(sample boostRegenESCSample, context boo
 		throttleDrop := startThrottle - probe.drive.Throttle
 		if reference.filteredRPM >= boostRegenMinimumRPM && startThrottle >= boostRegenThrottleArmMinimum &&
 			throttleDrop >= boostRegenThrottleDrop && energyFraction >= boostRegenMinimumEnergy {
+			liftSamples, longestLiftSamples := boostRegenLiftSampleCounts(probe.history[referenceIndex:], probe.drive.Throttle, startThrottle)
 			trigger := "partial_lift"
 			if probe.drive.Throttle <= boostRegenFullLiftMaximum {
 				trigger = "full_lift"
 			}
 			probe.episode = &boostRegenEpisode{
-				startedAt:         reference.observedAt,
-				boot:              sample.Boot,
-				startSequence:     reference.sequence,
-				endSequence:       sample.Sequence,
-				startRPM:          reference.filteredRPM,
-				minimumRPM:        minInt(reference.filteredRPM, probe.filteredRPM),
-				endRPM:            probe.filteredRPM,
-				maximumRPM:        maximumRPM,
-				samples:           len(probe.history) - referenceIndex + 1,
-				gapMultiplier:     boostRegenGapMultiplier(context.Health),
-				boostStart:        context.Health.Boost,
-				lap:               context.Course.Lap,
-				lastMarkerIndex:   cloneIntPointer(context.Course.LastMarkerIndex),
-				trigger:           trigger,
-				startThrottle:     startThrottle,
-				minimumThrottle:   probe.drive.Throttle,
-				suppressionReason: boostRegenDynamicSuppression(context, probe.lastImpactAt, now),
+				startedAt:          reference.observedAt,
+				boot:               sample.Boot,
+				startSequence:      reference.sequence,
+				endSequence:        sample.Sequence,
+				startRPM:           reference.filteredRPM,
+				minimumRPM:         minInt(reference.filteredRPM, probe.filteredRPM),
+				endRPM:             probe.filteredRPM,
+				maximumRPM:         maximumRPM,
+				samples:            len(probe.history) - referenceIndex + 1,
+				gapMultiplier:      boostRegenGapMultiplier(context.Health),
+				boostStart:         context.Health.Boost,
+				lap:                context.Course.Lap,
+				lastMarkerIndex:    cloneIntPointer(context.Course.LastMarkerIndex),
+				trigger:            trigger,
+				startThrottle:      startThrottle,
+				minimumThrottle:    probe.drive.Throttle,
+				liftSamples:        liftSamples,
+				longestLiftSamples: longestLiftSamples,
+				suppressionReason:  boostRegenDynamicSuppression(context, probe.lastImpactAt, now),
 			}
 			if sample.RPM == 0 {
 				probe.episode.zeroSamples = 1
@@ -429,6 +453,36 @@ func (probe *boostRegenProbe) regenReferenceLocked(now time.Time) (boostRegenHis
 		maximumThrottle = math.Max(maximumThrottle, candidate.throttle)
 	}
 	return peak, peakIndex, maximumThrottle, true
+}
+
+func boostRegenLiftSampleCounts(history []boostRegenHistorySample, currentThrottle float64, startThrottle float64) (int, int) {
+	current := 0
+	longest := 0
+	observe := func(throttle float64) {
+		if startThrottle-throttle >= boostRegenThrottleDrop {
+			current++
+			longest = maxInt(longest, current)
+			return
+		}
+		current = 0
+	}
+	for _, sample := range history {
+		observe(sample.throttle)
+	}
+	observe(currentThrottle)
+	return current, longest
+}
+
+func (episode *boostRegenEpisode) observeLift(throttle float64) {
+	if episode == nil {
+		return
+	}
+	if episode.startThrottle-throttle >= boostRegenThrottleDrop {
+		episode.liftSamples++
+		episode.longestLiftSamples = maxInt(episode.longestLiftSamples, episode.liftSamples)
+		return
+	}
+	episode.liftSamples = 0
 }
 
 func (probe *boostRegenProbe) appendHistoryLocked(sample boostRegenESCSample, now time.Time) {
@@ -479,6 +533,9 @@ func (probe *boostRegenProbe) finishEpisodeLocked(context boostRegenObservationC
 	if episode.samples < 2 && episode.suppressionReason == "" {
 		episode.suppressionReason = "insufficient_samples"
 	}
+	if episode.longestLiftSamples < boostRegenMinimumLiftSamples && episode.suppressionReason == "" {
+		episode.suppressionReason = "short_lift"
+	}
 	maximumRPM := maxInt(1, episode.maximumRPM)
 	energyFraction := boostRegenEnergyFraction(episode.startRPM, episode.minimumRPM, maximumRPM)
 	if energyFraction < boostRegenMinimumEnergy && episode.suppressionReason == "" {
@@ -487,8 +544,8 @@ func (probe *boostRegenProbe) finishEpisodeLocked(context boostRegenObservationC
 	chargePreview := math.Min(boostRegenMaximumEventPoints, boostRegenPointsPerEnergy*energyFraction*episode.gapMultiplier)
 	boostDelta := context.Health.Boost - episode.boostStart
 	return &boostRegenLogSample{
-		EventID:            fmt.Sprintf("%s:%s:regen_shadow:%s:%d", strings.TrimSpace(context.SourceID), strings.TrimSpace(context.CarID), episode.boot, episode.startSequence),
-		Mode:               "shadow",
+		EventID:            fmt.Sprintf("%s:%s:regen_live:%s:%d", strings.TrimSpace(context.SourceID), strings.TrimSpace(context.CarID), episode.boot, episode.startSequence),
+		Mode:               "live",
 		AlgorithmVersion:   boostRegenAlgorithmVersion,
 		Trigger:            episode.trigger,
 		EndReason:          endReason,
@@ -507,6 +564,8 @@ func (probe *boostRegenProbe) finishEpisodeLocked(context boostRegenObservationC
 		MinimumThrottle:    roundBoostRegen(episode.minimumThrottle, 3),
 		EndThrottle:        roundBoostRegen(probe.drive.Throttle, 3),
 		ThrottleDrop:       roundBoostRegen(math.Max(0, episode.startThrottle-episode.minimumThrottle), 3),
+		LongestLiftSamples: episode.longestLiftSamples,
+		MinimumLiftSamples: boostRegenMinimumLiftSamples,
 		EnergyFraction:     roundBoostRegen(energyFraction, 4),
 		Intensity:          boostRegenIntensity(energyFraction),
 		GapMultiplier:      roundBoostRegen(episode.gapMultiplier, 3),
@@ -518,6 +577,7 @@ func (probe *boostRegenProbe) finishEpisodeLocked(context boostRegenObservationC
 		SuppressionReason:  episode.suppressionReason,
 		BoostStart:         roundBoostRegen(episode.boostStart, 3),
 		BoostEnd:           roundBoostRegen(context.Health.Boost, 3),
+		BoostAfter:         roundBoostRegen(context.Health.Boost, 3),
 		ActualBoostDelta:   roundBoostRegen(boostDelta, 3),
 		Lap:                episode.lap,
 		LastMarkerIndex:    cloneIntPointer(episode.lastMarkerIndex),

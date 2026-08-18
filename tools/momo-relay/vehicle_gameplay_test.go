@@ -217,7 +217,8 @@ func TestVehicleGameplayBoostUsesRaceGapAndExpiresToGearThree(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := prepareGameplayHealth(base, 5*time.Minute, 4, 4)
 	health.observeRaceStateWithGap(true, "rr_gameplay", "green", 4, 4, vehicleRaceGap{Known: true, LapDeltaToAhead: 1}, base)
-	for tick := 1; tick <= 16*10; tick++ {
+	const chargeSeconds = 54
+	for tick := 1; tick <= chargeSeconds*10; tick++ {
 		now := base.Add(time.Duration(tick) * 100 * time.Millisecond)
 		if tick%10 == 0 {
 			health.observeRaceStateWithGap(true, "rr_gameplay", "green", 4, 4, vehicleRaceGap{Known: true, LapDeltaToAhead: 1}, now)
@@ -225,21 +226,21 @@ func TestVehicleGameplayBoostUsesRaceGapAndExpiresToGearThree(t *testing.T) {
 		health.limitCommand("S:1500,T:2000", now)
 	}
 
-	ready := health.snapshot(base.Add(16 * time.Second))
+	ready := health.snapshot(base.Add(chargeSeconds * time.Second))
 	if ready.BoostState != "ready" || math.Abs(ready.Boost-vehicleBoostMaximum) > 0.001 || ready.Gear != 3 {
 		t.Fatalf("last-place boost state = %#v", ready)
 	}
-	active, ok := health.activateBoost(base.Add(16 * time.Second))
+	active, ok := health.activateBoost(base.Add(chargeSeconds * time.Second))
 	if !ok || active.Gear != 4 || active.BoostState != "active" || active.BoostRemainingMS != vehicleBoostDuration.Milliseconds() {
 		t.Fatalf("boost activation = %#v accepted=%t", active, ok)
 	}
-	if _, accepted := health.setRequestedGear(2, base.Add(17*time.Second)); accepted {
+	if _, accepted := health.setRequestedGear(2, base.Add((chargeSeconds+1)*time.Second)); accepted {
 		t.Fatal("gear shift was accepted while boost was active")
 	}
-	if got := health.limitCommand("S:1500,T:2000", base.Add(17*time.Second)); got != "S:1500,T:1900" {
+	if got := health.limitCommand("S:1500,T:2000", base.Add((chargeSeconds+1)*time.Second)); got != "S:1500,T:1900" {
 		t.Fatalf("boost command = %q, want G4 PWM 1900", got)
 	}
-	expired := health.snapshot(base.Add(18500 * time.Millisecond))
+	expired := health.snapshot(base.Add(chargeSeconds*time.Second + vehicleBoostDuration))
 	if expired.Gear != 3 || expired.BoostState != "charging" || expired.Boost != 0 {
 		t.Fatalf("expired boost state = %#v", expired)
 	}
@@ -286,20 +287,57 @@ func TestVehicleGameplayStandaloneBoostUsesFallbackAndKeepsFuel(t *testing.T) {
 		health.limitCommand("S:1500,T:1800", now)
 	}
 
-	ready := health.snapshot(base.Add(30 * time.Second))
-	if ready.BoostState != "ready" || ready.Boost != vehicleBoostMaximum || ready.BoostChargeMS != vehicleBoostFallbackCharge.Milliseconds() {
-		t.Fatalf("standalone boost = %#v", ready)
+	partial := health.snapshot(base.Add(30 * time.Second))
+	if partial.BoostState != "charging" || math.Abs(partial.Boost-30) > 0.001 || partial.BoostChargeMS != vehicleBoostFallbackCharge.Milliseconds() || partial.BoostPassiveScale != vehicleBoostPassiveChargeScale {
+		t.Fatalf("standalone passive boost = %#v", partial)
+	}
+	for tick := 30*10 + 1; tick <= 100*10; tick++ {
+		now := base.Add(time.Duration(tick) * 100 * time.Millisecond)
+		health.limitCommand("S:1500,T:1800", now)
+	}
+
+	ready := health.snapshot(base.Add(100 * time.Second))
+	if ready.BoostState != "ready" || ready.Boost != vehicleBoostMaximum {
+		t.Fatalf("standalone ready boost = %#v", ready)
 	}
 	if ready.Fuel != vehicleFuelMaximum || ready.FuelRatePerSec != 0 {
 		t.Fatalf("standalone fuel changed = %#v", ready)
 	}
-	active, accepted := health.activateBoost(base.Add(30 * time.Second))
+	active, accepted := health.activateBoost(base.Add(100 * time.Second))
 	if !accepted || active.Gear != vehicleBoostGear || active.BoostState != "active" {
 		t.Fatalf("standalone boost activation = %#v accepted=%t", active, accepted)
 	}
-	expired := health.snapshot(base.Add(30*time.Second + vehicleBoostDuration))
+	expired := health.snapshot(base.Add(100*time.Second + vehicleBoostDuration))
 	if expired.Gear != vehicleNormalGearMaximum || expired.BoostState != "charging" || expired.Boost != 0 {
 		t.Fatalf("standalone boost expiration = %#v", expired)
+	}
+}
+
+func TestVehicleGameplayAppliesRegenerativeBoostAtomically(t *testing.T) {
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.setDriveEnabled(true, base)
+	health.mu.Lock()
+	health.boost = 20
+	health.mu.Unlock()
+
+	applied := health.applyBoostRegen(15, base)
+	if applied.RequestedAmount != 15 || applied.AppliedAmount != 15 || applied.SuppressionReason != "" || applied.Snapshot.Boost != 35 {
+		t.Fatalf("regen application = %#v", applied)
+	}
+
+	health.mu.Lock()
+	health.boost = 95
+	health.mu.Unlock()
+	capped := health.applyBoostRegen(15, base)
+	if capped.AppliedAmount != 5 || capped.Snapshot.Boost != vehicleBoostMaximum || capped.Snapshot.BoostState != "ready" {
+		t.Fatalf("capped regen application = %#v", capped)
+	}
+
+	health.setPitPresent(true, base)
+	suppressed := health.applyBoostRegen(15, base)
+	if suppressed.AppliedAmount != 0 || suppressed.SuppressionReason != "pit" {
+		t.Fatalf("PIT regen application = %#v", suppressed)
 	}
 }
 
@@ -353,7 +391,7 @@ func TestVehicleGameplayTelemetryIsVersionedJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "VGS:1,")), &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HP != 100 || snapshot.Fuel != 100 || snapshot.NormalGearMax != 3 || snapshot.Gear != 1 {
+	if snapshot.HP != 100 || snapshot.Fuel != 100 || snapshot.NormalGearMax != 3 || snapshot.Gear != 1 || snapshot.BoostChargeMS != vehicleBoostFallbackCharge.Milliseconds() || snapshot.BoostPassiveScale != vehicleBoostPassiveChargeScale {
 		t.Fatalf("gameplay telemetry snapshot = %#v", snapshot)
 	}
 }

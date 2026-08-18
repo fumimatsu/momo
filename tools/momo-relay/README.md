@@ -48,7 +48,7 @@ Relayは各`-source`の上流Momoから受信した`TEL:` text messageとPilot�
 sourceだけを記録し、`DRIVE:0`、command/drive channel切断、Pilot切断で直ちに止める。走行入力は50Hzの
 操縦経路を待たせないよう10Hzを上限に`drive_input`として保存する。各sampleにはsteering、要求・制限後の
 power PWM、throttle、brake、gear、HP、Fuel、Boost、順位、Fuel消費率、アクセル変動量を含める。Boostは
-状態、使用残時間、充電可否、満充電基準時間とその計算に使った前車差・周回差も保存し、出力制限は
+状態、使用残時間、充電可否、満充電基準時間、常時充電倍率とその計算に使った前車差・周回差も保存し、出力制限は
 gear、damage、fuel emptyの理由を保存する。`brake`は中立PWMより下の制動／バック入力を表す。
 アクセルを大きく戻した通常減速は、同時刻の`esc0`回転数と組み合わせて完全オフと部分リフトを判定する。Viewerの
 接続有無に依存しないため、車体座標、重力除去、軸符号を走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
@@ -58,18 +58,18 @@ Race Controlの`lastMarkerIndex`が進んだ時は、周回、マーカー番号
 `course_marker`として1回だけ正規化する。同じ周回・同じマーカーのtiming correctionでは重複を作らず、
 `drive_input`には現在の`lap`と`lastMarkerIndex`だけを付けるため、マーカー増設後もミニセクター単位で結合できる。
 
-回生BOOSTは、まず実ゲージを変更しないShadow Modeで計測する。直近600 msに30%以上のアクセルと
+回生BOOSTは、直近600 msに30%以上のアクセルと
 1200 RPM以上の駆動があり、アクセルが直近ピークから20%以上戻り、RPMの二乗差が最大回転エネルギー比の2%以上
 減った時に1イベントを開始する。これにより`throttle=0`の完全オフだけでなく、S字で1.0から0.4へ戻すような
 部分リフトも判定する。ESC回転数は直近3 sampleの中央値を使い、ゼロ停止、回転数の再上昇、または3秒で区間を閉じる。
 結果は`boost_regen_probe`へアルゴリズム版、`full_lift`／`partial_lift`、アクセル低下量、終了理由、開始／最低／終了RPM、強度、
-前車差による倍率、仮に加算するBOOST量、実際のBOOST増分、周回／マーカー位置とともに保存する。
-本導入候補は従来の常時充電を35%へ抑え、回転エネルギー比1.0あたり30ポイント、1イベント最大8ポイントとする。
-Shadow Mode中はこの設定を`targetPassiveScale`、`pointsPerEnergy`、`eventChargeCap`として各レコードへ記録するが、
-常時充電量と実ゲージは変更しない。
+前車差による倍率、要求回生量、実加算量、加算前後のBOOST、周回／マーカー位置とともに保存する。
+常時充電は従来速度の30%へ抑え、回転エネルギー比1.0あたり50ポイント、1イベント最大15ポイントを
+Relay正本のBOOSTへ加算する。成立時は更新後の`VGS:1`を直ちに配信するため、PilotとObserverの実メーターへ反映される。
+設定値は`targetPassiveScale`、`pointsPerEnergy`、`eventChargeCap`、実加算量は`chargeApplied`として各レコードへ記録する。
 PIT、BOOST使用中／満充電、燃料切れ、強い衝突の直後、明示ブレーキ／バック、ESC欠損・品質不良は
 `eligible=false`と`suppressionReason`を残す。除外時も候補量を残すため、閾値と誤検出率を走行ログから比較してから
-実ゲージへ反映できる。
+調整できる。
 
 記録は明示指定時だけ有効にする。既定では無効で、容量を消費しない。
 
@@ -99,7 +99,7 @@ Get-Content $log -Tail 500 | ForEach-Object { $_ | ConvertFrom-Json } |
   Select-Object -Last 10
 ```
 
-Shadow Mode走行後は、回生候補数、除外理由、仮加算量を次で集計できる。
+回生走行後は、候補数、除外理由、要求量と実加算量を次で集計できる。
 
 ```powershell
 $regen = Get-Content $log | ForEach-Object { $_ | ConvertFrom-Json } |
@@ -109,8 +109,12 @@ $regen | Group-Object {
 } | Select-Object Name, Count
 $regen | Where-Object { $_.boostRegenProbe.eligible } |
   ForEach-Object { $_.boostRegenProbe } |
-  Measure-Object -Property chargePreview -Sum -Average -Maximum
+  Measure-Object -Property chargeApplied -Sum -Average -Maximum
 ```
+
+回生判定v4では、アクセルを20%以上抜いた状態がESCテレメトリで2サンプル連続する前に戻った候補を
+`short_lift`として記録し、BOOSTへ加算しない。ログの`longestLiftSamples`と`minimumLiftSamples`で
+判定結果を確認できる。通常走行中の時間充電は基準速度の30%とし、`drive_input.boostPassiveScale`へ記録する。
 
 記録対象は `DRIVE:1` の車両だけである。停止中に ESC の到達だけを確認する場合は Relay の status と
 Viewer の debug OSD を使い、走行ログを採る場合は Pilot を DRIVE ON にする。
@@ -559,9 +563,10 @@ Fuel 0でもPITへ戻れるよう前進PWMを1590、後退PWMを対称の1410へ
 ダメージによる速度制限は前進だけに適用し、障害物から脱出するための後退出力は維持する。
 
 通常ギア上限はG3である。前進中に溜まるBoostが100になると、G3から右パドルで2.5秒だけG4を起動できる。
-充填時間は順位そのものではなくRace Controlの`intervalToAheadMs`と`lapDeltaToAhead`で決める。先頭は45秒、
+充填の基準時間は順位そのものではなくRace Controlの`intervalToAheadMs`と`lapDeltaToAhead`で決める。先頭は45秒、
 同一周回では0秒差の40秒から8秒差以上の20秒まで線形に短縮し、1周遅れは16秒、3周差以上は12秒とする。
 タイム差がまだ無い場合、およびRace Control未接続・`green`以外の整備走行では30秒へfallbackする。
+常時充填速度はこの基準の30%で、残りはアクセルを戻した時のESC回転減衰による回生BOOSTで獲得する。
 `GEAR:4`の直接指定は拒否し、G4終了時はRelayがG3へ戻す。
 
 Relayは旧client向けの`VHS:1`を維持し、HP、Fuel、Boost、実効gearをJSONの`VGS:1`でも配信する。

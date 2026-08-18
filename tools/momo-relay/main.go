@@ -1918,13 +1918,14 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 			r.fuelCommandGeneration.Store(generation)
 		}
 		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, now)
-		r.observeBoostRegenTelemetry(raw, health, event, now)
+		var regenApplied bool
+		health, regenApplied = r.observeBoostRegenTelemetry(raw, health, event, now)
 		if event != nil {
 			r.publishVehicleEvent(*event)
 		} else if isLegacyImpactEvent(raw) {
 			log.Printf("source %q: ignore diagnostic V1 impact event: legacy_event_unsupported", r.name)
 		}
-		if publish {
+		if publish || regenApplied {
 			r.broadcastVehicleGameplay(health)
 			if r.pitPresence != nil {
 				if pit, changed := r.pitPresence.observeHealth(health); changed {
@@ -2357,6 +2358,7 @@ func (r *relay) recordDriveInput(pilotID uint64, requested webrtc.DataChannelMes
 		BoostRemainingMS:    health.BoostRemainingMS,
 		BoostChargeEligible: boostChargeEligible,
 		BoostChargeMS:       health.BoostChargeMS,
+		BoostPassiveScale:   health.BoostPassiveScale,
 		Position:            health.Position,
 		FieldSize:           health.FieldSize,
 		RaceGapKnown:        health.RaceGapKnown,

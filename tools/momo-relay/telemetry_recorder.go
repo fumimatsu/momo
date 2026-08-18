@@ -63,6 +63,7 @@ type driveInputLogSample struct {
 	BoostRemainingMS    int64    `json:"boostRemainingMs,omitempty"`
 	BoostChargeEligible bool     `json:"boostChargeEligible"`
 	BoostChargeMS       int64    `json:"boostChargeMs"`
+	BoostPassiveScale   float64  `json:"boostPassiveScale"`
 	Position            int      `json:"position"`
 	FieldSize           int      `json:"fieldSize"`
 	RaceGapKnown        bool     `json:"raceGapKnown"`

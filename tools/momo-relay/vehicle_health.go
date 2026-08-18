@@ -39,6 +39,7 @@ const (
 	vehicleBoostFullGapBenefit       = 8 * time.Second
 	vehicleBoostOneLapDownCharge     = 16 * time.Second
 	vehicleBoostMinimumCharge        = 12 * time.Second
+	vehicleBoostPassiveChargeScale   = 0.30
 	vehicleNormalGearMaximum         = 3
 	vehicleBoostGear                 = 4
 	relayImpactWeakMagnitudeMPS2     = 10.0
@@ -71,6 +72,7 @@ type vehicleHealthSnapshot struct {
 	GapToAheadMS       *int64  `json:"gapToAheadMs,omitempty"`
 	LapDeltaToAhead    *int    `json:"lapDeltaToAhead,omitempty"`
 	BoostChargeMS      int64   `json:"boostChargeMs"`
+	BoostPassiveScale  float64 `json:"boostPassiveScale"`
 	ServerTimeMS       int64   `json:"serverTimeMs"`
 }
 
@@ -78,6 +80,13 @@ type vehicleRaceGap struct {
 	Known             bool
 	IntervalToAheadMS int64
 	LapDeltaToAhead   int
+}
+
+type vehicleBoostRegenApplyResult struct {
+	RequestedAmount   float64
+	AppliedAmount     float64
+	SuppressionReason string
+	Snapshot          vehicleHealthSnapshot
 }
 
 type pitRecoveryApplyResult struct {
@@ -658,7 +667,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 		}
 	} else if activelyDriving && health.fuel > 0 && health.boost < vehicleBoostMaximum {
 		previous := health.boost
-		health.boost = math.Min(vehicleBoostMaximum, health.boost+(vehicleBoostMaximum/health.boostChargeDurationLocked().Seconds()*elapsed))
+		health.boost = math.Min(vehicleBoostMaximum, health.boost+(vehicleBoostMaximum/health.boostChargeDurationLocked().Seconds()*elapsed*vehicleBoostPassiveChargeScale))
 		if vehicleBoostMaximum-health.boost < 0.001 {
 			health.boost = vehicleBoostMaximum
 		}
@@ -689,6 +698,7 @@ func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot
 		SessionType:        vehicleSessionTypeState(health.lastSessionType),
 		RaceGapKnown:       health.raceGapKnown,
 		BoostChargeMS:      health.boostChargeDurationLocked().Milliseconds(),
+		BoostPassiveScale:  vehicleBoostPassiveChargeScale,
 		ServerTimeMS:       now.UnixMilli(),
 	}
 	if health.raceGapKnown && health.position > 1 {
@@ -707,7 +717,8 @@ func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
 	return vehicleHealthSnapshot{
 		HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
 		Fuel: vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
-		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, FuelRateMultiplier: 1, SessionType: "unknown", ServerTimeMS: now.UnixMilli(),
+		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, FuelRateMultiplier: 1, SessionType: "unknown",
+		BoostChargeMS: vehicleBoostFallbackCharge.Milliseconds(), BoostPassiveScale: vehicleBoostPassiveChargeScale, ServerTimeMS: now.UnixMilli(),
 	}
 }
 
@@ -772,6 +783,40 @@ func (health *vehicleHealth) activateBoost(now time.Time) (vehicleHealthSnapshot
 	health.boost = vehicleBoostMaximum
 	health.boostActiveUntil = now.Add(vehicleBoostDuration)
 	return health.snapshotLocked(now), true
+}
+
+func (health *vehicleHealth) applyBoostRegen(amount float64, now time.Time) vehicleBoostRegenApplyResult {
+	result := vehicleBoostRegenApplyResult{RequestedAmount: amount}
+	if health == nil {
+		result.SuppressionReason = "vehicle_unavailable"
+		result.Snapshot = defaultVehicleHealthSnapshot(now)
+		return result
+	}
+
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.advanceRecoveryLocked(now)
+
+	switch {
+	case math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0:
+		result.SuppressionReason = "invalid_charge"
+	case !health.driveEnabled:
+		result.SuppressionReason = "drive_off"
+	case health.pitPresent:
+		result.SuppressionReason = "pit"
+	case health.boostStateLocked(now) == "active":
+		result.SuppressionReason = "boost_active"
+	case health.boost >= vehicleBoostMaximum:
+		result.SuppressionReason = "boost_full"
+	case health.fuel <= 0:
+		result.SuppressionReason = "fuel_empty"
+	default:
+		before := health.boost
+		health.boost = math.Min(vehicleBoostMaximum, health.boost+amount)
+		result.AppliedAmount = health.boost - before
+	}
+	result.Snapshot = health.snapshotLocked(now)
+	return result
 }
 
 func (health *vehicleHealth) effectiveGearLocked(now time.Time) int {
