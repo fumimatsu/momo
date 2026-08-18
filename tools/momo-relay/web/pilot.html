@@ -689,6 +689,16 @@
       animation: race-milestone-enter 520ms ease-out 1;
     }
 
+    .race-milestone[data-kind="lap"][data-result="normal"] {
+      border-color: #f0c94e;
+      background: rgba(55, 39, 4, 0.54);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3), 0 0 18px rgba(255, 207, 66, 0.2);
+    }
+
+    .race-milestone[data-kind="lap"][data-result="normal"] output {
+      color: #ffe082;
+    }
+
     .race-milestone[data-result="personal-best"] {
       border-color: #7fe56d;
       background: rgba(9, 42, 16, 0.56);
@@ -727,6 +737,101 @@
 
     .race-milestone[data-kind="goal"] .race-milestone-detail {
       grid-column: 2 / 4;
+    }
+
+    .race-milestone[data-kind="summary"]:not([hidden]) {
+      display: block;
+      width: min(640px, calc(100vw - 32px));
+      min-height: 0;
+      padding: 18px 22px 20px;
+      border-color: #f0c94e;
+      background: rgba(11, 15, 18, 0.78);
+      box-shadow: 0 10px 36px rgba(0, 0, 0, 0.48), 0 0 26px rgba(255, 207, 66, 0.2);
+    }
+
+    .race-milestone[data-kind="summary"] > .race-milestone-checker,
+    .race-milestone[data-kind="summary"] > .race-milestone-copy,
+    .race-milestone[data-kind="summary"] > output,
+    .race-milestone[data-kind="summary"] > .race-milestone-detail {
+      display: none;
+    }
+
+    .race-result-summary {
+      display: grid;
+      gap: 16px;
+    }
+
+    .race-result-summary[hidden] {
+      display: none;
+    }
+
+    .race-result-summary-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 224, 130, 0.42);
+    }
+
+    .race-result-summary-title {
+      display: grid;
+      gap: 3px;
+    }
+
+    .race-result-summary-title span,
+    .race-result-metric span {
+      color: #ffe082;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0.08em;
+    }
+
+    .race-result-summary-title strong {
+      font-size: 32px;
+    }
+
+    .race-result-summary-title small {
+      color: rgba(230, 240, 247, 0.88);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .race-result-position {
+      color: #ffffff;
+      font-family: Impact, "Arial Narrow", sans-serif;
+      font-size: 42px;
+      font-weight: 400;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .race-result-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .race-result-metric {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+      padding: 11px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.055);
+    }
+
+    .race-result-metric strong {
+      overflow: hidden;
+      color: #ffffff;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 23px;
+      font-weight: 850;
+      letter-spacing: -0.04em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .race-milestone-checker {
@@ -4147,6 +4252,30 @@
       </div>
       <output id="raceMilestoneValue">--.---s</output>
       <span id="raceMilestoneDetail" class="race-milestone-detail">LAP TIME</span>
+      <div id="raceResultSummary" class="race-result-summary" aria-label="Race summary" hidden>
+        <div class="race-result-summary-head">
+          <div class="race-result-summary-title">
+            <span>RACE SUMMARY</span>
+            <strong>FINAL RESULT</strong>
+            <small id="raceResultCompletedLaps">-- LAPS COMPLETE</small>
+          </div>
+          <strong id="raceResultPosition" class="race-result-position">P-- / --</strong>
+        </div>
+        <div class="race-result-metrics">
+          <div class="race-result-metric">
+            <span>TOTAL TIME</span>
+            <strong id="raceResultTotalTime">--:--.---</strong>
+          </div>
+          <div class="race-result-metric">
+            <span>BEST LAP</span>
+            <strong id="raceResultBestLap">--:--.---</strong>
+          </div>
+          <div class="race-result-metric">
+            <span>AVERAGE LAP</span>
+            <strong id="raceResultAverageLap">--:--.---</strong>
+          </div>
+        </div>
+      </div>
     </section>
     <section id="pitStopwatch" class="pit-stopwatch" data-state="servicing" aria-label="PIT elapsed time" hidden>
       <div>
@@ -4526,17 +4655,17 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260818-team-observer-ui-v1"></script>
-    <script src="../../m5-audio.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="../../telemetry.js?v=20260818-race-summary-v2"></script>
+    <script src="../../m5-audio.js?v=20260818-race-summary-v2"></script>
     <script
-      src="./gamepad-profile.js?v=20260818-team-observer-ui-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260818-team-observer-ui-v1'"
+      src="./gamepad-profile.js?v=20260818-race-summary-v2"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260818-race-summary-v2'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260818-team-observer-ui-v1"></script>
-    <script src="./race-battle.js?v=20260818-team-observer-ui-v1"></script>
-    <script src="./notification-controller.js?v=20260818-team-observer-ui-v1"></script>
-    <script src="../../race-announcer.js?v=20260818-team-observer-ui-v1"></script>
-    <script src="./pilot.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="./ffb-bridge.js?v=20260818-race-summary-v2"></script>
+    <script src="./race-battle.js?v=20260818-race-summary-v2"></script>
+    <script src="./notification-controller.js?v=20260818-race-summary-v2"></script>
+    <script src="../../race-announcer.js?v=20260818-race-summary-v2"></script>
+    <script src="./pilot.js?v=20260818-race-summary-v2"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

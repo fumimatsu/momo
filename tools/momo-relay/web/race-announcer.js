@@ -127,6 +127,42 @@
     });
   }
 
+  function buildRaceSummary(input = {}) {
+    if (String(input.sessionType || '').trim().toLowerCase() !== 'race') {
+      return null;
+    }
+    const lapTimes = Array.isArray(input.laps)
+      ? input.laps
+        .map((entry) => finiteNumber(entry?.timeMs))
+        .filter((value) => value !== null && value > 0)
+        .map(Math.round)
+      : [];
+    if (lapTimes.length === 0) return null;
+
+    const position = finiteNumber(input.position);
+    const fieldSize = finiteNumber(input.fieldSize);
+    const totalTimeMs = finiteNumber(input.totalTimeMs);
+    const suppliedBestLapMs = finiteNumber(input.bestLapMs);
+    const bestLapMs = suppliedBestLapMs !== null && suppliedBestLapMs > 0
+      ? Math.round(suppliedBestLapMs)
+      : Math.min(...lapTimes);
+    const averageLapMs = Math.round(
+      lapTimes.reduce((total, lapTimeMs) => total + lapTimeMs, 0) / lapTimes.length,
+    );
+    const lapTimeTotalMs = lapTimes.reduce((total, lapTimeMs) => total + lapTimeMs, 0);
+
+    return Object.freeze({
+      position: position !== null && position >= 1 ? Math.floor(position) : null,
+      fieldSize: fieldSize !== null && fieldSize >= 1 ? Math.floor(fieldSize) : null,
+      totalTimeMs: totalTimeMs !== null && totalTimeMs > 0
+        ? Math.round(totalTimeMs)
+        : lapTimeTotalMs,
+      bestLapMs,
+      averageLapMs,
+      completedLaps: lapTimes.length,
+    });
+  }
+
   function selectPreferredVoice(voices, options = {}) {
     const candidates = Array.isArray(voices)
       ? voices.filter((voice) => voice && typeof voice.name === 'string' && typeof voice.lang === 'string')
@@ -236,6 +272,7 @@
   return Object.freeze({
     buildRemotePreference,
     buildLapAnnouncement,
+    buildRaceSummary,
     createRemoteAudioTracker,
     normalizeRemoteLanguage,
     parseRemoteMessage,
