@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260817-race-audio-playback-v1';
+  const PILOT_BUILD_ID = '20260818-lap-history-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -187,6 +187,7 @@
   const RACE_MAP_ENABLED = getBooleanParam('raceMap', RACE_BATTLE_ENABLED);
   const RACE_MAP_DEFAULT_LAP_MS = Math.max(3000, getNumberParam('raceMapDefaultLapMs', 24000));
   const RACE_MAP_RENDER_INTERVAL_MS = 1000 / 20;
+  const RACE_LAP_HISTORY_LIMIT = 20;
   const RACE_MAP_SECTOR_BOUNDARIES = Object.freeze([0, 0.42277, 0.73115, 1]);
   const RACE_MAP_MARKER_OFFSETS = Object.freeze([[-15, -15], [15, -15], [-15, 15], [15, 15]]);
   const RACE_MAP_COLORS = Object.freeze(['green', 'yellow', 'cyan', 'red']);
@@ -644,6 +645,7 @@
 	let remoteRaceAudioPlaybackBlocked = '';
 	const remoteRaceAudioTracker = raceAnnouncer.createRemoteAudioTracker();
   const receivedRaceLapHistory = new Map();
+  let renderedRaceLapHistorySignature = '';
   const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
     warningGapMs: RACE_REAR_WARNING_GAP_MS,
     criticalGapMs: RACE_REAR_CRITICAL_GAP_MS,
@@ -2345,45 +2347,38 @@
     element?.classList.toggle('is-overall-best', className === 'is-overall-best');
   }
 
-  function renderRaceHud() {
-    const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
-    const lap = getDisplayedRaceLap(raceState.lap, raceState.lapCount);
-    const position = raceState.position === null ? '--' : String(raceState.position);
-    const fieldSize = raceState.fieldSize === null ? '--' : String(raceState.fieldSize);
-    setText(racePhase, raceState.phase);
-    setText(raceLapCurrentNumber, lap);
-    setText(raceLapTotalCount, lapCount);
-    raceLapCount?.setAttribute('aria-label', `Lap ${lap} of ${lapCount}`);
+  function renderRaceClock() {
     setText(raceCurrentLap, formatRaceTime(getDisplayedRaceTime(raceState.currentLapMs)));
-    setText(raceLastLap, formatRaceTime(raceState.lastLapMs));
-    setText(raceBestLap, formatRaceTime(raceState.bestLapMs));
-    applyRaceBestTimeClass(raceBestLap, classifyRaceBestTime(
-      raceState.bestLapMs,
-      raceState.bestLapMs,
-      raceState.overallBestLapMs,
-    ));
-    setText(raceTotalTime, formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs, raceState.allTimeMode)));
+    setText(
+      raceTotalTime,
+      formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs, raceState.allTimeMode)),
+    );
     renderRaceStartSignal();
-    if (racePosition) {
-      racePosition.replaceChildren(document.createTextNode(position));
-      const total = document.createElement('em');
-      total.textContent = `/${fieldSize}`;
-      racePosition.append(total);
-      scheduleRaceBattleLayout();
-    }
-    renderRaceBattle();
+  }
+
+  function renderRaceLapHistory() {
     if (!raceLapHistory) {
       return;
     }
+    const entries = raceState.laps.slice(0, RACE_LAP_HISTORY_LIMIT);
+    const signature = JSON.stringify([
+      entries,
+      raceState.bestLapMs,
+      raceState.overallBestLapMs,
+    ]);
+    if (signature === renderedRaceLapHistorySignature) {
+      return;
+    }
+    renderedRaceLapHistorySignature = signature;
     raceLapHistory.replaceChildren();
-    if (raceState.laps.length === 0) {
+    if (entries.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'is-empty';
       empty.textContent = 'WAITING FOR RACE DATA';
       raceLapHistory.append(empty);
       return;
     }
-    for (const entry of raceState.laps) {
+    for (const entry of entries) {
       const item = document.createElement('li');
       const bestClass = classifyRaceBestTime(
         entry.timeMs,
@@ -2400,6 +2395,34 @@
       item.append(label, value);
       raceLapHistory.append(item);
     }
+  }
+
+  function renderRaceHud() {
+    const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
+    const lap = getDisplayedRaceLap(raceState.lap, raceState.lapCount);
+    const position = raceState.position === null ? '--' : String(raceState.position);
+    const fieldSize = raceState.fieldSize === null ? '--' : String(raceState.fieldSize);
+    setText(racePhase, raceState.phase);
+    setText(raceLapCurrentNumber, lap);
+    setText(raceLapTotalCount, lapCount);
+    raceLapCount?.setAttribute('aria-label', `Lap ${lap} of ${lapCount}`);
+    renderRaceClock();
+    setText(raceLastLap, formatRaceTime(raceState.lastLapMs));
+    setText(raceBestLap, formatRaceTime(raceState.bestLapMs));
+    applyRaceBestTimeClass(raceBestLap, classifyRaceBestTime(
+      raceState.bestLapMs,
+      raceState.bestLapMs,
+      raceState.overallBestLapMs,
+    ));
+    if (racePosition) {
+      racePosition.replaceChildren(document.createTextNode(position));
+      const total = document.createElement('em');
+      total.textContent = `/${fieldSize}`;
+      racePosition.append(total);
+      scheduleRaceBattleLayout();
+    }
+    renderRaceBattle();
+    renderRaceLapHistory();
   }
 
   function displayRacePhase(phase) {
@@ -2725,6 +2748,7 @@
       raceState.laps = [];
       raceState.rivals = [];
       raceState.clockRunning = false;
+      renderedRaceLapHistorySignature = '';
       hideRearAttention(true);
       raceStartSignalGreenUntil = 0;
       lastRaceLapAnnouncementKey = '';
@@ -7443,7 +7467,7 @@
       || raceState.phaseCode === 'countdown'
       || raceState.phaseCode === 'green'
     ) {
-      renderRaceHud();
+      renderRaceClock();
       syncRaceStartSignalSound();
     }
   }, 100);

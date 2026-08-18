@@ -346,28 +346,51 @@ http://<relay-host>:8090/gamepad.html?viewer=relay-pilot&relayPilotPath=flat&dev
 
 ## Web Observer
 
-本番 Web Observer は Relay と同一 origin から配信する。
+本番 Web Observer は read-only Team Observer として Relay と同一 origin から配信する。
 
 ```text
 http://<relay-host>:8090/observer.html
 ```
 
-ページは query がなければ `location.host` を接続先 Relay として使い、4 台分の read-only
-Observer WebRTC session を映像専用で開く。telemetry、command 監査、vehicle event は各 source の
-signaling WebSocket、全車共通の Race state は専用の `/ws/race-state` 1 本で受信する。
+ページは query がなければ `location.host` を接続先 Relay として使う。順位、コース位置、
+ラップ・セクターは全参加車を表示し、選択した最大 4 台だけ read-only Observer WebRTC session を
+開く。telemetry、command 監査、vehicle event は選択 source の signaling WebSocket、全車共通の
+Race state は専用の `/ws/race-state` 1 本で受信する。
 ブラウザへ Race Control token は渡さない。Relay が Race Control へ 1 本だけ認証接続し、
 Web Observer へ Race state を重複させず配る。
 
-映像接続を静的に絞る場合は`videoDevices`へRelay deviceをカンマ区切りで指定する。省略時は
-従来どおり全台へ接続する。
+Team Observer の選択正本は物理車両の `vehicleId` である。URL は `teamVehicles`、browser storage は
+`momoTeamObserverVehiclesV2` を使う。旧 `teamCars` と `videoDevices` は source/car ID から解決して
+一度移行する互換入力として維持する。
 
 ```text
-http://<relay-host>:8090/observer.html?videoDevices=11.3,11.5
+http://<relay-host>:8090/observer.html?teamVehicles=<vehicle-id-1>,<vehicle-id-2>
 ```
 
-これはProgram Observerへ向けた初期基盤であり、選択外sourceのWebRTCとsource別signalingを
-作らない。そのため選択外sourceの個別Telemetryとvehicle eventも現在は受信しない。Race stateは
-全車共通WebSocketから受信する。全車の運用監視が必要な画面では、現段階では指定なしを使う。
+Relay は `GET /api/v1/team-observer-directory` で Coordinator の local Race Directory cache から
+非 secret の vehicle/pilot display projection を返し、`GET /api/v1/pilot-devices` で現在の vehicle
+source availability を返す。両 endpoint は Garage と同じ CIDR policy で保護する。Relay は private
+Race Directory token を保持せず、Browser も Cloudflare API や cache file を直接読まない。
+
+```powershell
+.\tools\start-mads-observer.ps1 -RebuildRelay `
+  -TeamObserverDirectoryCache 'C:\src\momo-race-timing\state\race-directory-cache.json' `
+  -TeamObserverDirectoryOrganization '<organization-slug>' `
+  -TeamObserverDirectoryEvent '<event-slug>' `
+  -TeamObserverDirectoryMaxAge '1h'
+```
+
+cache を設定しない場合、directory endpoint は HTTP `204` となり、Team Observer は静的
+`observer-config.json` と `/api/v1/pilot-devices` へフォールバックする。cache が stale の場合は内容を
+表示しながら `DIRECTORY STALE` を出す。missing、invalid、wrong-scope は HTTP `503` とし、Browser は
+最後に検証済みの in-memory projection または静的設定を維持する。
+
+Race Directory は pilot と vehicle の組み合わせを確定しない。レース中の対応は
+`race_state.roster.participants[]` の `vehicleId/sourceId/carId/pilotId` を run 固定の正本として使う。
+レース外は vehicle と source availability を表示し、pilot assignment を推測しない。
+
+選択外 source の WebRTC と source 別 signaling は作らないため、個別 Telemetry と vehicle event は
+現在受信しない。全車の HP、PIT、確定 event を軽量配信する契約は別の実装段階である。
 
 `raceFallback=http` は障害診断用の明示設定として維持する。指定しても Race WebSocket が
 正常な間は HTTP polling を止め、WebSocket 切断中だけ 500 ms 間隔で最新状態を補完する。

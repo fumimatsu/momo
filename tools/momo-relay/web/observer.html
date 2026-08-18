@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#050708">
-  <title>Momo Web Observer</title>
-  <link rel="stylesheet" href="observer.css?v=20260816-camera-overlay-v2">
-  <script src="/telemetry.js?v=20260816-camera-dashboard-v1"></script>
-  <script type="module" src="observer.js?v=20260816-camera-dashboard-v2"></script>
+  <title>Momo Team Observer</title>
+  <link rel="stylesheet" href="observer.css?v=20260818-team-observer-v3">
+  <script src="/telemetry.js?v=20260818-team-observer-v3"></script>
+  <script type="module" src="observer.js?v=20260818-team-observer-v3"></script>
 </head>
 <body>
   <div class="observer-app">
@@ -15,7 +15,7 @@
       <div class="header-title">
         <span class="live-dot" aria-hidden="true"></span>
         <div>
-          <strong>RACE OVERVIEW</strong>
+          <strong>TEAM OBSERVER</strong>
           <span id="trackName">SDK RACING / TOKOROZAWA BASE</span>
         </div>
       </div>
@@ -41,8 +41,8 @@
       <aside class="leaderboard" aria-labelledby="leaderboardTitle">
         <div class="panel-heading">
           <div>
-            <span class="eyebrow">LIVE ORDER</span>
-            <h1 id="leaderboardTitle">LEADERBOARD</h1>
+            <span class="eyebrow">ALL PARTICIPANTS</span>
+            <h1 id="leaderboardTitle">RACE ORDER</h1>
           </div>
           <span id="panelCount" class="panel-count">0/4 VIDEO</span>
         </div>
@@ -143,7 +143,19 @@
       </aside>
     </main>
 
-    <section id="cameraGrid" class="camera-grid" aria-label="Onboard camera previews"></section>
+    <section class="team-monitor" aria-labelledby="teamMonitorTitle">
+      <div class="team-selection-bar">
+        <div class="team-selection-title">
+          <span class="eyebrow">FIXED DETAIL MONITOR</span>
+          <h2 id="teamMonitorTitle">TEAM CARS</h2>
+        </div>
+        <div id="teamSelectionSlots" class="team-selection-slots" aria-label="Selected team cars"></div>
+        <button id="teamSelectorOpen" class="team-selector-open" type="button" aria-haspopup="dialog" aria-controls="teamSelectorDrawer">
+          MANAGE
+        </button>
+      </div>
+      <section id="cameraGrid" class="camera-grid" aria-label="Selected onboard camera previews"></section>
+    </section>
 
     <section class="situation-strip" aria-labelledby="situationTitle">
       <div class="situation-title">
@@ -153,6 +165,24 @@
       <div id="situationRows" class="situation-rows"></div>
     </section>
 
+  </div>
+
+  <div id="teamSelectorBackdrop" class="team-selector-backdrop" hidden>
+    <aside id="teamSelectorDrawer" class="team-selector-drawer" role="dialog" aria-modal="true" aria-labelledby="teamSelectorTitle">
+      <header class="team-selector-head">
+        <div>
+          <span class="eyebrow">MAXIMUM 4 ONBOARD FEEDS</span>
+          <h2 id="teamSelectorTitle">SELECT TEAM CARS</h2>
+        </div>
+        <button id="teamSelectorClose" class="team-selector-close" type="button" aria-label="Close team car selector">&#x2715;</button>
+      </header>
+      <section id="teamReplacementPanel" class="team-replacement-panel" hidden></section>
+      <div id="teamSelectorList" class="team-selector-list"></div>
+      <footer class="team-selector-footer">
+        <span id="teamSelectionCount">0 / 4 SELECTED</span>
+        <button id="teamSelectionClear" type="button">CLEAR ALL</button>
+      </footer>
+    </aside>
   </div>
 </body>
 </html>

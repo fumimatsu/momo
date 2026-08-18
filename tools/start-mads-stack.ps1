@@ -7,6 +7,10 @@ param(
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
+    [string]$TeamObserverDirectoryCache = $env:MOMO_TEAM_OBSERVER_DIRECTORY_CACHE,
+    [string]$TeamObserverDirectoryOrganization = $env:MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION,
+    [string]$TeamObserverDirectoryEvent = $env:MOMO_TEAM_OBSERVER_DIRECTORY_EVENT,
+    [string]$TeamObserverDirectoryMaxAge = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE)) { '1h' } else { $env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE }),
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
@@ -129,9 +133,20 @@ try {
     })
     $relayHasExpectedConfig = $relayProcesses.Count -gt 0 -and
         @($relayProcesses | Where-Object {
+            $directoryMatches = if ([string]::IsNullOrWhiteSpace($TeamObserverDirectoryCache)) {
+                $_.CommandLine -notlike '*-team-observer-directory-cache*'
+            }
+            else {
+                $_.CommandLine.Contains('-team-observer-directory-cache') -and
+                    $_.CommandLine.Contains([System.IO.Path]::GetFullPath($TeamObserverDirectoryCache.Trim())) -and
+                    $_.CommandLine.Contains($TeamObserverDirectoryOrganization.Trim()) -and
+                    $_.CommandLine.Contains($TeamObserverDirectoryEvent.Trim()) -and
+                    $_.CommandLine.Contains($TeamObserverDirectoryMaxAge.Trim())
+            }
             $_.CommandLine -like "*${raceControlWsUrl}*" -and
             $_.CommandLine -like "*-health-recovery-mode $HealthRecoveryMode*" -and
-            $_.CommandLine -like "*-fuel-drive-duration $($FuelDriveDurationSeconds)s*"
+            $_.CommandLine -like "*-fuel-drive-duration $($FuelDriveDurationSeconds)s*" -and
+            $directoryMatches
         }).Count -gt 0
 
     $launchParameters = @{
@@ -142,6 +157,10 @@ try {
         AyameSignalingUrl = $AyameSignalingUrl
         AyamePilotRoom113 = $AyamePilotRoom113
         AyamePilotRoom116 = $AyamePilotRoom116
+        TeamObserverDirectoryCache = $TeamObserverDirectoryCache
+        TeamObserverDirectoryOrganization = $TeamObserverDirectoryOrganization
+        TeamObserverDirectoryEvent = $TeamObserverDirectoryEvent
+        TeamObserverDirectoryMaxAge = $TeamObserverDirectoryMaxAge
         FuelDriveDurationSeconds = $FuelDriveDurationSeconds
         TelemetryLogDirectory = $TelemetryLogDirectory
         TelemetryLogRetentionHours = $TelemetryLogRetentionHours

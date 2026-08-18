@@ -121,6 +121,36 @@ $go = & .\tools\Resolve-GoExecutable.ps1
 Remove-Item Env:RACE_DIRECTORY_READ_TOKEN
 ```
 
+## Team Observer projection
+
+Relay は Coordinator cache を read-only で検証し、同一 origin の Team Observer へ非 secret projection
+を返す。private read token は cache 更新プロセスだけに保持し、Relay の環境・引数へ渡さない。
+
+```powershell
+Set-Location C:\src\momo
+.\tools\start-mads-observer.ps1 `
+  -RebuildRelay `
+  -OperationsAllowCidr '192.168.11.0/24' `
+  -GarageAllowCidr '192.168.11.0/24' `
+  -TeamObserverDirectoryCache 'C:\src\momo-race-timing\state\race-directory-cache.json' `
+  -TeamObserverDirectoryOrganization '<organization-slug>' `
+  -TeamObserverDirectoryEvent '<event-slug>' `
+  -TeamObserverDirectoryMaxAge '1h'
+```
+
+確認する endpoint:
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:8090/api/v1/team-observer-directory'
+Invoke-RestMethod 'http://127.0.0.1:8090/api/v1/pilot-devices'
+```
+
+- projection は `vehicleId`、active `sourceId`、表示用 pilot/vehicle/event だけを含む。
+- cache の ETag、organization ID、theme song、token は返さない。
+- cache 未設定は `204`、invalid/missing/wrong-scope は `503`。
+- max age 超過時は HTTP `200` のまま `stale: true` とし、画面に警告を出す。
+- Race Directory だけで pilot と vehicle を結び付けず、run 中は locked roster を正とする。
+
 ## Relay との手動 JOIN
 
 ```powershell
@@ -145,7 +175,7 @@ cache の active `sourceId` ごとに Relay source が存在し、実車の DRIV
 - Relay DRIVE 状態と directory を自動 JOIN する Coordinator lifecycle
 - read-only roster preview と operator diagnostics
 - Coordinator から Race Control への自動 PUT
-- Relay から Team Observer への非 secret projection
+- Team Observer の選択外車両へ HP、PIT、確定 event を一括配信する fleet snapshot
 - 5 台以上の Race Control timing 運用
 
 次の場合は roster 作成へ進まない。
@@ -156,4 +186,3 @@ cache の active `sourceId` ごとに Relay source が存在し、実車の DRIV
 - vehicle または active `sourceId` が重複する
 - confirmed pilot と DRIVE session の対応を確定できない
 - MADSYSTEM が実レースを実行中
-

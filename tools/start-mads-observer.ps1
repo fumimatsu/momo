@@ -22,6 +22,10 @@ param(
     [string]$OperationsAllowCidr = '127.0.0.1/32',
     [string]$SourceAdminAllowCidr = '192.168.11.0/24',
     [string]$GarageAllowCidr = '192.168.11.0/24',
+    [string]$TeamObserverDirectoryCache = $env:MOMO_TEAM_OBSERVER_DIRECTORY_CACHE,
+    [string]$TeamObserverDirectoryOrganization = $env:MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION,
+    [string]$TeamObserverDirectoryEvent = $env:MOMO_TEAM_OBSERVER_DIRECTORY_EVENT,
+    [string]$TeamObserverDirectoryMaxAge = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE)) { '1h' } else { $env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE }),
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
@@ -131,6 +135,30 @@ $resolvedRelaySourceRegistryPath = if ([string]::IsNullOrWhiteSpace($RelaySource
 if (-not [string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath) -and [string]::IsNullOrWhiteSpace($env:MOMO_RELAY_ADMIN_TOKEN)) {
     throw 'MOMO_RELAY_ADMIN_TOKEN is required when RelaySourceRegistryPath is set.'
 }
+$teamObserverDirectoryValues = @(
+    $TeamObserverDirectoryCache,
+    $TeamObserverDirectoryOrganization,
+    $TeamObserverDirectoryEvent
+)
+$teamObserverDirectoryConfigured = @($teamObserverDirectoryValues | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+}).Count
+if ($teamObserverDirectoryConfigured -ne 0 -and $teamObserverDirectoryConfigured -ne 3) {
+    throw 'TeamObserverDirectoryCache, TeamObserverDirectoryOrganization, and TeamObserverDirectoryEvent must be configured together.'
+}
+$resolvedTeamObserverDirectoryCache = if ($teamObserverDirectoryConfigured -eq 0) {
+    ''
+} else {
+    [System.IO.Path]::GetFullPath($TeamObserverDirectoryCache.Trim())
+}
+if (-not [string]::IsNullOrWhiteSpace($resolvedTeamObserverDirectoryCache)) {
+    if (-not (Test-Path -LiteralPath $resolvedTeamObserverDirectoryCache -PathType Leaf)) {
+        throw "Team Observer directory cache was not found: $resolvedTeamObserverDirectoryCache"
+    }
+    if ($TeamObserverDirectoryMaxAge.Trim() -notmatch '^[1-9][0-9]*(?:ms|s|m|h)$') {
+        throw 'TeamObserverDirectoryMaxAge must be a positive Go duration such as 30m or 1h.'
+    }
+}
 $resolvedObserverCrashDumpDirectory = if ([string]::IsNullOrWhiteSpace($ObserverCrashDumpDirectory)) {
     Join-Path $relayDirectory 'crash_dumps'
 } else {
@@ -214,6 +242,14 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
     if (-not [string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath)) {
         $relayArgs += @('-source-registry', $resolvedRelaySourceRegistryPath)
     }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedTeamObserverDirectoryCache)) {
+        $relayArgs += @(
+            '-team-observer-directory-cache', $resolvedTeamObserverDirectoryCache,
+            '-team-observer-directory-organization', $TeamObserverDirectoryOrganization.Trim(),
+            '-team-observer-directory-event', $TeamObserverDirectoryEvent.Trim(),
+            '-team-observer-directory-max-age', $TeamObserverDirectoryMaxAge.Trim()
+        )
+    }
     if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
         $relayArgs += @(
             '-source', "11.3=ws://$Device113`:8080/ws",
@@ -283,6 +319,9 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
     Write-Host 'Relay started: http://127.0.0.1:8090/'
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
         Write-Host "Telemetry log directory: $($TelemetryLogDirectory.Trim()) (retention: $TelemetryLogRetentionHours h)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($resolvedTeamObserverDirectoryCache)) {
+        Write-Host "Team Observer directory: $resolvedTeamObserverDirectoryCache ($($TeamObserverDirectoryOrganization.Trim())/$($TeamObserverDirectoryEvent.Trim()))"
     }
 }
 elseif (-not $SkipRelay) {

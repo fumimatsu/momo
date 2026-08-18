@@ -66,6 +66,28 @@ export function selectVideoDevices(cars, value) {
   return selected;
 }
 
+export function normalizeTeamSelection(cars, value, limit = 4) {
+  const available = Array.isArray(cars) ? cars : [];
+  const maximum = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 32) : 4;
+  let tokens;
+  if (Array.isArray(value) || value instanceof Set) {
+    tokens = Array.from(value, (item) => String(item || '').trim()).filter(Boolean);
+  } else {
+    const raw = String(value ?? '').trim();
+    if (!raw || raw.toLowerCase() === 'all') tokens = available.map((car) => car.device);
+    else if (raw.toLowerCase() === 'none') tokens = [];
+    else tokens = raw.split(',').map((item) => item.trim()).filter(Boolean);
+  }
+  const selected = [];
+  for (const token of tokens) {
+    const car = available.find((candidate) => candidate.device === token || candidate.carId === token);
+    if (!car || selected.includes(car.device)) continue;
+    selected.push(car.device);
+    if (selected.length >= maximum) break;
+  }
+  return selected;
+}
+
 export function parseControlCommand(message) {
   const text = String(message || '').trim();
   if (!text || text.length > 128) return null;
@@ -678,8 +700,8 @@ export function elapsedSinceRaceMarkerMs(standing, raceElapsedMs) {
 }
 
 export function normalizeObserverConfig(config) {
-  if (!config || !Array.isArray(config.cars) || config.cars.length < 1 || config.cars.length > 4) {
-    throw new Error('observer config requires 1 to 4 cars');
+  if (!config || !Array.isArray(config.cars) || config.cars.length < 1 || config.cars.length > 32) {
+    throw new Error('observer config requires 1 to 32 cars');
   }
   const vehicleSpeedProfiles = {};
   for (const [profileId, profile] of Object.entries(config.vehicleSpeedProfiles || {})) {
@@ -707,13 +729,15 @@ export function normalizeObserverConfig(config) {
     }
     return {
       device,
+			vehicleId: String(car.vehicleId || `source:${device}`).trim(),
+			sourceId: device,
       carId,
       displayNumber,
       driver: String(car.driver || '').trim(),
       initials: String(car.initials || displayNumber).trim().slice(0, 3),
       portraitUrl: String(car.portraitUrl || '').trim(),
       flip: car.flip !== false,
-      color: colors[index],
+      color: colors[index % colors.length],
       speedProfileId,
       speedProfile: vehicleSpeedProfiles[speedProfileId] || null,
     };
@@ -745,6 +769,246 @@ export function normalizeObserverConfig(config) {
       pitRejoinProgress: motionNumber('pitRejoinProgress', 0.184, 0, 1),
     },
   };
+}
+
+export function normalizeTeamObserverDirectoryProjection(value) {
+	if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1
+			|| typeof value.directoryRevision !== 'string'
+			|| !/^rd_[a-f0-9]{32}$/.test(value.directoryRevision)
+			|| !value.event || typeof value.event !== 'object'
+			|| !Array.isArray(value.pilots) || !Array.isArray(value.vehicles) || !Array.isArray(value.entries)
+			|| value.pilots.length > 256 || value.vehicles.length > 256 || value.entries.length > 256) {
+		throw new Error('invalid Team Observer directory projection');
+	}
+	const event = {
+		eventId: String(value.event.eventId || '').trim(),
+		slug: String(value.event.slug || '').trim(),
+		name: String(value.event.name || '').trim(),
+		status: String(value.event.status || '').trim(),
+	};
+	if (!event.eventId || !event.slug || !event.name
+			|| !['draft', 'open', 'live', 'closed', 'archived'].includes(event.status)) {
+		throw new Error('invalid Team Observer directory event');
+	}
+	const fetchedAtMs = Date.parse(value.fetchedAt);
+	const ageMs = finiteNumber(value.ageMs);
+	if (!Number.isFinite(fetchedAtMs) || ageMs === null || ageMs < 0 || typeof value.stale !== 'boolean') {
+		throw new Error('invalid Team Observer directory freshness');
+	}
+	const pilotIds = new Set();
+	const pilots = value.pilots.map((pilot, index) => {
+		const pilotId = String(pilot?.pilotId || '').trim();
+		const callsign = String(pilot?.callsign || '').trim();
+		const photoUrl = String(pilot?.photoUrl || '').trim();
+		const color = String(pilot?.color || '').trim();
+		if (!pilotId || !callsign || pilotIds.has(pilotId)
+				|| (photoUrl && !/^https?:\/\//.test(photoUrl))
+				|| (color && !/^#[0-9a-f]{6}$/i.test(color))) {
+			throw new Error(`invalid Team Observer directory pilot at index ${index}`);
+		}
+		pilotIds.add(pilotId);
+		return {
+			pilotId,
+			pilotNo: String(pilot.pilotNo || '').trim(),
+			callsign,
+			displayName: String(pilot.displayName || '').trim(),
+			teamName: String(pilot.teamName || '').trim(),
+			photoUrl,
+			color,
+		};
+	});
+	const vehicleIds = new Set();
+	const sourceIds = new Set();
+	const vehicles = value.vehicles.map((vehicle, index) => {
+		const vehicleId = String(vehicle?.vehicleId || '').trim();
+		const vehicleName = String(vehicle?.vehicleName || '').trim();
+		const sourceId = String(vehicle?.sourceId || '').trim();
+		const status = String(vehicle?.status || '').trim();
+		if (!vehicleId || !vehicleName || vehicleIds.has(vehicleId)
+				|| !['active', 'maintenance'].includes(status)
+				|| (sourceId && sourceIds.has(sourceId))) {
+			throw new Error(`invalid Team Observer directory vehicle at index ${index}`);
+		}
+		vehicleIds.add(vehicleId);
+		if (sourceId) sourceIds.add(sourceId);
+		return {
+			vehicleId,
+			vehicleName,
+			displayNumber: String(vehicle.displayNumber || '').trim(),
+			status,
+			sourceId,
+		};
+	});
+	const entryIds = new Set();
+	const entries = value.entries.map((entry, index) => {
+		const entryId = String(entry?.entryId || '').trim();
+		const pilotId = String(entry?.pilotId || '').trim();
+		if (!entryId || !pilotIds.has(pilotId) || entryIds.has(entryId)) {
+			throw new Error(`invalid Team Observer directory entry at index ${index}`);
+		}
+		entryIds.add(entryId);
+		return { entryId, pilotId, classCode: String(entry.classCode || '').trim() };
+	});
+	return {
+		version: 1,
+		fetchedAt: new Date(fetchedAtMs).toISOString(),
+		ageMs,
+		stale: value.stale,
+		directoryRevision: value.directoryRevision,
+		event,
+		pilots,
+		vehicles,
+		entries,
+	};
+}
+
+export function normalizePilotDevicesSnapshot(value) {
+	if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1
+			|| !Array.isArray(value.devices) || value.devices.length > 32) {
+		throw new Error('invalid Relay pilot devices snapshot');
+	}
+	const devices = new Set();
+	const carIds = new Set();
+	return {
+		version: 1,
+		devices: value.devices.map((device, index) => {
+			const sourceId = String(device?.device || '').trim();
+			const carId = String(device?.carId || '').trim();
+			const availability = String(device?.availability || '').trim();
+			const state = String(device?.state || '').trim();
+			const videoFps = finiteNumber(device?.videoFps);
+			if (!sourceId || !carId || devices.has(sourceId) || carIds.has(carId)
+					|| !['ready', 'in_use', 'connecting', 'unavailable'].includes(availability)
+					|| !state || videoFps === null || videoFps < 0 || typeof device.pilotInUse !== 'boolean') {
+				throw new Error(`invalid Relay pilot device at index ${index}`);
+			}
+			devices.add(sourceId);
+			carIds.add(carId);
+			return { sourceId, carId, availability, state, videoFps, pilotInUse: device.pilotInUse };
+		}),
+	};
+}
+
+export function mergeTeamObserverFleet(config, directory = null, pilotDevices = null, roster = null) {
+	if (!config || !Array.isArray(config.cars)) throw new Error('normalized observer config is required');
+	const staticBySource = new Map(config.cars.map((car) => [car.sourceId || car.device, car]));
+	const staticByCar = new Map(config.cars.map((car) => [car.carId, car]));
+	const deviceBySource = new Map((pilotDevices?.devices || []).map((device) => [device.sourceId, device]));
+	const directoryPilotById = new Map((directory?.pilots || []).map((pilot) => [pilot.pilotId, pilot]));
+	const rosterParticipants = Array.isArray(roster?.participants) ? roster.participants : [];
+	const rosterByVehicle = new Map();
+	const rosterBySource = new Map();
+	for (const participant of rosterParticipants) {
+		const sourceId = String(participant?.sourceId || '').trim();
+		const carId = String(participant?.carId || '').trim();
+		const pilotId = String(participant?.pilotId || '').trim();
+		const vehicleId = String(participant?.vehicleId || '').trim();
+		if (!sourceId || !carId || !pilotId) continue;
+		const normalized = { ...participant, sourceId, carId, pilotId, vehicleId };
+		if (vehicleId) rosterByVehicle.set(vehicleId, normalized);
+		rosterBySource.set(sourceId, normalized);
+	}
+	const records = [];
+	const byVehicle = new Map();
+	const bySource = new Map();
+	const bindRecordSource = (record, sourceId) => {
+		if (!sourceId || record.sourceId === sourceId) return;
+		if (record.sourceId && bySource.get(record.sourceId) === record) bySource.delete(record.sourceId);
+		const displaced = bySource.get(sourceId);
+		if (displaced && displaced !== record) displaced.sourceId = '';
+		record.sourceId = sourceId;
+		bySource.set(sourceId, record);
+	};
+	const addRecord = (vehicleId, sourceId, directoryVehicle = null) => {
+		if (vehicleId && byVehicle.has(vehicleId)) {
+			const record = byVehicle.get(vehicleId);
+			if (directoryVehicle) record.directoryVehicle = directoryVehicle;
+			return record;
+		}
+		if (sourceId && bySource.has(sourceId)) return bySource.get(sourceId);
+		const record = { vehicleId: vehicleId || `source:${sourceId}`, sourceId, directoryVehicle };
+		records.push(record);
+		byVehicle.set(record.vehicleId, record);
+		if (sourceId) bySource.set(sourceId, record);
+		return record;
+	};
+	for (const vehicle of directory?.vehicles || []) addRecord(vehicle.vehicleId, vehicle.sourceId, vehicle);
+	for (const participant of rosterParticipants) {
+		const sourceId = String(participant?.sourceId || '').trim();
+		const vehicleId = String(participant?.vehicleId || '').trim();
+		if (!sourceId) continue;
+		const record = addRecord(vehicleId, sourceId);
+		if (vehicleId && record.vehicleId !== vehicleId && record.vehicleId.startsWith('source:')) {
+			byVehicle.delete(record.vehicleId);
+			record.vehicleId = vehicleId;
+			byVehicle.set(vehicleId, record);
+		}
+		bindRecordSource(record, sourceId);
+	}
+	for (const device of pilotDevices?.devices || []) addRecord('', device.sourceId);
+	const rosterCarIds = new Set(rosterParticipants.map((participant) => String(participant?.carId || '').trim()).filter(Boolean));
+	if (directory === null && pilotDevices === null && rosterParticipants.length === 0) {
+		for (const car of config.cars) {
+			if (!rosterCarIds.has(car.carId)) addRecord(car.vehicleId, car.sourceId || car.device);
+		}
+	}
+	if (records.length < 1 || records.length > 32) throw new Error('Team Observer fleet requires 1 to 32 vehicles');
+	const colors = ['green', 'yellow', 'cyan', 'red'];
+	const carIds = new Set();
+	return records.map((record, index) => {
+		const participant = rosterByVehicle.get(record.vehicleId) || rosterBySource.get(record.sourceId) || null;
+		const device = deviceBySource.get(participant?.sourceId || record.sourceId) || null;
+		const sourceId = participant?.sourceId || record.sourceId || '';
+		const staticCar = staticBySource.get(sourceId) || staticByCar.get(participant?.carId || device?.carId) || null;
+		let carId = participant?.carId || device?.carId || staticCar?.carId || `UNASSIGNED-${index + 1}`;
+		if (carIds.has(carId)) carId = `UNASSIGNED-${index + 1}`;
+		carIds.add(carId);
+		const pilot = directoryPilotById.get(participant?.pilotId) || null;
+		const displayNumber = String(participant?.displayNumber || record.directoryVehicle?.displayNumber
+			|| staticCar?.displayNumber || index + 1).padStart(2, '0');
+		const driver = String(participant?.pilotName || pilot?.displayName || pilot?.callsign || staticCar?.driver || '').trim();
+		return {
+			vehicleId: record.vehicleId,
+			sourceId,
+			device: sourceId,
+			carId,
+			displayNumber,
+			driver,
+			initials: abbreviateDriverName(driver, staticCar?.initials || displayNumber),
+			portraitUrl: pilot?.photoUrl || staticCar?.portraitUrl || '',
+			flip: staticCar?.flip !== false,
+			color: staticCar?.color || colors[index % colors.length],
+			speedProfileId: staticCar?.speedProfileId || '',
+			speedProfile: staticCar?.speedProfile || null,
+			vehicleName: String(participant?.carName || record.directoryVehicle?.vehicleName || '').trim(),
+			directoryStatus: record.directoryVehicle?.status || '',
+			availability: device?.availability || (sourceId ? 'unknown' : 'unbound'),
+			sourceBound: Boolean(sourceId),
+		};
+	});
+}
+
+export function normalizeTeamVehicleSelection(cars, value, limit = 4) {
+	const available = Array.isArray(cars) ? cars : [];
+	const maximum = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 32) : 4;
+	let tokens;
+	if (Array.isArray(value) || value instanceof Set) {
+		tokens = Array.from(value, (item) => String(item || '').trim()).filter(Boolean);
+	} else {
+		const raw = String(value ?? '').trim();
+		if (!raw || raw.toLowerCase() === 'all') tokens = available.map((car) => car.vehicleId);
+		else if (raw.toLowerCase() === 'none') tokens = [];
+		else tokens = raw.split(',').map((item) => item.trim()).filter(Boolean);
+	}
+	const selected = [];
+	for (const token of tokens) {
+		const car = available.find((candidate) => candidate.vehicleId === token
+			|| candidate.sourceId === token || candidate.device === token || candidate.carId === token);
+		if (!car || selected.includes(car.vehicleId)) continue;
+		selected.push(car.vehicleId);
+		if (selected.length >= maximum) break;
+	}
+	return selected;
 }
 
 export function standingsByConfiguredCar(configCars, raceState) {
@@ -859,7 +1123,7 @@ export function deriveSituations(
         priority: 100 + (100 - health.hp),
       });
     }
-    if (connection && !connection.videoActive) {
+    if (connection && !connection.subscriptionDisabled && !connection.videoActive) {
       situations.push({
         type: 'connection',
         label: 'VIDEO STATUS',

@@ -15,8 +15,12 @@ import {
   formatDuration,
   formatSplitTime,
   formatStandingGap,
+	mergeTeamObserverFleet,
   normalizeLapHistory,
   normalizeObserverConfig,
+	normalizePilotDevicesSnapshot,
+	normalizeTeamObserverDirectoryProjection,
+	normalizeTeamVehicleSelection,
   parseControlCommand,
   parsePitPresence,
   parseRaceState,
@@ -25,9 +29,8 @@ import {
   projectCourseProgress,
   raceClockValue,
   reconstructRaceElapsedMs,
-  selectVideoDevices,
   standingsByConfiguredCar,
-} from './observer-core.js';
+} from './observer-core.js?v=20260818-team-observer-v3';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
@@ -39,6 +42,11 @@ const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
+const TEAM_SELECTION_LIMIT = 4;
+const TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverVehiclesV2';
+const LEGACY_TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverCarsV1';
+const PILOT_DEVICES_POLL_MS = 5000;
+const DIRECTORY_POLL_MS = 30000;
 const CAMERA_MOTION_SCALE_G = 1.5;
 const CAMERA_RPM_SCALE = 50_000;
 const CAMERA_SPEED_SCALE_KPH = 120;
@@ -49,7 +57,15 @@ const CAMERA_ESC_CRITICAL_C = 85;
 const CAMERA_MOTOR_WARNING_C = 80;
 const CAMERA_MOTOR_CRITICAL_C = 100;
 const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
-const MARKER_RENDER_OFFSETS = [[-16, -16], [16, -16], [-16, 16], [16, 16]];
+const MARKER_RENDER_OFFSETS = [
+  [-16, -16], [16, -16], [-16, 16], [16, 16],
+  ...Array.from({ length: 28 }, (_, index) => {
+    const ring = Math.floor(index / 8) + 2;
+    const angle = (index % 8) * Math.PI / 4;
+    const radius = ring * 12;
+    return [Math.cos(angle) * radius, Math.sin(angle) * radius];
+  }),
+];
 const CAR_EFFECTS = Object.freeze({
   'gravel': { label: 'GRAVEL', durationMs: 1100, priority: 20 },
   'impact': { label: 'IMPACT', durationMs: 1900, priority: 80 },
@@ -75,7 +91,7 @@ const vehicleEventHistoryByCar = new Map();
 const pitByCar = new Map();
 const pendingPitByCar = new Map();
 const connectionByCar = new Map();
-const clients = [];
+const clientByCar = new Map();
 const vehicleEventTimers = new Map();
 const carEffectTimers = new Map();
 const activeEffectByCar = new Map();
@@ -87,6 +103,7 @@ const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
 const cameraTitleNodesByCar = new Map();
+const cameraTileNodesByCar = new Map();
 const cameraEffectNodesByCar = new Map();
 const leaderboardNodesByCar = new Map();
 const telemetryNodesByCar = new Map();
@@ -95,6 +112,9 @@ const controlNodesByCar = new Map();
 const renderedTelemetryByCar = new Map();
 const pitMotionByCar = new Map();
 let observerConfig = null;
+let baseObserverConfig = null;
+let teamDirectory = null;
+let pilotDevices = null;
 let raceState = null;
 let standingByCar = new Map();
 let lapPaceByCar = new Map();
@@ -115,6 +135,13 @@ let telemetryRenderedAt = 0;
 let leaderboardSignature = '';
 let sectorRowsSignature = '';
 let timingRowsSignature = '';
+let selectedTeamVehicleIds = [];
+let pendingTeamVehicleId = '';
+let activeRelayHost = '';
+let teamPeersEnabled = false;
+let pilotDevicesPollTimer = 0;
+let directoryPollTimer = 0;
+let fleetPollInFlight = false;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -127,6 +154,315 @@ function svgElement(tag, attributes = {}) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value));
   return node;
+}
+
+function selectedTeamCars() {
+  if (!observerConfig) return [];
+	const byVehicle = new Map(observerConfig.cars.map((car) => [car.vehicleId, car]));
+	return selectedTeamVehicleIds.map((vehicleId) => byVehicle.get(vehicleId)).filter(Boolean);
+}
+
+function isTeamCarSelected(car) {
+	return Boolean(car && selectedTeamVehicleIds.includes(car.vehicleId));
+}
+
+function loadStoredTeamSelection() {
+  try {
+    const raw = localStorage.getItem(TEAM_SELECTION_STORAGE_KEY);
+    if (raw === null) return null;
+    const value = JSON.parse(raw);
+		if (!value || value.version !== 2 || !Array.isArray(value.vehicleIds)) return null;
+		if (teamDirectory && value.eventSlug !== teamDirectory.event.slug) return null;
+		return value.vehicleIds;
+  } catch (_) {
+    return null;
+  }
+}
+
+function loadLegacyStoredTeamSelection() {
+	try {
+		const value = JSON.parse(localStorage.getItem(LEGACY_TEAM_SELECTION_STORAGE_KEY));
+		return Array.isArray(value) ? value : null;
+	} catch (_) {
+		return null;
+	}
+}
+
+function initialTeamSelection(params) {
+	if (params.has('teamVehicles')) {
+		return normalizeTeamVehicleSelection(
+			observerConfig.cars,
+			params.get('teamVehicles') || 'none',
+			TEAM_SELECTION_LIMIT,
+		);
+	}
+  if (params.has('teamCars')) {
+		return normalizeTeamVehicleSelection(
+      observerConfig.cars,
+      params.get('teamCars') || 'none',
+      TEAM_SELECTION_LIMIT,
+    );
+  }
+  if (params.has('videoDevices')) {
+		return normalizeTeamVehicleSelection(
+      observerConfig.cars,
+      params.get('videoDevices') || 'none',
+      TEAM_SELECTION_LIMIT,
+    );
+  }
+  const stored = loadStoredTeamSelection();
+	if (stored !== null) return normalizeTeamVehicleSelection(observerConfig.cars, stored, TEAM_SELECTION_LIMIT);
+	const legacy = loadLegacyStoredTeamSelection();
+	return legacy === null
+		? normalizeTeamVehicleSelection(observerConfig.cars, 'all', TEAM_SELECTION_LIMIT)
+		: normalizeTeamVehicleSelection(observerConfig.cars, legacy, TEAM_SELECTION_LIMIT);
+}
+
+function persistTeamSelection() {
+  try {
+		localStorage.setItem(TEAM_SELECTION_STORAGE_KEY, JSON.stringify({
+			version: 2,
+			eventSlug: teamDirectory?.event.slug || '',
+			directoryRevision: teamDirectory?.directoryRevision || '',
+			vehicleIds: selectedTeamVehicleIds,
+		}));
+		localStorage.removeItem(LEGACY_TEAM_SELECTION_STORAGE_KEY);
+  } catch (_) {
+    // URL state remains available when storage is disabled.
+  }
+  const url = new URL(location.href);
+	url.searchParams.set('teamVehicles', selectedTeamVehicleIds.length > 0 ? selectedTeamVehicleIds.join(',') : 'none');
+	url.searchParams.delete('teamCars');
+	url.searchParams.delete('videoDevices');
+  history.replaceState(null, '', url);
+}
+
+function openTeamSelector() {
+  const backdrop = document.getElementById('teamSelectorBackdrop');
+  if (!backdrop) return;
+  backdrop.hidden = false;
+  renderTeamSelectionControls();
+  document.getElementById('teamSelectorClose')?.focus();
+}
+
+function closeTeamSelector() {
+  const backdrop = document.getElementById('teamSelectorBackdrop');
+  if (!backdrop) return;
+  backdrop.hidden = true;
+	pendingTeamVehicleId = '';
+  renderTeamSelectionControls();
+  document.getElementById('teamSelectorOpen')?.focus();
+}
+
+function focusTeamCar(car) {
+  const tile = cameraTileNodesByCar.get(car?.carId);
+  if (!tile || !tile.isConnected) return;
+  tile.classList.remove('is-focused');
+  void tile.offsetWidth;
+  tile.classList.add('is-focused');
+  tile.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  window.setTimeout(() => tile.classList.remove('is-focused'), 900);
+}
+
+function syncTeamSelectionDecorations() {
+  for (const car of observerConfig?.cars || []) {
+    const selected = isTeamCarSelected(car);
+    const leader = leaderboardNodesByCar.get(car.carId);
+    leader?.classList.toggle('is-team-selected', selected);
+    leader?.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    const marker = markerNodesByCar.get(car.carId)?.marker;
+    marker?.classList.toggle('is-team-selected', selected);
+    marker?.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+}
+
+function renderTeamReplacementPanel() {
+  const panel = document.getElementById('teamReplacementPanel');
+  if (!panel) return;
+	const candidate = observerConfig?.cars.find((car) => car.vehicleId === pendingTeamVehicleId);
+  panel.hidden = !candidate;
+  panel.replaceChildren();
+  if (!candidate) return;
+  panel.append(element('strong', '', `REPLACE WITH CAR ${candidate.displayNumber}`));
+  const choices = element('div', 'team-replacement-choices');
+  selectedTeamCars().forEach((car, index) => {
+    const button = element('button', `car-${car.color}`, `SLOT ${index + 1} / CAR ${car.displayNumber}`);
+    button.type = 'button';
+    button.addEventListener('click', () => {
+			const next = [...selectedTeamVehicleIds];
+			next[index] = candidate.vehicleId;
+			pendingTeamVehicleId = '';
+      setTeamSelection(next, true);
+    });
+    choices.append(button);
+  });
+  const cancel = element('button', 'team-replacement-cancel', 'CANCEL');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => {
+		pendingTeamVehicleId = '';
+    renderTeamSelectionControls();
+  });
+  choices.append(cancel);
+  panel.append(choices);
+}
+
+function renderTeamSelectionControls() {
+  if (!observerConfig) return;
+  const slots = document.getElementById('teamSelectionSlots');
+  if (slots) {
+    const cars = selectedTeamCars();
+    slots.replaceChildren(...Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => {
+      const car = cars[index];
+      const slot = element('div', `team-selection-slot${car ? ` car-${car.color} is-filled` : ''}`);
+      if (!car) {
+        const empty = element('button', 'team-slot-main', `SLOT ${index + 1}`);
+        empty.type = 'button';
+        empty.setAttribute('aria-label', `Select a car for slot ${index + 1}`);
+        empty.addEventListener('click', openTeamSelector);
+        slot.append(empty);
+        return slot;
+      }
+      const standing = standingByCar.get(car.carId);
+      const main = element('button', 'team-slot-main');
+      main.type = 'button';
+      main.append(
+        element('strong', '', `#${car.displayNumber}`),
+        element('span', '', carName(car, standing)),
+      );
+      main.addEventListener('click', () => focusTeamCar(car));
+      const remove = element('button', 'team-slot-remove', '×');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove CAR ${car.displayNumber} from team monitor`);
+      remove.addEventListener('click', () => {
+				setTeamSelection(selectedTeamVehicleIds.filter((vehicleId) => vehicleId !== car.vehicleId), true);
+      });
+      slot.append(main, remove);
+      return slot;
+    }));
+  }
+
+  const list = document.getElementById('teamSelectorList');
+  if (list) {
+    list.replaceChildren(...standingsByConfiguredCar(observerConfig.cars, raceState).map(({ car, standing }) => {
+      const selected = isTeamCarSelected(car);
+      const row = element('button', `team-selector-row car-${car.color}${selected ? ' is-selected' : ''}`);
+      row.type = 'button';
+      row.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      const identity = element('span', 'team-selector-identity');
+      identity.append(element('strong', '', `#${car.displayNumber}`), element('span', '', carName(car, standing)));
+      const connection = connectionByCar.get(car.carId);
+      row.append(
+        identity,
+			element('span', 'team-selector-device', car.device || 'SOURCE UNBOUND'),
+			element('em', '', selected ? connection?.state || 'SELECTED'
+				: car.directoryStatus === 'maintenance' ? 'MAINTENANCE'
+					: standing ? 'RACING' : String(car.availability || 'AVAILABLE').toUpperCase()),
+      );
+      row.addEventListener('click', () => {
+        if (selected) {
+					setTeamSelection(selectedTeamVehicleIds.filter((vehicleId) => vehicleId !== car.vehicleId), true);
+          return;
+        }
+        requestTeamCar(car);
+      });
+      return row;
+    }));
+  }
+  setTextIfChanged(
+    document.getElementById('teamSelectionCount'),
+		`${selectedTeamVehicleIds.length} / ${TEAM_SELECTION_LIMIT} SELECTED${teamDirectory?.stale ? ' · DIRECTORY STALE' : ''}`,
+  );
+  renderTeamReplacementPanel();
+  syncTeamSelectionDecorations();
+}
+
+function requestTeamCar(car) {
+  if (!car) return;
+  if (isTeamCarSelected(car)) {
+    focusTeamCar(car);
+    return;
+  }
+	if (selectedTeamVehicleIds.length < TEAM_SELECTION_LIMIT) {
+		setTeamSelection([...selectedTeamVehicleIds, car.vehicleId], true);
+    return;
+  }
+	pendingTeamVehicleId = car.vehicleId;
+  openTeamSelector();
+}
+
+function syncSelectedTeamPeers() {
+  const selectedCarIds = new Set(selectedTeamCars().map((car) => car.carId));
+  for (const car of observerConfig.cars) {
+    if (selectedCarIds.has(car.carId)) continue;
+    const client = clientByCar.get(car.carId);
+    client?.close();
+    clientByCar.delete(car.carId);
+    healthByCar.delete(car.carId);
+    telemetryByCar.delete(car.carId);
+    controlByCar.delete(car.carId);
+    vehicleEventByCar.delete(car.carId);
+    vehicleEventHistoryByCar.delete(car.carId);
+    pitByCar.delete(car.carId);
+    renderedTelemetryByCar.delete(car.carId);
+    if (!connectionByCar.get(car.carId)?.subscriptionDisabled) {
+      updateCameraState(car, {
+        state: 'DISABLED', detail: 'NOT SELECTED', fps: 0, videoActive: false,
+        dataOpen: false, subscriptionDisabled: true,
+      });
+    }
+  }
+  createCameraTiles();
+  for (const car of selectedTeamCars()) {
+    const connection = connectionByCar.get(car.carId);
+    if (!connection || connection.subscriptionDisabled) {
+      updateCameraState(car, {
+				state: car.sourceBound ? 'WAITING' : 'UNAVAILABLE',
+				detail: car.sourceBound ? (teamPeersEnabled ? 'CONNECTING TO RELAY' : 'UI TEST') : 'SOURCE UNBOUND',
+        fps: 0, videoActive: false, dataOpen: false, subscriptionDisabled: false,
+      });
+    }
+  }
+  if (!teamPeersEnabled) return;
+  for (const car of selectedTeamCars()) {
+		if (clientByCar.has(car.carId) || !car.sourceBound || !car.device) continue;
+    const video = cameraTileNodesByCar.get(car.carId)?.querySelector('video');
+    if (!video) continue;
+    const client = new ObserverPeer(
+      car,
+      activeRelayHost,
+      video,
+      updateCameraState,
+      handleHealth,
+      handlePit,
+      handleTelemetry,
+      handleControl,
+      handleVehicleEvent,
+    );
+    clientByCar.set(car.carId, client);
+    client.connect();
+  }
+}
+
+function setTeamSelection(value, persist = false) {
+	const next = normalizeTeamVehicleSelection(observerConfig?.cars || [], value, TEAM_SELECTION_LIMIT);
+	const changed = next.length !== selectedTeamVehicleIds.length
+		|| next.some((vehicleId, index) => vehicleId !== selectedTeamVehicleIds[index]);
+	selectedTeamVehicleIds = next;
+	pendingTeamVehicleId = '';
+  if (changed) {
+    syncSelectedTeamPeers();
+    for (const car of selectedTeamCars()) renderedTelemetryByCar.delete(car.carId);
+    renderCameraTitles();
+    renderCameraHealthDisplays();
+    renderTelemetryDisplays();
+    renderControlDisplays(performance.now());
+    leaderboardSignature = '';
+    renderLeaderboard();
+    renderHeader();
+    renderSituations();
+  }
+  renderTeamSelectionControls();
+  if (persist) persistTeamSelection();
 }
 
 function applyCarEffect(carId) {
@@ -167,7 +503,7 @@ function triggerCarEffect(carId, name) {
 }
 
 function carName(car, standing = null) {
-  return standing?.driver || car.driver || `CAR ${car.displayNumber}`;
+  return standing?.driver || car.driver || car.vehicleName || `CAR ${car.displayNumber}`;
 }
 
 function createDriverAvatar(car, standing) {
@@ -599,16 +935,29 @@ function renderLeaderboard() {
       bestLapMs: standing.bestLapMs, driver: standing.driver,
     } : null,
     health: healthByCar.get(car.carId) || null,
+    selected: isTeamCarSelected(car),
   })));
   if (signature === leaderboardSignature) return;
   leaderboardSignature = signature;
+  const previousScrollTop = root.scrollTop;
   currentLapNodeByCar.clear();
   leaderboardNodesByCar.clear();
   root.replaceChildren(...rows.map(({ car, standing }) => {
     const health = healthByCar.get(car.carId);
     const connection = connectionByCar.get(car.carId);
     const status = ['racing', 'finished', 'retired'].includes(standing?.status) ? standing.status : 'waiting';
-    const row = element('article', `leader-row car-${car.color} is-${status}${standing?.position === 1 ? ' is-leader' : ''}`);
+    const selected = isTeamCarSelected(car);
+    const row = element('article', `leader-row car-${car.color} is-${status}${standing?.position === 1 ? ' is-leader' : ''}${selected ? ' is-team-selected' : ''}`);
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    row.setAttribute('aria-label', `Monitor CAR ${car.displayNumber} ${carName(car, standing)}`);
+    row.addEventListener('click', () => requestTeamCar(car));
+    row.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      requestTeamCar(car);
+    });
     row.append(element('div', 'leader-pos', standing?.position ? `P${standing.position}` : 'P--'), createDriverAvatar(car, standing));
     const driver = element('div', 'leader-driver');
     driver.append(element('strong', '', carName(car, standing)), element('span', 'leader-car', `CAR ${car.displayNumber}`));
@@ -648,6 +997,8 @@ function renderLeaderboard() {
     applyCarEffect(car.carId);
     return row;
   }));
+  root.scrollTop = previousScrollTop;
+  syncTeamSelectionDecorations();
 }
 
 function renderSectorRows() {
@@ -834,6 +1185,21 @@ function renderSituations() {
     vehicleEventByCar,
     pitByCar,
   );
+	if (teamDirectory?.stale) {
+		const ageMs = Math.max(0, Number(teamDirectory.ageMs) || 0);
+		const age = ageMs >= 3600000
+			? `${Math.floor(ageMs / 3600000)}H OLD`
+			: `${Math.max(1, Math.floor(ageMs / 60000))}M OLD`;
+		situations.push({
+			type: 'directory-stale',
+			label: 'DIRECTORY STALE',
+			primary: teamDirectory.event.name || 'VEHICLE DIRECTORY',
+			detail: age,
+			tone: 'watch',
+			priority: 40,
+		});
+		situations.sort((left, right) => right.priority - left.priority).splice(4);
+	}
   if (situations.length === 0) {
     root.replaceChildren(element('article', 'situation-item situation-watch situation-empty', 'WAITING FOR LIVE RACE DATA'));
     return;
@@ -856,8 +1222,9 @@ function renderHeader() {
   const totalLaps = raceState?.raceInfo?.totalLaps;
   document.getElementById('lapValue').innerHTML = `${leader?.lap ?? '--'} <em>/ ${totalLaps ?? '--'}</em>`;
   const panelCount = document.getElementById('panelCount');
-  panelCount.textContent = `${connected}/${observerConfig.cars.length} VIDEO`;
-  panelCount.dataset.state = connected === observerConfig.cars.length ? 'all' : connected > 0 ? 'partial' : 'none';
+  panelCount.textContent = `${connected}/${TEAM_SELECTION_LIMIT} VIDEO`;
+	panelCount.dataset.state = selectedTeamVehicleIds.length > 0 && connected === selectedTeamVehicleIds.length
+    ? 'all' : connected > 0 ? 'partial' : 'none';
 }
 
 function renderPitState() {
@@ -873,19 +1240,33 @@ function createTrackMarkers() {
   const root = document.getElementById('trackMarkers');
   markerNodesByCar.clear();
   root.replaceChildren(...observerConfig.cars.map((car) => {
+    const selected = isTeamCarSelected(car);
     const marker = svgElement('g', {
       id: `marker-${car.carId}`,
-      class: `car-marker car-${car.color}`,
+      class: `car-marker car-${car.color}${selected ? ' is-team-selected' : ''}`,
       'aria-label': `${car.carId} estimated course position`,
+      'aria-pressed': selected ? 'true' : 'false',
+      role: 'button',
+      tabindex: '0',
       hidden: '',
     });
     const confidence = svgElement('circle', { class: 'marker-confidence', r: 23 });
-    marker.append(confidence, svgElement('circle', { class: 'marker-core', r: 16 }));
+    marker.append(
+      svgElement('circle', { class: 'marker-hit', r: 30 }),
+      confidence,
+      svgElement('circle', { class: 'marker-core', r: 16 }),
+    );
     const label = svgElement('text', { class: 'marker-label', y: 3 });
     label.textContent = car.displayNumber;
     const title = svgElement('title');
     title.textContent = `${car.carId} waiting for sector timing`;
     marker.append(label, title);
+    marker.addEventListener('click', () => requestTeamCar(car));
+    marker.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      requestTeamCar(car);
+    });
     markerNodesByCar.set(car.carId, { marker, confidence, label, title });
     return marker;
   }));
@@ -1248,7 +1629,7 @@ function updateAnimationFrame(now) {
   }
   if (observerConfig && now - raceStatusRenderedAt >= TRANSPORT_RENDER_INTERVAL_MS) {
     raceStatusRenderedAt = now;
-    for (const car of observerConfig.cars) renderCameraTransportState(car, now);
+    for (const car of selectedTeamCars()) renderCameraTransportState(car, now);
   }
   animationFrame = requestAnimationFrame(updateAnimationFrame);
 }
@@ -1264,13 +1645,14 @@ function renderAll() {
   renderTimingRows();
   renderSituations();
   renderPitState();
+  renderTeamSelectionControls();
 }
 
 function renderCameraTitles() {
   for (const car of observerConfig.cars) {
     const nodes = cameraTitleNodesByCar.get(car.carId);
     if (!nodes) continue;
-    const driverName = standingByCar.get(car.carId)?.driver || car.driver || car.device;
+    const driverName = standingByCar.get(car.carId)?.driver || car.driver || car.vehicleName || car.device;
     nodes.driver.textContent = driverName;
     nodes.root.title = driverName;
   }
@@ -1377,19 +1759,14 @@ function renderCameraHealthDisplays() {
   for (const car of observerConfig.cars) renderCameraHealth(car);
 }
 
-function createCameraTiles() {
-  const root = document.getElementById('cameraGrid');
-  cameraTitleNodesByCar.clear();
-  cameraEffectNodesByCar.clear();
-  telemetryNodesByCar.clear();
-  healthNodesByCar.clear();
-  controlNodesByCar.clear();
-  renderedTelemetryByCar.clear();
-  root.replaceChildren(...observerConfig.cars.map((car) => {
+function createCameraTile(car) {
+    const cached = cameraTileNodesByCar.get(car.carId);
+    if (cached) return cached;
     const tile = element('article', `camera-tile camera-${car.color}`);
+    tile.dataset.carId = car.carId;
     const head = element('div', 'camera-head');
     const title = element('strong', '', `CAR ${car.displayNumber} `);
-    const driver = element('span', '', car.driver || car.device);
+		const driver = element('span', '', car.driver || car.vehicleName || car.device || 'SOURCE UNBOUND');
     title.append(driver);
     cameraTitleNodesByCar.set(car.carId, { root: title, driver });
     const status = element('span', '', '');
@@ -1505,9 +1882,29 @@ function createCameraTiles() {
     feed.append(video, dashboard, controls, videoState, eventFlash);
     tile.append(head, feed);
     cameraEffectNodesByCar.set(car.carId, { root: tile, badge: eventFlash });
+    cameraTileNodesByCar.set(car.carId, tile);
     applyCarEffect(car.carId);
     return tile;
-  }));
+}
+
+function createEmptyCameraTile(index) {
+  const tile = element('article', 'camera-tile camera-slot-empty');
+  const button = element('button', 'camera-slot-select');
+  button.type = 'button';
+  button.setAttribute('aria-label', `Select a car for team monitor slot ${index + 1}`);
+  button.append(element('strong', '', `SLOT ${index + 1}`), element('span', '', 'SELECT CAR'));
+  button.addEventListener('click', openTeamSelector);
+  tile.append(button);
+  return tile;
+}
+
+function createCameraTiles() {
+  const root = document.getElementById('cameraGrid');
+  if (!root) return;
+  const cars = selectedTeamCars();
+  root.replaceChildren(...Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => (
+    cars[index] ? createCameraTile(cars[index]) : createEmptyCameraTile(index)
+  )));
 }
 
 function updateCameraState(car, state) {
@@ -1528,6 +1925,7 @@ function updateCameraState(car, state) {
   if (summaryChanged) {
     renderHeader();
     renderSituations();
+    renderTeamSelectionControls();
   }
 }
 
@@ -1564,8 +1962,9 @@ function handleRaceState(state, source = 'websocket') {
     receivedAt: performance.now(),
     sequence: Number.isInteger(state.sequence) ? state.sequence : null,
   };
-  for (const car of observerConfig?.cars || []) renderCameraTransportState(car, performance.now());
+  for (const car of selectedTeamCars()) renderCameraTransportState(car, performance.now());
   if (!raceDeduplicator.accept(state)) return;
+	if (state.roster) applyTeamObserverFleet(state.roster);
   const previousRunId = raceState?.raceRunId || '';
   const nextRunId = state.raceRunId || '';
   if (previousRunId && nextRunId && previousRunId !== nextRunId) {
@@ -1856,6 +2255,126 @@ async function loadConfig() {
   return normalizeObserverConfig(await response.json());
 }
 
+function createRelayHTTPURL(relayHost, pathname) {
+	return new URL(pathname, `${location.protocol}//${relayHost}`).toString();
+}
+
+async function loadTeamObserverDirectory(relayHost) {
+	const response = await fetch(createRelayHTTPURL(relayHost, '/api/v1/team-observer-directory'), { cache: 'no-store' });
+	if (response.status === 204 || response.status === 404) return null;
+	if (!response.ok) throw new Error(`Team Observer directory HTTP ${response.status}`);
+	return normalizeTeamObserverDirectoryProjection(await response.json());
+}
+
+async function loadPilotDevices(relayHost) {
+	const response = await fetch(createRelayHTTPURL(relayHost, '/api/v1/pilot-devices'), { cache: 'no-store' });
+	if (!response.ok) throw new Error(`Relay pilot devices HTTP ${response.status}`);
+	return normalizePilotDevicesSnapshot(await response.json());
+}
+
+function fleetTopologySignature(cars) {
+	return JSON.stringify(cars.map((car) => [
+		car.vehicleId, car.sourceId, car.carId, car.flip, car.speedProfileId,
+	]));
+}
+
+function clearCameraNodeMaps() {
+	for (const map of [
+		cameraTitleNodesByCar, cameraTileNodesByCar, cameraEffectNodesByCar,
+		telemetryNodesByCar, healthNodesByCar, controlNodesByCar,
+	]) map.clear();
+}
+
+function applyTeamObserverFleet(roster = raceState?.roster || null) {
+	if (!baseObserverConfig) return false;
+	const nextCars = mergeTeamObserverFleet(baseObserverConfig, teamDirectory, pilotDevices, roster);
+	if (observerConfig && fleetTopologySignature(observerConfig.cars) === fleetTopologySignature(nextCars)) {
+		if (JSON.stringify(observerConfig.cars) === JSON.stringify(nextCars)) return false;
+		observerConfig = { ...baseObserverConfig, cars: nextCars };
+		leaderboardSignature = '';
+		sectorRowsSignature = '';
+		timingRowsSignature = '';
+		renderAll();
+		return false;
+	}
+	const oldCarsByVehicle = new Map((observerConfig?.cars || []).map((car) => [car.vehicleId, car]));
+	const selectionTokens = selectedTeamVehicleIds.flatMap((vehicleId) => {
+		const previous = oldCarsByVehicle.get(vehicleId);
+		return previous?.sourceId ? [vehicleId, previous.sourceId] : [vehicleId];
+	});
+	for (const client of clientByCar.values()) client.close();
+	clientByCar.clear();
+	clearCameraNodeMaps();
+	observerConfig = { ...baseObserverConfig, cars: nextCars };
+	selectedTeamVehicleIds = normalizeTeamVehicleSelection(nextCars, selectionTokens, TEAM_SELECTION_LIMIT);
+	connectionByCar.clear();
+	for (const car of nextCars) connectionByCar.set(car.carId, {
+		state: isTeamCarSelected(car) ? (car.sourceBound ? 'WAITING' : 'UNAVAILABLE') : 'DISABLED',
+		detail: isTeamCarSelected(car) ? (car.sourceBound ? 'NOT CONNECTED' : 'SOURCE UNBOUND') : 'NOT SELECTED',
+		fps: 0,
+		videoActive: false,
+		dataOpen: false,
+		subscriptionDisabled: !isTeamCarSelected(car),
+	});
+	createTrackMarkers();
+	createCameraTiles();
+	leaderboardSignature = '';
+	sectorRowsSignature = '';
+	timingRowsSignature = '';
+	rebuildRaceViewCache();
+	renderAll();
+	if (teamPeersEnabled) syncSelectedTeamPeers();
+	persistTeamSelection();
+	return true;
+}
+
+async function refreshTeamObserverFleet({ directory = false, devices = true } = {}) {
+	if (fleetPollInFlight || document.hidden || !activeRelayHost) return;
+	fleetPollInFlight = true;
+	try {
+		if (directory) {
+			try {
+				const nextDirectory = await loadTeamObserverDirectory(activeRelayHost);
+				teamDirectory = nextDirectory;
+			} catch (error) {
+				console.warn(error);
+			}
+		}
+		if (devices) {
+			try {
+				pilotDevices = await loadPilotDevices(activeRelayHost);
+			} catch (error) {
+				console.warn(error);
+			}
+		}
+		applyTeamObserverFleet();
+	} finally {
+		fleetPollInFlight = false;
+	}
+}
+
+function startTeamObserverFleetPolling() {
+	if (!pilotDevicesPollTimer) {
+		pilotDevicesPollTimer = window.setInterval(
+			() => void refreshTeamObserverFleet({ devices: true }),
+			PILOT_DEVICES_POLL_MS,
+		);
+	}
+	if (!directoryPollTimer) {
+		directoryPollTimer = window.setInterval(
+			() => void refreshTeamObserverFleet({ directory: true, devices: false }),
+			DIRECTORY_POLL_MS,
+		);
+	}
+}
+
+function stopTeamObserverFleetPolling() {
+	if (pilotDevicesPollTimer) window.clearInterval(pilotDevicesPollTimer);
+	if (directoryPollTimer) window.clearInterval(directoryPollTimer);
+	pilotDevicesPollTimer = 0;
+	directoryPollTimer = 0;
+}
+
 function updateDisplayClass() {
   const scale = Number.isFinite(window.devicePixelRatio) ? window.devicePixelRatio : 1;
   const physicalWidth = window.innerWidth * scale;
@@ -1934,16 +2453,45 @@ async function initialize() {
   updateDisplayClass();
   window.addEventListener('resize', updateDisplayClass);
   try {
-    observerConfig = await loadConfig();
+		baseObserverConfig = await loadConfig();
+    const params = new URLSearchParams(location.search);
+		activeRelayHost = params.get('relayHost') || location.host;
+		if (params.get('uiTest') !== '1') {
+			try {
+				teamDirectory = await loadTeamObserverDirectory(activeRelayHost);
+			} catch (error) {
+				console.warn(error);
+			}
+			try {
+				pilotDevices = await loadPilotDevices(activeRelayHost);
+			} catch (error) {
+				console.warn(error);
+			}
+		}
+		observerConfig = {
+			...baseObserverConfig,
+			cars: mergeTeamObserverFleet(baseObserverConfig, teamDirectory, pilotDevices, null),
+		};
+		selectedTeamVehicleIds = initialTeamSelection(params);
     document.getElementById('trackName').textContent = observerConfig.trackName;
     createTrackMarkers();
     trackGeometry = readTrackGeometry();
     createCameraTiles();
     for (const car of observerConfig.cars) connectionByCar.set(car.carId, {
-      state: 'WAITING', detail: 'NOT CONNECTED', fps: 0, videoActive: false,
-      dataOpen: false,
+			state: isTeamCarSelected(car) ? (car.sourceBound ? 'WAITING' : 'UNAVAILABLE') : 'DISABLED',
+			detail: isTeamCarSelected(car) ? (car.sourceBound ? 'NOT CONNECTED' : 'SOURCE UNBOUND') : 'NOT SELECTED',
+      fps: 0, videoActive: false, dataOpen: false,
+      subscriptionDisabled: !isTeamCarSelected(car),
     });
-		const params = new URLSearchParams(location.search);
+		document.getElementById('teamSelectorOpen')?.addEventListener('click', openTeamSelector);
+		document.getElementById('teamSelectorClose')?.addEventListener('click', closeTeamSelector);
+		document.getElementById('teamSelectionClear')?.addEventListener('click', () => setTeamSelection([], true));
+		document.getElementById('teamSelectorBackdrop')?.addEventListener('click', (event) => {
+			if (event.target === event.currentTarget) closeTeamSelector();
+		});
+		window.addEventListener('keydown', (event) => {
+			if (event.key === 'Escape' && !document.getElementById('teamSelectorBackdrop')?.hidden) closeTeamSelector();
+		});
 		if (params.get('uiTest') === '1') {
 			seedObserverUiTest();
 			renderAll();
@@ -1955,40 +2503,19 @@ async function initialize() {
 			}
 			animationFrame = requestAnimationFrame(updateAnimationFrame);
 			return;
-		}
+    }
     renderAll();
-    const relayHost = params.get('relayHost') || location.host;
-    const videoDevices = selectVideoDevices(observerConfig.cars, params.get('videoDevices'));
+    teamPeersEnabled = true;
     raceFallbackEnabled = params.get('raceFallback') !== 'off';
-    raceClient = new RaceStateStream(relayHost, handleRaceState, (open) => {
+    raceClient = new RaceStateStream(activeRelayHost, handleRaceState, (open) => {
       raceStreamOpen = open;
-      syncRaceStateFallback(relayHost);
-      for (const car of observerConfig.cars) renderCameraTransportState(car, performance.now());
+      syncRaceStateFallback(activeRelayHost);
+      for (const car of selectedTeamCars()) renderCameraTransportState(car, performance.now());
     });
     raceClient.connect();
-    syncRaceStateFallback(relayHost);
-    for (const car of observerConfig.cars) {
-      if (!videoDevices.has(car.device)) {
-        updateCameraState(car, {
-          state: 'DISABLED', detail: 'VIDEO NOT SUBSCRIBED', fps: 0, videoActive: false,
-          dataOpen: false, subscriptionDisabled: true,
-        });
-        continue;
-      }
-      const client = new ObserverPeer(
-        car,
-        relayHost,
-        document.getElementById(`video-${car.carId}`),
-        updateCameraState,
-        handleHealth,
-        handlePit,
-        handleTelemetry,
-        handleControl,
-        handleVehicleEvent,
-      );
-      clients.push(client);
-      client.connect();
-    }
+    syncRaceStateFallback(activeRelayHost);
+    syncSelectedTeamPeers();
+		startTeamObserverFleetPolling();
     animationFrame = requestAnimationFrame(updateAnimationFrame);
   } catch (error) {
     document.getElementById('liveStatus').textContent = 'CONFIG ERROR';
@@ -1999,9 +2526,11 @@ async function initialize() {
 window.addEventListener('pagehide', () => {
   if (animationFrame) cancelAnimationFrame(animationFrame);
   raceFallbackEnabled = false;
+	stopTeamObserverFleetPolling();
   raceClient?.close();
   stopRaceStatePolling();
-  for (const client of clients) client.close();
+  for (const client of clientByCar.values()) client.close();
+  clientByCar.clear();
   for (const timer of vehicleEventTimers.values()) window.clearTimeout(timer);
   vehicleEventTimers.clear();
   for (const timer of carEffectTimers.values()) window.clearTimeout(timer);

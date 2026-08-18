@@ -396,6 +396,7 @@ type relayServer struct {
 	pitEventsMu           sync.Mutex
 	pitEvents             map[string]pitPresenceReceipt
 	pitEventIDs           []string
+	teamObserverDirectory *teamObserverDirectorySource
 }
 
 type raceStateEnvelope struct {
@@ -3407,6 +3408,10 @@ func main() {
 	var telemetryLogRetention time.Duration
 	var healthRecoveryModeValue string
 	var fuelDriveDuration time.Duration
+	var teamObserverDirectoryCache string
+	var teamObserverDirectoryOrganization string
+	var teamObserverDirectoryEvent string
+	var teamObserverDirectoryMaxAge time.Duration
 	var configuredDefinitions []relayFileSource
 	flag.StringVar(&configPath, "config", "", "JSON source configuration file; cannot be combined with -upstream, -source, -race-car, or -ayame-pilot-room")
 	flag.StringVar(&sourceRegistryPath, "source-registry", strings.TrimSpace(os.Getenv("MOMO_RELAY_SOURCE_REGISTRY")), "Relay-owned JSON registry for dynamically managed sources")
@@ -3434,6 +3439,10 @@ func main() {
 	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "retain telemetry NDJSON logs for this duration; clean every 2h while race is idle (0 disables cleanup)")
 	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
 	flag.DurationVar(&fuelDriveDuration, "fuel-drive-duration", vehicleFuelDefaultDriveDuration, "active forward-driving time required to consume a full fuel tank")
+	flag.StringVar(&teamObserverDirectoryCache, "team-observer-directory-cache", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_CACHE")), "validated Race Directory cache used for the read-only Team Observer projection")
+	flag.StringVar(&teamObserverDirectoryOrganization, "team-observer-directory-organization", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION")), "expected organization slug for the Team Observer directory cache")
+	flag.StringVar(&teamObserverDirectoryEvent, "team-observer-directory-event", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_EVENT")), "expected event slug for the Team Observer directory cache")
+	flag.DurationVar(&teamObserverDirectoryMaxAge, "team-observer-directory-max-age", time.Hour, "age after which the Team Observer directory projection is marked stale")
 	flag.BoolVar(&allowObserverCommand, "allow-observer-command", false, "allow observer viewers to send commands to Momo")
 	flag.DurationVar(&rtpStallTimeout, "rtp-stall-timeout", defaultRTPStallTimeout, "reconnect a source when received RTP stops for this duration")
 	flag.DurationVar(&upstreamStartTimeout, "upstream-start-timeout", defaultUpstreamStartTimeout, "reconnect a source when no RTP arrives after connection")
@@ -3453,6 +3462,15 @@ func main() {
 	}
 	if rtpStallTimeout <= 0 || upstreamStartTimeout <= 0 || fuelDriveDuration <= 0 || telemetryLogRetention < 0 {
 		log.Fatal("-rtp-stall-timeout, -upstream-start-timeout, and -fuel-drive-duration must be positive; -telemetry-log-retention must not be negative")
+	}
+	teamObserverDirectory, err := newTeamObserverDirectorySource(
+		teamObserverDirectoryCache,
+		teamObserverDirectoryOrganization,
+		teamObserverDirectoryEvent,
+		teamObserverDirectoryMaxAge,
+	)
+	if err != nil {
+		log.Fatal(err)
 	}
 	if strings.TrimSpace(healthRecoveryModeValue) == "" {
 		healthRecoveryModeValue = string(vehicleHealthRecoveryDefault)
@@ -3604,6 +3622,7 @@ func main() {
 		dynamicSourceRegistry: dynamicRegistry,
 		recorder:              recorder,
 		pitEvents:             make(map[string]pitPresenceReceipt),
+		teamObserverDirectory: teamObserverDirectory,
 		sourceRuntime: relaySourceRuntime{
 			rootContext:          ctx,
 			allowObserverCommand: allowObserverCommand,
@@ -3654,6 +3673,7 @@ func main() {
 	mux.HandleFunc("/ws/race-state", serverRelay.serveRaceStateWS)
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
 	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
+	mux.HandleFunc("/api/v1/team-observer-directory", garagePolicy.wrap(serverRelay.serveTeamObserverDirectory))
 	mux.HandleFunc("/api/v1/gameplay/pit-recovery-ticks",
 		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitRecoveryTick)))
 	mux.HandleFunc("/api/v1/gameplay/pit-presence-events",
