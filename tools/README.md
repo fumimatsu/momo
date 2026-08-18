@@ -107,6 +107,11 @@ token を command history、log、Git 管理ファイルへ残さない。常設
 
 ## Relay と Native Observer の同居
 
+11.100 の Relay と連携して Native Observer、MADSYSTEM、Web Observer を起動する手順は
+[MADSYSTEM と Native Observer の起動](../docs/madsystem-native-observer-operations.md) を参照する。
+Race Directory API、local cache、Relay DRIVE 状態、Race Control roster lock の引継ぎは
+[Race Directory の 11.100 引継ぎ](../docs/race-directory-11-100-handoff.md) を参照する。
+
 Native Observer は次の Windows build artifact を使う。
 
 ```text
