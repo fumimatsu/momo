@@ -17,12 +17,6 @@ function state(seq, forwardMps2, verticalMps2) {
   };
 }
 
-test('front load responds to normal braking range', () => {
-  assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -1 }).frontLoad, 0);
-  assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -2.25 }).frontLoad, 0.5);
-  assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -3.5 }).frontLoad, 1);
-});
-
 test('battery voltage uses warning-inclusive and critical-exclusive thresholds', () => {
   const classify = telemetry.classifyLowTelemetryValue;
   assert.equal(classify(7.31, 7.3, 7.0), 'normal');

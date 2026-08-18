@@ -489,22 +489,6 @@
     }
   }
 
-  function deriveFfbLongitudinalLoad(input, options = {}) {
-    const forwardMps2 = Number(input?.forwardMps2);
-    if (!Number.isFinite(forwardMps2)) {
-      return { frontLoad: 0, measuredLoad: 0 };
-    }
-
-    const startMps2 = Math.max(0, Number(options.startMps2 ?? 1.0));
-    const fullMps2 = Math.max(startMps2 + 0.1, Number(options.fullMps2 ?? 3.5));
-    const measuredLoad = clamp(
-      ((-forwardMps2) - startMps2) / (fullMps2 - startMps2),
-      0,
-      1,
-    );
-    return { frontLoad: measuredLoad, measuredLoad };
-  }
-
   class MotionFeatureExtractor {
     constructor(options = {}) {
       this.options = { ...DEFAULT_MOTION_OPTIONS, ...options };
@@ -883,7 +867,6 @@
     TelemetryTracker,
     classifyLowTelemetryValue,
     classifySequence,
-    deriveFfbLongitudinalLoad,
     deriveVehicleMotion,
     encodeTelemetry,
     getStaleThresholdMs,

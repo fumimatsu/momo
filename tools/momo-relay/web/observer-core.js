@@ -611,7 +611,8 @@ export function raceClockValue(state, elapsedSinceSnapshotMs = 0, lapHistory = n
     || state.standings?.[0];
   const base = finiteNumber(leader?.allTimeMs);
   if (state.allTimeMode !== 'countdown') {
-    const currentLap = currentLapClockValue(leader, state, elapsed);
+    const leaderIsRacing = state.phase === 'green' && leader?.status === 'racing';
+    const currentLap = leaderIsRacing ? currentLapClockValue(leader, state, elapsed) : 0;
     const reconstructed = reconstructRaceElapsedMs(leader, lapHistory, currentLap);
     if (reconstructed !== null) return reconstructed;
   }
