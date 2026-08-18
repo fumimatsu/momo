@@ -75,6 +75,9 @@ type driveInputLogSample struct {
 	LastMarkerIndex     *int     `json:"lastMarkerIndex,omitempty"`
 	FuelRatePerSecond   float64  `json:"fuelRatePerSecond"`
 	FuelRateMultiplier  float64  `json:"fuelRateMultiplier"`
+	FuelPowerScale      float64  `json:"fuelPowerScale"`
+	FuelRoughMultiplier float64  `json:"fuelRoughMultiplier"`
+	FuelBoostMultiplier float64  `json:"fuelBoostMultiplier"`
 	ThrottleVariation   float64  `json:"throttleVariationPerSecond"`
 	SessionType         string   `json:"sessionType"`
 }

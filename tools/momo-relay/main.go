@@ -593,19 +593,23 @@ type telemetryOperationsState struct {
 }
 
 type vehicleHealthOperationsState struct {
-	HP               float64 `json:"hp"`
-	SpeedCap         float64 `json:"speedCap"`
-	Mode             string  `json:"mode"`
-	RecoveryMode     string  `json:"recoveryMode"`
-	Fuel             float64 `json:"fuel"`
-	FuelState        string  `json:"fuelState"`
-	Boost            float64 `json:"boost"`
-	BoostState       string  `json:"boostState"`
-	BoostRemainingMS int64   `json:"boostRemainingMs"`
-	Gear             int     `json:"gear"`
-	Position         int     `json:"position"`
-	FieldSize        int     `json:"fieldSize"`
-	FuelRatePerSec   float64 `json:"fuelRatePerSecond"`
+	HP                  float64 `json:"hp"`
+	SpeedCap            float64 `json:"speedCap"`
+	Mode                string  `json:"mode"`
+	RecoveryMode        string  `json:"recoveryMode"`
+	Fuel                float64 `json:"fuel"`
+	FuelState           string  `json:"fuelState"`
+	Boost               float64 `json:"boost"`
+	BoostState          string  `json:"boostState"`
+	BoostRemainingMS    int64   `json:"boostRemainingMs"`
+	Gear                int     `json:"gear"`
+	Position            int     `json:"position"`
+	FieldSize           int     `json:"fieldSize"`
+	FuelRatePerSec      float64 `json:"fuelRatePerSecond"`
+	FuelRateMultiplier  float64 `json:"fuelRateMultiplier"`
+	FuelPowerScale      float64 `json:"fuelPowerScale"`
+	FuelRoughMultiplier float64 `json:"fuelRoughMultiplier"`
+	FuelBoostMultiplier float64 `json:"fuelBoostMultiplier"`
 }
 
 type downstreamOperationsState struct {
@@ -1139,19 +1143,23 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		VideoHealth: videoHealth.String(),
 		Drive:       r.driveStatusSnapshot(),
 		VehicleHealth: vehicleHealthOperationsState{
-			HP:               health.HP,
-			SpeedCap:         health.SpeedCap,
-			Mode:             health.Mode,
-			RecoveryMode:     string(r.vehicleHealth.recoveryModeSnapshot()),
-			Fuel:             health.Fuel,
-			FuelState:        health.FuelState,
-			Boost:            health.Boost,
-			BoostState:       health.BoostState,
-			BoostRemainingMS: health.BoostRemainingMS,
-			Gear:             health.Gear,
-			Position:         health.Position,
-			FieldSize:        health.FieldSize,
-			FuelRatePerSec:   health.FuelRatePerSec,
+			HP:                  health.HP,
+			SpeedCap:            health.SpeedCap,
+			Mode:                health.Mode,
+			RecoveryMode:        string(r.vehicleHealth.recoveryModeSnapshot()),
+			Fuel:                health.Fuel,
+			FuelState:           health.FuelState,
+			Boost:               health.Boost,
+			BoostState:          health.BoostState,
+			BoostRemainingMS:    health.BoostRemainingMS,
+			Gear:                health.Gear,
+			Position:            health.Position,
+			FieldSize:           health.FieldSize,
+			FuelRatePerSec:      health.FuelRatePerSec,
+			FuelRateMultiplier:  health.FuelRateMultiplier,
+			FuelPowerScale:      health.FuelPowerScale,
+			FuelRoughMultiplier: health.FuelRoughMultiplier,
+			FuelBoostMultiplier: health.FuelBoostMultiplier,
 		},
 		Upstream: upstreamOperationsState{
 			PeerState:               peerState,
@@ -2370,6 +2378,9 @@ func (r *relay) recordDriveInput(pilotID uint64, requested webrtc.DataChannelMes
 		LastMarkerIndex:     courseProgress.LastMarkerIndex,
 		FuelRatePerSecond:   health.FuelRatePerSec,
 		FuelRateMultiplier:  health.FuelRateMultiplier,
+		FuelPowerScale:      health.FuelPowerScale,
+		FuelRoughMultiplier: health.FuelRoughMultiplier,
+		FuelBoostMultiplier: health.FuelBoostMultiplier,
 		ThrottleVariation:   health.ThrottleVariation,
 		SessionType:         health.SessionType,
 	})

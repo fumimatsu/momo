@@ -172,6 +172,7 @@ func TestVehicleGameplayQualifyConsumesFuel(t *testing.T) {
 	health := newVehicleHealthWithFuelDuration(base, 10*time.Second)
 	health.observeRaceState(true, "rr_qualify", "green", 1, 4, base, "qualify")
 	health.setDriveEnabled(true, base)
+	health.setRequestedGear(3, base)
 	health.limitCommand("S:1500,T:1800", base)
 
 	advanceGameplayDrivingInSession(health, base, 5, "qualify")
@@ -208,8 +209,70 @@ func TestVehicleGameplayRoughThrottleConsumesMoreFuelThanSteadyThrottle(t *testi
 	if math.Abs(steadySnapshot.Fuel-(200.0/3.0)) > 0.001 || steadySnapshot.FuelRateMultiplier != 1 {
 		t.Fatalf("steady fuel snapshot = %#v", steadySnapshot)
 	}
-	if roughSnapshot.Fuel >= steadySnapshot.Fuel-5 || roughSnapshot.FuelRateMultiplier < 1.5 || roughSnapshot.ThrottleVariation <= vehicleFuelVariationFullPenalty {
+	if roughSnapshot.Fuel >= steadySnapshot.Fuel-4 || roughSnapshot.FuelRoughMultiplier < 1.5 || roughSnapshot.ThrottleVariation <= vehicleFuelVariationFullPenalty {
 		t.Fatalf("rough fuel snapshot = %#v, steady = %#v", roughSnapshot, steadySnapshot)
+	}
+}
+
+func TestVehicleGameplayFuelScalesWithEffectivePower(t *testing.T) {
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		gear      int
+		wantScale float64
+		wantFuel  float64
+	}{
+		{gear: 1, wantScale: 0.20, wantFuel: 100 - 10.0/6.0},
+		{gear: 2, wantScale: 0.50, wantFuel: 100 - 25.0/6.0},
+		{gear: 3, wantScale: 1.00, wantFuel: 100 - 50.0/6.0},
+	}
+
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("gear_%d", test.gear), func(t *testing.T) {
+			health := newVehicleHealthWithFuelDuration(base, 120*time.Second)
+			health.observeRaceState(true, "rr_fuel_power", "green", 1, 4, base, "race")
+			health.setDriveEnabled(true, base)
+			health.setRequestedGear(test.gear, base)
+			health.limitCommand("S:1500,T:2000", base)
+
+			for tick := 1; tick <= 100; tick++ {
+				now := base.Add(time.Duration(tick) * 100 * time.Millisecond)
+				health.limitCommand("S:1500,T:2000", now)
+			}
+
+			snapshot := health.snapshot(base.Add(10 * time.Second))
+			if math.Abs(snapshot.FuelPowerScale-test.wantScale) > 0.001 ||
+				math.Abs(snapshot.FuelRateMultiplier-test.wantScale) > 0.001 ||
+				math.Abs(snapshot.Fuel-test.wantFuel) > 0.001 {
+				t.Fatalf("gear %d fuel snapshot = %#v", test.gear, snapshot)
+			}
+		})
+	}
+}
+
+func TestVehicleGameplayBoostAddsFuelConsumption(t *testing.T) {
+	base := time.Date(2026, 8, 18, 13, 0, 0, 0, time.UTC)
+	health := newVehicleHealthWithFuelDuration(base, 120*time.Second)
+	health.observeRaceState(true, "rr_fuel_boost", "green", 1, 4, base, "race")
+	health.setDriveEnabled(true, base)
+	health.setRequestedGear(3, base)
+	health.limitCommand("S:1500,T:2000", base)
+	health.mu.Lock()
+	health.boost = vehicleBoostMaximum
+	health.mu.Unlock()
+	if _, activated := health.activateBoost(base); !activated {
+		t.Fatal("boost activation failed")
+	}
+
+	for tick := 1; tick <= 20; tick++ {
+		now := base.Add(time.Duration(tick) * 100 * time.Millisecond)
+		health.limitCommand("S:1500,T:2000", now)
+	}
+
+	snapshot := health.snapshot(base.Add(2 * time.Second))
+	if math.Abs(snapshot.Fuel-97.5) > 0.001 || snapshot.FuelPowerScale != 1 ||
+		snapshot.FuelBoostMultiplier != vehicleFuelBoostMultiplier ||
+		math.Abs(snapshot.FuelRateMultiplier-vehicleFuelBoostMultiplier) > 0.001 {
+		t.Fatalf("boost fuel snapshot = %#v", snapshot)
 	}
 }
 
