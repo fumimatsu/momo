@@ -524,13 +524,15 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 2px 16px;
       align-items: center;
-      width: min(390px, calc(100vw - 32px));
-      min-height: 62px;
-      padding: 8px 14px;
+      width: min(460px, calc(100vw - 32px));
+      min-height: 72px;
+      padding: 10px 18px;
       border: 2px solid #ffd04f;
       border-radius: 4px;
-      background: rgba(67, 43, 3, 0.84);
-      box-shadow: 0 10px 34px rgba(0, 0, 0, 0.48);
+      background: rgba(46, 29, 2, 0.5);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3);
+      -webkit-backdrop-filter: blur(4px);
+      backdrop-filter: blur(4px);
       color: #ffffff;
       transform: translateX(-50%) scale(var(--osd-scale));
       transform-origin: top center;
@@ -541,17 +543,21 @@
     }
 
     .rear-attention-kicker {
-      color: rgba(255, 240, 185, 0.82);
-      font-size: 9px;
+      color: rgba(255, 240, 185, 0.94);
+      font-size: 10px;
       font-weight: 800;
       letter-spacing: 0.08em;
     }
 
     .rear-attention strong {
       display: block;
-      font-size: 20px;
+      overflow: hidden;
+      font-size: 25px;
       letter-spacing: 0;
       line-height: 1.05;
+      text-overflow: ellipsis;
+      text-shadow: 0 2px 2px rgba(0, 0, 0, 0.96), 0 0 10px rgba(0, 0, 0, 0.72);
+      white-space: nowrap;
     }
 
     .rear-attention output {
@@ -559,23 +565,26 @@
       grid-column: 2;
       color: #ffe06c;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 27px;
+      font-size: 36px;
       font-weight: 800;
       letter-spacing: 0;
+      text-shadow: 0 2px 2px rgba(0, 0, 0, 0.96), 0 0 10px rgba(0, 0, 0, 0.72);
     }
 
     .rear-attention-detail {
       grid-column: 1 / 3;
-      color: rgba(255, 242, 207, 0.9);
+      color: rgba(255, 247, 224, 0.98);
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 10px;
-      font-weight: 700;
+      font-size: 13px;
+      font-weight: 800;
       letter-spacing: 0;
+      line-height: 1.2;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.98), 0 0 7px rgba(0, 0, 0, 0.8);
     }
 
     .rear-attention[data-severity="critical"] {
       border-color: #ff6159;
-      background: rgba(91, 13, 11, 0.87);
+      background: rgba(63, 8, 7, 0.56);
     }
 
     .rear-attention[data-severity="critical"] output {
@@ -584,8 +593,8 @@
 
     .rear-attention[data-mode="blue-flag"] {
       border-color: #55a7ff;
-      background: rgba(5, 35, 91, 0.9);
-      box-shadow: 0 10px 34px rgba(0, 32, 94, 0.55);
+      background: rgba(3, 25, 65, 0.56);
+      box-shadow: 0 8px 26px rgba(0, 32, 94, 0.34);
     }
 
     .rear-attention[data-mode="blue-flag"] .rear-attention-kicker,
@@ -618,13 +627,15 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 2px 18px;
       align-items: center;
-      width: min(420px, calc(100vw - 32px));
-      min-height: 62px;
-      padding: 8px 14px;
+      width: min(480px, calc(100vw - 32px));
+      min-height: 72px;
+      padding: 10px 18px;
       border: 2px solid #57dcff;
       border-radius: 4px;
-      background: rgba(3, 34, 47, 0.88);
-      box-shadow: 0 10px 34px rgba(0, 0, 0, 0.48), 0 0 20px rgba(69, 218, 255, 0.18);
+      background: rgba(2, 24, 33, 0.52);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3), 0 0 16px rgba(69, 218, 255, 0.14);
+      -webkit-backdrop-filter: blur(4px);
+      backdrop-filter: blur(4px);
       color: #ffffff;
       pointer-events: none;
       transform: translateX(-50%) scale(var(--osd-scale));
@@ -636,38 +647,42 @@
     }
 
     .race-milestone-kicker {
-      color: rgba(185, 239, 255, 0.88);
-      font-size: 9px;
+      color: rgba(185, 239, 255, 0.96);
+      font-size: 10px;
       font-weight: 800;
       letter-spacing: 0.08em;
     }
 
     .race-milestone strong {
       display: block;
-      font-size: 22px;
+      font-size: 26px;
       letter-spacing: 0;
       line-height: 1.05;
+      text-shadow: 0 2px 2px rgba(0, 0, 0, 0.96), 0 0 10px rgba(0, 0, 0, 0.72);
     }
 
     .race-milestone output {
       grid-row: 1 / 3;
       grid-column: 2;
-      min-width: 132px;
+      min-width: 162px;
       color: #8be9ff;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 29px;
+      font-size: 38px;
       font-weight: 850;
       letter-spacing: 0;
       text-align: right;
+      text-shadow: 0 2px 2px rgba(0, 0, 0, 0.96), 0 0 10px rgba(0, 0, 0, 0.72);
     }
 
     .race-milestone-detail {
       grid-column: 1 / 3;
-      color: rgba(213, 242, 250, 0.9);
+      color: rgba(225, 247, 253, 0.98);
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 10px;
-      font-weight: 700;
+      font-size: 13px;
+      font-weight: 800;
       letter-spacing: 0;
+      line-height: 1.2;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.98), 0 0 7px rgba(0, 0, 0, 0.8);
     }
 
     .race-milestone.is-active {
@@ -676,8 +691,8 @@
 
     .race-milestone[data-result="personal-best"] {
       border-color: #7fe56d;
-      background: rgba(16, 63, 24, 0.9);
-      box-shadow: 0 10px 34px rgba(0, 0, 0, 0.48), 0 0 24px rgba(95, 255, 122, 0.3);
+      background: rgba(9, 42, 16, 0.56);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3), 0 0 20px rgba(95, 255, 122, 0.22);
     }
 
     .race-milestone[data-result="personal-best"] output {
@@ -686,8 +701,8 @@
 
     .race-milestone[data-result="overall-best"] {
       border-color: #bd78ff;
-      background: rgba(53, 18, 82, 0.92);
-      box-shadow: 0 10px 34px rgba(0, 0, 0, 0.48), 0 0 26px rgba(190, 101, 255, 0.36);
+      background: rgba(38, 11, 60, 0.58);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.3), 0 0 22px rgba(190, 101, 255, 0.26);
     }
 
     .race-milestone[data-result="overall-best"] output {
@@ -697,8 +712,8 @@
     .race-milestone[data-kind="goal"] {
       grid-template-columns: 50px minmax(0, 1fr) auto;
       border-color: #f5f7fb;
-      background: rgba(9, 13, 17, 0.94);
-      box-shadow: 0 10px 38px rgba(0, 0, 0, 0.58), 0 0 30px rgba(255, 255, 255, 0.24);
+      background: rgba(6, 9, 12, 0.64);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 24px rgba(255, 255, 255, 0.18);
     }
 
     .race-milestone[data-kind="goal"] .race-milestone-copy {
@@ -732,8 +747,8 @@
 
     .race-milestone[data-kind="safety"] {
       border-color: #ff645f;
-      background: rgba(91, 13, 11, 0.94);
-      box-shadow: 0 10px 38px rgba(0, 0, 0, 0.58), 0 0 30px rgba(255, 74, 69, 0.32);
+      background: rgba(60, 8, 7, 0.62);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 24px rgba(255, 74, 69, 0.24);
     }
 
     .race-milestone[data-kind="safety"] output {
@@ -777,13 +792,15 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 2px 18px;
       align-items: center;
-      width: min(390px, calc(100vw - 32px));
-      min-height: 58px;
-      padding: 8px 14px;
+      width: min(440px, calc(100vw - 32px));
+      min-height: 66px;
+      padding: 9px 18px;
       border: 2px solid rgba(78, 218, 255, 0.9);
       border-radius: 4px;
-      background: rgba(3, 32, 43, 0.84);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.42);
+      background: rgba(2, 24, 33, 0.5);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      -webkit-backdrop-filter: blur(4px);
+      backdrop-filter: blur(4px);
       color: #ffffff;
       pointer-events: none;
       transform: translateX(-50%) scale(var(--osd-scale));
@@ -795,8 +812,8 @@
     }
 
     .pit-stopwatch-kicker {
-      color: rgba(181, 240, 255, 0.86);
-      font-size: 9px;
+      color: rgba(181, 240, 255, 0.96);
+      font-size: 10px;
       font-weight: 800;
       letter-spacing: 0.1em;
     }
@@ -804,8 +821,9 @@
     .pit-stopwatch strong {
       display: block;
       color: #d7f8ff;
-      font-size: 19px;
+      font-size: 23px;
       line-height: 1.05;
+      text-shadow: 0 2px 2px rgba(0, 0, 0, 0.96), 0 0 10px rgba(0, 0, 0, 0.72);
     }
 
     .pit-stopwatch output {
@@ -814,15 +832,16 @@
       min-width: 150px;
       color: #7feaff;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
-      font-size: 32px;
+      font-size: 39px;
       font-weight: 850;
       letter-spacing: 0.02em;
       text-align: right;
+      text-shadow: 0 2px 2px rgba(0, 0, 0, 0.96), 0 0 10px rgba(0, 0, 0, 0.72);
     }
 
     .pit-stopwatch[data-state="complete"] {
       border-color: rgba(95, 255, 168, 0.92);
-      background: rgba(4, 48, 32, 0.84);
+      background: rgba(2, 36, 23, 0.54);
     }
 
     .pit-stopwatch[data-state="complete"] output {
@@ -1597,7 +1616,7 @@
 
     .vehicle-vital[data-state="warning"] { --vital-color: #ffd34d; }
     .vehicle-vital[data-state="critical"] {
-      --vital-color: #ff4778;
+      --vital-color: #ff4e58;
       animation: vehicle-vital-critical 520ms ease-in-out infinite alternate;
     }
     .vehicle-vital[data-state="stale"],
@@ -3248,30 +3267,30 @@
       }
 
       .rear-attention {
-        width: min(330px, calc(100vw - 24px));
-        min-height: 54px;
+        width: min(410px, calc(100vw - 24px));
+        min-height: 64px;
       }
 
       .rear-attention strong {
-        font-size: 17px;
+        font-size: 21px;
       }
 
       .rear-attention output {
-        font-size: 22px;
+        font-size: 29px;
       }
 
       .race-milestone {
-        width: min(350px, calc(100vw - 24px));
-        min-height: 54px;
+        width: min(420px, calc(100vw - 24px));
+        min-height: 64px;
       }
 
       .race-milestone strong {
-        font-size: 18px;
+        font-size: 22px;
       }
 
       .race-milestone output {
-        min-width: 112px;
-        font-size: 23px;
+        min-width: 136px;
+        font-size: 30px;
       }
 
       .race-milestone[data-kind="goal"] {
@@ -3284,17 +3303,17 @@
       }
 
       .pit-stopwatch {
-        width: min(330px, calc(100vw - 24px));
-        min-height: 52px;
+        width: min(390px, calc(100vw - 24px));
+        min-height: 60px;
       }
 
       .pit-stopwatch strong {
-        font-size: 16px;
+        font-size: 20px;
       }
 
       .pit-stopwatch output {
-        min-width: 125px;
-        font-size: 27px;
+        min-width: 138px;
+        font-size: 32px;
       }
 
       .race-history {
@@ -4507,17 +4526,17 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260818-lap-history-v1"></script>
-    <script src="../../m5-audio.js?v=20260818-lap-history-v1"></script>
+    <script src="../../telemetry.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="../../m5-audio.js?v=20260818-team-observer-ui-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260818-lap-history-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260818-lap-history-v1'"
+      src="./gamepad-profile.js?v=20260818-team-observer-ui-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260818-team-observer-ui-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260818-lap-history-v1"></script>
-    <script src="./race-battle.js?v=20260818-lap-history-v1"></script>
-    <script src="./notification-controller.js?v=20260818-lap-history-v1"></script>
-    <script src="../../race-announcer.js?v=20260818-lap-history-v1"></script>
-    <script src="./pilot.js?v=20260818-lap-history-v1"></script>
+    <script src="./ffb-bridge.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="./race-battle.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="./notification-controller.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="../../race-announcer.js?v=20260818-team-observer-ui-v1"></script>
+    <script src="./pilot.js?v=20260818-team-observer-ui-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

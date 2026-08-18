@@ -23,6 +23,23 @@ test('front load responds to normal braking range', () => {
   assert.equal(telemetry.deriveFfbLongitudinalLoad({ forwardMps2: -3.5 }).frontLoad, 1);
 });
 
+test('battery voltage uses warning-inclusive and critical-exclusive thresholds', () => {
+  const classify = telemetry.classifyLowTelemetryValue;
+  assert.equal(classify(7.31, 7.3, 7.0), 'normal');
+  assert.equal(classify(7.3, 7.3, 7.0), 'warning');
+  assert.equal(classify(7.0, 7.3, 7.0), 'warning');
+  assert.equal(classify(6.99, 7.3, 7.0), 'critical');
+  assert.equal(classify(Number.NaN, 7.3, 7.0), 'unavailable');
+});
+
+test('battery voltage hysteresis prevents warning color flicker', () => {
+  const classify = telemetry.classifyLowTelemetryValue;
+  assert.equal(classify(7.4, 7.3, 7.0, 'warning', 0.2), 'warning');
+  assert.equal(classify(7.51, 7.3, 7.0, 'warning', 0.2), 'normal');
+  assert.equal(classify(7.1, 7.3, 7.0, 'critical', 0.2), 'critical');
+  assert.equal(classify(7.2, 7.3, 7.0, 'critical', 0.2), 'warning');
+});
+
 test('surface roughness stays quiet at rest and reacts independently from impact', () => {
   const extractor = new telemetry.MotionFeatureExtractor();
   let snapshot = null;

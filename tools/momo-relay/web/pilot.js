@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260818-lap-history-v1';
+  const PILOT_BUILD_ID = '20260818-team-observer-ui-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -221,11 +221,11 @@
   const VEHICLE_BATTERY_CELLS = Math.max(1, Math.min(8, getIntegerParam('batteryCells', 2)));
   const VEHICLE_VOLTAGE_WARNING_V = Math.max(
     0,
-    getNumberParam('batteryWarningV', VEHICLE_BATTERY_CELLS * 3.5),
+    getNumberParam('batteryWarningV', VEHICLE_BATTERY_CELLS * 3.65),
   );
   const VEHICLE_VOLTAGE_CRITICAL_V = Math.min(
     VEHICLE_VOLTAGE_WARNING_V,
-    Math.max(0, getNumberParam('batteryCriticalV', VEHICLE_BATTERY_CELLS * 3.3)),
+    Math.max(0, getNumberParam('batteryCriticalV', VEHICLE_BATTERY_CELLS * 3.5)),
   );
   const VEHICLE_ESC_TEMP_WARNING_C = getNumberParam('escTempWarningC', 70);
   const VEHICLE_ESC_TEMP_CRITICAL_C = Math.max(
@@ -1782,7 +1782,10 @@
     rearAttention.dataset.severity = severity;
     rearAttention.dataset.mode = 'rear';
     setText(rearAttentionKicker, 'PROXIMITY ALERT');
-    setText(rearAttentionLabel, critical ? 'REAR ATTACK' : 'REAR PRESSURE');
+    setText(
+      rearAttentionLabel,
+      `${critical ? 'REAR ATTACK' : 'REAR PRESSURE'} · ${rivalName}`,
+    );
     setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
     setText(
       rearAttentionDetail,
@@ -1821,7 +1824,7 @@
     rearAttention.dataset.mode = 'blue-flag';
     rearAttention.dataset.severity = 'blue-flag';
     setText(rearAttentionKicker, 'RACE CONTROL');
-    setText(rearAttentionLabel, 'BLUE FLAG');
+    setText(rearAttentionLabel, `BLUE FLAG · ${rivalName}`);
     setText(rearAttentionGap, formatRaceInterval(state.gapMs, null));
     setText(rearAttentionDetail, `LET FASTER CAR PASS  /  ${rivalName}  /  ${markerLabel}`);
     rearAttention.hidden = false;
@@ -3643,14 +3646,13 @@
   }
 
   function classifyLowVital(value, warning, critical, previous, hysteresis) {
-    if (!Number.isFinite(value)) return 'unavailable';
-    if (previous === 'critical' && value <= critical + hysteresis) return 'critical';
-    if (previous === 'warning' && value <= warning + hysteresis) {
-      return value <= critical ? 'critical' : 'warning';
-    }
-    if (value <= critical) return 'critical';
-    if (value <= warning) return 'warning';
-    return 'normal';
+    return window.FpvTelemetry?.classifyLowTelemetryValue?.(
+      value,
+      warning,
+      critical,
+      previous,
+      hysteresis,
+    ) || 'unavailable';
   }
 
   function classifyHighVital(value, warning, critical, previous, hysteresis) {
@@ -3689,6 +3691,7 @@
   function updateVehicleVitals(nowMs = performance.now()) {
     if (!vehicleVitals) return;
     const snapshot = getCurrentEscSnapshot(nowMs);
+    updateVehicleStatusClusterVisibility(snapshot);
     renderVehicleSpeed(snapshot, nowMs);
     const esc = snapshot?.state?.esc;
     if (!snapshot || !esc) {
@@ -4444,15 +4447,19 @@
     return isGamepadDriveActive();
   }
 
+  function updateVehicleStatusClusterVisibility(snapshot = getCurrentEscSnapshot()) {
+    if (!vehicleStatusCluster) return;
+    const hasEscTelemetry = Boolean(snapshot?.state?.esc);
+    vehicleStatusCluster.hidden = !(isDriveUiVisible() || hasEscTelemetry);
+  }
+
   function updateControlUiMode() {
     const driveUiVisible = isDriveUiVisible();
     document.body.classList.toggle('drive-ui', driveUiVisible);
     if (driveHud) {
       driveHud.hidden = !driveUiVisible;
     }
-    if (vehicleStatusCluster) {
-      vehicleStatusCluster.hidden = !driveUiVisible;
-    }
+    updateVehicleStatusClusterVisibility();
     updateDriveHud();
     updateOsdScale();
   }
