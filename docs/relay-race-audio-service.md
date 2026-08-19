@@ -12,6 +12,7 @@ Relay PilotへLAP完了とGOALの日英TTSを配信する実装である。Pilot
 実装済み範囲:
 
 - `race_state v2` の新規 `lapHistory` から `lap_complete` を 1 回だけ確定する。
+- `lapHistory[].achievement` が示す自己ベスト・全体ベスト更新を LAP 読み上げへ追加する。Relay はベストを再計算しない。
 - `phase` の `finished` 遷移から `race_finish` を 1 回だけ確定する。
 - 英語はKokoro `am_michael`、日本語は`jf_alpha + Misaki JAG2P`を使う。Viewerの既定選択は`Off`とする。
 - WebGPU/FP32 model準備完了後の`lap_complete`だけをBrowser Kokoroへ分散する。
@@ -337,6 +338,12 @@ APIで読む。capabilityは同じprefixで`type: race_audio_capabilities`、`st
 `eventId` は `(raceRunId, carId, kind, lap)` から決める。timing correction で lap time が変わっても同じ LAP を
 再度読まない。Relay 再起動または途中接続時は、その時点の既存 `lapHistory` を baseline とし、過去 LAP を
 まとめて再生しない。
+
+`achievement` は timing authority が全車の完了時刻順で確定する任意項目であり、値は
+`personal_best` または `overall_best` とする。Race Control は検証・保存・配信だけを行い、Relay は値に応じて
+`New personal best` または `New overall best` を文末へ付ける。現在の production authority である MADSYSTEM が
+この項目を省略する間は、通常の LAP とタイムだけを読み上げる。Timing Engine への authority 切替前に、
+MADSYSTEM 側も同じ項目を送るか、切替までベスト更新音声を無効のまま受け入れる必要がある。
 
 ## この PC での起動
 

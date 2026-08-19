@@ -76,6 +76,29 @@ func TestRaceAudioDetectorDefersConfiguredFinalLapUntilFinish(t *testing.T) {
 	}
 }
 
+func TestRaceAudioDetectorUsesAuthoritativeLapAchievement(t *testing.T) {
+	detector := raceAudioDetector{}
+	detector.observe(raceAudioTestState("run-best", "green", 1, 14000), "CP-1")
+	events := detector.observe(
+		raceAudioTestStateWithAchievement("run-best", "green", "racing", 2, 13000, "personal_best"),
+		"CP-1",
+	)
+	if len(events) != 1 || events[0].EnglishText != "Lap 2. 13 point zero zero zero seconds. New personal best." ||
+		events[0].JapaneseText != "2周目、13.000。自己ベスト更新。" {
+		t.Fatalf("unexpected personal best event: %#v", events)
+	}
+
+	detector.observe(raceAudioTestState("run-overall", "green", 1, 14000), "CP-1")
+	events = detector.observe(
+		raceAudioTestStateWithAchievement("run-overall", "green", "racing", 2, 12000, "overall_best"),
+		"CP-1",
+	)
+	if len(events) != 1 || events[0].EnglishText != "Lap 2. 12 point zero zero zero seconds. New overall best." ||
+		events[0].JapaneseText != "2周目、12.000。全体ベスト更新。" {
+		t.Fatalf("unexpected overall best event: %#v", events)
+	}
+}
+
 func TestRaceAudioPitDetectorEmitsServiceCompleteOnce(t *testing.T) {
 	detector := raceAudioPitDetector{}
 	servicing := pitPresenceSnapshot{
@@ -127,16 +150,19 @@ func TestRaceAudioPitCompleteUsesBrowserKokoroPath(t *testing.T) {
 }
 
 func TestRaceAudioEnglishTemplatesAreShortAndOmitUnknownPosition(t *testing.T) {
-	if got, want := raceAudioEnglishLapText(4, 13715, 2), "Lap 4. 13 point seven one five seconds"; got != want {
+	if got, want := raceAudioEnglishLapText(4, 13715, ""), "Lap 4. 13 point seven one five seconds"; got != want {
 		t.Fatalf("lap text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishLapText(4, 13715, 0), "Lap 4. 13 point seven one five seconds"; got != want {
-		t.Fatalf("lap text without position = %q, want %q", got, want)
+	if got, want := raceAudioEnglishLapText(4, 13715, "personal_best"), "Lap 4. 13 point seven one five seconds. New personal best."; got != want {
+		t.Fatalf("personal best lap text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioJapaneseLapText(4, 13715, 2), "4周目、13.715"; got != want {
+	if got, want := raceAudioEnglishLapText(4, 13715, "overall_best"), "Lap 4. 13 point seven one five seconds. New overall best."; got != want {
+		t.Fatalf("overall best lap text = %q, want %q", got, want)
+	}
+	if got, want := raceAudioJapaneseLapText(4, 13715, ""), "4周目、13.715"; got != want {
 		t.Fatalf("Japanese lap text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioJapaneseLapText(5, 13005, 0), "5周目、13.005"; got != want {
+	if got, want := raceAudioJapaneseLapText(5, 13005, "personal_best"), "5周目、13.005。自己ベスト更新。"; got != want {
 		t.Fatalf("Japanese lap text with zero digits = %q, want %q", got, want)
 	}
 	if got, want := raceAudioJapaneseFinishText(2, 13715), "ゴール。 2位。 最終ラップ、13.715秒。"; got != want {
@@ -695,19 +721,34 @@ func measureRaceAudioTrackDelivery(t *testing.T, clip raceAudioClip) time.Durati
 }
 
 func raceAudioTestState(runID string, phase string, newestLap int, newestLapMS int) string {
-	return raceAudioTestStateWithStatus(runID, phase, "racing", newestLap, newestLapMS)
+	return raceAudioTestStateWithAchievement(runID, phase, "racing", newestLap, newestLapMS, "")
 }
 
 func raceAudioTestStateWithStatus(runID string, phase string, status string, newestLap int, newestLapMS int) string {
+	return raceAudioTestStateWithAchievement(runID, phase, status, newestLap, newestLapMS, "")
+}
+
+func raceAudioTestStateWithAchievement(
+	runID string,
+	phase string,
+	status string,
+	newestLap int,
+	newestLapMS int,
+	achievement string,
+) string {
 	history := make([]map[string]any, 0, newestLap)
 	for lap := 1; lap <= newestLap; lap++ {
 		lapTimeMS := 14000 + lap
 		if lap == newestLap {
 			lapTimeMS = newestLapMS
 		}
-		history = append(history, map[string]any{
+		entry := map[string]any{
 			"carId": "CP-1", "lap": lap, "lapTimeMs": lapTimeMS,
-		})
+		}
+		if lap == newestLap && achievement != "" {
+			entry["achievement"] = achievement
+		}
+		history = append(history, entry)
 	}
 	payload := map[string]any{
 		"type": "race_state", "version": 2, "raceId": "race-test", "raceRunId": runID,

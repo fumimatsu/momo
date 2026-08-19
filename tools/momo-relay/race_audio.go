@@ -137,6 +137,13 @@ type raceAudioCalloutRequest struct {
 	GapMS     int    `json:"gapMs"`
 }
 
+type raceAudioLapHistory struct {
+	CarID       string `json:"carId"`
+	Lap         int    `json:"lap"`
+	LapTimeMS   int    `json:"lapTimeMs"`
+	Achievement string `json:"achievement"`
+}
+
 type raceAudioState struct {
 	Type        string `json:"type"`
 	Version     int    `json:"version"`
@@ -153,11 +160,7 @@ type raceAudioState struct {
 		Status   string `json:"status"`
 		Lap      int    `json:"lap"`
 	} `json:"standings"`
-	LapHistory []struct {
-		CarID     string `json:"carId"`
-		Lap       int    `json:"lap"`
-		LapTimeMS int    `json:"lapTimeMs"`
-	} `json:"lapHistory"`
+	LapHistory []raceAudioLapHistory `json:"lapHistory"`
 }
 
 type raceAudioDetector struct {
@@ -449,11 +452,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	if detector.seenLaps == nil {
 		detector.seenLaps = make(map[string]struct{})
 	}
-	histories := make([]struct {
-		CarID     string `json:"carId"`
-		Lap       int    `json:"lap"`
-		LapTimeMS int    `json:"lapTimeMs"`
-	}, 0, len(state.LapHistory))
+	histories := make([]raceAudioLapHistory, 0, len(state.LapHistory))
 	for _, history := range state.LapHistory {
 		if history.CarID == carID && history.Lap > 0 && history.LapTimeMS > 0 {
 			histories = append(histories, history)
@@ -492,8 +491,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			EventID:      key,
 			Kind:         "lap_complete",
 			Priority:     40,
-			EnglishText:  raceAudioEnglishLapText(history.Lap, history.LapTimeMS, standingPosition),
-			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, standingPosition),
+			EnglishText:  raceAudioEnglishLapText(history.Lap, history.LapTimeMS, history.Achievement),
+			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, history.Achievement),
 		})
 	}
 	if !detector.finished && isFinished {
@@ -555,8 +554,16 @@ func (detector *raceAudioPitDetector) observe(snapshot pitPresenceSnapshot) *rac
 	}
 }
 
-func raceAudioEnglishLapText(lap int, lapTimeMS int, _ int) string {
-	return fmt.Sprintf("Lap %d. %s seconds", lap, raceAudioEnglishLapTime(lapTimeMS))
+func raceAudioEnglishLapText(lap int, lapTimeMS int, achievement string) string {
+	text := fmt.Sprintf("Lap %d. %s seconds.", lap, raceAudioEnglishLapTime(lapTimeMS))
+	switch achievement {
+	case "overall_best":
+		return text + " New overall best."
+	case "personal_best":
+		return text + " New personal best."
+	default:
+		return strings.TrimSuffix(text, ".")
+	}
 }
 
 func raceAudioEnglishLapTime(lapTimeMS int) string {
@@ -575,8 +582,16 @@ func raceAudioEnglishLapTime(lapTimeMS int) string {
 	)
 }
 
-func raceAudioJapaneseLapText(lap int, lapTimeMS int, _ int) string {
-	return fmt.Sprintf("%d周目、%d.%03d", lap, lapTimeMS/1000, lapTimeMS%1000)
+func raceAudioJapaneseLapText(lap int, lapTimeMS int, achievement string) string {
+	text := fmt.Sprintf("%d周目、%d.%03d", lap, lapTimeMS/1000, lapTimeMS%1000)
+	switch achievement {
+	case "overall_best":
+		return text + "。全体ベスト更新。"
+	case "personal_best":
+		return text + "。自己ベスト更新。"
+	default:
+		return text
+	}
 }
 
 func raceAudioEventFromCallout(clientID uint64, request raceAudioCalloutRequest) (raceAudioEvent, error) {

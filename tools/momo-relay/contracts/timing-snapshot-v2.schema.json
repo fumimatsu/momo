@@ -76,6 +76,7 @@
         "lap": { "type": "integer", "minimum": 1 },
         "completedAtRaceMs": { "type": "integer", "minimum": 0 },
         "lapTimeMs": { "type": "integer", "minimum": 1 },
+        "achievement": { "enum": ["personal_best", "overall_best"] },
         "sectorTimes": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/lapSectorTime" } }
       }
     }
