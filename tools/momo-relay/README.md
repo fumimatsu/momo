@@ -35,6 +35,9 @@ Relay を再ビルドし、Race Control 連携なしで起動中の場合だけ�
 初期本番は英語 Kokoro `am_michael` を使う。Pilot は TTS の `queued` 受信時に固定 radio cue を鳴らし、
 音声生成を待つ間から M5Audio を duck する。
 
+Relay に残す接続・操縦安全責務と、Timing Engine / Race Control / Gameplay Engine へ
+移すレースルールの境界は、[Relay 責務境界](../../docs/relay-responsibility-boundary.md) を参照する。
+
 Relay の接続・RTP・下流 Viewer 状態を可視化する Operations 画面の設計は、[Relay Operations Dashboard 設計](../../doc/RELAY_OPERATIONS_DASHBOARD_DESIGN.md) を参照する。
 
 特定の Pilot PC で M5 音声のバイナリ DataChannel は受信できる一方、文字列 DataChannel が
