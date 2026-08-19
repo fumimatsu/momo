@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260819-pilot-callouts-v1';
+  const PILOT_BUILD_ID = '20260819-kokoro-prewarm-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -676,6 +676,9 @@
 	let remoteRaceAudioModes = new Set(['remote']);
 	let browserKokoroClient = null;
 	let browserKokoroState = 'idle';
+	let browserKokoroWarmupState = 'idle';
+	let browserKokoroWarmupDeferredPhase = '';
+	let browserKokoroWarmupReason = '';
 	let browserKokoroFailure = '';
 	let browserKokoroActiveSource = null;
 	let browserKokoroActiveEventId = '';
@@ -900,7 +903,7 @@
 
   function getInitialHost() {
     const params = getUrlParams();
-    const host = params.get('host');
+    const host = params.get('host') || params.get('relayHost');
     if (host) {
       return host;
     }
@@ -2687,7 +2690,8 @@
 	}
 
 	function getRaceAudioMode() {
-		if (isRaceAnnouncementEnabled() && browserKokoroState === 'ready' && !browserKokoroFailure &&
+		if (isRaceAnnouncementEnabled() && browserKokoroState === 'ready' &&
+			browserKokoroWarmupState === 'ready' && !browserKokoroFailure &&
 			remoteRaceAudioModes.has(browserKokoro?.MODE)) {
 			return browserKokoro.MODE;
 		}
@@ -2718,6 +2722,7 @@
 		browserKokoroClient?.shutdown();
 		browserKokoroClient = null;
 		browserKokoroState = 'failed';
+		browserKokoroWarmupState = 'failed';
 		sendRaceAudioPreference();
 		const state = remoteRaceAudioTracker.finish(prompt?.promptId);
 		if (state.idle) setM5AudioDucking(1, prompt?.ducking?.releaseMs || 250);
@@ -2764,9 +2769,46 @@
 		recordEvent('browser Kokoro playing', `${prompt.language} ${generated.generationMs}ms`);
 	}
 
-	function ensureBrowserKokoroRuntime() {
+	function isBrowserKokoroWarmupPhase() {
+		return raceState.phaseCode === 'idle' || raceState.phaseCode === 'ready';
+	}
+
+	function warmupBrowserKokoroRuntime(reason = 'ready') {
+		if (!browserKokoroClient || browserKokoroState !== 'ready' ||
+			browserKokoroWarmupState === 'ready') {
+			return Promise.resolve(browserKokoroWarmupState === 'ready');
+		}
+		if (!isBrowserKokoroWarmupPhase()) {
+			const phase = raceState.phaseCode || 'unknown';
+			if (browserKokoroWarmupDeferredPhase !== phase) {
+				browserKokoroWarmupDeferredPhase = phase;
+				recordEvent('browser Kokoro warm-up deferred', phase);
+			}
+			return Promise.resolve(false);
+		}
+		browserKokoroWarmupDeferredPhase = '';
+		const voice = raceAnnounceLanguage === 'ja-JP' ? 'jf_alpha' : 'am_michael';
+		browserKokoroWarmupReason = reason;
+		return browserKokoroClient.warmup({ voice })
+			.then(() => true)
+			.catch((error) => {
+				browserKokoroFailure = error.message || String(error);
+				browserKokoroClient?.shutdown();
+				browserKokoroClient = null;
+				browserKokoroState = 'failed';
+				browserKokoroWarmupState = 'failed';
+				browserKokoroWarmupReason = '';
+				sendRaceAudioPreference();
+				recordEvent('browser Kokoro warm-up failed', browserKokoroFailure);
+				return false;
+			});
+	}
+
+	function ensureBrowserKokoroRuntime(options = {}) {
+		const allowBeforeCapability = options.allowBeforeCapability === true;
 		if (!isRaceAnnouncementEnabled() || browserKokoroFailure ||
-			!remoteRaceAudioModes.has(browserKokoro?.MODE) || !browserKokoro?.isSupported?.(window)) {
+			(!allowBeforeCapability && !remoteRaceAudioModes.has(browserKokoro?.MODE)) ||
+			!browserKokoro?.isSupported?.(window)) {
 			return Promise.resolve(false);
 		}
 		if (!browserKokoroClient) {
@@ -2775,9 +2817,15 @@
 				workerUrl: './browser-kokoro-worker.mjs',
 				onState: (snapshot, detail) => {
 					browserKokoroState = snapshot.state;
-					if (snapshot.state === 'ready') {
-						recordEvent('browser Kokoro ready', `${detail.loadMs || 0}ms`);
+					browserKokoroWarmupState = snapshot.warmupState || 'idle';
+					if (detail.warmup && browserKokoroWarmupState === 'ready') {
+						recordEvent('browser Kokoro warm-up ready', `${detail.warmupMs || 0}ms ${browserKokoroWarmupReason || 'load'}`);
+						browserKokoroWarmupReason = '';
 						sendRaceAudioPreference();
+					} else if (detail.warmupStarted) {
+						recordEvent('browser Kokoro warm-up start', browserKokoroWarmupReason || 'load');
+					} else if (snapshot.state === 'ready') {
+						recordEvent('browser Kokoro ready', `${detail.loadMs || 0}ms`);
 					}
 				},
 				onAudio: (prompt, generated) => {
@@ -2793,10 +2841,11 @@
 			});
 		}
 		return browserKokoroClient.load()
-			.then(() => true)
+			.then(() => warmupBrowserKokoroRuntime(options.reason || 'load'))
 			.catch((error) => {
 				browserKokoroFailure = error.message || String(error);
 				browserKokoroState = 'failed';
+				browserKokoroWarmupState = 'failed';
 				sendRaceAudioPreference();
 				recordEvent('browser Kokoro unavailable', browserKokoroFailure);
 				return false;
@@ -2809,7 +2858,8 @@
 		if (payload.type === 'race_audio_capabilities') {
 			remoteRaceAudioEnabled = payload.state === 'enabled';
 			remoteRaceAudioModes = new Set(Array.isArray(payload.modes) ? payload.modes : ['remote']);
-			ensureBrowserKokoroRuntime();
+			ensureBrowserKokoroRuntime({ reason: 'capabilities' })
+				.then(() => sendRaceAudioPreference());
 			recordEvent('race audio capabilities', `${payload.state || 'unknown'} ${payload.language || ''}`.trim());
 			return true;
 		}
@@ -2910,7 +2960,7 @@
 		stopRaceAnnouncement();
 		selectedRaceAnnouncementVoiceName = '';
 		if (isRaceAnnouncementEnabled()) prepareRaceAnnouncement();
-		ensureBrowserKokoroRuntime();
+		ensureBrowserKokoroRuntime({ allowBeforeCapability: true, reason: 'language' });
 		sendRaceAudioPreference();
 		recordEvent('race audio preference', nextLanguage);
 	}
@@ -3130,6 +3180,7 @@
       }
     }
     raceState.sampledAt = performance.now();
+		warmupBrowserKokoroRuntime('race phase');
     syncRaceSafetyNotification();
     evaluateRaceAttention();
     renderRaceHud();
@@ -6336,6 +6387,7 @@
       updateUiState();
       return;
     }
+		ensureBrowserKokoroRuntime({ allowBeforeCapability: true, reason: 'connect' });
     if (roomLockBusy) {
       return;
     }
@@ -7790,6 +7842,7 @@
       voice: selectedRaceAnnouncementVoiceName || RACE_ANNOUNCE_VOICE || null,
 		mode: getRaceAudioMode(),
 		browserKokoroState,
+		browserKokoroWarmupState,
 		browserKokoroFailure: browserKokoroFailure || null,
 		browserKokoro: browserKokoroClient?.snapshot?.() || null,
       rate: RACE_ANNOUNCE_RATE,

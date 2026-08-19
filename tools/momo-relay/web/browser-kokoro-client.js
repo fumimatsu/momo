@@ -63,6 +63,11 @@
     let latestSequence = 0;
     let active = null;
     let pending = null;
+    let warmupState = 'idle';
+    let warmupPromise = null;
+    let resolveWarmup = null;
+    let rejectWarmup = null;
+    let warmupRequestId = '';
 
     function snapshot() {
       return Object.freeze({
@@ -70,6 +75,7 @@
         activePromptId: active?.prompt.promptId || null,
         pendingPromptId: pending?.prompt.promptId || null,
         latestSequence,
+        warmupState,
       });
     }
 
@@ -97,6 +103,15 @@
 				failLoad(failure);
 				return;
 			}
+			if (warmupState === 'running') {
+				warmupState = 'failed';
+				warmupRequestId = '';
+				const reject = rejectWarmup;
+				resolveWarmup = null;
+				rejectWarmup = null;
+				warmupPromise = null;
+				reject?.(failure);
+			}
 			setState('failed', { error: failure });
 			const failed = pending || (active && !active.dropped ? active : null);
 			if (active && active !== failed && !active.dropped) {
@@ -108,7 +123,7 @@
 		}
 
     function pump() {
-      if (state !== 'ready' || active || !pending || !worker) return;
+      if (state !== 'ready' || warmupState === 'running' || active || !pending || !worker) return;
       active = pending;
       pending = null;
       const requestId = `generate-${++requestSerial}`;
@@ -130,6 +145,19 @@
         onState(snapshot(), { progress: message.progress });
         return;
       }
+      if (message.type === 'warmed' && warmupState === 'running' &&
+          warmupRequestId === message.requestId) {
+        warmupState = 'ready';
+        warmupRequestId = '';
+        const resolve = resolveWarmup;
+        resolveWarmup = null;
+        rejectWarmup = null;
+        warmupPromise = null;
+        onState(snapshot(), { warmup: true, warmupMs: Number(message.warmupMs) || 0 });
+        resolve?.(snapshot());
+        pump();
+        return;
+      }
       if (message.type === 'generated' && active?.requestId === message.requestId) {
         const completed = active;
         active = null;
@@ -149,6 +177,17 @@
         const error = new Error(String(message.message || 'Browser Kokoro worker failed'));
         if (state === 'loading') {
           failLoad(error);
+          return;
+        }
+        if (warmupState === 'running' && warmupRequestId === message.requestId) {
+          warmupState = 'failed';
+          warmupRequestId = '';
+          const reject = rejectWarmup;
+          resolveWarmup = null;
+          rejectWarmup = null;
+          warmupPromise = null;
+          onState(snapshot(), { warmup: true, error });
+          reject?.(error);
           return;
         }
         if (active?.requestId === message.requestId) {
@@ -180,6 +219,34 @@
         config: { device: 'webgpu', dtype: 'fp32' },
       });
       return loadPromise;
+    }
+
+    function warmup(options = {}) {
+      if (state !== 'ready' || !worker) {
+        return Promise.reject(new Error('Browser Kokoro runtime is not ready'));
+      }
+      if (warmupState === 'ready') return Promise.resolve(snapshot());
+      if (warmupPromise) return warmupPromise;
+      if (warmupState === 'failed') {
+        return Promise.reject(new Error('Browser Kokoro warm-up is unavailable'));
+      }
+      if (active || pending) {
+        return Promise.reject(new Error('Browser Kokoro is busy'));
+      }
+      const voice = options.voice === 'jf_alpha' ? 'jf_alpha' : 'am_michael';
+      warmupState = 'running';
+      warmupRequestId = `warmup-${++requestSerial}`;
+      warmupPromise = new Promise((resolve, reject) => {
+        resolveWarmup = resolve;
+        rejectWarmup = reject;
+      });
+      onState(snapshot(), { warmupStarted: true });
+      worker.postMessage({
+        type: 'warmup',
+        requestId: warmupRequestId,
+        config: { voice },
+      });
+      return warmupPromise;
     }
 
     function enqueue(input) {
@@ -220,10 +287,15 @@
       loadPromise = null;
       resolveLoad = null;
       rejectLoad = null;
+      warmupState = 'idle';
+      warmupPromise = null;
+      resolveWarmup = null;
+      rejectWarmup = null;
+      warmupRequestId = '';
       setState('idle');
     }
 
-    return Object.freeze({ load, enqueue, clear, shutdown, snapshot });
+    return Object.freeze({ load, warmup, enqueue, clear, shutdown, snapshot });
   }
 
   return Object.freeze({ MODEL_ID, MODE, createClient, isSupported, normalizePrompt });

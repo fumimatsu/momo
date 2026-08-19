@@ -66,11 +66,28 @@ async function generate(requestId, prompt) {
   }, [samples.buffer]);
 }
 
+async function warmRuntime(requestId, config) {
+  if (!runtime) throw new Error('Kokoro runtime is not loaded');
+  const voice = config?.voice === 'jf_alpha' ? 'jf_alpha' : 'am_michael';
+  const inputIds = runtime.tokenizer('a', { truncation: true }).input_ids;
+  const started = performance.now();
+  const audio = await runtime.generate_from_ids(inputIds, { voice, speed: 1 });
+  const source = audio.audio || audio.data;
+  if (!source || source.length === 0) throw new Error('Kokoro warm-up returned empty audio');
+  self.postMessage({
+    type: 'warmed',
+    requestId,
+    warmupMs: Math.round(performance.now() - started),
+  });
+}
+
 self.addEventListener('message', async (event) => {
   const { type, requestId, config, prompt } = event.data || {};
   try {
     if (type === 'load') {
       await loadRuntime(requestId, config);
+    } else if (type === 'warmup') {
+      await warmRuntime(requestId, config);
     } else if (type === 'generate') {
       await generate(requestId, prompt);
     }
