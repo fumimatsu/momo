@@ -23,8 +23,8 @@ func TestVehicleHealthAppliesDamageAndClampsForwardThrottle(t *testing.T) {
 	if snapshot.HP != 88 || snapshot.Mode != "healthy" {
 		t.Fatalf("strong impact snapshot = %#v, want HP 88 healthy", snapshot)
 	}
-	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1596\n" {
-		t.Fatalf("limited command = %q, want gear-1 and health limit 1596", got)
+	if got := health.limitCommand("S:1500,T:2000\n", base.Add(1100*time.Millisecond)); got != "S:1500,T:1598\n" {
+		t.Fatalf("limited command = %q, want gear-1 and health limit 1598", got)
 	}
 	if got := health.limitCommand("S:1500,T:1000\n", base.Add(1200*time.Millisecond)); got != "S:1500,T:1000\n" {
 		t.Fatalf("damage must not limit reverse escape command: %q", got)
@@ -37,11 +37,11 @@ func TestVehicleHealthSpeedCapUsesGentleHealthyRange(t *testing.T) {
 		want float64
 	}{
 		{hp: 100, want: 1.00},
-		{hp: 88, want: 0.96},
-		{hp: 72, want: 0.9066666667},
-		{hp: 70, want: 0.90},
-		{hp: 35, want: 0.60},
-		{hp: 0, want: 0.35},
+		{hp: 88, want: 0.98},
+		{hp: 72, want: 0.9533333333},
+		{hp: 70, want: 0.95},
+		{hp: 35, want: 0.90},
+		{hp: 0, want: 0.60},
 	}
 
 	for _, test := range tests {

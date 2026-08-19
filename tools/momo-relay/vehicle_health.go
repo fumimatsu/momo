@@ -1076,11 +1076,11 @@ func vehicleHealthSpeedCap(hp float64) float64 {
 	hp = math.Max(0, math.Min(vehicleHealthMaximum, hp))
 	switch {
 	case hp >= 70:
-		return 0.90 + ((hp - 70) / 30 * 0.10)
+		return 0.95 + ((hp - 70) / 30 * 0.05)
 	case hp >= 35:
-		return 0.60 + ((hp - 35) / 35 * 0.30)
+		return 0.90 + ((hp - 35) / 35 * 0.05)
 	default:
-		return 0.35 + (hp / 35 * 0.25)
+		return 0.60 + (hp / 35 * 0.30)
 	}
 }
 
