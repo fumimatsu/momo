@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260819-lap-best-audio-v1';
+  const PILOT_BUILD_ID = '20260820-m5-audio-default-on-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -62,6 +62,7 @@
   const RC_STEERING_NEUTRAL_DEADBAND_US = getNumberParamAllowZero('rcSteeringNeutralDeadband', 10);
   const RC_THROTTLE_NEUTRAL_DEADBAND_US = getNumberParamAllowZero('rcThrottleNeutralDeadband', 10);
   const GAMEPAD_PROFILE_STORAGE_KEY_LEGACY = 'fpvGamepadMapping';
+  const M5_AUDIO_ENABLED_STORAGE_KEY = 'momoM5AudioEnabled';
   const GAMEPAD_PROFILE_STORAGE_KEY = getGamepadProfileStorageKey();
   const GAMEPAD_PROFILE = loadGamepadProfile();
   const GAMEPAD_ENABLED = getBooleanParam('gamepad', true);
@@ -604,6 +605,7 @@
 	let vehicleResourceAnimationFrame = 0;
 	const vehicleResourceDisplay = { hp: null, fuel: null };
   let m5AudioPlayer = null;
+  let m5AudioPreferredEnabled = loadM5AudioPreference();
   let dcPingSeq = 0;
   let dcRttMs = null;
   let lastDcPongAt = 0;
@@ -3519,6 +3521,42 @@
   function updateTelemetryUi() {
     setText(telemetryState, getTelemetryStatus());
     updateVehicleVitals();
+  }
+
+  function loadM5AudioPreference() {
+    try {
+      const raw = window.localStorage?.getItem(M5_AUDIO_ENABLED_STORAGE_KEY);
+      if (raw === null || raw === undefined) return true;
+      return !['0', 'false', 'off'].includes(raw.trim().toLowerCase());
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function saveM5AudioPreference(enabled) {
+    try {
+      window.localStorage?.setItem(M5_AUDIO_ENABLED_STORAGE_KEY, enabled ? '1' : '0');
+    } catch (_) {
+      // Storage may be unavailable in private or embedded browser contexts.
+    }
+  }
+
+  async function applyM5AudioPreference(enabled = m5AudioPreferredEnabled, persist = false) {
+    m5AudioPreferredEnabled = Boolean(enabled);
+    if (persist) saveM5AudioPreference(m5AudioPreferredEnabled);
+    if (!m5AudioPlayer) {
+      updateM5AudioUi();
+      return false;
+    }
+    const accepted = await m5AudioPlayer.setEnabled(m5AudioPreferredEnabled);
+    sendM5AudioSubscription();
+    updateM5AudioUi();
+    return accepted;
+  }
+
+  function retryPreferredM5Audio() {
+    if (!m5AudioPreferredEnabled || m5AudioPlayer?.snapshot().enabled) return;
+    void applyM5AudioPreference();
   }
 
   function updateM5AudioUi(snapshot = null, status = null) {
@@ -7829,13 +7867,12 @@
     if (!m5AudioPlayer) {
       return;
     }
-    const accepted = await m5AudioPlayer.setEnabled(!m5AudioPlayer.snapshot().enabled);
+    const accepted = await applyM5AudioPreference(!m5AudioPlayer.snapshot().enabled, true);
     if (!accepted) {
       recordEvent('m5 audio unavailable');
     }
-    sendM5AudioSubscription();
-    updateM5AudioUi();
   });
+  document.addEventListener('click', retryPreferredM5Audio);
   btnMic?.addEventListener('click', toggleMic);
   micVolumeInput?.addEventListener('input', () => setMicVolume());
   btnDebug.addEventListener('click', toggleDebugOsd);
@@ -7963,6 +8000,11 @@
   setRaceAnnouncementLanguage(raceAnnounceLanguage, false);
   m5AudioPlayer = window.MomoM5Audio?.createPlayer({ onState: updateM5AudioUi }) || null;
   updateM5AudioUi();
+  void applyM5AudioPreference().then((accepted) => {
+    if (m5AudioPlayer && m5AudioPreferredEnabled && !accepted) {
+      recordEvent('m5 audio waiting for user interaction');
+    }
+  });
   applyMediaControlsVisibility();
   setElementHidden(btnCarSelect, !GARAGE_AVAILABLE);
   window.momoRaceHud = {
