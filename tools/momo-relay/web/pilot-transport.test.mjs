@@ -24,7 +24,8 @@ test('ESC vitals remain visible after Drive Off and use the 2S voltage threshold
   assert.match(source, /VEHICLE_BATTERY_CELLS \* 3\.65/);
   assert.match(source, /VEHICLE_BATTERY_CELLS \* 3\.5/);
   assert.match(source, /const hasEscTelemetry = Boolean\(snapshot\?\.state\?\.esc\)/);
-  assert.match(source, /vehicleStatusCluster\.hidden = !\(isDriveUiVisible\(\) \|\| hasEscTelemetry\)/);
+  assert.match(source, /const hidden = !\(driveUiVisible \|\| hasEscTelemetry\)/);
+  assert.match(source, /if \(vehicleStatusCluster\.hidden !== hidden\) \{\s*vehicleStatusCluster\.hidden = hidden;/);
   assert.match(source, /const snapshot = getCurrentEscSnapshot\(nowMs\);\s*updateVehicleStatusClusterVisibility\(snapshot\);/);
 });
 

@@ -128,22 +128,39 @@
     const overallBestLapMs = finiteNumber(input.overallBestLapMs);
     const isBestLap = bestLapMs !== null && Math.round(bestLapMs) === roundedLapTimeMs;
     const isOverallBest = overallBestLapMs !== null && Math.round(overallBestLapMs) === roundedLapTimeMs;
+    const achievement = String(input.achievement || '').trim().toLowerCase();
+    const isPersonalBestUpdate = achievement === 'personal_best';
+    const isOverallBestUpdate = achievement === 'overall_best';
     const language = normalizeRemoteLanguage(input.language);
     if (language === 'ja-JP') {
+      const suffix = isOverallBestUpdate
+        ? '。全体ベスト更新。'
+        : isPersonalBestUpdate ? '。自己ベスト更新。' : '';
       return Object.freeze({
         lap: roundedLap,
         lapTimeMs: roundedLapTimeMs,
+        bestLapMs: bestLapMs !== null ? Math.round(bestLapMs) : null,
+        overallBestLapMs: overallBestLapMs !== null ? Math.round(overallBestLapMs) : null,
         isBestLap,
         isOverallBest,
-        text: `${roundedLap}周目、${(roundedLapTimeMs / 1000).toFixed(3)}`,
+        isPersonalBestUpdate,
+        isOverallBestUpdate,
+        text: `${roundedLap}周目、${(roundedLapTimeMs / 1000).toFixed(3)}${suffix}`,
       });
     }
+    const suffix = isOverallBestUpdate
+      ? '. New overall best.'
+      : isPersonalBestUpdate ? '. New personal best.' : '';
     return Object.freeze({
       lap: roundedLap,
       lapTimeMs: roundedLapTimeMs,
+      bestLapMs: bestLapMs !== null ? Math.round(bestLapMs) : null,
+      overallBestLapMs: overallBestLapMs !== null ? Math.round(overallBestLapMs) : null,
       isBestLap,
       isOverallBest,
-      text: `Lap ${roundedLap}. ${(roundedLapTimeMs / 1000).toFixed(3)} seconds`,
+      isPersonalBestUpdate,
+      isOverallBestUpdate,
+      text: `Lap ${roundedLap}. ${(roundedLapTimeMs / 1000).toFixed(3)} seconds${suffix}`,
     });
   }
 

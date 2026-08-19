@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260819-kokoro-prewarm-v1';
+  const PILOT_BUILD_ID = '20260819-lap-best-audio-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -100,6 +100,7 @@
   const GAMEPAD_FFB_PRESET_BUTTON = getNumberParamWithProfile('gamepadFfbPresetButton', 'ffbPresetButton', -1, true);
   const GAMEPAD_MENU_BUTTON = getNumberParamWithProfile('gamepadMenuButton', 'menuButton', -1, true);
   const OSD_UPDATE_INTERVAL_MS = getNumberParam('osdMs', 100);
+  const DRIVE_HUD_RENDER_INTERVAL_MS = 1000 / 30;
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
   const DC_PING_INTERVAL_MS = getNumberParam('dcPingMs', 1000);
   // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
@@ -329,6 +330,8 @@
 
   const remoteVideo = document.getElementById('remote_video');
 	const raceRadioCueAsset = document.getElementById('raceRadioCueAsset');
+	const raceSignalRedAsset = document.getElementById('raceSignalRedAsset');
+	const raceSignalStartAsset = document.getElementById('raceSignalStartAsset');
 	const remoteRaceAudio = document.createElement('audio');
 	remoteRaceAudio.autoplay = true;
 	remoteRaceAudio.playsInline = true;
@@ -619,6 +622,10 @@
     throttle: 0,
     brake: 0,
   };
+  let driveHudRenderFrame = null;
+  let driveHudLastRenderedAt = 0;
+  let driveHudLastRenderKey = '';
+  let controlUiModeKey = '';
   const vehicleVitalStates = {
     voltage: 'waiting',
     escTemperature: 'waiting',
@@ -665,6 +672,9 @@
   let scheduledRaceSummaryKey = '';
   let raceSummaryTimer = null;
   let raceSignalAudioContext = null;
+	const raceSignalBuffers = { red: null, start: null };
+	let raceSignalBufferPromise = null;
+	let raceSignalAssetLoadFailed = false;
 	let raceRadioCueBuffer = null;
 	let raceRadioCueBufferPromise = null;
   let raceSignalSoundUnlocked = false;
@@ -1387,7 +1397,42 @@
     if (!element) {
       return;
     }
-    element.textContent = value;
+    const next = value == null ? '' : String(value);
+    if (element.textContent !== next) {
+      element.textContent = next;
+    }
+  }
+
+  function setAttributeIfChanged(element, name, value) {
+    if (!element) return;
+    const next = String(value);
+    if (element.getAttribute(name) !== next) {
+      element.setAttribute(name, next);
+    }
+  }
+
+  function setDatasetIfChanged(element, name, value) {
+    if (!element) return;
+    const next = String(value);
+    if (element.dataset[name] !== next) {
+      element.dataset[name] = next;
+    }
+  }
+
+  function setStylePropertyIfChanged(element, name, value) {
+    if (!element) return;
+    const next = String(value);
+    if (element.style.getPropertyValue(name) !== next) {
+      element.style.setProperty(name, next);
+    }
+  }
+
+  function setClassStateIfChanged(element, name, enabled) {
+    if (!element) return;
+    const next = Boolean(enabled);
+    if (element.classList.contains(name) !== next) {
+      element.classList.toggle(name, next);
+    }
   }
 
   function normalizeRaceNumber(value) {
@@ -1962,9 +2007,9 @@
     if (!raceMilestone || !announcement) {
       return;
     }
-    const result = announcement.isOverallBest
+    const result = announcement.isOverallBestUpdate || announcement.isOverallBest
       ? 'overall-best'
-      : announcement.isBestLap ? 'personal-best' : 'normal';
+      : announcement.isPersonalBestUpdate || announcement.isBestLap ? 'personal-best' : 'normal';
     raceMilestone.dataset.kind = 'lap';
     raceMilestone.dataset.result = result;
     setText(raceMilestoneKicker, 'LAP COMPLETE');
@@ -2366,6 +2411,61 @@
 		return raceRadioCueBufferPromise;
 	}
 
+	function preloadRaceSignalSounds(context) {
+		if (raceSignalBuffers.red && raceSignalBuffers.start) {
+			return Promise.resolve(raceSignalBuffers);
+		}
+		if (raceSignalBufferPromise) {
+			return raceSignalBufferPromise;
+		}
+		if (raceSignalAssetLoadFailed || !context || typeof fetch !== 'function' ||
+			!raceSignalRedAsset?.href || !raceSignalStartAsset?.href) {
+			return Promise.resolve(null);
+		}
+		const assets = [
+			['red', raceSignalRedAsset.href],
+			['start', raceSignalStartAsset.href],
+		];
+		raceSignalBufferPromise = Promise.all(assets.map(async ([signal, href]) => {
+			const response = await fetch(href, { cache: 'force-cache' });
+			if (!response.ok) {
+				throw new Error(`${signal}: HTTP ${response.status}`);
+			}
+			const encoded = await response.arrayBuffer();
+			const buffer = await context.decodeAudioData(encoded);
+			return [signal, buffer];
+		}))
+			.then((decodedAssets) => {
+				for (const [signal, buffer] of decodedAssets) {
+					raceSignalBuffers[signal] = buffer;
+				}
+				return raceSignalBuffers;
+			})
+			.catch((error) => {
+				raceSignalAssetLoadFailed = true;
+				raceSignalBufferPromise = null;
+				recordEvent('race signal asset preload failed', error.message || String(error));
+				return null;
+			});
+		return raceSignalBufferPromise;
+	}
+
+	function playRaceSignalAsset(context, signal) {
+		const buffer = raceSignalBuffers[signal];
+		if (!buffer || RACE_SIGNAL_SOUND_VOLUME <= 0) {
+			preloadRaceSignalSounds(context);
+			return false;
+		}
+		const source = context.createBufferSource();
+		const gain = context.createGain();
+		source.buffer = buffer;
+		gain.gain.value = RACE_SIGNAL_SOUND_VOLUME;
+		source.connect(gain);
+		gain.connect(context.destination);
+		source.start();
+		return true;
+	}
+
   function unlockRaceSignalSound() {
     if ((!RACE_SIGNAL_SOUND_ENABLED && !isRaceAnnouncementEnabled()) || raceSignalSoundUnlocked) {
       return;
@@ -2375,6 +2475,7 @@
       return;
     }
 		preloadRaceRadioCueSound(context);
+		preloadRaceSignalSounds(context);
     context.resume?.()
       .then(() => {
         raceSignalSoundUnlocked = context.state === 'running';
@@ -2393,8 +2494,9 @@
       unlockRaceSignalSound();
       return false;
     }
-    const played = raceAnnouncer.playSignal(context, 'red', RACE_SIGNAL_SOUND_VOLUME);
-    if (played) recordEvent('race signal sound', 'red');
+    const assetPlayed = playRaceSignalAsset(context, 'red');
+    const played = assetPlayed || raceAnnouncer.playSignal(context, 'red', RACE_SIGNAL_SOUND_VOLUME);
+    if (played) recordEvent('race signal sound', assetPlayed ? 'red asset' : 'red fallback');
     return played;
   }
 
@@ -2404,8 +2506,9 @@
       unlockRaceSignalSound();
       return false;
     }
-    const played = raceAnnouncer.playSignal(context, 'green', RACE_SIGNAL_SOUND_VOLUME);
-    if (played) recordEvent('race signal sound', 'green');
+    const assetPlayed = playRaceSignalAsset(context, 'start');
+    const played = assetPlayed || raceAnnouncer.playSignal(context, 'green', RACE_SIGNAL_SOUND_VOLUME);
+    if (played) recordEvent('race signal sound', assetPlayed ? 'start asset 620 Hz' : 'green fallback');
     return played;
   }
 
@@ -2598,7 +2701,10 @@
       const completedLap = normalizeRaceNumber(entry?.lap);
       const timeMs = normalizeRaceNumber(entry?.lapTimeMs);
       if (completedLap !== null && completedLap > 0 && timeMs !== null && timeMs > 0) {
-        receivedRaceLapHistory.set(completedLap, timeMs);
+        const achievement = entry?.achievement === 'personal_best' || entry?.achievement === 'overall_best'
+          ? entry.achievement
+          : '';
+        receivedRaceLapHistory.set(completedLap, { timeMs, achievement });
       }
     }
     if (completedLaps.length === 0) {
@@ -2606,13 +2712,14 @@
       const completedLap = lap === null ? null : Math.max(1,
         state.phase === 'finished' ? lap : lap - 1);
       if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
-        receivedRaceLapHistory.set(completedLap, lastLapMs);
+        receivedRaceLapHistory.set(completedLap, { timeMs: lastLapMs, achievement: '' });
       }
     }
-    const laps = Array.from(receivedRaceLapHistory, ([completedLap, timeMs]) => ({
+    const laps = Array.from(receivedRaceLapHistory, ([completedLap, entry]) => ({
       lap: completedLap,
-      timeMs,
-    }));
+      timeMs: entry.timeMs,
+      achievement: entry.achievement,
+    })).sort((left, right) => right.lap - left.lap);
     const overallBestLapCandidates = state.standings
       .map((entry) => normalizeRaceNumber(entry?.bestLapMs))
       .filter((value) => value !== null && value > 0);
@@ -2989,8 +3096,8 @@
   }
 
   function getRaceLapAnnouncement() {
-    const lapTimeMs = normalizeRaceNumber(raceState.lastLapMs);
     const latestLap = raceState.laps[0] || null;
+    const lapTimeMs = normalizeRaceNumber(latestLap?.timeMs) ?? normalizeRaceNumber(raceState.lastLapMs);
     const lap = normalizeRaceNumber(latestLap?.lap) ?? normalizeRaceNumber(raceState.lap);
     if (lap === null || lap < 1 || lapTimeMs === null || lapTimeMs <= 0) {
       return null;
@@ -3003,6 +3110,7 @@
       lapTimeMs: roundedLapTimeMs,
       bestLapMs,
       overallBestLapMs,
+      achievement: latestLap?.achievement,
       position: raceState.position,
       language: raceAnnounceLanguage,
     });
@@ -4833,19 +4941,32 @@
     return isGamepadDriveActive();
   }
 
-  function updateVehicleStatusClusterVisibility(snapshot = getCurrentEscSnapshot()) {
+  function updateVehicleStatusClusterVisibility(
+    snapshot = getCurrentEscSnapshot(),
+    driveUiVisible = isDriveUiVisible(),
+  ) {
     if (!vehicleStatusCluster) return;
     const hasEscTelemetry = Boolean(snapshot?.state?.esc);
-    vehicleStatusCluster.hidden = !(isDriveUiVisible() || hasEscTelemetry);
+    const hidden = !(driveUiVisible || hasEscTelemetry);
+    if (vehicleStatusCluster.hidden !== hidden) {
+      vehicleStatusCluster.hidden = hidden;
+    }
   }
 
   function updateControlUiMode() {
     const driveUiVisible = isDriveUiVisible();
+    const snapshot = getCurrentEscSnapshot();
+    const nextModeKey = `${driveUiVisible}:${Boolean(snapshot?.state?.esc)}`;
+    if (controlUiModeKey === nextModeKey) {
+      return;
+    }
+    controlUiModeKey = nextModeKey;
     document.body.classList.toggle('drive-ui', driveUiVisible);
     if (driveHud) {
       driveHud.hidden = !driveUiVisible;
     }
-    updateVehicleStatusClusterVisibility();
+    updateVehicleStatusClusterVisibility(snapshot, driveUiVisible);
+    driveHudLastRenderKey = '';
     updateDriveHud();
     updateOsdScale();
   }
@@ -4855,10 +4976,27 @@
       return;
     }
     const level = Math.max(0, Math.min(1, value));
-    element.style.setProperty('--drive-level', String(level));
+    setStylePropertyIfChanged(element, '--drive-level', level.toFixed(3));
   }
 
   function updateDriveHud() {
+    if (driveHudRenderFrame !== null) {
+      return;
+    }
+    driveHudRenderFrame = window.requestAnimationFrame(renderDriveHudFrame);
+  }
+
+  function renderDriveHudFrame(now) {
+    if (driveHudLastRenderedAt > 0 && now - driveHudLastRenderedAt < DRIVE_HUD_RENDER_INTERVAL_MS) {
+      driveHudRenderFrame = window.requestAnimationFrame(renderDriveHudFrame);
+      return;
+    }
+    driveHudRenderFrame = null;
+    driveHudLastRenderedAt = now;
+    renderDriveHud();
+  }
+
+  function renderDriveHud() {
     if (DRIVE_UI_TEST_MODE) {
       driveHudState.steering = Math.max(-1, Math.min(1, DRIVE_UI_TEST_STEERING));
       driveHudState.throttle = Math.max(0, Math.min(1, DRIVE_UI_TEST_THROTTLE));
@@ -4867,51 +5005,71 @@
     const steering = Math.max(-1, Math.min(1, driveHudState.steering));
     const throttle = Math.max(0, Math.min(1, driveHudState.throttle));
     const brake = Math.max(0, Math.min(1, driveHudState.brake));
-    const gamepadActive = isGamepadDriveActive();
+    const steeringMarker = `${(50 + steering * 45).toFixed(1)}%`;
+    const steeringDirection = steering < -0.01 ? 'left' : steering > 0.01 ? 'right' : 'center';
+    const steeringPercent = Math.round(Math.abs(steering) * 100);
+    const throttlePercent = Math.round(throttle * 100);
+    const brakePercent = Math.round(brake * 100);
+    const displayedGear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
+    const connected = dataChannel && dataChannel.readyState === 'open';
+    const renderKey = [
+      rcDriveEnabled,
+      steeringMarker,
+      steeringDirection,
+      steeringPercent,
+      throttle.toFixed(3),
+      throttlePercent,
+      brake.toFixed(3),
+      brakePercent,
+      displayedGear,
+      vehicleGameplay?.boostState || '',
+      connected,
+    ].join(':');
+    if (driveHudLastRenderKey === renderKey) {
+      return;
+    }
+    driveHudLastRenderKey = renderKey;
     if (driveHudMode) {
-      driveHudMode.textContent = rcDriveEnabled ? 'DRIVE ON' : 'DRIVE OFF';
-      driveHudMode.setAttribute('aria-pressed', rcDriveEnabled ? 'true' : 'false');
+      setText(driveHudMode, rcDriveEnabled ? 'DRIVE ON' : 'DRIVE OFF');
+      setAttributeIfChanged(driveHudMode, 'aria-pressed', rcDriveEnabled ? 'true' : 'false');
     }
     if (driveHudSteeringMarker) {
-      driveHudSteeringMarker.style.left = `${(50 + steering * 45).toFixed(1)}%`;
+      setStylePropertyIfChanged(driveHudSteeringMarker, 'left', steeringMarker);
     }
-    const steeringDirection = steering < -0.01 ? 'left' : steering > 0.01 ? 'right' : 'center';
-    const steeringLevel = Math.abs(steering);
     if (driveHudSteeringControl) {
-      driveHudSteeringControl.dataset.direction = steeringDirection;
+      setDatasetIfChanged(driveHudSteeringControl, 'direction', steeringDirection);
     }
     if (driveHudSteeringTrack) {
-      driveHudSteeringTrack.dataset.direction = steeringDirection;
+      setDatasetIfChanged(driveHudSteeringTrack, 'direction', steeringDirection);
     }
     if (driveHudSteering) {
       const directionLabel = steeringDirection === 'left' ? 'L' : steeringDirection === 'right' ? 'R' : 'C';
-      driveHudSteering.textContent = `${directionLabel} ${Math.round(steeringLevel * 100)}%`;
+      setText(driveHudSteering, `${directionLabel} ${steeringPercent}%`);
     }
     setDriveHudLevel(driveHudThrottle, throttle);
     setDriveHudLevel(driveHudBrake, brake);
     if (driveHudThrottleValue) {
-      driveHudThrottleValue.textContent = `${Math.round(throttle * 100)}%`;
+      setText(driveHudThrottleValue, `${throttlePercent}%`);
     }
     if (driveHudBrakeValue) {
-      driveHudBrakeValue.textContent = `${Math.round(brake * 100)}%`;
+      setText(driveHudBrakeValue, `${brakePercent}%`);
     }
-		const displayedGear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
 		if (driveHudGear) {
-			driveHudGear.setAttribute('aria-label', `Throttle gear ${displayedGear}`);
+      setAttributeIfChanged(driveHudGear, 'aria-label', `Throttle gear ${displayedGear}`);
     }
     for (const step of driveHudGearSteps) {
       const gear = Number(step.dataset.gear);
 			const boostGear = gear === 4;
 			const available = gear <= RC_GEAR_COUNT || boostGear;
-      step.hidden = !available;
-			step.classList.toggle('is-ready', boostGear && vehicleGameplay?.boostState === 'ready');
-			step.classList.toggle('is-active', available && gear === displayedGear);
-			step.setAttribute('aria-current', available && gear === displayedGear ? 'true' : 'false');
+      const hidden = !available;
+      if (step.hidden !== hidden) step.hidden = hidden;
+      setClassStateIfChanged(step, 'is-ready', boostGear && vehicleGameplay?.boostState === 'ready');
+      setClassStateIfChanged(step, 'is-active', available && gear === displayedGear);
+      setAttributeIfChanged(step, 'aria-current', available && gear === displayedGear ? 'true' : 'false');
     }
     if (driveHudConnection) {
-      const connected = dataChannel && dataChannel.readyState === 'open';
-      driveHudConnection.textContent = connected ? 'DISCONNECT' : 'DISCONNECTED';
-      driveHudConnection.dataset.active = connected ? 'true' : 'false';
+      setText(driveHudConnection, connected ? 'DISCONNECT' : 'DISCONNECTED');
+      setDatasetIfChanged(driveHudConnection, 'active', connected ? 'true' : 'false');
     }
   }
 
@@ -5451,7 +5609,6 @@
     );
     driveHudState.throttle = throttle;
     driveHudState.brake = brake;
-    updateDriveHud();
     lastGamepadStatus = formatGamepadStatus(gamepad, steering, throttle, brake);
   }
 
