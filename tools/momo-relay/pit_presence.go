@@ -330,6 +330,9 @@ func (r *relay) broadcastPitPresence(snapshot pitPresenceSnapshot) {
 		return
 	}
 	r.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(message), IsString: true})
+	if r.raceAudio != nil {
+		r.raceAudio.observePit(snapshot)
+	}
 }
 
 func (r *relay) currentGameplayMessages(now time.Time) []string {

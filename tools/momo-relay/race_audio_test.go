@@ -36,7 +36,8 @@ func TestRaceAudioDetectorEmitsNewLapAndFinishOnce(t *testing.T) {
 		t.Fatalf("unexpected lap events: %#v", events)
 	}
 	events = detector.observe(raceAudioTestState("run-1", "finished", 2, 13120), "CP-1")
-	if len(events) != 1 || events[0].Kind != "race_finish" {
+	if len(events) != 1 || events[0].Kind != "race_finish" ||
+		events[0].EnglishText != "Checkered flag. P 2. Final lap, 13 point one two zero seconds." {
 		t.Fatalf("unexpected finish events: %#v", events)
 	}
 	if events := detector.observe(raceAudioTestState("run-1", "finished", 2, 13120), "CP-1"); len(events) != 0 {
@@ -49,14 +50,79 @@ func TestRaceAudioDetectorEmitsFinalLapBeforeFinishFromStandingStatus(t *testing
 	detector.observe(raceAudioTestStateWithStatus("run-1", "green", "racing", 9, 18586), "CP-1")
 
 	events := detector.observe(raceAudioTestStateWithStatus("run-1", "green", "finished", 10, 27760), "CP-1")
-	if len(events) != 2 {
-		t.Fatalf("final snapshot emitted %d events, want 2: %#v", len(events), events)
+	if len(events) != 1 {
+		t.Fatalf("final snapshot emitted %d events, want 1: %#v", len(events), events)
 	}
-	if events[0].Kind != "lap_complete" || events[1].Kind != "race_finish" {
-		t.Fatalf("final event order = %q then %q, want lap_complete then race_finish", events[0].Kind, events[1].Kind)
+	if events[0].Kind != "race_finish" ||
+		events[0].EnglishText != "Checkered flag. P 2. Final lap, 27 point seven six zero seconds." {
+		t.Fatalf("unexpected combined finish event: %#v", events[0])
 	}
 	if events := detector.observe(raceAudioTestStateWithStatus("run-1", "green", "finished", 10, 27760), "CP-1"); len(events) != 0 {
 		t.Fatalf("duplicate final snapshot emitted %d events", len(events))
+	}
+}
+
+func TestRaceAudioDetectorDefersConfiguredFinalLapUntilFinish(t *testing.T) {
+	detector := raceAudioDetector{}
+	detector.observe(raceAudioTestStateWithStatus("run-1", "green", "racing", 9, 18586), "CP-1")
+
+	if events := detector.observe(raceAudioTestStateWithStatus("run-1", "green", "racing", 10, 27760), "CP-1"); len(events) != 0 {
+		t.Fatalf("configured final lap emitted before finish: %#v", events)
+	}
+	events := detector.observe(raceAudioTestStateWithStatus("run-1", "green", "finished", 10, 27760), "CP-1")
+	if len(events) != 1 || events[0].Kind != "race_finish" ||
+		events[0].JapaneseText != "ゴール。 2位。 最終ラップ、27.760秒。" {
+		t.Fatalf("unexpected deferred finish event: %#v", events)
+	}
+}
+
+func TestRaceAudioPitDetectorEmitsServiceCompleteOnce(t *testing.T) {
+	detector := raceAudioPitDetector{}
+	servicing := pitPresenceSnapshot{
+		RaceRunID: "run-1", CarID: "CP-1", Present: true,
+		EntryID: "entry-1", ServiceState: "servicing",
+	}
+	complete := servicing
+	complete.ServiceState = "complete"
+
+	if event := detector.observe(servicing); event != nil {
+		t.Fatalf("initial servicing snapshot emitted event: %#v", event)
+	}
+	event := detector.observe(complete)
+	if event == nil || event.Kind != "pit_service_complete" || event.Priority != 65 ||
+		event.EnglishText != "Pit service complete." || event.JapaneseText != "ピットサービス完了。" {
+		t.Fatalf("unexpected PIT complete event: %#v", event)
+	}
+	if event := detector.observe(complete); event != nil {
+		t.Fatalf("duplicate complete snapshot emitted event: %#v", event)
+	}
+	if event := detector.observe(servicing); event != nil {
+		t.Fatalf("same entry returning to servicing emitted event: %#v", event)
+	}
+	if event := detector.observe(complete); event != nil {
+		t.Fatalf("same entry completed twice: %#v", event)
+	}
+}
+
+func TestRaceAudioPitDetectorDoesNotReplayExistingCompleteState(t *testing.T) {
+	detector := raceAudioPitDetector{}
+	complete := pitPresenceSnapshot{
+		RaceRunID: "run-1", CarID: "CP-1", Present: true,
+		EntryID: "entry-1", ServiceState: "complete",
+	}
+	if event := detector.observe(complete); event != nil {
+		t.Fatalf("initial complete snapshot emitted event: %#v", event)
+	}
+	complete.RaceRunID = "run-2"
+	complete.EntryID = "entry-2"
+	if event := detector.observe(complete); event != nil {
+		t.Fatalf("new run complete baseline emitted event: %#v", event)
+	}
+}
+
+func TestRaceAudioPitCompleteUsesBrowserKokoroPath(t *testing.T) {
+	if !raceAudioBrowserLocalEvent("pit_service_complete") {
+		t.Fatal("PIT complete is not routed through Browser Kokoro")
 	}
 }
 
@@ -73,16 +139,16 @@ func TestRaceAudioEnglishTemplatesAreShortAndOmitUnknownPosition(t *testing.T) {
 	if got, want := raceAudioJapaneseLapText(5, 13005, 0), "5周目、13.005"; got != want {
 		t.Fatalf("Japanese lap text with zero digits = %q, want %q", got, want)
 	}
-	if got, want := raceAudioJapaneseFinishText(2), "レース終了。2位"; got != want {
+	if got, want := raceAudioJapaneseFinishText(2, 13715), "ゴール。 2位。 最終ラップ、13.715秒。"; got != want {
 		t.Fatalf("Japanese finish text = %q, want %q", got, want)
 	}
 	if got, want := raceAudioEnglishLapTime(13005), "13 point zero zero five"; got != want {
 		t.Fatalf("lap time = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishFinishText(2), "Checkered flag. Race finished. P 2."; got != want {
+	if got, want := raceAudioEnglishFinishText(2, 13715), "Checkered flag. P 2. Final lap, 13 point seven one five seconds."; got != want {
 		t.Fatalf("finish text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishFinishText(0), "Checkered flag. Race finished."; got != want {
+	if got, want := raceAudioEnglishFinishText(0, 0), "Checkered flag."; got != want {
 		t.Fatalf("finish text without position = %q, want %q", got, want)
 	}
 }
@@ -646,6 +712,7 @@ func raceAudioTestStateWithStatus(runID string, phase string, status string, new
 	payload := map[string]any{
 		"type": "race_state", "version": 2, "raceId": "race-test", "raceRunId": runID,
 		"phase": phase, "viewerCarId": "CP-1",
+		"raceInfo":   map[string]any{"totalLaps": 10},
 		"standings":  []map[string]any{{"carId": "CP-1", "position": 2, "status": status, "lap": newestLap}},
 		"lapHistory": history,
 	}

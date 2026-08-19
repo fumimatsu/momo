@@ -144,7 +144,10 @@ type raceAudioState struct {
 	RaceRunID   string `json:"raceRunId"`
 	Phase       string `json:"phase"`
 	ViewerCarID string `json:"viewerCarId"`
-	Standings   []struct {
+	RaceInfo    struct {
+		TotalLaps int `json:"totalLaps"`
+	} `json:"raceInfo"`
+	Standings []struct {
 		CarID    string `json:"carId"`
 		Position int    `json:"position"`
 		Status   string `json:"status"`
@@ -165,11 +168,22 @@ type raceAudioDetector struct {
 	seenLaps    map[string]struct{}
 }
 
+type raceAudioPitDetector struct {
+	mu               sync.Mutex
+	initialized      bool
+	runID            string
+	entryID          string
+	present          bool
+	serviceState     string
+	completedEntryID string
+}
+
 type raceAudioSource struct {
-	relay    *relay
-	service  *raceAudioServiceClient
-	detector raceAudioDetector
-	jobs     chan raceAudioJob
+	relay       *relay
+	service     *raceAudioServiceClient
+	detector    raceAudioDetector
+	pitDetector raceAudioPitDetector
+	jobs        chan raceAudioJob
 }
 
 type raceAudioJob struct {
@@ -464,13 +478,16 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		detector.initialized = true
 		return nil
 	}
-	events := make([]raceAudioEvent, 0, 2)
+	events := make([]raceAudioEvent, 0, 1)
 	for _, history := range histories {
 		key := raceAudioLapKey(runID, carID, history.Lap, history.LapTimeMS)
 		if _, exists := detector.seenLaps[key]; exists {
 			continue
 		}
 		detector.seenLaps[key] = struct{}{}
+		if isFinished || (state.RaceInfo.TotalLaps > 0 && history.Lap >= state.RaceInfo.TotalLaps) {
+			continue
+		}
 		events = append(events, raceAudioEvent{
 			EventID:      key,
 			Kind:         "lap_complete",
@@ -480,16 +497,62 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		})
 	}
 	if !detector.finished && isFinished {
+		finalLapTimeMS := 0
+		if len(histories) > 0 {
+			finalLapTimeMS = histories[len(histories)-1].LapTimeMS
+		}
 		events = append(events, raceAudioEvent{
 			EventID:      fmt.Sprintf("%s:%s:race_finish", runID, carID),
 			Kind:         "race_finish",
 			Priority:     70,
-			EnglishText:  raceAudioEnglishFinishText(standingPosition),
-			JapaneseText: raceAudioJapaneseFinishText(standingPosition),
+			EnglishText:  raceAudioEnglishFinishText(standingPosition, finalLapTimeMS),
+			JapaneseText: raceAudioJapaneseFinishText(standingPosition, finalLapTimeMS),
 		})
 	}
 	detector.finished = detector.finished || isFinished
 	return events
+}
+
+func (detector *raceAudioPitDetector) observe(snapshot pitPresenceSnapshot) *raceAudioEvent {
+	runID := strings.TrimSpace(snapshot.RaceRunID)
+	entryID := strings.TrimSpace(snapshot.EntryID)
+	serviceState := strings.ToLower(strings.TrimSpace(snapshot.ServiceState))
+	detector.mu.Lock()
+	defer detector.mu.Unlock()
+
+	if detector.runID != runID {
+		detector.initialized = false
+		detector.runID = runID
+		detector.completedEntryID = ""
+	}
+	if !detector.initialized {
+		detector.initialized = true
+		detector.entryID = entryID
+		detector.present = snapshot.Present
+		detector.serviceState = serviceState
+		return nil
+	}
+
+	previousEntryID := detector.entryID
+	previousPresent := detector.present
+	previousServiceState := detector.serviceState
+	detector.entryID = entryID
+	detector.present = snapshot.Present
+	detector.serviceState = serviceState
+
+	if runID == "" || entryID == "" || detector.completedEntryID == entryID ||
+		!previousPresent || !snapshot.Present || previousEntryID != entryID ||
+		previousServiceState != "servicing" || serviceState != "complete" {
+		return nil
+	}
+	detector.completedEntryID = entryID
+	return &raceAudioEvent{
+		EventID:      fmt.Sprintf("%s:%s:pit_service_complete:%s", runID, snapshot.CarID, entryID),
+		Kind:         "pit_service_complete",
+		Priority:     65,
+		EnglishText:  "Pit service complete.",
+		JapaneseText: "ピットサービス完了。",
+	}
 }
 
 func raceAudioEnglishLapText(lap int, lapTimeMS int, _ int) string {
@@ -580,18 +643,26 @@ type raceAudioBrowserPrompt struct {
 	PhonemePolicy string  `json:"phonemePolicy"`
 }
 
-func raceAudioEnglishFinishText(position int) string {
+func raceAudioEnglishFinishText(position int, finalLapTimeMS int) string {
+	parts := []string{"Checkered flag."}
 	if position > 0 {
-		return fmt.Sprintf("Checkered flag. Race finished. P %d.", position)
+		parts = append(parts, fmt.Sprintf("P %d.", position))
 	}
-	return "Checkered flag. Race finished."
+	if finalLapTimeMS > 0 {
+		parts = append(parts, fmt.Sprintf("Final lap, %s seconds.", raceAudioEnglishLapTime(finalLapTimeMS)))
+	}
+	return strings.Join(parts, " ")
 }
 
-func raceAudioJapaneseFinishText(position int) string {
+func raceAudioJapaneseFinishText(position int, finalLapTimeMS int) string {
+	parts := []string{"ゴール。"}
 	if position > 0 {
-		return fmt.Sprintf("レース終了。%d位", position)
+		parts = append(parts, fmt.Sprintf("%d位。", position))
 	}
-	return "レース終了"
+	if finalLapTimeMS > 0 {
+		parts = append(parts, fmt.Sprintf("最終ラップ、%d.%03d秒。", finalLapTimeMS/1000, finalLapTimeMS%1000))
+	}
+	return strings.Join(parts, " ")
 }
 
 func raceAudioLapKey(runID string, carID string, lap int, _ int) string {
@@ -638,6 +709,21 @@ func (source *raceAudioSource) observe(message string) {
 	}
 }
 
+func (source *raceAudioSource) observePit(snapshot pitPresenceSnapshot) {
+	if source == nil {
+		return
+	}
+	event := source.pitDetector.observe(snapshot)
+	if event == nil {
+		return
+	}
+	select {
+	case source.jobs <- raceAudioJob{event: *event}:
+	default:
+		log.Printf("source %q: drop race audio event %q because the queue is full", source.relay.name, event.EventID)
+	}
+}
+
 func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEvent) bool {
 	if source == nil || client == nil {
 		return false
@@ -652,7 +738,7 @@ func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEve
 
 func raceAudioBrowserLocalEvent(kind string) bool {
 	switch kind {
-	case "lap_complete", "gap_ahead", "gap_behind":
+	case "lap_complete", "pit_service_complete", "gap_ahead", "gap_behind":
 		return true
 	default:
 		return false
