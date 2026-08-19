@@ -18,10 +18,92 @@ uv sync --group dev
 uv run python .\race_audio_service.py --listen 0.0.0.0:18090 --engine kokoro
 ```
 
-Kokoro は起動時に `am_michael` でウォームアップする。`listening` 表示後の初回 LAP に
-ONNX 初期化を混ぜないため、起動完了まで数秒かかる。Relay の既定 voice も `am_michael` である。
+Kokoro は起動時に英語`am_michael`と日本語`jf_alpha`をウォームアップする。`listening`表示後の
+初回LAPにONNX初期化や日本語辞書初期化を混ぜないため、起動完了まで数秒かかる。
+Relayの既定voiceは英語`am_michael`である。
 
 ## Comparison engines
+
+### Browser Pilot Kokoro
+
+Pilot固有のLAP通知を各Viewerで生成する検証では、日本語`jf_alpha + Misaki JAG2P`と英語
+`am_michael + espeak-ng`がKokoroへ渡す整形後音素とmodel input IDを基準fixtureとして出力する。
+ブラウザ側は同じIDを`generate_from_ids()`へ渡し、G2Pとtokenizerのruntime差を除外する。
+
+```powershell
+cd E:\src\momo\tools\race-audio-service
+& .\.venv\Scripts\python.exe .\export_browser_kokoro_fixture.py `
+  E:\src\momo-fpv-viewer\tools\browser-kokoro-lab\fixtures
+```
+
+fixtureにはmodel/voices SHA-256、日英の音素とmodel input ID、Python基準WAV、生成時間を含む。生成物はGit管理しない。
+日本語fixtureではMisakiの生音素も保持し、末尾の韻律制御列を除去して`.`を発話境界として付ける。
+固有語の置換は`japanese_pronunciation_dictionary.json`へ分離し、聴取確認済みの項目だけを登録する。
+Viewer側の実行手順と測定結果は`momo-fpv-viewer/docs/browser-kokoro-pilot-evaluation.md`を参照する。
+公開Viewerからこのserviceを直接呼ばせない。RelayがBearer token付きで`POST /v1/prepare`を呼び、短い
+音素payloadとmodel input IDだけを`momo-race-audio` Reliable DataChannelへ中継する。対応Pilotは
+WebGPU/FP32 modelのload完了後、LAP通知だけをローカル生成する。GOALと全体実況は`/v1/synthesize`で
+中央生成する。
+
+### Qwen3-TTS PoC
+
+Qwen3-TTS は現行 service へ組み込まず、比較専用の Python 3.12 venv で実行する。
+現行 service は Python 3.13 を前提としている一方、検証済みの Qwen runtime は Python 3.12 を使うためである。
+`faster-qwen3-tts` は MIT、Qwen3-TTS のcodeと使用modelは Apache-2.0 である。配布物へ組み込む場合は
+それぞれのlicense noticeとmodel provenanceを残す。
+
+```powershell
+py -3.12 -m venv E:\tmp\momo-race-audio-qwen-venv
+$python = 'E:\tmp\momo-race-audio-qwen-venv\Scripts\python.exe'
+& $python -m pip install --upgrade pip
+& $python -m pip install torch==2.11.0+cu128 torchaudio==2.11.0+cu128 `
+  --index-url https://download.pytorch.org/whl/cu128
+& $python -m pip install qwen-tts==0.1.1 faster-qwen3-tts==0.3.2 `
+  av==18.1.0 kokoro-onnx==0.4.9 'misaki[ja]==0.9.4' pytest
+```
+
+Kokoro の model は `download-kokoro-models.ps1` で準備する。Qwen model の cache を一時領域へ
+分離する場合は `HF_HOME` を設定する。
+
+```powershell
+cd C:\src\momo\tools\race-audio-service
+$python = 'E:\tmp\momo-race-audio-qwen-venv\Scripts\python.exe'
+$output = 'E:\tmp\momo-qwen3-tts-comparison'
+$env:HF_HOME = 'E:\tmp\huggingface-cache'
+
+& $python .\compare_tts_engines.py --engine kokoro --language en-US `
+  --voice am_michael --output-dir $output
+& $python .\compare_tts_engines.py --engine kokoro --language en-US `
+  --voice jf_alpha --output-dir $output
+& $python .\compare_tts_engines.py --engine kokoro --language ja-JP `
+  --voice jf_alpha --output-dir $output
+& $python .\compare_tts_engines.py --engine qwen3 --language en-US `
+  --voice Ryan --output-dir $output --burst-size 4
+& $python .\compare_tts_engines.py --engine qwen3 --language ja-JP `
+  --voice Ono_Anna --output-dir $output --burst-size 4 --qwen-local-files-only
+& $python .\compare_tts_engines.py --engine qwen3 --qwen-backend faster `
+  --qwen-streaming --qwen-model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice `
+  --qwen-max-new-tokens 256 --language en-US --voice Ryan `
+  --output-dir $output --burst-size 4
+& $python .\compare_tts_engines.py --engine qwen3 --qwen-backend faster `
+  --qwen-streaming --qwen-model Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice `
+  --qwen-max-new-tokens 256 --language ja-JP --voice Ono_Anna `
+  --output-dir $output --burst-size 4 --qwen-local-files-only
+& $python .\build_tts_comparison_report.py $output
+```
+
+`--limit` は各言語の先頭 N 文だけを試す。`--qwen-local-files-only` は model download 完了後の
+再現試験で使う。`faster` backend は CUDA Graph を起動時に捕捉し、さらに CustomVoice を1回生成して
+codecを含めてウォームアップする。Windows では FlashAttention を前提にせず `sdpa` を既定にする。CustomVoice の
+比較経路では SoX の warning が出ても WAV は生成できるが、Qwen の別機能には SoX が必要になり得る。
+
+比較 corpus は日英各 20 文で、パイロット名、車両番号、小数ラップタイム、PIT、BOOST、接触、
+最終周、略語混在を含む。manifest には P50 / P95、RTF、GPU peak、4件同時到着時の待ち時間を記録する。
+HTML report は同一文の逐次生成に対して音声長が 2 倍以上になった burst 出力を、反復・生成不安定の
+確認対象として強調する。
+
+RTF は `生成時間 / 音声時間` の一般的な定義で記録し、小さいほど速い。`speedFactor` はその逆数で、
+`2.5` なら音声の再生時間に対して約2.5倍速で生成できたことを示す。
 
 Piper Plus CSS10 6-language model を使う場合:
 
@@ -70,8 +152,22 @@ Windows Firewall は `192.168.11.100` からの TCP 18090 だけを許可する�
 uv run python .\race_audio_service.py --listen 127.0.0.1:18090 --engine fixture
 ```
 
+`/v1/prepare`の同時要求を1、4、8、16、32件で再現し、中央G2P処理の
+エラー率とP50/P95を確認する場合:
+
+```powershell
+uv run python .\benchmark_prepare_burst.py --url http://127.0.0.1:18090 --language ja-JP
+```
+
+これは音声推論ではなく、Browser Kokoroへ渡す音素とtokenの準備処理を測る。
+Pilot数を増やす前に、実運用と同じengine、辞書、token設定で実行する。
+
 日本語を VOICEVOX で比較する場合は、VOICEVOX Engine を先に起動して `--engine voicevox` を使う。
-現行既定は英語 Kokoro の `am_michael` である。`jf_alpha`、VOICEVOX、Piper Plus は比較経路として残すが、
+現行既定は英語 Kokoro の `am_michael` である。日本語は`misaki[ja]`の`JAG2P`で音素化してから、
+末尾のMisaki韻律制御列を除去し、発話境界`.`を付けてKokoro ONNXへ`is_phonemes=True`で渡す。
+このポリシーと`japanese_pronunciation_dictionary.json`の内容はengine identityへ含め、旧音声cacheを再利用しない。
+`jf_alpha`は日本語女性話者であり、英語G2Pと組み合わせれば
+英語も生成できるが、日本語話者らしい発音になる。VOICEVOX、Piper Plusは比較経路として残すが、
 初期本番構成では使用しない。
 この PC では FP32 model が INT8 model より大幅に速かったため、`kokoro-v1.0.onnx` を既定にする。
 

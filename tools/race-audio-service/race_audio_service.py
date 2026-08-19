@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wave
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from http import HTTPStatus
@@ -35,9 +36,12 @@ MAX_REQUEST_BYTES = 32 * 1024
 MAX_TEXT_LENGTH = 512
 PIPER_TEXT_NORMALIZER_VERSION = 1
 PIPER_PROSODY_PIPELINE_VERSION = 1
+KOKORO_JAPANESE_TERMINAL_POLICY = "strip-misaki-terminal-prosody-and-append-period-v1"
+KOKORO_BROWSER_MODEL_ID = "onnx-community/Kokoro-82M-v1.0-ONNX"
 
 
 _NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
+_KOKORO_JAPANESE_TERMINAL_PROSODY_PATTERN = re.compile(r"[_^\-][j^_\-]*$")
 _ENGLISH_SMALL_NUMBERS = (
     "zero",
     "one",
@@ -73,6 +77,59 @@ _ENGLISH_TENS = (
     "ninety",
 )
 _JAPANESE_DIGITS = ("ゼロ", "一", "二", "三", "四", "五", "六", "七", "八", "九")
+
+
+def strip_kokoro_japanese_terminal_prosody(phonemes: str) -> str:
+    return _KOKORO_JAPANESE_TERMINAL_PROSODY_PATTERN.sub("", phonemes).rstrip()
+
+
+def normalize_kokoro_japanese_terminal_phonemes(phonemes: str) -> str:
+    normalized = strip_kokoro_japanese_terminal_prosody(phonemes)
+    if not normalized:
+        raise ValueError("Japanese phonemes are empty after terminal normalization")
+    if normalized[-1] not in ".,!?":
+        normalized += "."
+    return normalized
+
+
+def load_kokoro_japanese_pronunciation_dictionary(path: Path) -> dict[str, str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schemaVersion") != 1 or not isinstance(payload.get("entries"), list):
+        raise ValueError("unsupported Japanese pronunciation dictionary")
+    result: dict[str, str] = {}
+    for entry in payload["entries"]:
+        if not isinstance(entry, dict):
+            raise ValueError("Japanese pronunciation entry must be an object")
+        surface = entry.get("surface")
+        phonemes = entry.get("phonemes")
+        if not isinstance(surface, str) or not surface.strip():
+            raise ValueError("Japanese pronunciation surface is required")
+        if not isinstance(phonemes, str) or not phonemes.strip():
+            raise ValueError(f"Japanese pronunciation phonemes are required: {surface}")
+        if surface in result:
+            raise ValueError(f"duplicate Japanese pronunciation surface: {surface}")
+        result[surface] = phonemes.strip()
+    return result
+
+
+def apply_kokoro_japanese_pronunciation_dictionary(
+    engine: "KokoroEngine",
+    text: str,
+    phonemes: str,
+    pronunciations: Mapping[str, str],
+) -> str:
+    adjusted = phonemes
+    for surface, replacement in pronunciations.items():
+        if surface not in text:
+            continue
+        source_batches = engine.phoneme_batches(surface, "ja-JP")
+        if len(source_batches) != 1:
+            raise ValueError(f"Japanese pronunciation surface produced multiple batches: {surface}")
+        source = strip_kokoro_japanese_terminal_prosody(source_batches[0])
+        if source not in adjusted:
+            raise ValueError(f"Japanese pronunciation surface was not found in prompt phonemes: {surface}")
+        adjusted = adjusted.replace(source, replacement)
+    return adjusted
 
 
 def _english_integer_words(value: int) -> str:
@@ -171,7 +228,9 @@ class KokoroEngine:
         model_path: Path,
         voices_path: Path,
         warm_up_voice: str = "am_michael",
+        warm_up_japanese_voice: str = "jf_alpha",
         warm_up: bool = True,
+        japanese_pronunciations: Mapping[str, str] | None = None,
     ) -> None:
         from kokoro_onnx import Kokoro
 
@@ -182,6 +241,22 @@ class KokoroEngine:
         self._model_path = model_path.resolve()
         self._voices_path = voices_path.resolve()
         self._model = Kokoro(str(self._model_path), str(self._voices_path))
+        from misaki import ja
+
+        self._japanese_g2p = ja.JAG2P(version="pyopenjtalk")
+        self._japanese_pronunciations = dict(japanese_pronunciations or {})
+        pronunciation_digest = hashlib.sha256(
+            json.dumps(
+                self._japanese_pronunciations,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        self._identity = (
+            f"kokoro-onnx:{self._model_path.name}:{self._voices_path.name}:"
+            f"{KOKORO_JAPANESE_TERMINAL_POLICY}:dictionary-{pronunciation_digest}"
+        )
         self._lock = threading.Lock()
         if warm_up:
             with self._lock:
@@ -191,21 +266,109 @@ class KokoroEngine:
                     speed=1.04,
                     lang="en-us",
                 )
+                japanese_phonemes = self.prepare_japanese_phonemes(
+                    "実況音声の準備ができました。"
+                )
+                self._model.create(
+                    japanese_phonemes,
+                    voice=warm_up_japanese_voice,
+                    speed=1.04,
+                    is_phonemes=True,
+                )
 
     @property
     def identity(self) -> str:
-        return f"kokoro-onnx:{self._model_path.name}:{self._voices_path.name}"
+        return self._identity
+
+    def phonemize_japanese(self, text: str) -> str:
+        phonemes, _tokens = self._japanese_g2p(text)
+        if not phonemes or "❓" in phonemes:
+            raise ValueError("Kokoro Japanese G2P could not phonemize the text")
+        return phonemes
+
+    def prepare_japanese_phonemes(self, text: str) -> str:
+        phonemes = apply_kokoro_japanese_pronunciation_dictionary(
+            self,
+            text,
+            self.phonemize_japanese(text),
+            self._japanese_pronunciations,
+        )
+        return normalize_kokoro_japanese_terminal_phonemes(phonemes)
+
+    def prepare_browser_prompt(
+        self, text: str, language: str, voice: str, speed: float
+    ) -> dict[str, object]:
+        if language == "ja-JP":
+            phoneme_batches = list(self._model._split_phonemes(
+                self.prepare_japanese_phonemes(text)
+            ))
+        elif language == "en-US":
+            phoneme_batches = self.english_phoneme_batches(text)
+        else:
+            raise ValueError(f"unsupported Kokoro phoneme language: {language}")
+        if len(phoneme_batches) != 1:
+            raise ValueError("browser Kokoro prompt must fit in one phoneme batch")
+        phonemes = phoneme_batches[0]
+        return {
+            "version": PROTOCOL_VERSION,
+            "engine": "kokoro",
+            "modelId": KOKORO_BROWSER_MODEL_ID,
+            "language": language,
+            "voice": voice,
+            "speed": speed,
+            "phonemes": phonemes,
+            "modelInputIds": self.model_input_ids(phonemes),
+            "phonemePolicy": (
+                KOKORO_JAPANESE_TERMINAL_POLICY if language == "ja-JP" else "espeak-ng"
+            ),
+        }
+
+    def japanese_phoneme_batches(self, text: str) -> list[str]:
+        return list(self._model._split_phonemes(self.phonemize_japanese(text)))
+
+    def english_phoneme_batches(self, text: str) -> list[str]:
+        phonemes = self._model.tokenizer.phonemize(text, "en-us")
+        if not phonemes:
+            raise ValueError("Kokoro English G2P could not phonemize the text")
+        return list(self._model._split_phonemes(phonemes))
+
+    def phoneme_batches(self, text: str, language: str) -> list[str]:
+        if language == "ja-JP":
+            return self.japanese_phoneme_batches(text)
+        if language == "en-US":
+            return self.english_phoneme_batches(text)
+        raise ValueError(f"unsupported Kokoro phoneme language: {language}")
+
+    def model_input_ids(self, phonemes: str) -> list[int]:
+        return [0, *map(int, self._model.tokenizer.tokenize(phonemes)), 0]
+
+    def synthesize_phonemes(
+        self, phonemes: str, voice: str, speed: float
+    ) -> tuple[np.ndarray, int]:
+        if not phonemes:
+            raise ValueError("Kokoro phonemes are required")
+        with self._lock:
+            samples, sample_rate = self._model.create(
+                phonemes,
+                voice=voice,
+                speed=speed,
+                is_phonemes=True,
+            )
+        return np.asarray(samples, dtype=np.float32), int(sample_rate)
 
     def synthesize(
         self, text: str, language: str, voice: str, speed: float
     ) -> tuple[np.ndarray, int]:
-        language_code = "ja" if language == "ja-JP" else "en-us"
+        if language == "ja-JP":
+            return self.synthesize_phonemes(
+                self.prepare_japanese_phonemes(text), voice, speed
+            )
         with self._lock:
             samples, sample_rate = self._model.create(
                 text,
                 voice=voice,
                 speed=speed,
-                lang=language_code,
+                lang="en-us",
             )
         return np.asarray(samples, dtype=np.float32), int(sample_rate)
 
@@ -469,7 +632,7 @@ def encode_opus_packets(samples: np.ndarray, sample_rate: int) -> tuple[list[byt
 
 
 @dataclass(frozen=True)
-class SynthesisRequest:
+class PromptRequest:
     event_key: str
     language: str
     voice: str
@@ -477,15 +640,18 @@ class SynthesisRequest:
     speed: float
 
 
-def parse_synthesis_request(payload: object) -> SynthesisRequest:
+@dataclass(frozen=True)
+class SynthesisRequest(PromptRequest):
+    pass
+
+
+def parse_prompt_request(payload: object) -> PromptRequest:
     if not isinstance(payload, dict):
         raise ValueError("JSON object is required")
     event_key = str(payload.get("eventKey", "")).strip()
     language = str(payload.get("language", "")).strip()
     voice = str(payload.get("voice", "")).strip()
     text = str(payload.get("text", "")).strip()
-    codec = str(payload.get("codec", "")).strip().lower()
-    frame_duration_ms = payload.get("frameDurationMs")
     try:
         speed = float(payload.get("speed", 1.0))
     except (TypeError, ValueError) as error:
@@ -500,9 +666,23 @@ def parse_synthesis_request(payload: object) -> SynthesisRequest:
         raise ValueError(f"text is required and must not exceed {MAX_TEXT_LENGTH} characters")
     if not 0.5 <= speed <= 2.0:
         raise ValueError("speed must be between 0.5 and 2.0")
+    return PromptRequest(event_key, language, voice, text, speed)
+
+
+def parse_synthesis_request(payload: object) -> SynthesisRequest:
+    request = parse_prompt_request(payload)
+    assert isinstance(payload, dict)
+    codec = str(payload.get("codec", "")).strip().lower()
+    frame_duration_ms = payload.get("frameDurationMs")
     if codec != "opus" or frame_duration_ms != FRAME_DURATION_MS:
         raise ValueError("only 20 ms Opus packets are supported")
-    return SynthesisRequest(event_key, language, voice, text, speed)
+    return SynthesisRequest(
+        request.event_key,
+        request.language,
+        request.voice,
+        request.text,
+        request.speed,
+    )
 
 
 class RaceAudioApplication:
@@ -512,6 +692,12 @@ class RaceAudioApplication:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+
+    def prepare(self, request: PromptRequest) -> dict[str, object]:
+        prepare = getattr(self.engine, "prepare_browser_prompt", None)
+        if not callable(prepare):
+            raise ValueError("configured engine does not support browser prompts")
+        return prepare(request.text, request.language, request.voice, request.speed)
 
     def synthesize(self, request: SynthesisRequest) -> dict[str, object]:
         started = time.perf_counter()
@@ -593,7 +779,7 @@ class RaceAudioRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        if self.path != "/v1/synthesize":
+        if self.path not in {"/v1/prepare", "/v1/synthesize"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if self.bearer_token:
@@ -610,8 +796,10 @@ class RaceAudioRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(content_length))
-            request = parse_synthesis_request(payload)
-            response = self.application.synthesize(request)
+            if self.path == "/v1/prepare":
+                response = self.application.prepare(parse_prompt_request(payload))
+            else:
+                response = self.application.synthesize(parse_synthesis_request(payload))
         except (ValueError, json.JSONDecodeError) as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             return
@@ -634,12 +822,23 @@ class RaceAudioRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class RaceAudioHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 64
+    daemon_threads = True
+
+
 def create_engine(args: argparse.Namespace) -> AudioEngine:
     match args.engine:
         case "fixture":
             return FixtureEngine()
         case "kokoro":
-            return KokoroEngine(Path(args.kokoro_model), Path(args.kokoro_voices))
+            return KokoroEngine(
+                Path(args.kokoro_model),
+                Path(args.kokoro_voices),
+                japanese_pronunciations=load_kokoro_japanese_pronunciation_dictionary(
+                    Path(args.kokoro_japanese_pronunciation_dictionary)
+                ),
+            )
         case "voicevox":
             return VoicevoxEngine(args.voicevox_url, args.voicevox_speaker)
         case "piper-plus":
@@ -685,6 +884,10 @@ def main() -> None:
     parser.add_argument("--cache-dir", default="cache")
     parser.add_argument("--kokoro-model", default="models/kokoro-v1.0.onnx")
     parser.add_argument("--kokoro-voices", default="models/voices-v1.0.bin")
+    parser.add_argument(
+        "--kokoro-japanese-pronunciation-dictionary",
+        default="japanese_pronunciation_dictionary.json",
+    )
     parser.add_argument("--voicevox-url", default="http://127.0.0.1:50021")
     parser.add_argument("--voicevox-speaker", type=int, default=3)
     parser.add_argument("--piper-model", default="models/css10-ja-6lang-fp16.onnx")
@@ -697,7 +900,7 @@ def main() -> None:
     bearer_token = os.environ.get("MOMO_RACE_AUDIO_SERVICE_TOKEN", "").strip()
     require_token_for_non_loopback(host, bearer_token)
     application = RaceAudioApplication(create_engine(args), Path(args.cache_dir))
-    server = ThreadingHTTPServer((host, port), RaceAudioRequestHandler)
+    server = RaceAudioHTTPServer((host, port), RaceAudioRequestHandler)
     server.application = application  # type: ignore[attr-defined]
     server.bearer_token = bearer_token  # type: ignore[attr-defined]
     print(f"race audio service listening on http://{host}:{port} engine={application.engine.identity}")

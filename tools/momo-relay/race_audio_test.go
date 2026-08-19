@@ -61,11 +61,20 @@ func TestRaceAudioDetectorEmitsFinalLapBeforeFinishFromStandingStatus(t *testing
 }
 
 func TestRaceAudioEnglishTemplatesAreShortAndOmitUnknownPosition(t *testing.T) {
-	if got, want := raceAudioEnglishLapText(4, 13715, 2), "Lap 4. 13 point seven one five. P 2."; got != want {
+	if got, want := raceAudioEnglishLapText(4, 13715, 2), "Lap 4. 13 point seven one five seconds"; got != want {
 		t.Fatalf("lap text = %q, want %q", got, want)
 	}
-	if got, want := raceAudioEnglishLapText(4, 13715, 0), "Lap 4. 13 point seven one five."; got != want {
+	if got, want := raceAudioEnglishLapText(4, 13715, 0), "Lap 4. 13 point seven one five seconds"; got != want {
 		t.Fatalf("lap text without position = %q, want %q", got, want)
+	}
+	if got, want := raceAudioJapaneseLapText(4, 13715, 2), "4周目、13.715"; got != want {
+		t.Fatalf("Japanese lap text = %q, want %q", got, want)
+	}
+	if got, want := raceAudioJapaneseLapText(5, 13005, 0), "5周目、13.005"; got != want {
+		t.Fatalf("Japanese lap text with zero digits = %q, want %q", got, want)
+	}
+	if got, want := raceAudioJapaneseFinishText(2), "レース終了。2位"; got != want {
+		t.Fatalf("Japanese finish text = %q, want %q", got, want)
 	}
 	if got, want := raceAudioEnglishLapTime(13005), "13 point zero zero five"; got != want {
 		t.Fatalf("lap time = %q, want %q", got, want)
@@ -75,6 +84,60 @@ func TestRaceAudioEnglishTemplatesAreShortAndOmitUnknownPosition(t *testing.T) {
 	}
 	if got, want := raceAudioEnglishFinishText(0), "Checkered flag. Race finished."; got != want {
 		t.Fatalf("finish text without position = %q, want %q", got, want)
+	}
+}
+
+func TestRaceAudioCalloutUsesFixedTemplates(t *testing.T) {
+	event, err := raceAudioEventFromCallout(12, raceAudioCalloutRequest{
+		Type: "race_audio_callout_request", Version: 1, RequestID: "gap_behind-4",
+		Kind: "gap_behind", CarNumber: 7, GapMS: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Kind != "gap_behind" || event.Priority != 80 || event.EnglishText != "Car 7 behind. Gap zero point six seconds" ||
+		event.JapaneseText != "後ろ、7号車、差0.6" {
+		t.Fatalf("unexpected callout event: %#v", event)
+	}
+	ahead, err := raceAudioEventFromCallout(12, raceAudioCalloutRequest{
+		Type: "race_audio_callout_request", Version: 1, RequestID: "gap_ahead-5",
+		Kind: "gap_ahead", CarNumber: 11, GapMS: 2000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ahead.Priority != 30 || ahead.EnglishText != "Car 11 ahead. Gap two seconds" || ahead.JapaneseText != "前、11号車、差2.0" {
+		t.Fatalf("unexpected ahead event: %#v", ahead)
+	}
+}
+
+func TestRaceAudioCalloutRejectsInvalidOrArbitraryPayload(t *testing.T) {
+	cases := []raceAudioCalloutRequest{
+		{Type: "race_audio_callout_request", Version: 1, RequestID: "bad request", Kind: "gap_ahead", CarNumber: 1, GapMS: 500},
+		{Type: "race_audio_callout_request", Version: 1, RequestID: "request-1", Kind: "speak_text", CarNumber: 1, GapMS: 500},
+		{Type: "race_audio_callout_request", Version: 1, RequestID: "request-1", Kind: "gap_ahead", CarNumber: 1, GapMS: 550},
+	}
+	for _, request := range cases {
+		if _, err := raceAudioEventFromCallout(1, request); err == nil {
+			t.Fatalf("invalid request was accepted: %#v", request)
+		}
+	}
+}
+
+func TestRaceAudioCalloutRateLimitAndDeduplication(t *testing.T) {
+	client := &viewer{}
+	started := time.Unix(100, 0)
+	if !client.acceptRaceAudioCallout("request-1", started) {
+		t.Fatal("first callout was rejected")
+	}
+	if client.acceptRaceAudioCallout("request-1", started.Add(3*time.Second)) {
+		t.Fatal("duplicate callout was accepted")
+	}
+	if client.acceptRaceAudioCallout("request-2", started.Add(time.Second)) {
+		t.Fatal("rapid callout was accepted")
+	}
+	if !client.acceptRaceAudioCallout("request-2", started.Add(2*time.Second)) {
+		t.Fatal("callout after hard interval was rejected")
 	}
 }
 
@@ -155,6 +218,81 @@ func TestRaceAudioServiceClientUsesBearerTokenAndDecodesPackets(t *testing.T) {
 	}
 	if duration != 20 || len(clip.packets) != 1 {
 		t.Fatalf("unexpected clip duration=%d packets=%d", duration, len(clip.packets))
+	}
+}
+
+func TestRaceAudioServiceClientPreparesBrowserKokoroPrompt(t *testing.T) {
+	const token = "test-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/prepare" {
+			t.Fatalf("unexpected request path: %q", request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("unexpected authorization: %q", request.Header.Get("Authorization"))
+		}
+		var payload raceAudioPromptRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Language != "ja-JP" || payload.Voice != "jf_alpha" || payload.Text != "4周目、13.715" {
+			t.Fatalf("unexpected prompt request: %#v", payload)
+		}
+		_ = json.NewEncoder(w).Encode(raceAudioBrowserPrompt{
+			Version:       1,
+			Engine:        "kokoro",
+			ModelID:       raceAudioBrowserModelID,
+			Language:      payload.Language,
+			Voice:         payload.Voice,
+			Speed:         payload.Speed,
+			Phonemes:      "joɴɕuːme, ʥuː saɴteɴ nanaiʨi goː.",
+			ModelInputIDs: []int{0, 10, 11, 0},
+			PhonemePolicy: "strip-misaki-terminal-prosody-and-append-period-v1",
+		})
+	}))
+	defer server.Close()
+	client, err := newRaceAudioServiceClient(server.URL, token, "en-US", "am_michael", "jf_alpha", 1.04)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := client.prepare(context.Background(), raceAudioEvent{
+		EventID:      "run-1:CP-1:lap:4:13715",
+		Kind:         "lap_complete",
+		EnglishText:  "Lap 4. 13.715 seconds",
+		JapaneseText: "4周目、13.715",
+	}, "ja-JP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt.ModelID != raceAudioBrowserModelID || len(prompt.ModelInputIDs) != 4 {
+		t.Fatalf("unexpected browser prompt: %#v", prompt)
+	}
+}
+
+func TestValidateRaceAudioBrowserPromptRejectsMissingBoundaryTokens(t *testing.T) {
+	prompt := raceAudioBrowserPrompt{
+		Version:       1,
+		Engine:        "kokoro",
+		ModelID:       raceAudioBrowserModelID,
+		Language:      "en-US",
+		Voice:         "am_michael",
+		Speed:         1.04,
+		Phonemes:      "hello.",
+		ModelInputIDs: []int{1, 2, 3},
+	}
+	if err := validateRaceAudioBrowserPrompt(prompt, "en-US", "am_michael", 1.04); err == nil {
+		t.Fatal("browser prompt without boundary tokens was accepted")
+	}
+}
+
+func TestNormalizeRaceAudioModeKeepsLegacyPreferenceRemote(t *testing.T) {
+	if mode, err := normalizeRaceAudioMode(""); err != nil || mode != raceAudioModeRemote {
+		t.Fatalf("empty mode = %q, %v", mode, err)
+	}
+	if mode, err := normalizeRaceAudioMode(raceAudioModeBrowserKokoro); err != nil || mode != raceAudioModeBrowserKokoro {
+		t.Fatalf("browser mode = %q, %v", mode, err)
+	}
+	if _, err := normalizeRaceAudioMode("unknown"); err == nil {
+		t.Fatal("unknown race audio mode was accepted")
 	}
 }
 

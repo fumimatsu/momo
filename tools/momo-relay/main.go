@@ -83,46 +83,50 @@ type signalMessage struct {
 }
 
 type viewer struct {
-	id                  uint64
-	role                string
-	clientKind          string
-	remoteAddr          string
-	pc                  *webrtc.PeerConnection
-	state               atomic.Int32
-	telemetry           atomic.Pointer[webrtc.DataChannel]
-	command             atomic.Pointer[webrtc.DataChannel]
-	race                atomic.Pointer[webrtc.DataChannel]
-	raceAudio           atomic.Pointer[webrtc.DataChannel]
-	drive               atomic.Pointer[webrtc.DataChannel]
-	events              atomic.Pointer[webrtc.DataChannel]
-	lastCommandUnixNano atomic.Int64
-	lastCommandDropLog  atomic.Int64
-	lastTelemetryLog    atomic.Int64
-	lastTelemetrySentAt atomic.Int64
-	telemetryMessages   atomic.Uint64
-	telemetryBytes      atomic.Uint64
-	telemetrySendErrors atomic.Uint64
-	telemetryDropped    atomic.Uint64
-	telemetryThrottled  atomic.Uint64
-	telemetryWS         chan string
-	telemetryStateWS    *sourceLatestTelemetryQueue
-	gameplayWS          chan string
-	commandWS           chan string
-	raceWS              chan string
-	audioWS             chan string
-	eventsWS            chan string
-	audioSubscribed     atomic.Bool
-	telemetrySendMu     sync.Mutex
-	observerStateMu     sync.Mutex
-	observerStateAt     map[string]int64
-	raceSendMu          sync.Mutex
-	eventsSendMu        sync.Mutex
-	raceAudioSendMu     sync.Mutex
-	raceAudioLanguage   atomic.Value
-	raceAudioTrack      *webrtc.TrackLocalStaticSample
-	raceAudioQueue      chan raceAudioClip
-	raceAudioStop       chan struct{}
-	raceAudioStopOnce   sync.Once
+	id                   uint64
+	role                 string
+	clientKind           string
+	remoteAddr           string
+	pc                   *webrtc.PeerConnection
+	state                atomic.Int32
+	telemetry            atomic.Pointer[webrtc.DataChannel]
+	command              atomic.Pointer[webrtc.DataChannel]
+	race                 atomic.Pointer[webrtc.DataChannel]
+	raceAudio            atomic.Pointer[webrtc.DataChannel]
+	drive                atomic.Pointer[webrtc.DataChannel]
+	events               atomic.Pointer[webrtc.DataChannel]
+	lastCommandUnixNano  atomic.Int64
+	lastCommandDropLog   atomic.Int64
+	lastTelemetryLog     atomic.Int64
+	lastTelemetrySentAt  atomic.Int64
+	telemetryMessages    atomic.Uint64
+	telemetryBytes       atomic.Uint64
+	telemetrySendErrors  atomic.Uint64
+	telemetryDropped     atomic.Uint64
+	telemetryThrottled   atomic.Uint64
+	telemetryWS          chan string
+	telemetryStateWS     *sourceLatestTelemetryQueue
+	gameplayWS           chan string
+	commandWS            chan string
+	raceWS               chan string
+	audioWS              chan string
+	eventsWS             chan string
+	audioSubscribed      atomic.Bool
+	telemetrySendMu      sync.Mutex
+	observerStateMu      sync.Mutex
+	observerStateAt      map[string]int64
+	raceSendMu           sync.Mutex
+	eventsSendMu         sync.Mutex
+	raceAudioSendMu      sync.Mutex
+	raceAudioCalloutMu   sync.Mutex
+	raceAudioCalloutAt   time.Time
+	raceAudioCalloutSeen map[string]time.Time
+	raceAudioLanguage    atomic.Value
+	raceAudioMode        atomic.Value
+	raceAudioTrack       *webrtc.TrackLocalStaticSample
+	raceAudioQueue       chan raceAudioClip
+	raceAudioStop        chan struct{}
+	raceAudioStopOnce    sync.Once
 }
 
 // sourceLatestTelemetryQueue keeps one latest state per telemetry source.

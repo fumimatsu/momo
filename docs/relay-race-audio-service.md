@@ -5,15 +5,20 @@
 
 ## 状態
 
-Relay Pilot へ LAP 完了と GOAL の英語 TTS を配信する初期実装である。
-音声 asset の公開 HTTPS 配信は採用しない。TTS service は内部 API として動かし、Relay が取得した
-Opus packet を既存 PeerConnection の専用 audio track へ送る。
+Relay PilotへLAP完了とGOALの日英TTSを配信する実装である。Pilot固有のLAPは対応ブラウザへKokoroの
+音素とmodel input IDを送り、WebGPUで生成できる。GOALと将来の全体実況はRelayが取得したOpus packetを
+既存PeerConnectionの専用audio trackへ送る。音声assetの公開HTTPS配信は採用しない。
 
 実装済み範囲:
 
 - `race_state v2` の新規 `lapHistory` から `lap_complete` を 1 回だけ確定する。
 - `phase` の `finished` 遷移から `race_finish` を 1 回だけ確定する。
-- 初期本番 voice は Kokoro `am_michael` に固定する。`raceAnnounce=0` で無効化する。
+- 英語はKokoro `am_michael`、日本語は`jf_alpha + Misaki JAG2P`を使う。Viewerの既定選択は`Off`とする。
+- WebGPU/FP32 model準備完了後の`lap_complete`だけをBrowser Kokoroへ分散する。
+- Battle Meterと同じ確定gapから、前方車と後方車の車番・0.1秒単位の差をPilot固有通知にする。
+- Viewerは固定schemaの`race_audio_callout_request`だけを送り、Relayが文言を組み立てる。
+- RelayはPilotごとに2秒のhard limit、重複排除、512 byte上限を適用する。
+- `race_finish`は中央生成のOpus trackを維持し、旧Viewerはmode未指定のまま中央生成を使う。
 - `queued` 受信時に約 200 ms の固定 radio cue を即時再生し、TTS 生成中であることを Pilot へ知らせる。
 - TTS 失敗時は既存 Web Speech API へフォールバックする。
 - TTS 再生中は M5Audio を 40% へ下げ、終了時に復元する。
@@ -21,7 +26,8 @@ Opus packet を既存 PeerConnection の専用 audio track へ送る。
 
 未実装:
 
-- STOP、blue flag、接近警告、PIT、Fuel、final lap、Boost の server-side TTS event 化。
+- STOP、blue flag、PIT、Fuel、final lap、Boost の server-side TTS event 化。
+- race開始前など全員向けeventを1回生成し、全Pilotへ同じpacketを配るserver-level audio bus。
 - 高優先度音声による再生中 clip の中断と priority queue。
 - Operations 画面の生成時間、cache hit、失敗数。
 - 4 Pilot 同時実走試験と `11.100` への本番適用。
@@ -36,18 +42,35 @@ Race Control race_state v2
           |
           +-- internal HTTP --> 192.168.11.105 race-audio-service
           |                         +--> Kokoro EN / am_michael
-          |                         +--> JA engines retained for comparison only
-          |                         +--> Opus packet cache
+          |                         +--> Kokoro JA / jf_alpha + Misaki
+          |                         +--> /v1/prepare: phonemes + input IDs
+          |                         +--> /v1/synthesize: Opus packet cache
           |
           +-- WebRTC video track --------------------+
           +-- WebRTC race audio track (Opus) --------+--> Pilot Viewer
           +-- momo-race-audio DataChannel -----------+
-                       language / queued / playing / ended / failed
+                       mode / queued / prompt / playing / ended / failed
 ```
 
 外部 Ayame Pilot も Relay との PeerConnection で Opus track を受ける。ブラウザから TTS host へ
 直接接続しないため、Cloudflare Tunnel、公開 audio hostname、CORS、mixed content 対策は不要である。
 Ayame signaling server と TURN server は SDP / ICE / DTLS の確立だけを仲介し、TTS API は公開しない。
+
+Pilot固有のLAP通知は中央TTSで全件を生成せず、各Pilot ViewerのWebGPU Kokoroへ分散する。中央で日本語は
+Misaki JAG2P、英語はespeak-ngを使って固定model版のinput IDまで生成し、
+Relayが言語、voice、model revision、input IDをReliable channelで中継する。
+ViewerへRace Audio Service tokenや辞書を配布しない。全体実況は中央生成の独立audio layerとして残す。
+
+前後差通知は既存のReliableな`momo-race-audio` DataChannelを双方向で使う。ブラウザは任意文言を送れず、
+`gap_ahead | gap_behind`、車番、100 ms単位のgap、64文字以内のrequest IDだけを送る。Relayは
+`前、11号車、差0.8`または`Car 11 ahead. Gap zero point eight seconds`相当の固定文言に変換し、
+`/v1/prepare`結果だけを同じPilotへ返す。正式な`carNumber`がTiming/Directoryから届くまでは、
+`CP-2`や`FPV-02`の末尾番号を移行用fallbackとして使う。
+
+2026-08-19の20文比較では、ブラウザWebGPU/FP32がgeneration P50 388 ms、P95 524 ms、Python基準との
+minimum waveform cosine 0.9961だった。WASM/Q8はP50 7,651 msのためフォールバックに使わず、WebGPU
+利用不能時は中央生成を維持する。ローカル生成に失敗したLAPだけOS Speechへ戻す。実WebRTC映像との
+同時試験は未完了であり、Race Voiceは既定`Off`のままとする。
 
 ## 配置
 
@@ -72,10 +95,13 @@ TTS service と Relay は同じ PC である必要はない。現在の試験構
 
 ```text
 GET  /healthz
+POST /v1/prepare
 POST /v1/synthesize
 ```
 
-`POST /v1/synthesize` は `Authorization: Bearer <token>` を要求する。要求例:
+両POST APIは`Authorization: Bearer <token>`を要求し、Viewerから直接呼ばない。`/v1/prepare`は
+Kokoroの固定model ID、voice、整形後phonemes、model input IDsを返す。Relayは内容と境界tokenを検証して
+Reliable DataChannelへ中継する。`/v1/synthesize`の要求例:
 
 ```json
 {
@@ -99,6 +125,11 @@ cache key には engine、model、voice、language、text、speed、codec を含
 `am_michael` を 1 回推論し、最初の実イベントへ約 4.7 秒の cold inference を持ち込まない。
 文章量で変動するため、11.100 適用後も生成時間を測る。
 INT8 model は英語 5～6 秒、日本語 11～12 秒で、容量は小さいが race notification には遅いため既定にしない。
+
+`ThreadingHTTPServer`の既定accept queueでは16件以上の同時`/v1/prepare`が約0.5秒刻みで待ったため、
+serviceのqueueを64へ拡張した。2026-08-19のloopback再測定では32件同時要求が日英ともエラー0で、
+日本語P95 18.19 ms、英語P95 14.82 msだった。`benchmark_prepare_burst.py`で同じ試験を再現できる。
+これはG2Pとtoken生成だけの値であり、Browser側のWebGPU推論時間を含まない。
 
 ### Piper Plus CSS10 実測
 
@@ -179,22 +210,99 @@ model load と英語・日本語の warmup は約 4.7～6.0 秒だった。生�
 比較用ファイルは `compare_tts_engines.py` で生成し、`build_tts_comparison_report.py` で Kokoro、Pocket TTS、
 VOICEVOX と同じ表へ追加する。
 
+### Qwen3-TTS feasibility result
+
+2026-08-19 に RTX 5070 12 GB、Python 3.12、PyTorch 2.11.0 + CUDA 12.8、
+`Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`、BF16、SDPA で日英各 20 文を生成した。
+比較対象は Kokoro `am_michael` / `jf_alpha` とし、同じ race announcement corpus を使った。
+
+| engine / language | generation P50 | generation P95 | average audio | RTF P50 | GPU peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Kokoro English | 646 ms | 1,048 ms | 4,458 ms | 0.149 | CPU |
+| Kokoro Japanese / `jf_alpha` + Misaki | 708 ms | 946 ms | 5,058 ms | 0.141 | CPU |
+| Qwen3-TTS 0.6B English | 10,084 ms | 12,724 ms | 6,184 ms | 1.630 | 2,387 MB |
+| Qwen3-TTS 0.6B Japanese | 11,384 ms | 16,790 ms | 7,280 ms | 1.634 | 2,385 MB |
+
+Kokoro `jf_alpha`へ`lang=ja`で日本語文字列を直接渡した旧比較は、非対応言語の警告文を音声化した
+無効な出力だった。Kokoro v1 model自体は日本語対応であり、正しい経路は`misaki[ja]`の
+`JAG2P(version="pyopenjtalk")`で音素化し、Kokoro ONNXへ`is_phonemes=True`で渡す方式である。
+日本語の短い通知ではMisaki終端韻律が余分な語尾として発声されるため、本番serviceは末尾の
+`^ _ - j`制御列を除去し、音素境界`.`を付けてから生成する。ポリシーversionと発音辞書hashを
+engine identityへ含めるため、変更前のcacheは自動的に再利用されない。
+
+Qwen model の cache 済み load は約 8.3 秒、warmup は英語約 3.8 秒、日本語約 7.7 秒だった。
+VRAM 容量には余裕があるが、現在の公式 Python CustomVoice API は full WAV を返す batch 経路であり、
+この Windows SDPA 構成では生成完了まで待つ必要がある。現行の live race notification の 2.5 秒上限を
+満たさないため、本番 engine は Kokoro のままとする。
+
+単一 model instance に4件を同時到着させ、推論を直列化した結果:
+
+| language | wall time | client P50 | client P95 |
+| --- | ---: | ---: | ---: |
+| English | 80,080 ms | 28,320 ms | 73,109 ms |
+| Japanese | 43,853 ms | 27,614 ms | 42,270 ms |
+
+英語 burst の `pilot_name` は、逐次生成時 7,280 ms の音声が 28,400 ms まで伸び、生成にも
+46,420 msかかった。同一文・別 seed のため単純な性能分散だけとは断定できず、聞感で反復や脱落を
+確認する必要がある。ただし live 採用時には生成 timeout、最大音声長、1回だけの再生成、Kokoro fallback、
+同一文に対する音声長比の監視が必要である。
+
+同じ PC で `faster-qwen3-tts 0.3.2` の CUDA Graph / streaming backend と
+`Qwen3-TTS-12Hz-1.7B-CustomVoice` を追加検証した。ここでの RTF は `生成時間 / 音声時間`、
+speed factor はその逆数である。起動時に CUDA Graph 捕捉と CustomVoice 1文の生成を完了させてから
+race corpus を測定した。
+
+| language | TTFA P50 | TTFA P95 | generation P50 | generation P95 | speed P50 | GPU peak |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| English | 296 ms | 313 ms | 1,984 ms | 3,124 ms | 2.474x | 4,337 MB |
+| Japanese | 295 ms | 309 ms | 2,181 ms | 3,333 ms | 2.503x | 4,341 MB |
+
+model load は約 10.2～10.4 秒、完全 warmup は約 5.5～6.7 秒だった。RTX 5070では公開されている
+RTX 4090 の4倍台には届かなかったが、最初の音声を約0.3秒で供給し、その後は再生より約2.5倍速で
+生成できる。full WAV 完了時間が2.5秒を超える長文もあるが、streaming再生は継続できるため、
+upstream batch runtimeとは採用判断を分ける。
+
+4件同時到着時の単一 model直列処理:
+
+| language | wall time | client P50 | client P95 | request TTFA after dequeue |
+| --- | ---: | ---: | ---: | ---: |
+| English | 8,430 ms | 5,256 ms | 8,148 ms | 308～344 ms |
+| Japanese | 9,194 ms | 5,583 ms | 8,788 ms | 311～325 ms |
+
+各 request の推論開始後は速いが、後順位の event はmodel lock待ちになる。実際の実況音声も同時再生できないため、
+workerを4つへ増やす前に、priority queue、同種の古いeventの置換、race終了などの割り込み、生成済み音声cacheを
+設計する。今回のfaster 1.7B burstでは、逐次生成比2倍以上の音声長outlierは発生しなかった。
+
+現段階の判断:
+
+1. 日英両言語の生成、true streaming、既存比較レポートへの統合は成立する。
+2. faster 1.7B はlive実況backend候補として次段階へ進める。upstream 0.6B batch経路は候補から外す。
+3. 1.7B の日英全サンプルを人が確認し、名前、数字、略語、反復、自然さを評価する。ASR back-checkは補助に留める。
+4. Race Audio Serviceへの組み込みは、queue / timeout / duration guard / Kokoro fallbackと、実機E2Eを同時に実装する。
+   聞感とE2Eが通るまでKokoroの本番既定値は変更しない。
+5. Qwen を採用する場合も、ChatGPT 等が作る実況文と TTS engine は分離し、生成文を cache / priority queue /
+   fallbackへ渡す現在の責務分離を維持する。
+
 ## WebRTC / DataChannel 契約
 
 Relay transport の Viewer は接続開始時から audio recvonly transceiver を offer へ含める。Relay は Pilot ごとに
 Opus track を answer へ含め、idle 中も 20 ms Opus DTX silence を送る。最初の TTS event で SDP renegotiation は
 行わない。
 
-音声状態と設定は reliable `momo-race-audio` DataChannel を使う。初期本番は `en-US` だけを使う。
+音声状態と設定はreliable `momo-race-audio` DataChannelを使う。
 Viewer から Relay への設定:
 
 ```json
 {
   "type": "race_audio_preference",
   "version": 1,
-  "language": "en-US"
+  "language": "ja-JP",
+  "mode": "browser-kokoro"
 }
 ```
+
+`mode`は`remote`または`browser-kokoro`である。未指定は後方互換のため`remote`とする。Viewerは
+WebGPU/FP32 modelのload完了前に`browser-kokoro`を送らない。
 
 Relay から Viewer への message は `RACE_AUDIO:` prefix の後ろに JSON を置く。
 
@@ -209,8 +317,8 @@ Relay から Viewer への message は `RACE_AUDIO:` prefix の後ろに JSON �
   "language": "en-US",
   "durationMs": 4380,
   "fallbackText": {
-    "en-US": "Lap four. Thirteen point four four four. P two.",
-    "ja-JP": "4 周目。13.444 秒。現在 2 位。"
+    "en-US": "Lap four. Thirteen point four four four seconds",
+    "ja-JP": "4周目、13.444"
   },
   "ducking": {
     "m5AudioGain": 0.4,
@@ -220,9 +328,11 @@ Relay から Viewer への message は `RACE_AUDIO:` prefix の後ろに JSON �
 }
 ```
 
-`state` は `queued`、`ready`、`playing`、`ended`、`failed` を使う。`failed` では Viewer が選択言語の
-`fallbackText` を Web Speech API で読む。capability は同じ prefix で
-`type: race_audio_capabilities`、`state: enabled` を送る。
+`state`は`queued`、`prompt`、`ready`、`playing`、`ended`、`failed`を使う。`prompt`は
+`lap_complete`のBrowser Kokoro用で、phonemesとmodel input IDsを含む。Viewerは生成中に次のLAPが来たら
+最新1件だけを残し、古い生成結果を再生しない。`failed`ではViewerが選択言語の`fallbackText`をWeb Speech
+APIで読む。capabilityは同じprefixで`type: race_audio_capabilities`、`state: enabled`と
+`modes: ["remote", "browser-kokoro"]`を送る。
 
 `eventId` は `(raceRunId, carId, kind, lap)` から決める。timing correction で lap time が変わっても同じ LAP を
 再度読まない。Relay 再起動または途中接続時は、その時点の既存 `lapHistory` を baseline とし、過去 LAP を

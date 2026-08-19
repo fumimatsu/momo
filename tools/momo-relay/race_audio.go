@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -22,17 +23,25 @@ import (
 )
 
 const (
-	raceAudioLabel                = "momo-race-audio"
-	raceAudioProtocolVersion      = 1
-	raceAudioPacketDuration       = 20 * time.Millisecond
-	raceAudioQueueSize            = 4
-	raceAudioJobQueueSize         = 16
-	raceAudioMaximumResponse      = 4 * 1024 * 1024
-	raceAudioSynthesisTimeout     = 12 * time.Second
-	raceAudioDefaultLanguage      = "en-US"
-	raceAudioDefaultEnglishVoice  = "am_michael"
-	raceAudioDefaultJapaneseVoice = "jf_alpha"
+	raceAudioLabel                 = "momo-race-audio"
+	raceAudioProtocolVersion       = 1
+	raceAudioPacketDuration        = 20 * time.Millisecond
+	raceAudioQueueSize             = 4
+	raceAudioJobQueueSize          = 16
+	raceAudioMaximumResponse       = 4 * 1024 * 1024
+	raceAudioSynthesisTimeout      = 12 * time.Second
+	raceAudioDefaultLanguage       = "en-US"
+	raceAudioDefaultEnglishVoice   = "am_michael"
+	raceAudioDefaultJapaneseVoice  = "jf_alpha"
+	raceAudioModeRemote            = "remote"
+	raceAudioModeBrowserKokoro     = "browser-kokoro"
+	raceAudioBrowserModelID        = "onnx-community/Kokoro-82M-v1.0-ONNX"
+	raceAudioCalloutMinimumGap     = 2 * time.Second
+	raceAudioCalloutSeenTTL        = 2 * time.Minute
+	raceAudioCalloutMaximumMessage = 512
 )
+
+var raceAudioCalloutRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 
 var opusCodec = webrtc.RTPCodecCapability{
 	MimeType:    webrtc.MimeTypeOpus,
@@ -91,17 +100,19 @@ type raceAudioEvent struct {
 }
 
 type raceAudioMetadata struct {
-	Type         string            `json:"type"`
-	Version      int               `json:"version"`
-	State        string            `json:"state"`
-	EventID      string            `json:"eventId,omitempty"`
-	Kind         string            `json:"kind,omitempty"`
-	Priority     int               `json:"priority,omitempty"`
-	Language     string            `json:"language,omitempty"`
-	DurationMS   int               `json:"durationMs,omitempty"`
-	FallbackText map[string]string `json:"fallbackText,omitempty"`
-	Ducking      *raceAudioDucking `json:"ducking,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	Type         string                  `json:"type"`
+	Version      int                     `json:"version"`
+	State        string                  `json:"state"`
+	EventID      string                  `json:"eventId,omitempty"`
+	Kind         string                  `json:"kind,omitempty"`
+	Priority     int                     `json:"priority,omitempty"`
+	Language     string                  `json:"language,omitempty"`
+	DurationMS   int                     `json:"durationMs,omitempty"`
+	FallbackText map[string]string       `json:"fallbackText,omitempty"`
+	Ducking      *raceAudioDucking       `json:"ducking,omitempty"`
+	Modes        []string                `json:"modes,omitempty"`
+	Prompt       *raceAudioBrowserPrompt `json:"prompt,omitempty"`
+	Error        string                  `json:"error,omitempty"`
 }
 
 type raceAudioDucking struct {
@@ -114,6 +125,16 @@ type raceAudioPreference struct {
 	Type     string `json:"type"`
 	Version  int    `json:"version"`
 	Language string `json:"language"`
+	Mode     string `json:"mode,omitempty"`
+}
+
+type raceAudioCalloutRequest struct {
+	Type      string `json:"type"`
+	Version   int    `json:"version"`
+	RequestID string `json:"requestId"`
+	Kind      string `json:"kind"`
+	CarNumber int    `json:"carNumber"`
+	GapMS     int    `json:"gapMs"`
 }
 
 type raceAudioState struct {
@@ -148,7 +169,12 @@ type raceAudioSource struct {
 	relay    *relay
 	service  *raceAudioServiceClient
 	detector raceAudioDetector
-	jobs     chan raceAudioEvent
+	jobs     chan raceAudioJob
+}
+
+type raceAudioJob struct {
+	event          raceAudioEvent
+	targetClientID uint64
 }
 
 func newRaceAudioServiceClient(baseURL string, token string, defaultLanguage string,
@@ -203,6 +229,17 @@ func normalizeRaceAudioLanguage(value string) (string, error) {
 	}
 }
 
+func normalizeRaceAudioMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", raceAudioModeRemote:
+		return raceAudioModeRemote, nil
+	case raceAudioModeBrowserKokoro:
+		return raceAudioModeBrowserKokoro, nil
+	default:
+		return "", fmt.Errorf("unsupported race audio mode %q", value)
+	}
+}
+
 func (client *raceAudioServiceClient) voiceForLanguage(language string) string {
 	if language == "ja-JP" {
 		return client.japaneseVoice
@@ -210,20 +247,95 @@ func (client *raceAudioServiceClient) voiceForLanguage(language string) string {
 	return client.englishVoice
 }
 
+func raceAudioTextForLanguage(event raceAudioEvent, language string) string {
+	if language == "ja-JP" {
+		return event.JapaneseText
+	}
+	return event.EnglishText
+}
+
+func (client *raceAudioServiceClient) prepare(ctx context.Context, event raceAudioEvent,
+	language string) (*raceAudioBrowserPrompt, error) {
+	if client == nil {
+		return nil, errors.New("race audio service is disabled")
+	}
+	voice := client.voiceForLanguage(language)
+	payload, err := json.Marshal(raceAudioPromptRequest{
+		EventKey: event.EventID,
+		Language: language,
+		Voice:    voice,
+		Text:     raceAudioTextForLanguage(event, language),
+		Speed:    client.speed,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode race audio prompt request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/v1/prepare", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("create race audio prompt request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if client.token != "" {
+		req.Header.Set("Authorization", "Bearer "+client.token)
+	}
+	response, err := client.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request race audio prompt: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, raceAudioMaximumResponse+1))
+	if err != nil {
+		return nil, fmt.Errorf("read race audio prompt response: %w", err)
+	}
+	if len(body) > raceAudioMaximumResponse {
+		return nil, errors.New("race audio prompt response exceeds 4 MiB")
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("race audio service returned HTTP %d for prompt", response.StatusCode)
+	}
+	var decoded raceAudioBrowserPrompt
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode race audio prompt response: %w", err)
+	}
+	if err := validateRaceAudioBrowserPrompt(decoded, language, voice, client.speed); err != nil {
+		return nil, err
+	}
+	return &decoded, nil
+}
+
+func validateRaceAudioBrowserPrompt(prompt raceAudioBrowserPrompt, language string,
+	voice string, speed float64) error {
+	if prompt.Version != raceAudioProtocolVersion || prompt.Engine != "kokoro" ||
+		prompt.ModelID != raceAudioBrowserModelID || prompt.Language != language ||
+		prompt.Voice != voice || prompt.Speed != speed {
+		return errors.New("race audio prompt has an unsupported synthesis contract")
+	}
+	if len(prompt.Phonemes) == 0 || len(prompt.Phonemes) > 4096 ||
+		len(prompt.ModelInputIDs) < 3 || len(prompt.ModelInputIDs) > 1024 {
+		return errors.New("race audio prompt is empty or exceeds browser limits")
+	}
+	last := len(prompt.ModelInputIDs) - 1
+	if prompt.ModelInputIDs[0] != 0 || prompt.ModelInputIDs[last] != 0 {
+		return errors.New("race audio prompt is missing model boundary tokens")
+	}
+	for _, token := range prompt.ModelInputIDs {
+		if token < 0 {
+			return errors.New("race audio prompt contains a negative model token")
+		}
+	}
+	return nil
+}
+
 func (client *raceAudioServiceClient) synthesize(ctx context.Context, event raceAudioEvent,
 	language string) (raceAudioClip, int, error) {
 	if client == nil {
 		return raceAudioClip{}, 0, errors.New("race audio service is disabled")
 	}
-	text := event.EnglishText
-	if language == "ja-JP" {
-		text = event.JapaneseText
-	}
 	payload, err := json.Marshal(raceAudioSynthesisRequest{
 		EventKey:        event.EventID,
 		Language:        language,
 		Voice:           client.voiceForLanguage(language),
-		Text:            text,
+		Text:            raceAudioTextForLanguage(event, language),
 		Speed:           client.speed,
 		Codec:           "opus",
 		FrameDurationMS: int(raceAudioPacketDuration / time.Millisecond),
@@ -380,12 +492,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	return events
 }
 
-func raceAudioEnglishLapText(lap int, lapTimeMS int, position int) string {
-	text := fmt.Sprintf("Lap %d. %s.", lap, raceAudioEnglishLapTime(lapTimeMS))
-	if position > 0 {
-		text += fmt.Sprintf(" P %d.", position)
-	}
-	return text
+func raceAudioEnglishLapText(lap int, lapTimeMS int, _ int) string {
+	return fmt.Sprintf("Lap %d. %s seconds", lap, raceAudioEnglishLapTime(lapTimeMS))
 }
 
 func raceAudioEnglishLapTime(lapTimeMS int) string {
@@ -404,12 +512,72 @@ func raceAudioEnglishLapTime(lapTimeMS int) string {
 	)
 }
 
-func raceAudioJapaneseLapText(lap int, lapTimeMS int, position int) string {
-	text := fmt.Sprintf("%d 周目。%.3f 秒。", lap, float64(lapTimeMS)/1000)
-	if position > 0 {
-		text += fmt.Sprintf("現在 %d 位。", position)
+func raceAudioJapaneseLapText(lap int, lapTimeMS int, _ int) string {
+	return fmt.Sprintf("%d周目、%d.%03d", lap, lapTimeMS/1000, lapTimeMS%1000)
+}
+
+func raceAudioEventFromCallout(clientID uint64, request raceAudioCalloutRequest) (raceAudioEvent, error) {
+	requestID := strings.TrimSpace(request.RequestID)
+	kind := strings.ToLower(strings.TrimSpace(request.Kind))
+	if request.Type != "race_audio_callout_request" || request.Version != raceAudioProtocolVersion ||
+		!raceAudioCalloutRequestIDPattern.MatchString(requestID) {
+		return raceAudioEvent{}, errors.New("invalid race audio callout envelope")
 	}
-	return text
+	if kind != "gap_ahead" && kind != "gap_behind" {
+		return raceAudioEvent{}, errors.New("unsupported race audio callout kind")
+	}
+	if request.CarNumber < 1 || request.CarNumber > 999 || request.GapMS < 100 ||
+		request.GapMS > 5000 || request.GapMS%100 != 0 {
+		return raceAudioEvent{}, errors.New("invalid race audio callout value")
+	}
+	directionEN := "ahead"
+	directionJA := "前"
+	priority := 30
+	if kind == "gap_behind" {
+		directionEN = "behind"
+		directionJA = "後ろ"
+		priority = 60
+		if request.GapMS <= 1000 {
+			priority = 80
+		}
+	}
+	return raceAudioEvent{
+		EventID:      fmt.Sprintf("pilot:%d:%s", clientID, requestID),
+		Kind:         kind,
+		Priority:     priority,
+		EnglishText:  fmt.Sprintf("Car %d %s. Gap %s seconds", request.CarNumber, directionEN, raceAudioEnglishGap(request.GapMS)),
+		JapaneseText: fmt.Sprintf("%s、%d号車、差%d.%d", directionJA, request.CarNumber, request.GapMS/1000, (request.GapMS%1000)/100),
+	}, nil
+}
+
+func raceAudioEnglishGap(gapMS int) string {
+	digitWords := [...]string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+	seconds := gapMS / 1000
+	tenths := (gapMS % 1000) / 100
+	if tenths == 0 {
+		return digitWords[seconds]
+	}
+	return fmt.Sprintf("%s point %s", digitWords[seconds], digitWords[tenths])
+}
+
+type raceAudioPromptRequest struct {
+	EventKey string  `json:"eventKey"`
+	Language string  `json:"language"`
+	Voice    string  `json:"voice"`
+	Text     string  `json:"text"`
+	Speed    float64 `json:"speed"`
+}
+
+type raceAudioBrowserPrompt struct {
+	Version       int     `json:"version"`
+	Engine        string  `json:"engine"`
+	ModelID       string  `json:"modelId"`
+	Language      string  `json:"language"`
+	Voice         string  `json:"voice"`
+	Speed         float64 `json:"speed"`
+	Phonemes      string  `json:"phonemes"`
+	ModelInputIDs []int   `json:"modelInputIds"`
+	PhonemePolicy string  `json:"phonemePolicy"`
 }
 
 func raceAudioEnglishFinishText(position int) string {
@@ -421,9 +589,9 @@ func raceAudioEnglishFinishText(position int) string {
 
 func raceAudioJapaneseFinishText(position int) string {
 	if position > 0 {
-		return fmt.Sprintf("レース終了。%d 位。", position)
+		return fmt.Sprintf("レース終了。%d位", position)
 	}
-	return "レース終了。"
+	return "レース終了"
 }
 
 func raceAudioLapKey(runID string, carID string, lap int, _ int) string {
@@ -437,7 +605,7 @@ func newRaceAudioSource(r *relay, service *raceAudioServiceClient) *raceAudioSou
 	return &raceAudioSource{
 		relay:   r,
 		service: service,
-		jobs:    make(chan raceAudioEvent, raceAudioJobQueueSize),
+		jobs:    make(chan raceAudioJob, raceAudioJobQueueSize),
 	}
 }
 
@@ -450,8 +618,8 @@ func (source *raceAudioSource) start(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case event := <-source.jobs:
-				source.dispatch(ctx, event)
+			case job := <-source.jobs:
+				source.dispatch(ctx, job)
 			}
 		}
 	}()
@@ -463,20 +631,64 @@ func (source *raceAudioSource) observe(message string) {
 	}
 	for _, event := range source.detector.observe(message, source.relay.raceCarID) {
 		select {
-		case source.jobs <- event:
+		case source.jobs <- raceAudioJob{event: event}:
 		default:
 			log.Printf("source %q: drop race audio event %q because the queue is full", source.relay.name, event.EventID)
 		}
 	}
 }
 
-func (source *raceAudioSource) dispatch(parent context.Context, event raceAudioEvent) {
+func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEvent) bool {
+	if source == nil || client == nil {
+		return false
+	}
+	select {
+	case source.jobs <- raceAudioJob{event: event, targetClientID: client.id}:
+		return true
+	default:
+		return false
+	}
+}
+
+func raceAudioBrowserLocalEvent(kind string) bool {
+	switch kind {
+	case "lap_complete", "gap_ahead", "gap_behind":
+		return true
+	default:
+		return false
+	}
+}
+
+func (source *raceAudioSource) dispatch(parent context.Context, job raceAudioJob) {
 	client := source.relay.activeRaceAudioPilot()
-	if client == nil {
+	if client == nil || (job.targetClientID != 0 && job.targetClientID != client.id) {
 		return
 	}
+	event := job.event
 	language := client.raceAudioLanguageValue(source.service.defaultLanguage)
 	if language == "off" || client.raceAudio.Load() == nil {
+		return
+	}
+	mode := client.raceAudioModeValue()
+	if mode == raceAudioModeBrowserKokoro && raceAudioBrowserLocalEvent(event.Kind) {
+		source.relay.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("queued", language, event, 0, ""))
+		ctx, cancel := context.WithTimeout(parent, raceAudioSynthesisTimeout)
+		prompt, err := source.service.prepare(ctx, event, language)
+		cancel()
+		if err != nil {
+			log.Printf("source %q: prepare browser race audio event %q: %v", source.relay.name, event.EventID, err)
+			source.relay.sendRaceAudioMetadata(client,
+				raceAudioMetadataForEvent("failed", language, event, 0, "prompt_prepare_failed"))
+			return
+		}
+		if source.relay.activeRaceAudioPilotID() != client.id || client.raceAudio.Load() == nil ||
+			client.raceAudioLanguageValue(source.service.defaultLanguage) != language ||
+			client.raceAudioModeValue() != mode {
+			return
+		}
+		metadata := raceAudioMetadataForEvent("prompt", language, event, 0, "")
+		metadata.Prompt = prompt
+		source.relay.sendRaceAudioMetadata(client, metadata)
 		return
 	}
 	source.relay.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("queued", language, event, 0, ""))
@@ -529,6 +741,15 @@ func (client *viewer) raceAudioLanguageValue(fallback string) string {
 	return fallback
 }
 
+func (client *viewer) raceAudioModeValue() string {
+	if value := client.raceAudioMode.Load(); value != nil {
+		if mode, ok := value.(string); ok && mode != "" {
+			return mode
+		}
+	}
+	return raceAudioModeRemote
+}
+
 func (r *relay) activeRaceAudioPilotID() uint64 {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
@@ -561,6 +782,7 @@ func (r *relay) configureRaceAudioPeer(client *viewer, pc *webrtc.PeerConnection
 	client.raceAudioQueue = make(chan raceAudioClip, raceAudioQueueSize)
 	client.raceAudioStop = make(chan struct{})
 	client.raceAudioLanguage.Store(r.raceAudio.service.defaultLanguage)
+	client.raceAudioMode.Store(raceAudioModeRemote)
 	go drainRaceAudioRTCP(sender)
 	go r.runRaceAudioTrack(client)
 	return nil
@@ -629,25 +851,80 @@ func (r *relay) handleRaceAudioChannel(client *viewer, channel *webrtc.DataChann
 			Version:  raceAudioProtocolVersion,
 			State:    "enabled",
 			Language: language,
+			Modes:    []string{raceAudioModeRemote, raceAudioModeBrowserKokoro},
 		})
 	})
 	channel.OnMessage(func(message webrtc.DataChannelMessage) {
-		if !message.IsString {
+		if !message.IsString || len(message.Data) > raceAudioCalloutMaximumMessage {
 			return
 		}
-		var preference raceAudioPreference
-		if err := json.Unmarshal(message.Data, &preference); err != nil ||
-			preference.Type != "race_audio_preference" || preference.Version != raceAudioProtocolVersion {
+		var envelope struct {
+			Type    string `json:"type"`
+			Version int    `json:"version"`
+		}
+		if err := json.Unmarshal(message.Data, &envelope); err != nil || envelope.Version != raceAudioProtocolVersion {
 			return
 		}
-		language, err := normalizeRaceAudioLanguage(preference.Language)
-		if err != nil {
-			return
+		switch envelope.Type {
+		case "race_audio_preference":
+			var preference raceAudioPreference
+			if err := json.Unmarshal(message.Data, &preference); err != nil {
+				return
+			}
+			language, err := normalizeRaceAudioLanguage(preference.Language)
+			if err != nil {
+				return
+			}
+			mode, err := normalizeRaceAudioMode(preference.Mode)
+			if err != nil {
+				return
+			}
+			client.raceAudioLanguage.Store(language)
+			client.raceAudioMode.Store(mode)
+			log.Printf("source %q: viewer %d race audio language=%s mode=%s", r.name, client.id, language, mode)
+		case "race_audio_callout_request":
+			if client.raceAudioModeValue() != raceAudioModeBrowserKokoro || r.activeRaceAudioPilotID() != client.id {
+				return
+			}
+			var request raceAudioCalloutRequest
+			if err := json.Unmarshal(message.Data, &request); err != nil {
+				return
+			}
+			event, err := raceAudioEventFromCallout(client.id, request)
+			if err != nil || !client.acceptRaceAudioCallout(request.RequestID, time.Now()) {
+				return
+			}
+			if !r.raceAudio.enqueueCallout(client, event) {
+				r.sendRaceAudioMetadata(client,
+					raceAudioMetadataForEvent("failed", client.raceAudioLanguageValue(r.raceAudio.service.defaultLanguage),
+						event, 0, "prompt_queue_full"))
+			}
 		}
-		client.raceAudioLanguage.Store(language)
-		log.Printf("source %q: viewer %d race audio language=%s", r.name, client.id, language)
 	})
 	channel.OnClose(func() { client.raceAudio.CompareAndSwap(channel, nil) })
+}
+
+func (client *viewer) acceptRaceAudioCallout(requestID string, now time.Time) bool {
+	requestID = strings.TrimSpace(requestID)
+	client.raceAudioCalloutMu.Lock()
+	defer client.raceAudioCalloutMu.Unlock()
+	if client.raceAudioCalloutSeen == nil {
+		client.raceAudioCalloutSeen = make(map[string]time.Time)
+	}
+	if _, duplicate := client.raceAudioCalloutSeen[requestID]; duplicate {
+		return false
+	}
+	if !client.raceAudioCalloutAt.IsZero() && now.Sub(client.raceAudioCalloutAt) < raceAudioCalloutMinimumGap {
+		return false
+	}
+	for key, seenAt := range client.raceAudioCalloutSeen {
+		if now.Sub(seenAt) > raceAudioCalloutSeenTTL {
+			delete(client.raceAudioCalloutSeen, key)
+		}
+	}
+	client.raceAudioCalloutSeen[requestID] = now
+	client.raceAudioCalloutAt = now
+	return true
 }
 
 func (r *relay) sendRaceAudioMetadata(client *viewer, metadata raceAudioMetadata) bool {

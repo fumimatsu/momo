@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
   "av>=18.1.0,<19",
   "kokoro-onnx>=0.4.9,<0.5",
+  "misaki[ja]>=0.9.4,<0.10",
   "numpy>=2.0,<3",
   "piper-plus>=1.13.0,<2",
   "piper-plus-g2p[en,ja]>=0.2.0,<0.3",

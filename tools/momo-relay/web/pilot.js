@@ -1,17 +1,23 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260818-race-summary-v2';
+  const PILOT_BUILD_ID = '20260819-pilot-callouts-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
   }
   const NOTIFICATION_PRIORITIES = notificationModule.PRIORITIES;
+  const browserKokoro = window.MomoBrowserKokoro;
+  const pilotCalloutModule = window.MomoPilotCalloutPlanner;
+  if (!pilotCalloutModule?.createPlanner) {
+    throw new Error('MomoPilotCalloutPlanner is required.');
+  }
   const raceAnnouncer = window.MomoRaceAnnouncer;
   if (!raceAnnouncer?.buildLapAnnouncement || !raceAnnouncer?.buildRaceSummary ||
       !raceAnnouncer?.selectPreferredVoice ||
 			!raceAnnouncer?.playSignal || !raceAnnouncer?.normalizeRemoteLanguage ||
-			!raceAnnouncer?.buildRemotePreference || !raceAnnouncer?.parseRemoteMessage ||
+			!raceAnnouncer?.buildRemotePreference || !raceAnnouncer?.buildRemoteCalloutRequest ||
+      !raceAnnouncer?.parseRemoteMessage ||
 			!raceAnnouncer?.createRemoteAudioTracker) {
     throw new Error('MomoRaceAnnouncer is required.');
   }
@@ -291,18 +297,29 @@
   );
   const RACE_BATTLE_MIN_OFFSET_PX = 30;
   const RACE_BATTLE_MAX_OFFSET_PX = 80;
+  function readRaceAnnouncementLanguagePreference() {
+    try {
+      return window.localStorage?.getItem('momoRaceAnnounceLanguage') || '';
+    } catch (_) {
+      return '';
+    }
+  }
   const RACE_ANNOUNCE_ENABLED = getBooleanParam('raceAnnounce', true);
-  const RACE_ANNOUNCE_LANGUAGE = getStringParam('raceAnnounceLang', 'en-US');
+  const RACE_ANNOUNCE_LANGUAGE_STORAGE_KEY = 'momoRaceAnnounceLanguage';
+  const raceAnnounceLanguageParam = getStringParam('raceAnnounceLang', 'off');
+  const hasRaceAnnounceLanguageParam = new URLSearchParams(window.location.search).has('raceAnnounceLang');
+  let raceAnnounceLanguage = raceAnnouncer.normalizeRemoteLanguage(
+    hasRaceAnnounceLanguageParam
+      ? raceAnnounceLanguageParam
+      : readRaceAnnouncementLanguagePreference() || raceAnnounceLanguageParam,
+    RACE_ANNOUNCE_ENABLED,
+  );
   const RACE_ANNOUNCE_VOICE = getStringParam('raceAnnounceVoice', '');
   const RACE_ANNOUNCE_RATE = Math.max(0.5, Math.min(2.5, getNumberParam('raceAnnounceRate', 1.04)));
   const RACE_ANNOUNCE_VOLUME = Math.max(0, Math.min(1, getNumberParamAllowZero('raceAnnounceVolume', 0.95)));
 	const RACE_RADIO_CUE_VOLUME = Math.max(
 		0,
 		Math.min(0.4, getNumberParamAllowZero('raceRadioCueVolume', 0.22)),
-	);
-	const RACE_REMOTE_AUDIO_LANGUAGE = raceAnnouncer.normalizeRemoteLanguage(
-		RACE_ANNOUNCE_LANGUAGE,
-		RACE_ANNOUNCE_ENABLED,
 	);
   const RACE_SIGNAL_SOUND_ENABLED = getBooleanParam('raceSignalSound', true);
   const RACE_SIGNAL_SOUND_VOLUME = Math.max(
@@ -409,6 +426,7 @@
   const btnAudio = document.getElementById('btnAudio');
   const btnAudioFilter = document.getElementById('btnAudioFilter');
   const btnM5Audio = document.getElementById('btnM5Audio');
+  const raceAnnounceLanguageSelect = document.getElementById('raceAnnounceLanguage');
   const btnMic = document.getElementById('btnMic');
   const micControl = btnMic?.closest('.mic-control');
   const micVolumeInput = document.getElementById('micVolume');
@@ -655,7 +673,19 @@
 	let remoteRaceAudioEnabled = false;
 	let remoteRaceAudioPlaybackPromise = null;
 	let remoteRaceAudioPlaybackBlocked = '';
+	let remoteRaceAudioModes = new Set(['remote']);
+	let browserKokoroClient = null;
+	let browserKokoroState = 'idle';
+	let browserKokoroFailure = '';
+	let browserKokoroActiveSource = null;
+	let browserKokoroActiveEventId = '';
 	const remoteRaceAudioTracker = raceAnnouncer.createRemoteAudioTracker();
+  const pilotCalloutPlanner = pilotCalloutModule.createPlanner({
+    now: () => performance.now(),
+    warningGapMs: RACE_REAR_WARNING_GAP_MS,
+    criticalGapMs: RACE_REAR_CRITICAL_GAP_MS,
+    maximumGapMs: RACE_BATTLE_MAX_GAP_MS,
+  });
   const receivedRaceLapHistory = new Map();
   let renderedRaceLapHistorySignature = '';
   const rearAttentionTracker = window.MomoRaceBattle?.createRearAttentionTracker({
@@ -1439,6 +1469,7 @@
           ?? normalizeOptionalRaceNumber(entry.raceElapsedMs);
         return {
           carId,
+          carNumber: normalizeOptionalRaceNumber(entry.carNumber),
           driver,
           position,
           status: typeof entry.status === 'string' ? entry.status.trim().toLowerCase() : '',
@@ -2289,7 +2320,7 @@
 
   function getRaceSignalAudioContext() {
     const signalEnabled = RACE_SIGNAL_SOUND_ENABLED && RACE_SIGNAL_SOUND_VOLUME > 0;
-    const radioEnabled = RACE_ANNOUNCE_ENABLED && RACE_ANNOUNCE_VOLUME > 0;
+    const radioEnabled = isRaceAnnouncementEnabled() && RACE_ANNOUNCE_VOLUME > 0;
     if (!signalEnabled && !radioEnabled) {
       return null;
     }
@@ -2333,7 +2364,7 @@
 	}
 
   function unlockRaceSignalSound() {
-    if ((!RACE_SIGNAL_SOUND_ENABLED && !RACE_ANNOUNCE_ENABLED) || raceSignalSoundUnlocked) {
+    if ((!RACE_SIGNAL_SOUND_ENABLED && !isRaceAnnouncementEnabled()) || raceSignalSoundUnlocked) {
       return;
     }
     const context = getRaceSignalAudioContext();
@@ -2655,11 +2686,130 @@
 		ensureRemoteRaceAudioPlayback('user gesture');
 	}
 
+	function getRaceAudioMode() {
+		if (isRaceAnnouncementEnabled() && browserKokoroState === 'ready' && !browserKokoroFailure &&
+			remoteRaceAudioModes.has(browserKokoro?.MODE)) {
+			return browserKokoro.MODE;
+		}
+		return 'remote';
+	}
+
+	function stopBrowserKokoroPlayback(releaseMs = 250) {
+		const source = browserKokoroActiveSource;
+		const eventId = browserKokoroActiveEventId;
+		browserKokoroActiveSource = null;
+		browserKokoroActiveEventId = '';
+		if (source) {
+			source.onended = null;
+			try {
+				source.stop();
+			} catch (_) {
+				// The source may already have ended.
+			}
+		}
+		if (eventId) {
+			const state = remoteRaceAudioTracker.finish(eventId);
+			if (state.idle) setM5AudioDucking(1, releaseMs);
+		}
+	}
+
+	function fallbackBrowserKokoroPrompt(prompt, error) {
+		browserKokoroFailure = error?.message || String(error || 'browser Kokoro failed');
+		browserKokoroClient?.shutdown();
+		browserKokoroClient = null;
+		browserKokoroState = 'failed';
+		sendRaceAudioPreference();
+		const state = remoteRaceAudioTracker.finish(prompt?.promptId);
+		if (state.idle) setM5AudioDucking(1, prompt?.ducking?.releaseMs || 250);
+		const fallbackText = prompt?.fallbackText?.[raceAnnounceLanguage]
+			|| prompt?.fallbackText?.['en-US'];
+		if (fallbackText && state.idle) speakRaceLapAnnouncement({ text: fallbackText });
+		recordEvent('browser Kokoro fallback', browserKokoroFailure);
+	}
+
+	async function playBrowserKokoroAudio(prompt, generated) {
+		const context = getRaceSignalAudioContext();
+		if (!context) throw new Error('AudioContext is unavailable');
+		await context.resume?.();
+		if (context.state !== 'running') throw new Error(`AudioContext is ${context.state}`);
+		const samples = generated.samples instanceof ArrayBuffer
+			? new Float32Array(generated.samples)
+			: generated.samples instanceof Float32Array ? generated.samples : null;
+		const sampleRate = Number(generated.sampleRate);
+		if (!samples?.length || !Number.isFinite(sampleRate) || sampleRate < 8000 || sampleRate > 96000) {
+			throw new Error('Browser Kokoro returned invalid PCM audio');
+		}
+		stopBrowserKokoroPlayback(0);
+		if (supportsRaceAnnouncement()) window.speechSynthesis.cancel();
+		const buffer = context.createBuffer(1, samples.length, sampleRate);
+		buffer.copyToChannel(samples, 0);
+		const source = context.createBufferSource();
+		const gain = context.createGain();
+		source.buffer = buffer;
+		gain.gain.value = RACE_ANNOUNCE_VOLUME;
+		source.connect(gain);
+		gain.connect(context.destination);
+		browserKokoroActiveSource = source;
+		browserKokoroActiveEventId = prompt.promptId;
+		remoteRaceAudioTracker.play(prompt.promptId);
+		setM5AudioDucking(Number(prompt.ducking?.m5AudioGain) || 0.4, prompt.ducking?.attackMs || 80);
+		source.onended = () => {
+			if (browserKokoroActiveSource !== source) return;
+			browserKokoroActiveSource = null;
+			browserKokoroActiveEventId = '';
+			const state = remoteRaceAudioTracker.finish(prompt.promptId);
+			if (state.idle) setM5AudioDucking(1, prompt.ducking?.releaseMs || 250);
+		};
+		source.start();
+		recordEvent('browser Kokoro playing', `${prompt.language} ${generated.generationMs}ms`);
+	}
+
+	function ensureBrowserKokoroRuntime() {
+		if (!isRaceAnnouncementEnabled() || browserKokoroFailure ||
+			!remoteRaceAudioModes.has(browserKokoro?.MODE) || !browserKokoro?.isSupported?.(window)) {
+			return Promise.resolve(false);
+		}
+		if (!browserKokoroClient) {
+			browserKokoroClient = browserKokoro.createClient({
+				environment: window,
+				workerUrl: './browser-kokoro-worker.mjs',
+				onState: (snapshot, detail) => {
+					browserKokoroState = snapshot.state;
+					if (snapshot.state === 'ready') {
+						recordEvent('browser Kokoro ready', `${detail.loadMs || 0}ms`);
+						sendRaceAudioPreference();
+					}
+				},
+				onAudio: (prompt, generated) => {
+					playBrowserKokoroAudio(prompt, generated)
+						.catch((error) => fallbackBrowserKokoroPrompt(prompt, error));
+				},
+				onError: fallbackBrowserKokoroPrompt,
+				onDropped: (prompt, reason) => {
+					const state = remoteRaceAudioTracker.finish(prompt.promptId);
+					if (state.idle) setM5AudioDucking(1, prompt.ducking?.releaseMs || 250);
+					recordEvent('browser Kokoro dropped', `${prompt.promptId} ${reason}`);
+				},
+			});
+		}
+		return browserKokoroClient.load()
+			.then(() => true)
+			.catch((error) => {
+				browserKokoroFailure = error.message || String(error);
+				browserKokoroState = 'failed';
+				sendRaceAudioPreference();
+				recordEvent('browser Kokoro unavailable', browserKokoroFailure);
+				return false;
+			});
+	}
+
 	function handleRemoteRaceAudioMessage(message) {
 		const payload = raceAnnouncer.parseRemoteMessage(message);
 		if (!payload) return false;
 		if (payload.type === 'race_audio_capabilities') {
 			remoteRaceAudioEnabled = payload.state === 'enabled';
+			remoteRaceAudioModes = new Set(Array.isArray(payload.modes) ? payload.modes : ['remote']);
+			ensureBrowserKokoroRuntime();
 			recordEvent('race audio capabilities', `${payload.state || 'unknown'} ${payload.language || ''}`.trim());
 			return true;
 		}
@@ -2669,9 +2819,28 @@
 			if (payload.state === 'queued' && state.wasIdle) playRaceRadioCueSound();
 			return true;
 		}
+		if (payload.state === 'prompt') {
+			remoteRaceAudioEnabled = true;
+			remoteRaceAudioTracker.queue(payload.eventId);
+			const prompt = {
+				...payload.prompt,
+				promptId: payload.eventId,
+				fallbackText: payload.fallbackText,
+				ducking: payload.ducking,
+			};
+			try {
+				if (getRaceAudioMode() !== browserKokoro?.MODE || !browserKokoroClient) {
+					throw new Error('Browser Kokoro runtime is not ready');
+				}
+				browserKokoroClient.enqueue(prompt);
+			} catch (error) {
+				fallbackBrowserKokoroPrompt(prompt, error);
+			}
+			return true;
+		}
 		if (payload.state === 'playing') {
-			remoteRaceAudioTracker.play(payload.eventId);
 			stopRaceAnnouncement();
+			remoteRaceAudioTracker.play(payload.eventId);
 			setM5AudioDucking(Number(payload.ducking?.m5AudioGain) || 0.4, payload.ducking?.attackMs || 80);
 			ensureRemoteRaceAudioPlayback('playing event');
 			recordEvent('race audio playing', `${payload.kind || 'event'} ${payload.language || ''}`.trim());
@@ -2687,7 +2856,7 @@
 		if (payload.state === 'failed') {
 			const state = remoteRaceAudioTracker.finish(payload.eventId);
 			if (state.idle) setM5AudioDucking(1, payload.ducking?.releaseMs || 250);
-			const fallbackText = payload.fallbackText?.[RACE_REMOTE_AUDIO_LANGUAGE]
+			const fallbackText = payload.fallbackText?.[raceAnnounceLanguage]
 				|| payload.fallbackText?.['en-US'];
 			if (fallbackText && state.idle) speakRaceLapAnnouncement({ text: fallbackText });
 			recordEvent('race audio fallback', payload.error || 'remote failed');
@@ -2696,13 +2865,63 @@
 		return true;
 	}
 
+	function isRaceAnnouncementEnabled() {
+		return RACE_ANNOUNCE_ENABLED && raceAnnounceLanguage !== 'off';
+	}
+
+	function sendRaceAudioPreference() {
+		if (raceAudioChannel?.readyState !== 'open') return false;
+		raceAudioChannel.send(raceAnnouncer.buildRemotePreference(raceAnnounceLanguage, getRaceAudioMode()));
+		return true;
+	}
+
+  function requestPilotCallout() {
+    const callout = pilotCalloutPlanner.evaluate({
+      raceRunId: activeRaceRunId,
+      phaseCode: raceState.phaseCode,
+      battle: getRaceBattle(),
+    });
+    if (!callout || !isRaceAnnouncementEnabled() || !remoteRaceAudioEnabled ||
+        getRaceAudioMode() !== browserKokoro?.MODE || raceAudioChannel?.readyState !== 'open') {
+      return false;
+    }
+    try {
+      raceAudioChannel.send(raceAnnouncer.buildRemoteCalloutRequest(callout));
+      recordEvent('race audio callout requested',
+        `${callout.kind} car=${callout.carNumber} gap=${callout.gapMs} reason=${callout.reason}`);
+      return true;
+    } catch (error) {
+      recordEvent('race audio callout rejected', error.message || String(error));
+      return false;
+    }
+  }
+
+	function setRaceAnnouncementLanguage(value, persist = true) {
+		const nextLanguage = raceAnnouncer.normalizeRemoteLanguage(value, RACE_ANNOUNCE_ENABLED);
+		if (persist) {
+			try {
+				window.localStorage?.setItem(RACE_ANNOUNCE_LANGUAGE_STORAGE_KEY, nextLanguage);
+			} catch (_) {
+				// Private browsing may reject persistent storage; the current selection still applies.
+			}
+		}
+		raceAnnounceLanguage = nextLanguage;
+		if (raceAnnounceLanguageSelect) raceAnnounceLanguageSelect.value = nextLanguage;
+		stopRaceAnnouncement();
+		selectedRaceAnnouncementVoiceName = '';
+		if (isRaceAnnouncementEnabled()) prepareRaceAnnouncement();
+		ensureBrowserKokoroRuntime();
+		sendRaceAudioPreference();
+		recordEvent('race audio preference', nextLanguage);
+	}
+
   function prepareRaceAnnouncement() {
-    if (!RACE_ANNOUNCE_ENABLED || !supportsRaceAnnouncement()) {
+    if (!isRaceAnnouncementEnabled() || !supportsRaceAnnouncement()) {
       return false;
     }
     try {
       const voice = raceAnnouncer.selectPreferredVoice(window.speechSynthesis.getVoices(), {
-        language: RACE_ANNOUNCE_LANGUAGE,
+        language: raceAnnounceLanguage,
         preferredName: RACE_ANNOUNCE_VOICE,
       });
       selectedRaceAnnouncementVoiceName = voice?.name || '';
@@ -2714,10 +2933,9 @@
   }
 
   function stopRaceAnnouncement() {
-    if (!supportsRaceAnnouncement()) {
-      return;
-    }
-    window.speechSynthesis.cancel();
+		browserKokoroClient?.clear?.();
+		stopBrowserKokoroPlayback();
+		if (supportsRaceAnnouncement()) window.speechSynthesis.cancel();
   }
 
   function getRaceLapAnnouncement() {
@@ -2736,6 +2954,7 @@
       bestLapMs,
       overallBestLapMs,
       position: raceState.position,
+      language: raceAnnounceLanguage,
     });
     if (!announcement) return null;
     return {
@@ -2745,7 +2964,7 @@
   }
 
   function speakRaceLapAnnouncement(announcement) {
-    if (!RACE_ANNOUNCE_ENABLED || !announcement) {
+    if (!isRaceAnnouncementEnabled() || !announcement) {
       return false;
     }
     if (!prepareRaceAnnouncement()) {
@@ -2754,11 +2973,11 @@
     }
     try {
       const utterance = new window.SpeechSynthesisUtterance(announcement.text);
-      utterance.lang = RACE_ANNOUNCE_LANGUAGE;
+      utterance.lang = raceAnnounceLanguage;
       utterance.rate = RACE_ANNOUNCE_RATE;
       utterance.volume = RACE_ANNOUNCE_VOLUME;
       const voice = raceAnnouncer.selectPreferredVoice(window.speechSynthesis.getVoices(), {
-        language: RACE_ANNOUNCE_LANGUAGE,
+        language: raceAnnounceLanguage,
         preferredName: RACE_ANNOUNCE_VOICE,
       });
       selectedRaceAnnouncementVoiceName = voice?.name || '';
@@ -2859,6 +3078,7 @@
       raceStartSignalGreenUntil = 0;
       lastRaceLapAnnouncementKey = '';
       lastRaceSignalSoundKey = '';
+      pilotCalloutPlanner.clear(activeRaceRunId);
       stopRaceAnnouncement();
       hideRaceMilestone(true);
     }
@@ -2916,6 +3136,7 @@
     syncRaceMilestone(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
     announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
+    requestPilotCallout();
     return true;
   }
 
@@ -5765,7 +5986,9 @@
 		remoteRaceAudioPlaybackPromise = null;
 		remoteRaceAudioPlaybackBlocked = '';
 		remoteRaceAudioEnabled = false;
+		remoteRaceAudioModes = new Set(['remote']);
 		remoteRaceAudioTracker.reset();
+		stopRaceAnnouncement();
 		setM5AudioDucking(1, 0);
     updateUiState();
   }
@@ -6314,11 +6537,13 @@
 			raceAudioChannel = channel;
 			raceAudioChannel.onopen = () => {
 				recordEvent('race audio dc open');
-				raceAudioChannel.send(raceAnnouncer.buildRemotePreference(RACE_REMOTE_AUDIO_LANGUAGE));
+				sendRaceAudioPreference();
 			};
 			raceAudioChannel.onclose = () => {
 				remoteRaceAudioEnabled = false;
+				remoteRaceAudioModes = new Set(['remote']);
 				remoteRaceAudioTracker.reset();
+				stopRaceAnnouncement();
 				setM5AudioDucking(1, 250);
 				recordEvent('race audio dc close');
 			};
@@ -7388,6 +7613,9 @@
   btnMirror.addEventListener('click', toggleVideoMirror);
   btnAudio.addEventListener('click', toggleAudio);
   btnAudioFilter?.addEventListener('click', toggleAudioFilter);
+  raceAnnounceLanguageSelect?.addEventListener('change', () => {
+    setRaceAnnouncementLanguage(raceAnnounceLanguageSelect.value);
+  });
   btnM5Audio?.addEventListener('click', async () => {
     if (!m5AudioPlayer) {
       return;
@@ -7523,6 +7751,7 @@
   setVideoMirror(isMirrorEnabledByDefault());
   setAudioEnabled(false);
   setAudioFilterEnabled(AUDIO_FILTER_DEFAULT);
+  setRaceAnnouncementLanguage(raceAnnounceLanguage, false);
   m5AudioPlayer = window.MomoM5Audio?.createPlayer({ onState: updateM5AudioUi }) || null;
   updateM5AudioUi();
   applyMediaControlsVisibility();
@@ -7536,11 +7765,13 @@
       rivals: raceState.rivals.map((rival) => ({ ...rival })),
     }),
     testBattle: () => setRaceState(createRaceBattleDemoState()),
-    testAnnouncement: () => speakRaceLapAnnouncement({
-      key: 'manual-test',
+    testAnnouncement: () => speakRaceLapAnnouncement(raceAnnouncer.buildLapAnnouncement({
       lap: 1,
-      text: 'Lap 1 complete. 18.320 seconds. New personal best. Position 1.',
-    }),
+      lapTimeMs: 18_320,
+      bestLapMs: 18_320,
+      position: 1,
+      language: raceAnnounceLanguage,
+    })),
     testSignalSound: (signal = 'red') => {
       unlockRaceSignalSound();
       return signal === 'green' ? playRaceGreenSignalSound() : playRaceCountdownSignalSound();
@@ -7553,10 +7784,14 @@
       lastKey: lastRaceSignalSoundKey || null,
     }),
     getAnnouncementDiagnostics: () => ({
-      enabled: RACE_ANNOUNCE_ENABLED,
+      enabled: isRaceAnnouncementEnabled(),
       supported: supportsRaceAnnouncement(),
-      language: RACE_ANNOUNCE_LANGUAGE,
+      language: raceAnnounceLanguage,
       voice: selectedRaceAnnouncementVoiceName || RACE_ANNOUNCE_VOICE || null,
+		mode: getRaceAudioMode(),
+		browserKokoroState,
+		browserKokoroFailure: browserKokoroFailure || null,
+		browserKokoro: browserKokoroClient?.snapshot?.() || null,
       rate: RACE_ANNOUNCE_RATE,
       volume: RACE_ANNOUNCE_VOLUME,
       lastKey: lastRaceLapAnnouncementKey || null,
@@ -7619,6 +7854,7 @@
   });
   window.addEventListener('pagehide', () => {
     stopRaceAnnouncement();
+		browserKokoroClient?.shutdown();
     shutdownForPageHide();
   });
   startFpsMonitor();

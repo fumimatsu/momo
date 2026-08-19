@@ -19,11 +19,39 @@
     return 'en-US';
   }
 
-  function buildRemotePreference(language) {
+  function normalizeRemoteMode(value) {
+    return String(value || '').trim().toLowerCase() === 'browser-kokoro'
+      ? 'browser-kokoro'
+      : 'remote';
+  }
+
+  function buildRemotePreference(language, mode = 'remote') {
     return JSON.stringify({
       type: 'race_audio_preference',
       version: 1,
       language: normalizeRemoteLanguage(language, language !== 'off'),
+      mode: normalizeRemoteMode(mode),
+    });
+  }
+
+  function buildRemoteCalloutRequest(input = {}) {
+    const requestId = String(input.requestId || '').trim();
+    const kind = String(input.kind || '').trim().toLowerCase();
+    const carNumber = Number(input.carNumber);
+    const gapMs = Number(input.gapMs);
+    if (!/^[A-Za-z0-9._:-]{1,64}$/.test(requestId) ||
+        (kind !== 'gap_ahead' && kind !== 'gap_behind') ||
+        !Number.isInteger(carNumber) || carNumber < 1 || carNumber > 999 ||
+        !Number.isFinite(gapMs) || gapMs < 100 || gapMs > 5000) {
+      throw new Error('Invalid race audio callout request');
+    }
+    return JSON.stringify({
+      type: 'race_audio_callout_request',
+      version: 1,
+      requestId,
+      kind,
+      carNumber,
+      gapMs: Math.round(gapMs / 100) * 100,
     });
   }
 
@@ -98,32 +126,24 @@
     const roundedLapTimeMs = Math.round(lapTimeMs);
     const bestLapMs = finiteNumber(input.bestLapMs);
     const overallBestLapMs = finiteNumber(input.overallBestLapMs);
-    const position = finiteNumber(input.position);
     const isBestLap = bestLapMs !== null && Math.round(bestLapMs) === roundedLapTimeMs;
     const isOverallBest = overallBestLapMs !== null && Math.round(overallBestLapMs) === roundedLapTimeMs;
-    const segments = [
-      `Lap ${roundedLap} complete.`,
-      `${(roundedLapTimeMs / 1000).toFixed(3)} seconds.`,
-    ];
-
-    if (isOverallBest) {
-      segments.push('New overall fastest lap.');
-    } else if (isBestLap) {
-      segments.push('New personal best.');
-    } else if (bestLapMs !== null && roundedLapTimeMs > bestLapMs) {
-      segments.push(`${((roundedLapTimeMs - bestLapMs) / 1000).toFixed(3)} seconds off your best.`);
+    const language = normalizeRemoteLanguage(input.language);
+    if (language === 'ja-JP') {
+      return Object.freeze({
+        lap: roundedLap,
+        lapTimeMs: roundedLapTimeMs,
+        isBestLap,
+        isOverallBest,
+        text: `${roundedLap}周目、${(roundedLapTimeMs / 1000).toFixed(3)}`,
+      });
     }
-
-    if (position !== null && position >= 1) {
-      segments.push(`Position ${Math.floor(position)}.`);
-    }
-
     return Object.freeze({
       lap: roundedLap,
       lapTimeMs: roundedLapTimeMs,
       isBestLap,
       isOverallBest,
-      text: segments.join(' '),
+      text: `Lap ${roundedLap}. ${(roundedLapTimeMs / 1000).toFixed(3)} seconds`,
     });
   }
 
@@ -270,11 +290,13 @@
   }
 
   return Object.freeze({
+    buildRemoteCalloutRequest,
     buildRemotePreference,
     buildLapAnnouncement,
     buildRaceSummary,
     createRemoteAudioTracker,
     normalizeRemoteLanguage,
+    normalizeRemoteMode,
     parseRemoteMessage,
     playSignal,
     selectPreferredVoice,
