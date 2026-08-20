@@ -107,6 +107,48 @@ func TestTeamObserverDirectoryHTTPContract(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDirectoryCacheHTTPContract(t *testing.T) {
+	now := time.Now().UTC()
+	path := writeTeamObserverDirectoryCache(t, validTeamObserverDirectoryCache("madsystem", "tokorozawa-2026-08", now))
+	source, err := newTeamObserverDirectorySource(path, "madsystem", "tokorozawa-2026-08", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &relayServer{teamObserverDirectory: source}
+
+	request := httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/coordinator-directory-cache", nil)
+	recorder := httptest.NewRecorder()
+	server.serveCoordinatorDirectoryCache(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" ||
+		recorder.Header().Get("ETag") != `"rd_0123456789abcdef0123456789abcdef"` {
+		t.Fatalf("GET Coordinator cache = %d headers=%v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+	var cache teamObserverDirectoryCache
+	decoder := json.NewDecoder(recorder.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cache); err != nil {
+		t.Fatal(err)
+	}
+	if cache.Directory.Organization.Slug != "madsystem" || len(cache.Directory.RosterCandidates) != 1 ||
+		cache.Directory.Entries[0].EntryStatus != "confirmed" || cache.Directory.Vehicles[0].SourceBindings[0].SourceID != "11.3" {
+		t.Fatalf("Coordinator cache lost required identity fields: %#v", cache)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "http://relay.test/api/v1/coordinator-directory-cache", nil)
+	recorder = httptest.NewRecorder()
+	server.serveCoordinatorDirectoryCache(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("POST Coordinator cache = %d Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+	}
+
+	recorder = httptest.NewRecorder()
+	(&relayServer{}).serveCoordinatorDirectoryCache(recorder,
+		httptest.NewRequest(http.MethodGet, "http://relay.test/api/v1/coordinator-directory-cache", nil))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("disabled Coordinator cache = %d, want %d", recorder.Code, http.StatusNoContent)
+	}
+}
+
 func TestTeamObserverDirectorySourceRequiresCompleteExplicitScope(t *testing.T) {
 	if source, err := newTeamObserverDirectorySource("", "", "", time.Hour); err != nil || source != nil {
 		t.Fatalf("disabled source = %#v, %v", source, err)

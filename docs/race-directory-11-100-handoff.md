@@ -90,6 +90,33 @@ git pull --ff-only
 `403 operations access denied` だった。Relay 再起動後、11.100 の loopback と管理 LAN の
 両方から HTTP `200` を確認する。Internet 側の CIDR は許可しない。
 
+## 別 PC の Coordinator へ cache を渡す
+
+11.100 を Relay 専用 host、Race Operations Coordinator を別 PC で動かす場合、cloud read token は
+11.100 にだけ保存する。Coordinator host は起動時に次を取得する。
+
+```text
+GET http://192.168.11.100:8090/api/v1/coordinator-directory-cache
+```
+
+この endpoint は `operations-allow-cidr` で管理 LAN に限定され、Relay が読み込んだ完全な strict cache
+envelope を返す。`team-observer-directory` は表示用に entry status、roster candidates、organization、
+source bindings を削っているため Coordinator 入力として使用しない。
+
+Coordinator host の初回設定:
+
+```powershell
+Set-Location C:\src\momo-race-timing
+.\tools\Initialize-RaceDirectoryCache.ps1 `
+  -RelayCacheUrl http://192.168.11.100:8090/api/v1/coordinator-directory-cache `
+  -Organization madsystem `
+  -Event tokorozawa-2026-08 `
+  -CachePath C:\src\momo-race-timing\state\race-directory-cache.json
+```
+
+以後は Race Operations アプリケーション起動時に 1 回だけ mirror する。追加の Scheduled Task、常駐
+同期、Coordinator host への cloud token 配布は行わない。
+
 ## 実データ cache の確認
 
 専用 read token は 11.100 の process secret として配置する。command line、Git、log、

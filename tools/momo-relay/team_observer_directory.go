@@ -165,28 +165,8 @@ func newTeamObserverDirectorySource(path, organizationSlug, eventSlug string, ma
 }
 
 func (source *teamObserverDirectorySource) projection(now time.Time) (teamObserverDirectoryProjection, error) {
-	file, err := os.Open(source.path)
+	cache, err := source.cache()
 	if err != nil {
-		return teamObserverDirectoryProjection{}, fmt.Errorf("open cache: %w", err)
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxTeamObserverDirectoryBytes+1))
-	if err != nil {
-		return teamObserverDirectoryProjection{}, fmt.Errorf("read cache: %w", err)
-	}
-	if len(data) > maxTeamObserverDirectoryBytes {
-		return teamObserverDirectoryProjection{}, fmt.Errorf("cache exceeds %d bytes", maxTeamObserverDirectoryBytes)
-	}
-	var cache teamObserverDirectoryCache
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cache); err != nil {
-		return teamObserverDirectoryProjection{}, fmt.Errorf("decode cache: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return teamObserverDirectoryProjection{}, fmt.Errorf("decode cache: trailing JSON value")
-	}
-	if err := validateTeamObserverDirectoryCache(cache, source.organizationSlug, source.eventSlug); err != nil {
 		return teamObserverDirectoryProjection{}, err
 	}
 	fetchedAt, _ := time.Parse(time.RFC3339Nano, cache.FetchedAt)
@@ -229,6 +209,34 @@ func (source *teamObserverDirectorySource) projection(now time.Time) (teamObserv
 		})
 	}
 	return projection, nil
+}
+
+func (source *teamObserverDirectorySource) cache() (teamObserverDirectoryCache, error) {
+	file, err := os.Open(source.path)
+	if err != nil {
+		return teamObserverDirectoryCache{}, fmt.Errorf("open cache: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxTeamObserverDirectoryBytes+1))
+	if err != nil {
+		return teamObserverDirectoryCache{}, fmt.Errorf("read cache: %w", err)
+	}
+	if len(data) > maxTeamObserverDirectoryBytes {
+		return teamObserverDirectoryCache{}, fmt.Errorf("cache exceeds %d bytes", maxTeamObserverDirectoryBytes)
+	}
+	var cache teamObserverDirectoryCache
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cache); err != nil {
+		return teamObserverDirectoryCache{}, fmt.Errorf("decode cache: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return teamObserverDirectoryCache{}, fmt.Errorf("decode cache: trailing JSON value")
+	}
+	if err := validateTeamObserverDirectoryCache(cache, source.organizationSlug, source.eventSlug); err != nil {
+		return teamObserverDirectoryCache{}, err
+	}
+	return cache, nil
 }
 
 func validateTeamObserverDirectoryCache(cache teamObserverDirectoryCache, organizationSlug, eventSlug string) error {
@@ -402,6 +410,28 @@ func (server *relayServer) serveTeamObserverDirectory(w http.ResponseWriter, req
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(projection)
+}
+
+func (server *relayServer) serveCoordinatorDirectoryCache(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if server.teamObserverDirectory == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	cache, err := server.teamObserverDirectory.cache()
+	if err != nil {
+		logTeamObserverDirectoryError(err)
+		http.Error(w, "coordinator directory cache unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("ETag", `"`+normalizeTeamObserverDirectoryETag(cache.ETag)+`"`)
+	_ = json.NewEncoder(w).Encode(cache)
 }
 
 func logTeamObserverDirectoryError(err error) {

@@ -379,6 +379,11 @@ Relay は `GET /api/v1/team-observer-directory` で Coordinator の local Race D
 source availability を返す。両 endpoint は Garage と同じ CIDR policy で保護する。Relay は private
 Race Directory token を保持せず、Browser も Cloudflare API や cache file を直接読まない。
 
+Coordinator が別 PC で動作する場合は、管理 LAN 限定の
+`GET /api/v1/coordinator-directory-cache` から完全な検証済み cache を取得する。この endpoint は
+`-operations-allow-cidr` の対象で、cloud token や Relay runtime credential を返さない。表示用の
+`team-observer-directory` は情報を削っているため、Coordinator roster の入力には使用しない。
+
 ```powershell
 .\tools\start-mads-observer.ps1 -RebuildRelay `
   -TeamObserverDirectoryCache 'C:\src\momo-race-timing\state\race-directory-cache.json' `
