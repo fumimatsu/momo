@@ -384,8 +384,15 @@ Race Directory token を保持せず、Browser も Cloudflare API や cache file
   -TeamObserverDirectoryCache 'C:\src\momo-race-timing\state\race-directory-cache.json' `
   -TeamObserverDirectoryOrganization '<organization-slug>' `
   -TeamObserverDirectoryEvent '<event-slug>' `
-  -TeamObserverDirectoryMaxAge '1h'
+  -TeamObserverDirectoryMaxAge '24h' `
+  -RaceDirectoryRefreshConfig "$env:LOCALAPPDATA\MomoFPV\race-directory\race-directory-cache.json" `
+  -RaceDirectoryRefreshScript 'C:\src\momo-race-timing\tools\Invoke-RaceDirectoryCacheRefresh.ps1'
 ```
+
+refresh config と script を指定した場合、Relay 起動前に Race Directory を 1 回だけ更新する。常駐
+polling や Scheduled Task は使用しない。更新失敗時も検証済み cache が存在すれば警告を出して Relay
+を起動し、cache が存在しなければ起動を止める。D1 を変更した場合は Relay 起動操作をやり直すか、
+refresh script を明示的に 1 回実行する。
 
 cache を設定しない場合、directory endpoint は HTTP `204` となり、Team Observer は静的
 `observer-config.json` と `/api/v1/pilot-devices` へフォールバックする。cache が stale の場合は内容を

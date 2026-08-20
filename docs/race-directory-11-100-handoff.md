@@ -135,8 +135,14 @@ Set-Location C:\src\momo
   -TeamObserverDirectoryCache 'C:\src\momo-race-timing\state\race-directory-cache.json' `
   -TeamObserverDirectoryOrganization '<organization-slug>' `
   -TeamObserverDirectoryEvent '<event-slug>' `
-  -TeamObserverDirectoryMaxAge '1h'
+  -TeamObserverDirectoryMaxAge '24h' `
+  -RaceDirectoryRefreshConfig "$env:LOCALAPPDATA\MomoFPV\race-directory\race-directory-cache.json" `
+  -RaceDirectoryRefreshScript 'C:\src\momo-race-timing\tools\Invoke-RaceDirectoryCacheRefresh.ps1'
 ```
+
+Relay 起動時に Directory を 1 回だけ更新する。別の updater service や Windows Scheduled Task は
+起動しない。更新失敗時は既存の検証済み cache を維持して警告し、cache 自体がなければ Relay 起動を
+止める。参加者、車両、event を D1 で変更した場合は明示的に refresh する。
 
 確認する endpoint:
 

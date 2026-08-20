@@ -10,7 +10,9 @@ param(
     [string]$TeamObserverDirectoryCache = $env:MOMO_TEAM_OBSERVER_DIRECTORY_CACHE,
     [string]$TeamObserverDirectoryOrganization = $env:MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION,
     [string]$TeamObserverDirectoryEvent = $env:MOMO_TEAM_OBSERVER_DIRECTORY_EVENT,
-    [string]$TeamObserverDirectoryMaxAge = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE)) { '1h' } else { $env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE }),
+    [string]$TeamObserverDirectoryMaxAge = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE)) { '24h' } else { $env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE }),
+    [string]$RaceDirectoryRefreshConfig = $env:MOMO_RACE_DIRECTORY_REFRESH_CONFIG,
+    [string]$RaceDirectoryRefreshScript = $env:MOMO_RACE_DIRECTORY_REFRESH_SCRIPT,
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = 'C:\fpv-telemetry-logs',
@@ -161,6 +163,8 @@ try {
         TeamObserverDirectoryOrganization = $TeamObserverDirectoryOrganization
         TeamObserverDirectoryEvent = $TeamObserverDirectoryEvent
         TeamObserverDirectoryMaxAge = $TeamObserverDirectoryMaxAge
+        RaceDirectoryRefreshConfig = $RaceDirectoryRefreshConfig
+        RaceDirectoryRefreshScript = $RaceDirectoryRefreshScript
         FuelDriveDurationSeconds = $FuelDriveDurationSeconds
         TelemetryLogDirectory = $TelemetryLogDirectory
         TelemetryLogRetentionHours = $TelemetryLogRetentionHours

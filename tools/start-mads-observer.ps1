@@ -25,7 +25,9 @@ param(
     [string]$TeamObserverDirectoryCache = $env:MOMO_TEAM_OBSERVER_DIRECTORY_CACHE,
     [string]$TeamObserverDirectoryOrganization = $env:MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION,
     [string]$TeamObserverDirectoryEvent = $env:MOMO_TEAM_OBSERVER_DIRECTORY_EVENT,
-    [string]$TeamObserverDirectoryMaxAge = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE)) { '1h' } else { $env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE }),
+    [string]$TeamObserverDirectoryMaxAge = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE)) { '24h' } else { $env:MOMO_TEAM_OBSERVER_DIRECTORY_MAX_AGE }),
+    [string]$RaceDirectoryRefreshConfig = $env:MOMO_RACE_DIRECTORY_REFRESH_CONFIG,
+    [string]$RaceDirectoryRefreshScript = $env:MOMO_RACE_DIRECTORY_REFRESH_SCRIPT,
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
@@ -135,6 +137,23 @@ $resolvedRelaySourceRegistryPath = if ([string]::IsNullOrWhiteSpace($RelaySource
 if (-not [string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath) -and [string]::IsNullOrWhiteSpace($env:MOMO_RELAY_ADMIN_TOKEN)) {
     throw 'MOMO_RELAY_ADMIN_TOKEN is required when RelaySourceRegistryPath is set.'
 }
+$raceDirectoryRefreshValues = @($RaceDirectoryRefreshConfig, $RaceDirectoryRefreshScript)
+$raceDirectoryRefreshConfigured = @($raceDirectoryRefreshValues | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+}).Count
+if ($raceDirectoryRefreshConfigured -ne 0 -and $raceDirectoryRefreshConfigured -ne 2) {
+    throw 'RaceDirectoryRefreshConfig and RaceDirectoryRefreshScript must be configured together.'
+}
+$resolvedRaceDirectoryRefreshConfig = if ($raceDirectoryRefreshConfigured -eq 0) {
+    ''
+} else {
+    [System.IO.Path]::GetFullPath($RaceDirectoryRefreshConfig.Trim())
+}
+$resolvedRaceDirectoryRefreshScript = if ($raceDirectoryRefreshConfigured -eq 0) {
+    ''
+} else {
+    [System.IO.Path]::GetFullPath($RaceDirectoryRefreshScript.Trim())
+}
 $teamObserverDirectoryValues = @(
     $TeamObserverDirectoryCache,
     $TeamObserverDirectoryOrganization,
@@ -146,12 +165,33 @@ $teamObserverDirectoryConfigured = @($teamObserverDirectoryValues | Where-Object
 if ($teamObserverDirectoryConfigured -ne 0 -and $teamObserverDirectoryConfigured -ne 3) {
     throw 'TeamObserverDirectoryCache, TeamObserverDirectoryOrganization, and TeamObserverDirectoryEvent must be configured together.'
 }
+if ($raceDirectoryRefreshConfigured -ne 0 -and $teamObserverDirectoryConfigured -ne 3) {
+    throw 'Race Directory startup refresh requires the Team Observer directory cache configuration.'
+}
 $resolvedTeamObserverDirectoryCache = if ($teamObserverDirectoryConfigured -eq 0) {
     ''
 } else {
     [System.IO.Path]::GetFullPath($TeamObserverDirectoryCache.Trim())
 }
 if (-not [string]::IsNullOrWhiteSpace($resolvedTeamObserverDirectoryCache)) {
+    if (-not [string]::IsNullOrWhiteSpace($resolvedRaceDirectoryRefreshConfig)) {
+        if (-not (Test-Path -LiteralPath $resolvedRaceDirectoryRefreshConfig -PathType Leaf)) {
+            throw "Race Directory refresh config was not found: $resolvedRaceDirectoryRefreshConfig"
+        }
+        if (-not (Test-Path -LiteralPath $resolvedRaceDirectoryRefreshScript -PathType Leaf)) {
+            throw "Race Directory refresh script was not found: $resolvedRaceDirectoryRefreshScript"
+        }
+        try {
+            $refresh = & $resolvedRaceDirectoryRefreshScript -ConfigPath $resolvedRaceDirectoryRefreshConfig
+            Write-Host "Race Directory refreshed: $($refresh.status) revision=$($refresh.directoryRevision)"
+        }
+        catch {
+            if (-not (Test-Path -LiteralPath $resolvedTeamObserverDirectoryCache -PathType Leaf)) {
+                throw "Race Directory startup refresh failed and no local cache exists: $($_.Exception.Message)"
+            }
+            Write-Warning "Race Directory startup refresh failed; keeping the last-known-good cache: $($_.Exception.Message)"
+        }
+    }
     if (-not (Test-Path -LiteralPath $resolvedTeamObserverDirectoryCache -PathType Leaf)) {
         throw "Team Observer directory cache was not found: $resolvedTeamObserverDirectoryCache"
     }
