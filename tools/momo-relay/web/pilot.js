@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260820-race-safety-tts-f1-start-v1';
+  const PILOT_BUILD_ID = '20260820-pilot-identity-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -365,6 +365,14 @@
   const iceState = document.getElementById('iceState');
   const dcState = document.getElementById('dcState');
   const hostState = document.getElementById('hostState');
+  const pilotIdentity = document.getElementById('pilotIdentity');
+  const pilotPortrait = document.getElementById('pilotPortrait');
+  const pilotPortraitImage = document.getElementById('pilotPortraitImage');
+  const pilotPortraitInitials = document.getElementById('pilotPortraitInitials');
+  const pilotDisplayName = document.getElementById('pilotDisplayName');
+  const pilotTeamName = document.getElementById('pilotTeamName');
+  const pilotDisplayNumber = document.getElementById('pilotDisplayNumber');
+  const pilotComment = document.getElementById('pilotComment');
   const linkState = document.getElementById('linkState');
   const videoState = document.getElementById('videoState');
   const fpsState = document.getElementById('fpsState');
@@ -753,6 +761,7 @@
     sessionType: '',
     status: '',
     carId: '',
+    identity: null,
     lap: null,
     lapCount: null,
     position: null,
@@ -2843,11 +2852,91 @@
     }
   }
 
+  function pilotInitials(value, fallback = '--') {
+    const name = normalizePilotIdentityText(value, 128);
+    if (!name) return fallback;
+    const words = name.split(/\s+/).filter(Boolean);
+    const characters = words.length > 1
+      ? words.slice(0, 2).map((word) => Array.from(word)[0] || '')
+      : Array.from(name).slice(0, 2);
+    return characters.join('').toUpperCase() || fallback;
+  }
+
+  function setPilotPortraitLoadState(state) {
+    if (!pilotPortrait || !pilotPortraitImage || !pilotPortraitInitials) return;
+    pilotPortrait.dataset.loadState = state;
+    const loaded = state === 'loaded';
+    pilotPortraitImage.hidden = !loaded;
+    pilotPortraitInitials.hidden = loaded;
+  }
+
+  function renderPilotPortrait(identity, displayName) {
+    if (!pilotPortrait || !pilotPortraitImage || !pilotPortraitInitials) return;
+    setText(pilotPortraitInitials, pilotInitials(displayName, '--'));
+    pilotPortrait.setAttribute(
+      'aria-label',
+      identity?.photoUrl ? `${displayName} portrait` : `${displayName} initials`,
+    );
+    const photoUrl = identity?.photoUrl || '';
+    if (!photoUrl) {
+      if (pilotPortrait.dataset.src) pilotPortraitImage.removeAttribute('src');
+      pilotPortrait.dataset.src = '';
+      setPilotPortraitLoadState('fallback');
+      return;
+    }
+    if (pilotPortrait.dataset.src === photoUrl) return;
+    pilotPortrait.dataset.src = photoUrl;
+    setPilotPortraitLoadState('loading');
+    pilotPortraitImage.alt = `${displayName} portrait`;
+    pilotPortraitImage.src = photoUrl;
+  }
+
+  function renderPilotIdentity() {
+    if (!pilotIdentity) return;
+    const identity = raceState.identity || {};
+    const fallbackCarId = raceState.carId || RACE_CAR_ID || '';
+    const fallbackVehicle = fallbackCarId || formatPublicDeviceId(
+      lastTelemetryHostHint || getEndpointHostName(),
+    );
+    const displayName = identity.pilotName || 'UNASSIGNED';
+    const displayNumber = identity.displayNumber || fallbackCarId || '--';
+    const vehicleName = identity.carName || fallbackVehicle || 'FPV';
+    const meta = [
+      identity.pilotNo ? `PILOT ${identity.pilotNo}` : '',
+      identity.teamName || '',
+    ].filter(Boolean).join(' / ');
+    const commentVisible = Boolean(identity.comment)
+      && ['idle', 'ready', 'finished'].includes(raceState.phaseCode);
+
+    pilotIdentity.dataset.state = identity.source || 'unassigned';
+    pilotIdentity.style.setProperty('--pilot-accent', identity.color || '#67e9ff');
+    setText(hostState, vehicleName);
+    setText(pilotDisplayName, displayName);
+    setText(pilotDisplayNumber, displayNumber);
+    setText(pilotTeamName, meta);
+    pilotTeamName.hidden = !meta;
+    setText(pilotComment, identity.comment || '');
+    pilotComment.hidden = !commentVisible;
+    renderPilotPortrait(identity, displayName);
+  }
+
+  pilotPortraitImage?.addEventListener('load', () => {
+    if (pilotPortrait?.dataset.src === pilotPortraitImage.src) {
+      setPilotPortraitLoadState('loaded');
+    }
+  });
+  pilotPortraitImage?.addEventListener('error', () => {
+    if (pilotPortrait?.dataset.src === pilotPortraitImage.src) {
+      setPilotPortraitLoadState('error');
+    }
+  });
+
   function renderRaceHud() {
     const lapCount = raceState.lapCount === null ? '--' : String(raceState.lapCount);
     const lap = getDisplayedRaceLap(raceState.lap, raceState.lapCount);
     const position = raceState.position === null ? '--' : String(raceState.position);
     const fieldSize = raceState.fieldSize === null ? '--' : String(raceState.fieldSize);
+    renderPilotIdentity();
     setText(racePhase, raceState.phase);
     setText(raceLapCurrentNumber, lap);
     setText(raceLapTotalCount, lapCount);
@@ -2895,6 +2984,50 @@
 
   function normalizeRaceStartSignalMode(value) {
     return value === 'lights_out' ? 'lights_out' : 'green';
+  }
+
+  function normalizePilotIdentityText(value, maximumLength) {
+    if (typeof value !== 'string') return '';
+    return value.trim().slice(0, maximumLength);
+  }
+
+  function normalizePilotPhotoUrl(value) {
+    const source = normalizePilotIdentityText(value, 2048);
+    if (!source) return '';
+    try {
+      const url = new URL(source);
+      return url.protocol === 'https:' && !url.username && !url.password ? url.toString() : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function normalizePilotColor(value) {
+    const color = normalizePilotIdentityText(value, 7);
+    return /^#[0-9a-f]{6}$/i.test(color) ? color.toUpperCase() : '';
+  }
+
+  function normalizePilotIdentity(state, carId, standing) {
+    const participants = Array.isArray(state?.roster?.participants)
+      ? state.roster.participants
+      : [];
+    const participant = participants.find((item) => item?.carId === carId) || null;
+    const legacyPilotName = normalizePilotIdentityText(standing?.driver, 128);
+    return {
+      source: participant ? 'roster' : legacyPilotName ? 'legacy' : 'fallback',
+      carId,
+      vehicleId: normalizePilotIdentityText(participant?.vehicleId, 128),
+      sourceId: normalizePilotIdentityText(participant?.sourceId, 128),
+      carName: normalizePilotIdentityText(participant?.carName, 128),
+      displayNumber: normalizePilotIdentityText(participant?.displayNumber, 32),
+      pilotId: normalizePilotIdentityText(participant?.pilotId, 128),
+      pilotNo: normalizePilotIdentityText(participant?.pilotNo, 32),
+      pilotName: normalizePilotIdentityText(participant?.pilotName, 128) || legacyPilotName,
+      teamName: normalizePilotIdentityText(participant?.teamName, 128),
+      photoUrl: normalizePilotPhotoUrl(participant?.photoUrl),
+      comment: normalizePilotIdentityText(participant?.comment, 160),
+      color: normalizePilotColor(participant?.color),
+    };
   }
 
   function adaptRaceStateV2(state) {
@@ -2959,6 +3092,7 @@
       sessionType: String(state.raceInfo?.sessionType || '').trim().toLowerCase(),
       status: typeof standing?.status === 'string' ? standing.status.trim().toLowerCase() : '',
       carId,
+      identity: normalizePilotIdentity(state, carId, standing),
       lap,
       lapCount: normalizeRaceNumber(state.raceInfo?.totalLaps),
       position: normalizeRaceNumber(standing?.position) || null,
@@ -3490,6 +3624,7 @@
       raceState.sessionType = '';
       raceState.status = '';
       raceState.carId = '';
+      raceState.identity = null;
       raceState.lap = null;
       raceState.lapCount = null;
       raceState.position = null;
@@ -3538,6 +3673,11 @@
     }
     if (typeof nextState.carId === 'string') {
       raceState.carId = nextState.carId.trim();
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'identity')) {
+      raceState.identity = nextState.identity && typeof nextState.identity === 'object'
+        ? nextState.identity
+        : null;
     }
     if (Object.prototype.hasOwnProperty.call(nextState, 'status')) {
       raceState.status = typeof nextState.status === 'string'
@@ -3640,6 +3780,17 @@
       phase: 'RUNNING',
       phaseCode: 'green',
       carId: 'FPV-02',
+      identity: {
+        carId: 'FPV-02',
+        pilotNo: '07',
+        pilotName: 'AYA',
+        teamName: 'SDK RACING',
+        carName: 'MOMO EV PROTOTYPE',
+        displayNumber: '07',
+        photoUrl: '',
+        comment: 'Stay smooth. Attack the final sector.',
+        color: '#43E7FF',
+      },
       lap: 3,
       lapCount: 5,
       position: blueFlag ? 3 : 2,
@@ -4711,7 +4862,7 @@
   function updateHostUi(host) {
     const hostHint = host || lastTelemetryHostHint || getEndpointHostName();
     lastTelemetryHostHint = hostHint;
-    setText(hostState, formatPublicDeviceId(hostHint));
+    renderPilotIdentity();
     setText(endpointHostState, formatDebugHost(hostHint));
   }
 
@@ -7650,7 +7801,10 @@
       return;
     }
     setDriveEnabled(false);
-    window.location.assign(new URL('garage.html', window.location.href).toString());
+    const garageUrl = new URL('garage.html', window.location.href);
+    garageUrl.searchParams.set('returnUrl', window.location.href);
+    garageUrl.searchParams.set('v', PILOT_BUILD_ID);
+    window.location.assign(garageUrl.toString());
   }
 
   function getCalibrationGamepad() {

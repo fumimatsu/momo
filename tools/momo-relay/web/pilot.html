@@ -116,18 +116,94 @@
     }
 
     .race-identity {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 12px;
+      --pilot-accent: #67e9ff;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
       margin-bottom: 10px;
       padding-bottom: 8px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.2);
     }
 
+    .pilot-portrait {
+      position: relative;
+      display: grid;
+      width: 42px;
+      height: 42px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--pilot-accent) 82%, white 18%);
+      background: rgba(5, 17, 25, 0.76);
+      clip-path: polygon(0 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%);
+      place-items: center;
+    }
+
+    .pilot-portrait img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .pilot-portrait-initials {
+      color: var(--pilot-accent);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 14px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+    }
+
+    .pilot-identity-copy {
+      display: grid;
+      min-width: 0;
+      line-height: 1;
+    }
+
+    .pilot-vehicle-name,
+    .pilot-team {
+      overflow: hidden;
+      color: #a9c5dd;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pilot-name {
+      overflow: hidden;
+      margin: 3px 0;
+      color: #ffffff;
+      font-size: 20px;
+      font-style: italic;
+      line-height: 1;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pilot-comment {
+      margin: -3px 0 10px;
+      padding: 0 0 8px 51px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.13);
+      color: rgba(225, 242, 250, 0.78);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 8px;
+      font-style: italic;
+      line-height: 1.35;
+      letter-spacing: 0.04em;
+    }
+
+    .pilot-comment[hidden],
+    .pilot-team[hidden],
+    .pilot-portrait img[hidden],
+    .pilot-portrait-initials[hidden] { display: none; }
+
+    .race-identity[data-state="unassigned"] .pilot-name,
+    .race-identity[data-state="fallback"] .pilot-name { color: #9ab0bd; }
+
     .race-car-id {
       overflow: hidden;
-      color: #67e9ff;
+      color: var(--pilot-accent, #67e9ff);
       font-size: 25px;
       font-style: italic;
       line-height: 1;
@@ -3293,9 +3369,19 @@
       }
 
       .race-identity {
+        grid-template-columns: 34px minmax(0, 1fr) auto;
         margin-bottom: 8px;
         padding-bottom: 6px;
       }
+
+      .pilot-portrait {
+        width: 34px;
+        height: 34px;
+      }
+
+      .pilot-name { font-size: 17px; }
+      .pilot-vehicle-name, .pilot-team { font-size: 7px; }
+      .pilot-comment { margin-bottom: 8px; padding-left: 43px; }
 
       .race-car-id {
         font-size: 21px;
@@ -4413,10 +4499,19 @@
     </section>
     <div class="race-left-stack">
       <div class="race-summary race-card">
-        <div class="race-identity">
-          <span class="race-label">CAR</span>
-          <strong id="hostState" class="race-car-id">n/a</strong>
+        <div id="pilotIdentity" class="race-identity" data-state="unassigned">
+          <span id="pilotPortrait" class="pilot-portrait" aria-label="Pilot portrait unavailable">
+            <img id="pilotPortraitImage" alt="" decoding="async" hidden>
+            <span id="pilotPortraitInitials" class="pilot-portrait-initials">--</span>
+          </span>
+          <span class="pilot-identity-copy">
+            <span id="hostState" class="pilot-vehicle-name">n/a</span>
+            <strong id="pilotDisplayName" class="pilot-name">UNASSIGNED</strong>
+            <small id="pilotTeamName" class="pilot-team" hidden></small>
+          </span>
+          <strong id="pilotDisplayNumber" class="race-car-id">--</strong>
         </div>
+        <div id="pilotComment" class="pilot-comment" hidden></div>
         <div class="race-summary-head">
           <span id="racePhase" class="race-phase">STANDBY</span>
           <span id="raceLapCount" class="race-lap-count" aria-label="Lap -- of --">
@@ -4800,20 +4895,20 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="../../m5-audio.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="../../telemetry.js?v=20260820-pilot-identity-v1"></script>
+    <script src="../../m5-audio.js?v=20260820-pilot-identity-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260820-race-safety-tts-f1-start-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-race-safety-tts-f1-start-v1'"
+      src="./gamepad-profile.js?v=20260820-pilot-identity-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-pilot-identity-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="./race-battle.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="./notification-controller.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="../../race-announcer.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="../../race-ui-performance.js?v=20260820-race-safety-tts-f1-start-v1"></script>
-    <script src="./pilot.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="./ffb-bridge.js?v=20260820-pilot-identity-v1"></script>
+    <script src="./race-battle.js?v=20260820-pilot-identity-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260820-pilot-identity-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260820-pilot-identity-v1"></script>
+    <script src="./notification-controller.js?v=20260820-pilot-identity-v1"></script>
+    <script src="../../race-announcer.js?v=20260820-pilot-identity-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260820-pilot-identity-v1"></script>
+    <script src="./pilot.js?v=20260820-pilot-identity-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

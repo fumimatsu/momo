@@ -1030,6 +1030,24 @@ export function standingsByConfiguredCar(configCars, raceState) {
     });
 }
 
+export function raceParticipantCars(configCars, raceState) {
+  const cars = Array.isArray(configCars) ? configCars : [];
+  const rosterParticipants = Array.isArray(raceState?.roster?.participants)
+    ? raceState.roster.participants : [];
+  const participantCarIds = new Set(rosterParticipants
+    .map((participant) => String(participant?.carId || '').trim())
+    .filter(Boolean));
+  if (participantCarIds.size === 0) {
+    for (const standing of raceState?.standings || []) {
+      const carId = String(standing?.carId || '').trim();
+      if (carId) participantCarIds.add(carId);
+    }
+  }
+  return participantCarIds.size > 0
+    ? cars.filter((car) => participantCarIds.has(car.carId))
+    : cars;
+}
+
 export function countActiveVideos(connectionByCar) {
   return Array.from(connectionByCar.values()).filter((connection) => connection.videoActive === true).length;
 }

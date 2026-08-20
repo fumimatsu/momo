@@ -28,10 +28,11 @@ import {
   parseVehicleHealth,
   projectCourseProgress,
   raceClockValue,
+  raceParticipantCars,
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260820-team-observer-v12';
+} from './observer-core.js?v=20260820-team-observer-v13';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -500,7 +501,9 @@ function setTeamSelection(value, persist = false) {
     renderTelemetryDisplays();
     renderControlDisplays(performance.now());
     leaderboardSignature = '';
+    sectorRowsSignature = '';
     renderLeaderboard();
+    renderSectorRows();
     renderHeader();
     renderSituations();
   }
@@ -1075,7 +1078,7 @@ function updateLeaderboardRow(nodes, car, standing) {
 
 function renderLeaderboard() {
   const root = document.getElementById('leaderboardRows');
-  const rows = standingsByConfiguredCar(observerConfig.cars, raceState);
+  const rows = standingsByConfiguredCar(raceParticipantCars(observerConfig.cars, raceState), raceState);
   const signature = JSON.stringify(rows.map(({ car, standing }) => ({
     carId: car.carId,
     standing: standing ? {
@@ -1202,7 +1205,8 @@ function updateSectorRow(nodes, car, standing, personalSectorBest, overallSector
 
 function renderSectorRows() {
   const root = document.getElementById('sectorRows');
-  const density = observerConfig.cars.length > 32 ? 'crowded' : observerConfig.cars.length > 16 ? 'dense' : 'normal';
+  const sectorCars = selectedTeamCars();
+  const density = sectorCars.length > 32 ? 'crowded' : sectorCars.length > 16 ? 'dense' : 'normal';
   if (root.dataset.density !== density) root.dataset.density = density;
   const signature = JSON.stringify({
     standings: (raceState?.standings || []).map((standing) => ({
@@ -1211,6 +1215,7 @@ function renderSectorRows() {
     })),
     history: normalizedLapHistory.map((entry) => ({ carId: entry.carId, sectorTimes: entry.sectorTimes })),
     holds: Array.from(sectorCompletionHoldByCar.entries()),
+    selected: selectedTeamVehicleIds,
   });
   if (signature === sectorRowsSignature) return;
   const startedAt = UI_METRICS_ENABLED ? performance.now() : 0;
@@ -1239,7 +1244,7 @@ function renderSectorRows() {
       recordSectorBest(entry.carId, timing?.sector, timing?.timeMs);
     }
   }
-  const rows = standingsByConfiguredCar(observerConfig.cars, raceState);
+  const rows = standingsByConfiguredCar(sectorCars, raceState);
   const activeCarIds = new Set();
   let previousScrollTop = null;
   const preserveScroll = () => {
