@@ -10,6 +10,8 @@ function finiteNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+export const TEAM_OBSERVER_MAXIMUM_CARS = 100;
+
 export function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -68,7 +70,8 @@ export function selectVideoDevices(cars, value) {
 
 export function normalizeTeamSelection(cars, value, limit = 4) {
   const available = Array.isArray(cars) ? cars : [];
-  const maximum = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 32) : 4;
+  const maximum = Number.isInteger(limit) && limit > 0
+    ? Math.min(limit, TEAM_OBSERVER_MAXIMUM_CARS) : 4;
   let tokens;
   if (Array.isArray(value) || value instanceof Set) {
     tokens = Array.from(value, (item) => String(item || '').trim()).filter(Boolean);
@@ -701,8 +704,9 @@ export function elapsedSinceRaceMarkerMs(standing, raceElapsedMs) {
 }
 
 export function normalizeObserverConfig(config) {
-  if (!config || !Array.isArray(config.cars) || config.cars.length < 1 || config.cars.length > 32) {
-    throw new Error('observer config requires 1 to 32 cars');
+  if (!config || !Array.isArray(config.cars)
+      || config.cars.length < 1 || config.cars.length > TEAM_OBSERVER_MAXIMUM_CARS) {
+    throw new Error(`observer config requires 1 to ${TEAM_OBSERVER_MAXIMUM_CARS} cars`);
   }
   const vehicleSpeedProfiles = {};
   for (const [profileId, profile] of Object.entries(config.vehicleSpeedProfiles || {})) {
@@ -865,7 +869,7 @@ export function normalizeTeamObserverDirectoryProjection(value) {
 
 export function normalizePilotDevicesSnapshot(value) {
 	if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1
-			|| !Array.isArray(value.devices) || value.devices.length > 32) {
+			|| !Array.isArray(value.devices) || value.devices.length > TEAM_OBSERVER_MAXIMUM_CARS) {
 		throw new Error('invalid Relay pilot devices snapshot');
 	}
 	const devices = new Set();
@@ -953,7 +957,9 @@ export function mergeTeamObserverFleet(config, directory = null, pilotDevices = 
 			if (!rosterCarIds.has(car.carId)) addRecord(car.vehicleId, car.sourceId || car.device);
 		}
 	}
-	if (records.length < 1 || records.length > 32) throw new Error('Team Observer fleet requires 1 to 32 vehicles');
+	if (records.length < 1 || records.length > TEAM_OBSERVER_MAXIMUM_CARS) {
+		throw new Error(`Team Observer fleet requires 1 to ${TEAM_OBSERVER_MAXIMUM_CARS} vehicles`);
+	}
 	const colors = ['green', 'yellow', 'cyan', 'red'];
 	const carIds = new Set();
 	return records.map((record, index) => {
@@ -991,7 +997,8 @@ export function mergeTeamObserverFleet(config, directory = null, pilotDevices = 
 
 export function normalizeTeamVehicleSelection(cars, value, limit = 4) {
 	const available = Array.isArray(cars) ? cars : [];
-	const maximum = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 32) : 4;
+	const maximum = Number.isInteger(limit) && limit > 0
+		? Math.min(limit, TEAM_OBSERVER_MAXIMUM_CARS) : 4;
 	let tokens;
 	if (Array.isArray(value) || value instanceof Set) {
 		tokens = Array.from(value, (item) => String(item || '').trim()).filter(Boolean);

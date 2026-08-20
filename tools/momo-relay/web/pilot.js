@@ -1,7 +1,12 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260820-race-audio-sector-v1';
+  const PILOT_BUILD_ID = '20260820-ui-scale-v1';
+  const raceUiPerformance = window.MomoRaceUiPerformance;
+  if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
+      || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
+    throw new Error('MomoRaceUiPerformance is required.');
+  }
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -194,11 +199,18 @@
   const RACE_BATTLE_MAX_GAP_MS = 5000;
   const RACE_BATTLE_GAP_STEP_MS = 100;
   const RACE_MAP_ENABLED = getBooleanParam('raceMap', RACE_BATTLE_ENABLED);
+  const RACE_MAP_MAXIMUM_CARS = raceUiPerformance.DEFAULT_MAXIMUM_CARS;
+  const RACE_MAP_FIXTURE_CARS = raceUiPerformance.normalizeFixtureCarCount(
+    getIntegerParam('raceMapCars', 0),
+  );
+  const RACE_MAP_METRICS_ENABLED = getBooleanParam(
+    'raceMapMetrics',
+    RACE_MAP_FIXTURE_CARS > 0,
+  );
   const RACE_MAP_DEFAULT_LAP_MS = Math.max(3000, getNumberParam('raceMapDefaultLapMs', 24000));
   const RACE_MAP_RENDER_INTERVAL_MS = 1000 / 20;
   const RACE_LAP_HISTORY_LIMIT = 20;
   const RACE_MAP_SECTOR_BOUNDARIES = Object.freeze([0, 0.42277, 0.73115, 1]);
-  const RACE_MAP_MARKER_OFFSETS = Object.freeze([[-15, -15], [15, -15], [-15, 15], [15, 15]]);
   const RACE_MAP_COLORS = Object.freeze(['green', 'yellow', 'cyan', 'red']);
   const RACE_REAR_ATTENTION_ENABLED = getBooleanParam('rearAttention', true);
   const RACE_REAR_ATTENTION_DEMO = getBooleanParam('rearAttentionDemo', false);
@@ -668,7 +680,12 @@
   let raceMapAnimationFrame = 0;
   let raceMapRenderedAt = 0;
   let raceCourseLength = 0;
+  let raceCourseLookup = null;
   const raceCourseMarkerNodes = new Map();
+  const raceCourseMotionByCar = new Map();
+  const raceMapRenderSampler = raceUiPerformance.createDurationSampler();
+  const raceMapLongTaskTracker = raceUiPerformance.createLongTaskTracker();
+  let raceMapMetricLogCounter = 0;
   let lastRaceLapAnnouncementKey = '';
   let lastRaceMilestoneKey = '';
   let lastRaceGoalKey = '';
@@ -1508,7 +1525,7 @@
     return Number.isInteger(number) ? number : null;
   }
 
-  function normalizeRaceRivals(rivals, lapHistory = []) {
+  function normalizeRaceRivals(rivals, lapHistory = [], allTimeMode = 'elapsed') {
     if (!Array.isArray(rivals)) {
       return null;
     }
@@ -1522,7 +1539,11 @@
         const driver = typeof entry.driver === 'string' && entry.driver.trim()
           ? entry.driver.trim()
           : '';
-        const raceElapsedMs = window.MomoRaceBattle?.resolveRaceMapElapsedMs(entry, lapHistory)
+        const raceElapsedMs = window.MomoRaceBattle?.resolveRaceMapElapsedMs(
+          entry,
+          lapHistory,
+          { allTimeMode },
+        )
           ?? normalizeOptionalRaceNumber(entry.raceElapsedMs);
         return {
           carId,
@@ -1655,9 +1676,37 @@
     const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
     marker.append(core, label, title);
     raceCourseMarkers?.append(marker);
-    nodes = { marker, label, title };
+    nodes = { marker, core, label, title };
     raceCourseMarkerNodes.set(rival.carId, nodes);
     return nodes;
+  }
+
+  function raceMapLabelCarIds(rivals) {
+    if (rivals.length <= 4) {
+      return new Set(rivals.map((rival) => rival.carId));
+    }
+    const battle = getRaceBattle();
+    const ids = new Set([
+      raceState.carId,
+      battle.self?.carId,
+      battle.ahead?.carId,
+      battle.behind?.carId,
+      battle.self?.lappingCarBehindId,
+    ].filter(Boolean));
+    for (const rival of rivals) {
+      if (rival.lappingCarBehindId || rival.status === 'finished' || rival.status === 'retired') {
+        ids.add(rival.carId);
+      }
+    }
+    return ids;
+  }
+
+  function raceMapMarkerRadius(rival, showLabel, fieldSize) {
+    if (rival.carId === raceState.carId) return 24;
+    if (showLabel) return 18;
+    if (fieldSize > 48) return 7;
+    if (fieldSize > 16) return 10;
+    return 14;
   }
 
   function raceMapLapDuration(rival) {
@@ -1684,8 +1733,26 @@
         && markerRaceMs !== null && raceElapsedMs !== null) {
       const anchor = RACE_MAP_SECTOR_BOUNDARIES[markerIndex];
       const next = RACE_MAP_SECTOR_BOUNDARIES[markerIndex + 1];
-      const elapsedSinceMarkerMs = Math.max(0, raceElapsedMs + localAdvanceMs - markerRaceMs);
+      let elapsedSinceMarkerMs;
+      if (raceElapsedMs > markerRaceMs) {
+        elapsedSinceMarkerMs = Math.max(0, raceElapsedMs + localAdvanceMs - markerRaceMs);
+      } else {
+        const key = `${activeRaceRunId}:${markerIndex}:${markerRaceMs}`;
+        let motion = raceCourseMotionByCar.get(rival.carId);
+        if (!motion || motion.key !== key) {
+          motion = { key, elapsedMs: 0, updatedAt: now };
+          raceCourseMotionByCar.set(rival.carId, motion);
+        }
+        if (running) {
+          motion.elapsedMs += Math.max(0, now - motion.updatedAt);
+        }
+        motion.updatedAt = now;
+        elapsedSinceMarkerMs = motion.elapsedMs;
+      }
       return Math.min(next, anchor + (elapsedSinceMarkerMs / lapDurationMs));
+    }
+    if (markerIndex === null && raceElapsedMs !== null) {
+      return ((raceElapsedMs + localAdvanceMs) / lapDurationMs) % 1;
     }
     if (currentLapMs !== null) {
       return ((currentLapMs + localAdvanceMs) / lapDurationMs) % 1;
@@ -1703,36 +1770,64 @@
       return;
     }
     raceBattle.hidden = false;
-    if (!raceCourseLength && typeof raceCoursePath.getTotalLength === 'function') {
-      raceCourseLength = raceCoursePath.getTotalLength();
+    if (!raceCourseLookup) {
+      raceCourseLookup = raceUiPerformance.createSvgPathLookup(raceCoursePath);
+      raceCourseLength = raceCourseLookup?.length || 0;
     }
-    if (!raceCourseLength) {
+    if (!raceCourseLookup || !raceCourseLength) {
       return;
     }
+    const renderStartedAt = RACE_MAP_METRICS_ENABLED ? performance.now() : 0;
     const activeCarIds = new Set();
-    const rivals = raceState.rivals.slice(0, 4);
+    const rivals = raceState.rivals.slice(0, RACE_MAP_MAXIMUM_CARS);
+    const labelCarIds = raceMapLabelCarIds(rivals);
+    setDatasetIfChanged(
+      raceCourseMap,
+      'density',
+      rivals.length > 48 ? 'crowded' : rivals.length > 16 ? 'dense' : 'normal',
+    );
     rivals.forEach((rival, index) => {
       activeCarIds.add(rival.carId);
       const nodes = ensureRaceCourseMarker(rival, index);
       const progress = estimateRaceMapProgress(rival, now, index, rivals.length);
-      const point = raceCoursePath.getPointAtLength(progress * raceCourseLength);
-      const [offsetX, offsetY] = RACE_MAP_MARKER_OFFSETS[index] || [0, 0];
+      const point = raceUiPerformance.pointAtProgress(raceCourseLookup, progress);
+      if (!point) return;
+      const [offsetX, offsetY] = raceUiPerformance.markerOffset(index, rivals.length);
+      const showLabel = labelCarIds.has(rival.carId);
       nodes.marker.removeAttribute('hidden');
-      nodes.marker.dataset.self = String(rival.carId === raceState.carId);
-      nodes.marker.dataset.color = raceMapColor(rival, index);
-      nodes.marker.setAttribute(
+      setDatasetIfChanged(nodes.marker, 'self', rival.carId === raceState.carId);
+      setDatasetIfChanged(nodes.marker, 'color', raceMapColor(rival, index));
+      setDatasetIfChanged(nodes.marker, 'labeled', showLabel);
+      setAttributeIfChanged(nodes.core, 'r', raceMapMarkerRadius(rival, showLabel, rivals.length));
+      setAttributeIfChanged(
+        nodes.marker,
         'transform',
         `translate(${(point.x + offsetX).toFixed(2)} ${(point.y + offsetY).toFixed(2)})`,
       );
-      nodes.label.textContent = raceMapDriverLabel(rival);
-      nodes.title.textContent = `${rival.driver || rival.carId} / P${rival.position} / estimated position`;
+      nodes.label.toggleAttribute('hidden', !showLabel);
+      if (showLabel) setText(nodes.label, raceMapDriverLabel(rival));
+      setText(nodes.title, `${rival.driver || rival.carId} / P${rival.position} / estimated position`);
     });
     for (const [carId, nodes] of raceCourseMarkerNodes) {
       if (!activeCarIds.has(carId)) {
-        nodes.marker.setAttribute('hidden', '');
+        nodes.marker.remove();
+        raceCourseMarkerNodes.delete(carId);
+        raceCourseMotionByCar.delete(carId);
       }
     }
     raceCourseMap.dataset.state = rivals.length > 0 ? 'live' : 'waiting';
+    if (RACE_MAP_METRICS_ENABLED) {
+      raceMapRenderSampler.record(performance.now() - renderStartedAt);
+      raceMapMetricLogCounter += 1;
+      if (raceMapMetricLogCounter % 40 === 0) {
+        console.info('[RACE MAP METRICS]', JSON.stringify({
+          cars: rivals.length,
+          markers: raceCourseMarkerNodes.size,
+          render: raceMapRenderSampler.snapshot(),
+          longTasks: raceMapLongTaskTracker.snapshot(),
+        }));
+      }
+    }
   }
 
   function startRaceCourseMapAnimation() {
@@ -2798,7 +2893,7 @@
       serverTimeMs: normalizeRaceNumber(state.serverTimeMs),
       clockRunning: state.phase === 'green' && standing?.status === 'racing',
       laps,
-      rivals: normalizeRaceRivals(state.standings, state.lapHistory) || [],
+      rivals: normalizeRaceRivals(state.standings, state.lapHistory, state.allTimeMode) || [],
       sectors: sectorStatus.sectors,
     };
   }
@@ -3347,7 +3442,7 @@
       }
     }
     if (Object.prototype.hasOwnProperty.call(nextState, 'rivals')) {
-      const rivals = normalizeRaceRivals(nextState.rivals);
+      const rivals = normalizeRaceRivals(nextState.rivals, [], raceState.allTimeMode);
       if (rivals !== null) {
         raceState.rivals = rivals;
       }
@@ -3433,6 +3528,10 @@
   }
 
   function startRaceBattleDemo() {
+    if (RACE_MAP_FIXTURE_CARS > 0) {
+      setRaceState(raceUiPerformance.createRaceFixture(RACE_MAP_FIXTURE_CARS));
+      return;
+    }
     if (RACE_BATTLE_DEMO || RACE_REAR_ATTENTION_DEMO || RACE_BLUE_FLAG_DEMO) {
       setRaceState(createRaceBattleDemoState(1250, 1, 24_000, RACE_BLUE_FLAG_DEMO));
       if (RACE_REAR_ATTENTION_DEMO) {
@@ -8123,6 +8222,21 @@
       summaryScheduled: Boolean(scheduledRaceSummaryKey),
     }),
     getNotificationDiagnostics: () => notificationController.getState(),
+    getMapDiagnostics: () => ({
+      enabled: RACE_MAP_ENABLED,
+      metricsEnabled: RACE_MAP_METRICS_ENABLED,
+      fixtureCars: RACE_MAP_FIXTURE_CARS,
+      stateCars: raceState.rivals.length,
+      markerNodes: raceCourseMarkerNodes.size,
+      pathSamples: raceCourseLookup?.samples || 0,
+      render: raceMapRenderSampler.snapshot(),
+      longTasks: raceMapLongTaskTracker.snapshot(),
+    }),
+    resetMapDiagnostics: () => {
+      raceMapRenderSampler.reset();
+      raceMapLongTaskTracker.reset();
+    },
+    setMapFixture: (count) => setRaceState(raceUiPerformance.createRaceFixture(count)),
   };
   window.addEventListener('momo-race-state', (event) => setRaceState(event.detail));
 	window.addEventListener('pointerdown', unlockRaceSignalSound);
@@ -8133,6 +8247,7 @@
   window.addEventListener('keydown', prepareRaceAnnouncement);
   window.speechSynthesis?.addEventListener?.('voiceschanged', prepareRaceAnnouncement);
   renderRaceHud();
+  if (RACE_MAP_METRICS_ENABLED) raceMapLongTaskTracker.start();
   startRaceBattleDemo();
   startRaceMilestoneDemo();
   startRaceCourseMapAnimation();
@@ -8173,6 +8288,7 @@
   window.addEventListener('pagehide', () => {
     stopRaceAnnouncement();
 		browserKokoroClient?.shutdown();
+    raceMapLongTaskTracker.stop();
     shutdownForPageHide();
   });
   startFpsMonitor();

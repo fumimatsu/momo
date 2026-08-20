@@ -28,7 +28,7 @@ func TestRaceAudioDetectorIgnoresHistoryOnInitialState(t *testing.T) {
 	}
 }
 
-func TestRaceAudioDetectorAnnouncesStartPositionPauseAndResumeOnce(t *testing.T) {
+func TestRaceAudioDetectorAnnouncesInitialPositionWithoutStartPhrase(t *testing.T) {
 	detector := raceAudioDetector{}
 	ready := raceAudioScenarioState("run-start", "ready", "race", 10, 3, 0, nil, nil)
 	if events := detector.observe(ready, "CP-1"); len(events) != 0 {
@@ -38,9 +38,8 @@ func TestRaceAudioDetectorAnnouncesStartPositionPauseAndResumeOnce(t *testing.T)
 	green := raceAudioScenarioState("run-start", "green", "race", 10, 3, 0, nil, nil)
 	events := detector.observe(green, "CP-1")
 	if len(events) != 1 || events[0].Kind != "race_start" ||
-		events[0].EnglishText != "Race started. Position 3." ||
-		events[0].JapaneseText != "レーススタート。現在3位。" {
-		t.Fatalf("unexpected race start events: %#v", events)
+		events[0].EnglishText != "Position 3." || events[0].JapaneseText != "現在3位。" {
+		t.Fatalf("unexpected initial position event: %#v", events)
 	}
 	if events := detector.observe(green, "CP-1"); len(events) != 0 {
 		t.Fatalf("duplicate green state emitted events: %#v", events)

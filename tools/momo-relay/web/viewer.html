@@ -3604,6 +3604,16 @@
       stroke-width: 8;
     }
 
+    .race-course-map[data-density="dense"] .race-course-marker[data-labeled="false"] circle,
+    .race-course-map[data-density="crowded"] .race-course-marker[data-labeled="false"] circle {
+      stroke-width: 4;
+    }
+
+    .race-course-map[data-density="crowded"] .race-course-marker[data-labeled="false"] circle {
+      fill: rgba(4, 11, 15, 0.78);
+      stroke-width: 3;
+    }
+
     .race-course-marker text {
       fill: #ffffff;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
@@ -3614,6 +3624,10 @@
       stroke: rgba(0, 0, 0, 0.9);
       stroke-width: 4px;
       text-anchor: middle;
+    }
+
+    .race-course-marker text[hidden] {
+      display: none;
     }
 
     .race-sector-strip {
@@ -4754,19 +4768,20 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="../../m5-audio.js?v=20260820-race-audio-sector-v1"></script>
+    <script src="../../telemetry.js?v=20260820-ui-scale-v1"></script>
+    <script src="../../m5-audio.js?v=20260820-ui-scale-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260820-race-audio-sector-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-race-audio-sector-v1'"
+      src="./gamepad-profile.js?v=20260820-ui-scale-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-ui-scale-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="./race-battle.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="./notification-controller.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="../../race-announcer.js?v=20260820-race-audio-sector-v1"></script>
-    <script src="./pilot.js?v=20260820-race-audio-sector-v1"></script>
+    <script src="./ffb-bridge.js?v=20260820-ui-scale-v1"></script>
+    <script src="./race-battle.js?v=20260820-ui-scale-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260820-ui-scale-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260820-ui-scale-v1"></script>
+    <script src="./notification-controller.js?v=20260820-ui-scale-v1"></script>
+    <script src="../../race-announcer.js?v=20260820-ui-scale-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260820-ui-scale-v1"></script>
+    <script src="./pilot.js?v=20260820-ui-scale-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

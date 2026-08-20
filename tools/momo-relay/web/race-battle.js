@@ -55,12 +55,19 @@
     return number === null ? fallback : number;
   }
 
-  function resolveRaceMapElapsedMs(standing, lapHistory = []) {
+  function resolveRaceMapElapsedMs(standing, lapHistory = [], options = {}) {
     const markerRaceMs = finiteNonNegative(standing?.lastMarkerRaceMs);
     const explicitRaceElapsedMs = finiteNonNegative(standing?.raceElapsedMs);
     if (explicitRaceElapsedMs !== null
       && (markerRaceMs === null || explicitRaceElapsedMs >= markerRaceMs)) {
       return explicitRaceElapsedMs;
+    }
+
+    const allTimeMs = finiteNonNegative(standing?.allTimeMs);
+    const allTimeMode = String(options?.allTimeMode || 'elapsed').trim().toLowerCase();
+    if (allTimeMode !== 'countdown' && allTimeMs !== null
+      && (markerRaceMs === null || allTimeMs >= markerRaceMs)) {
+      return allTimeMs;
     }
 
     const carId = typeof standing?.carId === 'string' ? standing.carId.trim() : '';
@@ -85,7 +92,7 @@
     if (markerRaceMs !== null) {
       return markerRaceMs;
     }
-    return finiteNonNegative(standing?.allTimeMs);
+    return allTimeMs;
   }
 
   function createRearAttentionTracker(options = {}) {

@@ -37,3 +37,9 @@ test('race banners keep the rival identity in the prominent heading', () => {
   assert.match(html, /\.race-milestone \{[\s\S]*?background: rgba\(2, 24, 33, 0\.52\);/);
   assert.match(html, /\.race-milestone output \{[\s\S]*?font-size: 38px;/);
 });
+
+test('race map projects the first lap from elapsed race time before a marker anchor exists', () => {
+  assert.match(source, /resolveRaceMapElapsedMs\([\s\S]*?\{ allTimeMode \},/);
+  assert.match(source, /if \(markerIndex === null && raceElapsedMs !== null\) \{[\s\S]*?raceElapsedMs \+ localAdvanceMs/);
+  assert.match(source, /const raceCourseMotionByCar = new Map\(\)/);
+});

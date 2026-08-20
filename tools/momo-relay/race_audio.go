@@ -602,23 +602,25 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, history.Achievement, isFinalLap),
 		})
 	}
-	if sessionType == "race" && phase == "green" && previousPhase != "green" {
-		kind := "race_start"
-		priority := 55
-		englishText := raceAudioEnglishStartText(standingPosition, state.RaceInfo.TotalLaps == 1)
-		japaneseText := raceAudioJapaneseStartText(standingPosition, state.RaceInfo.TotalLaps == 1)
-		if previousPhase == "paused" {
-			kind = "race_resumed"
-			priority = 90
-			englishText = "Green flag. Race resumed."
-			japaneseText = "グリーン。レース再開。"
+	if sessionType == "race" && phase == "green" && previousPhase != "green" && previousPhase != "paused" {
+		englishText := raceAudioEnglishStartPositionText(standingPosition, state.RaceInfo.TotalLaps == 1)
+		japaneseText := raceAudioJapaneseStartPositionText(standingPosition, state.RaceInfo.TotalLaps == 1)
+		if englishText != "" || japaneseText != "" {
+			events = append(events, raceAudioEvent{
+				EventID:      fmt.Sprintf("%s:%s:race_start", runID, carID),
+				Kind:         "race_start",
+				Priority:     55,
+				EnglishText:  englishText,
+				JapaneseText: japaneseText,
+			})
 		}
+	} else if sessionType == "race" && phase == "green" && previousPhase == "paused" {
 		events = append(events, raceAudioEvent{
-			EventID:      fmt.Sprintf("%s:%s:%s", runID, carID, kind),
-			Kind:         kind,
-			Priority:     priority,
-			EnglishText:  englishText,
-			JapaneseText: japaneseText,
+			EventID:      fmt.Sprintf("%s:%s:race_resumed", runID, carID),
+			Kind:         "race_resumed",
+			Priority:     90,
+			EnglishText:  "Green flag. Race resumed.",
+			JapaneseText: "グリーン。レース再開。",
 		})
 	} else if sessionType == "race" && phase == "paused" && previousPhase == "green" {
 		events = append(events, raceAudioEvent{
@@ -829,26 +831,26 @@ func (detector *raceAudioPitDetector) observe(snapshot pitPresenceSnapshot) *rac
 	}
 }
 
-func raceAudioEnglishStartText(position int, finalLap bool) string {
-	text := "Race started."
+func raceAudioEnglishStartPositionText(position int, finalLap bool) string {
+	parts := make([]string, 0, 2)
 	if position > 0 {
-		text += fmt.Sprintf(" Position %d.", position)
+		parts = append(parts, fmt.Sprintf("Position %d.", position))
 	}
 	if finalLap {
-		text += " Final lap."
+		parts = append(parts, "Final lap.")
 	}
-	return text
+	return strings.Join(parts, " ")
 }
 
-func raceAudioJapaneseStartText(position int, finalLap bool) string {
-	text := "レーススタート。"
+func raceAudioJapaneseStartPositionText(position int, finalLap bool) string {
+	parts := make([]string, 0, 2)
 	if position > 0 {
-		text += fmt.Sprintf("現在%d位。", position)
+		parts = append(parts, fmt.Sprintf("現在%d位。", position))
 	}
 	if finalLap {
-		text += "ファイナルラップ。"
+		parts = append(parts, "ファイナルラップ。")
 	}
-	return text
+	return strings.Join(parts, "")
 }
 
 func raceAudioPositionEvent(runID string, carID string, previousPosition int, position int) raceAudioEvent {

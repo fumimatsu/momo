@@ -118,6 +118,8 @@ button, input, select, textarea { font: inherit; }
   padding: 5px 16px 4px 20px;
   border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-block-size: 82px;
 }
 
 .leader-row::before { position: absolute; inset: 7px auto 7px 0; width: 4px; background: var(--car); box-shadow: 0 0 12px color-mix(in srgb, var(--car) 55%, transparent); content: ""; }
@@ -219,7 +221,11 @@ button, input, select, textarea { font: inherit; }
 .car-marker[data-motion-state="holding-checkpoint"] .marker-confidence { opacity: .1; stroke: var(--yellow); stroke-width: 1.5; stroke-dasharray: 3 3; }
 .car-marker[data-motion-state^="pit-"] .marker-core { stroke: var(--cyan); }
 .marker-label { fill: #071013; font-size: 8px; letter-spacing: 0; }
+.marker-label[hidden] { display: none; }
 .car-marker[data-label-mode="number"] .marker-label { font-size: 12px; }
+.track-marker-layer[data-density="dense"] .car-marker:not(.is-team-selected) .marker-core,
+.track-marker-layer[data-density="crowded"] .car-marker:not(.is-team-selected) .marker-core { filter: none; }
+.track-marker-layer[data-density="crowded"] .car-marker:not(.is-team-selected) .marker-confidence { opacity: .06; }
 .car-marker[data-effect="impact"] .marker-core,
 .car-marker[data-effect="heavy-impact"] .marker-core,
 .car-marker[data-effect="fuel-empty"] .marker-core { animation: marker-alert-pulse .32s steps(2, end) 5; }
@@ -288,7 +294,7 @@ html[data-mode="live"] .battle-map-link { display: none; }
 .sector-columns span:nth-child(3) { color: var(--cyan); }
 .sector-columns span:nth-child(5) { color: var(--green); }
 .sector-rows { display: grid; gap: 3px; padding: 3px 10px 7px; }
-.sector-row { --car: var(--green); min-height: 34px; padding: 4px 7px; border: 1px solid var(--line-soft); border-left: 3px solid var(--car); background: linear-gradient(90deg, color-mix(in srgb, var(--car) 6%, transparent), rgba(255, 255, 255, .018) 48%); }
+.sector-row { --car: var(--green); min-height: 34px; padding: 4px 7px; border: 1px solid var(--line-soft); border-left: 3px solid var(--car); background: linear-gradient(90deg, color-mix(in srgb, var(--car) 6%, transparent), rgba(255, 255, 255, .018) 48%); content-visibility: auto; contain-intrinsic-block-size: 34px; }
 .sector-row.is-active { background: linear-gradient(90deg, color-mix(in srgb, var(--car) 15%, transparent), rgba(255, 255, 255, .022) 62%); }
 .sector-car { color: var(--text); font-size: 13px; font-weight: 800; }
 .race-car-status { overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
@@ -297,6 +303,8 @@ html[data-mode="live"] .battle-map-link { display: none; }
 .sector-bars i.done { border-color: var(--yellow); color: #0a0e10; background: var(--yellow); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yellow) 48%, transparent); }
 .sector-bars i.active { border-color: var(--car); color: #071013; background: repeating-linear-gradient(110deg, var(--car) 0 18px, color-mix(in srgb, var(--car) 72%, #fff) 18px 28px); background-size: 56px 100%; box-shadow: 0 0 9px color-mix(in srgb, var(--car) 55%, transparent); animation: sector-active-flow .8s linear infinite; }
 .sector-bars i.recent { border-color: var(--yellow); color: var(--yellow); background: color-mix(in srgb, var(--yellow) 18%, #111719); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yellow) 45%, transparent), 0 0 10px color-mix(in srgb, var(--yellow) 36%, transparent); animation: sector-complete-hold .6s ease-in-out infinite alternate; }
+.sector-rows[data-density="crowded"] .sector-bars i.active,
+.sector-rows[data-density="crowded"] .sector-bars i.recent { animation: none; }
 .sector-bars i.done.personal-best { border-color: var(--green); background: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 48%, transparent); }
 .sector-bars i.recent.personal-best { border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 18%, #111719); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 45%, transparent), 0 0 10px color-mix(in srgb, var(--green) 36%, transparent); }
 .sector-bars i.done.overall-best { border-color: var(--purple); background: var(--purple); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 48%, transparent); }
@@ -597,7 +605,7 @@ td:last-child { color: var(--cyan); }
 .team-replacement-choices button:hover, .team-replacement-choices button:focus-visible { border-color: var(--cyan); outline: none; }
 .team-replacement-choices .team-replacement-cancel { color: var(--muted); }
 .team-selector-list { min-height: 0; overflow-y: auto; }
-.team-selector-row { --car: #7f9096; display: grid; grid-template-columns: minmax(0, 1fr) 82px 86px; align-items: center; gap: 8px; width: 100%; min-height: 58px; padding: 8px 16px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-align: left; }
+.team-selector-row { --car: #7f9096; display: grid; grid-template-columns: minmax(0, 1fr) 82px 86px; align-items: center; gap: 8px; width: 100%; min-height: 58px; padding: 8px 16px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-align: left; content-visibility: auto; contain-intrinsic-block-size: 58px; }
 .team-selector-row.car-green { --car: var(--green); }
 .team-selector-row.car-yellow { --car: var(--yellow); }
 .team-selector-row.car-cyan { --car: var(--cyan); }
