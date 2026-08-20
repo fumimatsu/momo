@@ -45,7 +45,7 @@ param(
     [string]$ObserverVisualOutput = 'legacy',
     [string]$ObserverRelayWebSocketUrl = 'ws://127.0.0.1:8090/ws',
     [ValidateRange(1, 60)]
-    [int]$ObserverSharedOutputFps = 25,
+    [int]$ObserverSharedOutputFps = 50,
     [string]$ObserverExecutable = '',
     [switch]$ObserverHeadless,
     [string]$ObserverCrashDumpDirectory = '',

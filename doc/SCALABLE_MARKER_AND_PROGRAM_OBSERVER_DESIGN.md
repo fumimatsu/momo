@@ -306,16 +306,17 @@ GPU detectorを直接呼び出すか、ローカルworkerを独立サービス�
 各sourceの処理待ちフレームは最新1枚だけとする。検出処理が追い付かない場合は古いフレームを捨て、
 キューを蓄積して検出時刻が遅れることを防ぐ。
 
-初期値の候補は次のとおりとし、録画映像と実走で決定する。
+初期値は次のとおりとし、録画映像と実走で継続確認する。
 
 - 映像受信: 現行sourceのフレームレートを変更しない
-- marker検出: 25 Hzを標準とする。50 FPS入力では2フレームに1回を処理する
+- marker検出: 50 Hzを標準とし、50 FPS入力の最新フレームを処理する
 - 診断描画: 通常OFF、必要時のみ有効化する
 - 姿勢推定: marker ID判定だけの場合はOFF
 - corner refinement: 正確なcorner座標を使わない場合はOFF
 
-checkpointを見られる最短時間が40ms未満の場合は50 Hz検出も比較する。固定値だけで判断せず、
-実走録画からmarker visible durationの分布を取得し、25 Hzで連続認識条件を満たすことを確認する。
+台数追加後に publication rate、処理 p95、CPU / GPU の運用余力を満たせない場合だけ、
+明示的に25 Hz profileへ切り替える。検出周期は台数から自動決定せず、実走録画のmarker visible durationと
+実機soak testで判断する。25 Hzへ落としても余力を満たさない場合はMarker Nodeを分割する。
 
 ### 50 Hz live経路の現状
 
@@ -373,6 +374,10 @@ Dedicated Marker ReceiverはSDL grid、BGRA合成、音声再生、共有FHD出�
 4. 8 source 50 Hzは別profileとして測る。4 source groupを2つ同一GPUで逐次実行した結果を、
    8 source 50 Hzの合格根拠にはしない。
 5. 8 sourceで余力20%を満たさない場合は、検出周期を黙って落とさずMarker Nodeを2台へ分割する。
+
+2026-08-21の2 source実走では、Native Observerを50 Hz、GPU workerを50 Hzとして共有メモリ上の
+publication rate 49.195 Hzを確認した。5周レースは全LAPで3 sectorを取得し、Marker eventは全件1回目で
+ACKされた。この結果は50 Hzを標準起動にする根拠には使うが、4 source以上の容量合格根拠には使わない。
 
 RTX 4060 Laptop GPUの現行live経路は4 source 50 Hzの60秒gateを48.067 Hz、cycle p95 17.568 msで
 一度通過したが、同じ経路の再測定は45.133 Hz、cycle p95 20.830 msで失敗した。GPU clockが

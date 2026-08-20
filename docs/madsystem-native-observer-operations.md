@@ -90,6 +90,10 @@ Set-Location C:\src\momo
 MADSYSTEM と映像表示が不要で marker worker だけを使う構成では、
 `-ObserverVisualOutput off` を追加する。通常の MADSYSTEM 運用では指定しない。
 
+Marker 出力は `50 Hz` を標準とし、`start-mads-observer.ps1` の既定値も `50` とする。
+台数追加後の実測で publication rate、処理 p95、CPU / GPU の運用余力を満たせない場合だけ、
+`-ObserverSharedOutputFps 25` を明示して `25 Hz` profile へ切り替える。台数だけを理由に自動では落とさない。
+
 ### 3. MADSYSTEM
 
 ```powershell
