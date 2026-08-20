@@ -25,9 +25,17 @@ Relay PilotへLAP完了とGOALの日英TTSを配信する実装である。Pilot
 - TTS 再生中は M5Audio を 40% へ下げ、終了時に復元する。
 - LAN Relay と Ayame Relay transport の両方で同じ WebRTC audio track を使う。
 
+追加実装済み:
+
+- STOP 相当の `race_paused`、race 再開、race start、blue flag、順位変動を event 化する。
+- PIT は servicing 中に繰り返さず、service 完了時だけ event 化する。
+- Fuel low / critical / empty、critical damage、final lap を event 化する。
+
 未実装:
 
-- STOP、blue flag、PIT、Fuel、final lap、Boost の server-side TTS event 化。
+- Boost の server-side TTS event 化。
+- Yellow / Red flag を `flag` 遷移として区別した TTS event 化。Red は現状 `phase: paused` の `race_paused` として扱う。
+- 逆走状態の契約、判定、TTS event 化。
 - race開始前など全員向けeventを1回生成し、全Pilotへ同じpacketを配るserver-level audio bus。
 - 高優先度音声による再生中 clip の中断と priority queue。
 - Operations 画面の生成時間、cache hit、失敗数。
