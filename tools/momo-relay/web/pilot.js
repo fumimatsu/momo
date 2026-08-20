@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260820-m5-audio-default-on-v1';
+  const PILOT_BUILD_ID = '20260820-sector-achievement-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -403,6 +403,8 @@
   const raceCourseMap = document.getElementById('raceCourseMap');
   const raceCoursePath = document.getElementById('raceCoursePath');
   const raceCourseMarkers = document.getElementById('raceCourseMarkers');
+  const raceSectorStrip = document.getElementById('raceSectorStrip');
+  const raceSectorCells = Array.from(document.querySelectorAll('[data-race-sector]'));
   const rearAttention = document.getElementById('rearAttention');
   const rearAttentionKicker = document.getElementById('rearAttentionKicker');
   const rearAttentionLabel = document.getElementById('rearAttentionLabel');
@@ -714,6 +716,10 @@
     warningGapMs: RACE_BLUE_FLAG_WARNING_GAP_MS,
     releaseGapMs: RACE_BLUE_FLAG_RELEASE_GAP_MS,
   }) || null;
+  const sectorStatusTracker = window.MomoRaceBattle?.createSectorStatusTracker({
+    completedLapHoldMs: 2000,
+    now: () => performance.now(),
+  }) || null;
   const notificationController = notificationModule.createNotificationController({
     now: () => performance.now(),
     onChange: renderActiveNotification,
@@ -738,6 +744,7 @@
     serverTimeMs: null,
     laps: [],
     rivals: [],
+    sectors: [],
     clockRunning: false,
     sampledAt: 0,
   };
@@ -1742,6 +1749,41 @@
     raceMapAnimationFrame = window.requestAnimationFrame(render);
   }
 
+  function formatRaceSectorTime(milliseconds) {
+    const value = normalizeRaceNumber(milliseconds);
+    return value === null ? '--' : (value / 1000).toFixed(3);
+  }
+
+  function renderRaceSectors() {
+    if (!raceSectorStrip) return;
+    const sectors = Array.isArray(raceState.sectors) ? raceState.sectors : [];
+    raceSectorStrip.setAttribute(
+      'aria-label',
+      sectors[0]?.sampleLap ? `Lap ${sectors[0].sampleLap} sector times` : 'Current lap sector times',
+    );
+    raceSectorCells.forEach((cell, index) => {
+      const sector = sectors.find((item) => item?.sector === index + 1);
+      const state = sector?.status || 'missing';
+      cell.dataset.state = state;
+      const value = cell.querySelector('strong');
+      setText(value, formatRaceSectorTime(sector?.lastMs));
+      cell.setAttribute('aria-label', `Sector ${index + 1}, ${state.replace('_', ' ')}, ${value?.textContent || '--'}`);
+      if (sector?.isNewAchievement) {
+        cell.dataset.achievement = sector.achievement;
+        const animationToken = String(performance.now());
+        cell.dataset.achievementAnimation = animationToken;
+        cell.classList.remove('is-achievement');
+        void cell.offsetWidth;
+        cell.classList.add('is-achievement');
+        window.setTimeout(() => {
+          if (cell.dataset.achievementAnimation === animationToken) {
+            cell.classList.remove('is-achievement');
+          }
+        }, 900);
+      }
+    });
+  }
+
   function renderRaceBattle() {
     if (!raceBattle) {
       return;
@@ -1776,6 +1818,7 @@
       battle.behind?.lapDeltaToAhead ?? null,
       'NO BEHIND',
     );
+    renderRaceSectors();
     renderRaceCourseMap();
   }
 
@@ -2725,10 +2768,17 @@
     const overallBestLapCandidates = state.standings
       .map((entry) => normalizeRaceNumber(entry?.bestLapMs))
       .filter((value) => value !== null && value > 0);
+    const phaseCode = normalizeRacePhaseCode(state.phase);
+    const sectorStatus = sectorStatusTracker?.evaluate({
+      raceRunId: runId,
+      phaseCode,
+      carId,
+      standings: state.standings,
+    }) || { sectors: [] };
     return {
       reset: isNewRun,
       phase: displayRacePhase(state.phase),
-      phaseCode: normalizeRacePhaseCode(state.phase),
+      phaseCode,
       sessionType: String(state.raceInfo?.sessionType || '').trim().toLowerCase(),
       status: typeof standing?.status === 'string' ? standing.status.trim().toLowerCase() : '',
       carId,
@@ -2749,6 +2799,7 @@
       clockRunning: state.phase === 'green' && standing?.status === 'racing',
       laps,
       rivals: normalizeRaceRivals(state.standings, state.lapHistory) || [],
+      sectors: sectorStatus.sectors,
     };
   }
 
@@ -3232,6 +3283,7 @@
       raceState.serverTimeMs = null;
       raceState.laps = [];
       raceState.rivals = [];
+      raceState.sectors = [];
       raceState.clockRunning = false;
       renderedRaceLapHistorySignature = '';
       hideRearAttention(true);
@@ -3288,6 +3340,9 @@
       if (rivals !== null) {
         raceState.rivals = rivals;
       }
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'sectors')) {
+      raceState.sectors = Array.isArray(nextState.sectors) ? nextState.sectors : [];
     }
     raceState.sampledAt = performance.now();
 		warmupBrowserKokoroRuntime('race phase');

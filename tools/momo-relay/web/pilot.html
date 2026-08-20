@@ -3527,7 +3527,7 @@
       bottom: calc(16px + env(safe-area-inset-bottom));
       left: calc(16px + env(safe-area-inset-left));
       display: grid;
-      grid-template-rows: auto auto auto;
+      grid-template-rows: auto auto auto auto;
       width: 284px;
       height: auto;
       padding: 8px 9px 9px;
@@ -3614,6 +3614,69 @@
       stroke: rgba(0, 0, 0, 0.9);
       stroke-width: 4px;
       text-anchor: middle;
+    }
+
+    .race-sector-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 5px;
+      padding: 4px 0 5px;
+      border-top: 1px solid rgba(132, 195, 218, 0.17);
+    }
+
+    .race-sector-cell {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: baseline;
+      min-width: 0;
+      padding: 3px 5px;
+      overflow: hidden;
+      border-left: 3px solid rgba(110, 132, 142, 0.45);
+      background: rgba(0, 0, 0, 0.54);
+      color: #9aa8ae;
+    }
+
+    .race-sector-cell span {
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .race-sector-cell strong {
+      min-width: 0;
+      overflow: hidden;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 12px;
+      text-align: right;
+      text-overflow: clip;
+      white-space: nowrap;
+    }
+
+    .race-sector-cell[data-state="valid"] {
+      border-left-color: #e0b94f;
+      background: rgba(68, 50, 8, 0.46);
+      color: #f2d77e;
+    }
+
+    .race-sector-cell[data-state="personal_best"] {
+      border-left-color: #69da82;
+      background: rgba(9, 66, 31, 0.5);
+      color: #9bf0aa;
+    }
+
+    .race-sector-cell[data-state="overall_best"] {
+      border-left-color: #c372f2;
+      background: rgba(62, 20, 85, 0.55);
+      color: #dfa6ff;
+    }
+
+    .race-sector-cell.is-achievement {
+      animation: race-sector-achievement 850ms ease-out;
+    }
+
+    @keyframes race-sector-achievement {
+      0% { box-shadow: 0 0 0 rgba(255, 255, 255, 0); filter: brightness(1); }
+      25% { box-shadow: 0 0 13px currentColor; filter: brightness(1.55); }
+      100% { box-shadow: 0 0 0 rgba(255, 255, 255, 0); filter: brightness(1); }
     }
 
     .race-map-gaps {
@@ -4383,6 +4446,17 @@
           </g>
           <g id="raceCourseMarkers" class="race-course-markers" aria-label="Estimated vehicle positions"></g>
         </svg>
+        <div id="raceSectorStrip" class="race-sector-strip" aria-label="Current lap sector times">
+          <div class="race-sector-cell" data-race-sector="1" data-state="missing">
+            <span>S1</span><strong>--</strong>
+          </div>
+          <div class="race-sector-cell" data-race-sector="2" data-state="missing">
+            <span>S2</span><strong>--</strong>
+          </div>
+          <div class="race-sector-cell" data-race-sector="3" data-state="missing">
+            <span>S3</span><strong>--</strong>
+          </div>
+        </div>
         <div class="race-map-gaps">
           <div id="raceBattleAhead" class="race-battle-rival ahead is-missing">
             <span id="raceBattleAheadPosition" class="race-battle-position">--</span>
@@ -4680,19 +4754,19 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="../../m5-audio.js?v=20260820-m5-audio-default-on-v1"></script>
+    <script src="../../telemetry.js?v=20260820-sector-achievement-v1"></script>
+    <script src="../../m5-audio.js?v=20260820-sector-achievement-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260820-m5-audio-default-on-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-m5-audio-default-on-v1'"
+      src="./gamepad-profile.js?v=20260820-sector-achievement-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-sector-achievement-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="./race-battle.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="./notification-controller.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="../../race-announcer.js?v=20260820-m5-audio-default-on-v1"></script>
-    <script src="./pilot.js?v=20260820-m5-audio-default-on-v1"></script>
+    <script src="./ffb-bridge.js?v=20260820-sector-achievement-v1"></script>
+    <script src="./race-battle.js?v=20260820-sector-achievement-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260820-sector-achievement-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260820-sector-achievement-v1"></script>
+    <script src="./notification-controller.js?v=20260820-sector-achievement-v1"></script>
+    <script src="../../race-announcer.js?v=20260820-sector-achievement-v1"></script>
+    <script src="./pilot.js?v=20260820-sector-achievement-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

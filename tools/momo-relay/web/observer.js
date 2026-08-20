@@ -102,6 +102,7 @@ const currentLapNodeByCar = new Map();
 const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
+const seenSectorAchievements = new Set();
 const cameraTitleNodesByCar = new Map();
 const cameraTileNodesByCar = new Map();
 const cameraEffectNodesByCar = new Map();
@@ -1973,24 +1974,9 @@ function handleRaceState(state, source = 'websocket') {
     markerMotionByCar.clear();
     markerRenderByCar.clear();
     sectorCompletionHoldByCar.clear();
+    seenSectorAchievements.clear();
   }
   const previousStandingByCar = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
-  const previousOverallSectorBest = new Map();
-  for (const standing of raceState?.standings || []) {
-    for (const timing of standing.sectorTimes || []) {
-      if (!Number.isFinite(timing?.bestMs)) continue;
-      const previous = previousOverallSectorBest.get(timing.sector);
-      if (previous === undefined || timing.bestMs < previous) previousOverallSectorBest.set(timing.sector, timing.bestMs);
-    }
-  }
-  const overallSectorBest = new Map();
-  for (const standing of state.standings || []) {
-    for (const timing of standing.sectorTimes || []) {
-      if (!Number.isFinite(timing?.bestMs)) continue;
-      const previous = overallSectorBest.get(timing.sector);
-      if (previous === undefined || timing.bestMs < previous) overallSectorBest.set(timing.sector, timing.bestMs);
-    }
-  }
   for (const standing of state.standings || []) {
     const previous = previousStandingByCar.get(standing.carId);
     const completedLap = previousRunId === nextRunId
@@ -2001,23 +1987,20 @@ function handleRaceState(state, source = 'websocket') {
         && Number.isInteger(standing.position) && previous.position !== standing.position) {
       triggerCarEffect(standing.carId, standing.position < previous.position ? 'position-up' : 'position-down');
     }
-    if (previousRunId === nextRunId) {
-      const previousSectors = new Map((previous?.sectorTimes || []).map((timing) => [timing.sector, timing]));
-      for (const timing of standing.sectorTimes || []) {
-        if (!Number.isFinite(timing?.lastMs)
-            || previousSectors.get(timing.sector)?.lastMs === timing.lastMs) continue;
-        const currentOverall = overallSectorBest.get(timing.sector);
-        const previousOverall = previousOverallSectorBest.get(timing.sector);
-        const overallReference = currentOverall === undefined
-          ? previousOverall
-          : previousOverall === undefined ? currentOverall : Math.min(currentOverall, previousOverall);
-        const result = classifyCompletedSectorTime(
-          timing.lastMs,
-          timing.bestMs ?? previousSectors.get(timing.sector)?.bestMs,
-          overallReference,
-        );
-        if (result === 'overall-best' || result === 'personal-best') triggerCarEffect(standing.carId, result);
+    for (const timing of standing.sectorTimes || []) {
+      const result = timing?.achievement === 'overall_best'
+        ? 'overall-best'
+        : timing?.achievement === 'personal_best' ? 'personal-best' : '';
+      if (!result || !Number.isInteger(timing.sampleLap) || !Number.isFinite(timing.lastMs)) continue;
+      const achievementKey = [
+        nextRunId, standing.carId, timing.sector, timing.sampleLap, timing.lastMs, timing.achievement,
+      ].join(':');
+      if (seenSectorAchievements.has(achievementKey)) continue;
+      seenSectorAchievements.add(achievementKey);
+      while (seenSectorAchievements.size > 256) {
+        seenSectorAchievements.delete(seenSectorAchievements.values().next().value);
       }
+      if (previousRunId === nextRunId) triggerCarEffect(standing.carId, result);
     }
   }
   raceState = state;

@@ -19,6 +19,10 @@
     warningGapMs: 3000,
     releaseGapMs: 4000,
   });
+  const DEFAULT_SECTOR_OPTIONS = Object.freeze({
+    completedLapHoldMs: 2000,
+    maximumSeenAchievements: 64,
+  });
 
   function finiteNonNegative(value) {
     if (
@@ -314,11 +318,168 @@
     return Object.freeze({ config, evaluate, reset });
   }
 
+  function createSectorStatusTracker(options = {}) {
+    const config = Object.freeze({
+      completedLapHoldMs: normalizedOption(
+        options.completedLapHoldMs,
+        DEFAULT_SECTOR_OPTIONS.completedLapHoldMs,
+      ),
+      maximumSeenAchievements: Math.max(1, Math.floor(normalizedOption(
+        options.maximumSeenAchievements,
+        DEFAULT_SECTOR_OPTIONS.maximumSeenAchievements,
+      ))),
+    });
+    const now = typeof options.now === 'function' ? options.now : () => Date.now();
+    const seenAchievements = new Set();
+    let activeRunId = '';
+    let heldCompletedLap = null;
+    let heldUntil = 0;
+    let lastCompletedLapKey = '';
+
+    function reset(runId = '') {
+      activeRunId = String(runId || '').trim();
+      heldCompletedLap = null;
+      heldUntil = 0;
+      lastCompletedLapKey = '';
+      seenAchievements.clear();
+    }
+
+    function normalizeSectorTimes(standing) {
+      if (!Array.isArray(standing?.sectorTimes)) {
+        return [];
+      }
+      return standing.sectorTimes
+        .map((item) => {
+          const sector = integerNonNegative(item?.sector);
+          const sampleLap = integerNonNegative(item?.sampleLap);
+          const normalizedLastMs = finiteNonNegative(item?.lastMs);
+          const normalizedBestMs = finiteNonNegative(item?.bestMs);
+          const lastMs = normalizedLastMs !== null && normalizedLastMs > 0 ? normalizedLastMs : null;
+          const bestMs = normalizedBestMs !== null && normalizedBestMs > 0 ? normalizedBestMs : null;
+          const achievement = item?.achievement === 'personal_best'
+            || item?.achievement === 'overall_best'
+            ? item.achievement
+            : '';
+          return sector !== null && sector > 0
+            ? { sector, sampleLap, lastMs, bestMs, achievement }
+            : null;
+        })
+        .filter((item) => item !== null);
+    }
+
+    function rememberAchievement(key) {
+      if (seenAchievements.has(key)) {
+        return false;
+      }
+      seenAchievements.add(key);
+      while (seenAchievements.size > config.maximumSeenAchievements) {
+        seenAchievements.delete(seenAchievements.values().next().value);
+      }
+      return true;
+    }
+
+    function emptyResult(sectorCount = 3, displayLap = null) {
+      return {
+        displayLap,
+        sectors: Array.from({ length: sectorCount }, (_, index) => ({
+          sector: index + 1,
+          sampleLap: null,
+          lastMs: null,
+          status: 'missing',
+          achievement: '',
+          isNewAchievement: false,
+        })),
+      };
+    }
+
+    function evaluate(input = {}) {
+      const runId = String(input.raceRunId || '').trim();
+      if (runId !== activeRunId) {
+        reset(runId);
+      }
+      const carId = String(input.carId || '').trim();
+      const standings = Array.isArray(input.standings) ? input.standings : [];
+      const standing = standings.find((item) => String(item?.carId || '').trim() === carId);
+      const standingLap = integerNonNegative(standing?.lap);
+      const sectorCount = Math.min(3, Math.max(1, integerNonNegative(standing?.sectorCount) || 3));
+      if (!standing || standingLap === null) {
+        return emptyResult(sectorCount);
+      }
+
+      const phaseCode = String(input.phaseCode || '').trim().toLowerCase();
+      const ownSectors = normalizeSectorTimes(standing);
+      const finalSector = ownSectors.find((item) => item.sector === sectorCount);
+      const completedLapKey = finalSector?.sampleLap === standingLap && finalSector.lastMs !== null
+        ? `${standingLap}:${finalSector.lastMs}`
+        : '';
+      if (completedLapKey && completedLapKey !== lastCompletedLapKey && phaseCode === 'green') {
+        lastCompletedLapKey = completedLapKey;
+        heldCompletedLap = standingLap;
+        heldUntil = now() + config.completedLapHoldMs;
+      }
+      if (heldCompletedLap !== null && now() >= heldUntil) {
+        heldCompletedLap = null;
+      }
+
+      const displayLap = phaseCode === 'finished'
+        ? standingLap
+        : heldCompletedLap ?? standingLap + 1;
+      const overallBestBySector = new Map();
+      for (const peer of standings) {
+        for (const item of normalizeSectorTimes(peer)) {
+          if (item.bestMs === null) continue;
+          const previous = overallBestBySector.get(item.sector);
+          if (previous === undefined || item.bestMs < previous) {
+            overallBestBySector.set(item.sector, item.bestMs);
+          }
+        }
+      }
+
+      const sectors = Array.from({ length: sectorCount }, (_, index) => {
+        const sector = index + 1;
+        const item = ownSectors.find((candidate) => candidate.sector === sector
+          && candidate.sampleLap === displayLap);
+        if (!item || item.lastMs === null) {
+          return {
+            sector,
+            sampleLap: null,
+            lastMs: null,
+            status: 'missing',
+            achievement: '',
+            isNewAchievement: false,
+          };
+        }
+        const overallBest = overallBestBySector.get(sector);
+        const status = overallBest !== undefined && item.lastMs === overallBest
+          ? 'overall_best'
+          : item.bestMs !== null && item.lastMs === item.bestMs
+            ? 'personal_best'
+            : 'valid';
+        const achievementKey = item.achievement
+          ? `${runId}:${carId}:${sector}:${displayLap}:${item.lastMs}:${item.achievement}`
+          : '';
+        return {
+          sector,
+          sampleLap: displayLap,
+          lastMs: item.lastMs,
+          status,
+          achievement: item.achievement,
+          isNewAchievement: Boolean(achievementKey && rememberAchievement(achievementKey)),
+        };
+      });
+      return { displayLap, sectors };
+    }
+
+    return Object.freeze({ config, evaluate, reset });
+  }
+
   return Object.freeze({
     DEFAULT_OPTIONS,
     DEFAULT_BLUE_FLAG_OPTIONS,
+    DEFAULT_SECTOR_OPTIONS,
     createRearAttentionTracker,
     createBlueFlagTracker,
+    createSectorStatusTracker,
     resolveRaceMapElapsedMs,
   });
 }));
