@@ -44,6 +44,7 @@ const (
 	raceAudioBlueFlagReleaseGapMS  = 4000
 	raceAudioFuelLowThreshold      = 20.0
 	raceAudioFuelCriticalThreshold = 8.0
+	raceAudioSafetyPriority        = 100
 )
 
 var raceAudioCalloutRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
@@ -156,6 +157,7 @@ type raceAudioStanding struct {
 	Lap                int    `json:"lap"`
 	LappingCarBehindID string `json:"lappingCarBehindId"`
 	LappingGapMS       int    `json:"lappingGapMs"`
+	DirectionStatus    string `json:"directionStatus"`
 }
 
 type raceAudioState struct {
@@ -164,6 +166,7 @@ type raceAudioState struct {
 	RaceID      string `json:"raceId"`
 	RaceRunID   string `json:"raceRunId"`
 	Phase       string `json:"phase"`
+	Flag        string `json:"flag"`
 	ViewerCarID string `json:"viewerCarId"`
 	RaceInfo    struct {
 		TotalLaps   int    `json:"totalLaps"`
@@ -179,6 +182,8 @@ type raceAudioDetector struct {
 	runID         string
 	carID         string
 	phase         string
+	flag          string
+	direction     string
 	sessionType   string
 	position      int
 	blueFlagCarID string
@@ -187,10 +192,11 @@ type raceAudioDetector struct {
 }
 
 type raceAudioRaceContext struct {
-	RunID       string
-	CarID       string
-	Phase       string
-	SessionType string
+	RunID        string
+	CarID        string
+	Phase        string
+	SessionType  string
+	SafetyActive bool
 }
 
 type raceAudioGameplayDetector struct {
@@ -217,12 +223,112 @@ type raceAudioSource struct {
 	detector         raceAudioDetector
 	gameplayDetector raceAudioGameplayDetector
 	pitDetector      raceAudioPitDetector
-	jobs             chan raceAudioJob
+	jobs             *raceAudioJobQueue
 }
 
 type raceAudioJob struct {
 	event          raceAudioEvent
 	targetClientID uint64
+}
+
+type queuedRaceAudioJob struct {
+	job   raceAudioJob
+	order uint64
+}
+
+type raceAudioJobQueue struct {
+	mu        sync.Mutex
+	jobs      []queuedRaceAudioJob
+	nextOrder uint64
+	ready     chan struct{}
+}
+
+func newRaceAudioJobQueue() *raceAudioJobQueue {
+	return &raceAudioJobQueue{
+		jobs:  make([]queuedRaceAudioJob, 0, raceAudioJobQueueSize),
+		ready: make(chan struct{}, 1),
+	}
+}
+
+func (queue *raceAudioJobQueue) enqueue(job raceAudioJob) (bool, []raceAudioJob) {
+	if queue == nil {
+		return false, nil
+	}
+	queue.mu.Lock()
+	dropped := make([]raceAudioJob, 0)
+	for _, candidate := range queue.jobs {
+		if candidate.job.event.Priority >= raceAudioSafetyPriority &&
+			job.event.Priority < candidate.job.event.Priority {
+			queue.mu.Unlock()
+			return false, nil
+		}
+	}
+	if job.event.Priority >= raceAudioSafetyPriority {
+		retained := queue.jobs[:0]
+		for _, candidate := range queue.jobs {
+			if candidate.job.event.Priority < job.event.Priority {
+				dropped = append(dropped, candidate.job)
+				continue
+			}
+			retained = append(retained, candidate)
+		}
+		queue.jobs = retained
+	}
+	if len(queue.jobs) >= raceAudioJobQueueSize {
+		lowestIndex := 0
+		for index := 1; index < len(queue.jobs); index++ {
+			lowest := queue.jobs[lowestIndex]
+			candidate := queue.jobs[index]
+			if candidate.job.event.Priority < lowest.job.event.Priority ||
+				(candidate.job.event.Priority == lowest.job.event.Priority && candidate.order > lowest.order) {
+				lowestIndex = index
+			}
+		}
+		if job.event.Priority <= queue.jobs[lowestIndex].job.event.Priority {
+			queue.mu.Unlock()
+			return false, dropped
+		}
+		dropped = append(dropped, queue.jobs[lowestIndex].job)
+		queue.jobs = append(queue.jobs[:lowestIndex], queue.jobs[lowestIndex+1:]...)
+	}
+	queue.jobs = append(queue.jobs, queuedRaceAudioJob{job: job, order: queue.nextOrder})
+	queue.nextOrder++
+	queue.mu.Unlock()
+	select {
+	case queue.ready <- struct{}{}:
+	default:
+	}
+	return true, dropped
+}
+
+func (queue *raceAudioJobQueue) dequeue(ctx context.Context) (raceAudioJob, bool) {
+	if queue == nil {
+		return raceAudioJob{}, false
+	}
+	for {
+		queue.mu.Lock()
+		if len(queue.jobs) > 0 {
+			bestIndex := 0
+			for index := 1; index < len(queue.jobs); index++ {
+				best := queue.jobs[bestIndex]
+				candidate := queue.jobs[index]
+				if candidate.job.event.Priority > best.job.event.Priority ||
+					(candidate.job.event.Priority == best.job.event.Priority && candidate.order < best.order) {
+					bestIndex = index
+				}
+			}
+			job := queue.jobs[bestIndex].job
+			queue.jobs = append(queue.jobs[:bestIndex], queue.jobs[bestIndex+1:]...)
+			queue.mu.Unlock()
+			return job, true
+		}
+		queue.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return raceAudioJob{}, false
+		case <-queue.ready:
+		}
+	}
 }
 
 func newRaceAudioServiceClient(baseURL string, token string, defaultLanguage string,
@@ -453,10 +559,11 @@ func (detector *raceAudioDetector) context() raceAudioRaceContext {
 	detector.mu.Lock()
 	defer detector.mu.Unlock()
 	return raceAudioRaceContext{
-		RunID:       detector.runID,
-		CarID:       detector.carID,
-		Phase:       detector.phase,
-		SessionType: detector.sessionType,
+		RunID:        detector.runID,
+		CarID:        detector.carID,
+		Phase:        detector.phase,
+		SessionType:  detector.sessionType,
+		SafetyActive: detector.flag == "yellow" || detector.flag == "red" || detector.direction == "wrong_way",
 	}
 }
 
@@ -533,6 +640,10 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		return nil
 	}
 	phase := strings.ToLower(strings.TrimSpace(state.Phase))
+	flag := strings.ToLower(strings.TrimSpace(state.Flag))
+	if flag != "yellow" && flag != "red" && flag != "green" && flag != "finish" {
+		flag = "none"
+	}
 	sessionType := strings.ToLower(strings.TrimSpace(state.RaceInfo.SessionType))
 	detector.mu.Lock()
 	defer detector.mu.Unlock()
@@ -541,6 +652,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		detector.runID = runID
 		detector.carID = carID
 		detector.phase = ""
+		detector.flag = "none"
+		detector.direction = "unknown"
 		detector.sessionType = ""
 		detector.position = 0
 		detector.blueFlagCarID = ""
@@ -560,10 +673,16 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	standing := raceAudioStandingForCar(state, carID)
 	standingPosition := 0
 	standingStatus := ""
+	directionStatus := "unknown"
 	if standing != nil {
 		standingPosition = standing.Position
 		standingStatus = strings.ToLower(strings.TrimSpace(standing.Status))
+		directionStatus = strings.ToLower(strings.TrimSpace(standing.DirectionStatus))
+		if directionStatus != "normal" && directionStatus != "wrong_way" {
+			directionStatus = "unknown"
+		}
 	}
+	safetyActive := flag == "yellow" || flag == "red" || directionStatus == "wrong_way"
 	isFinished := strings.EqualFold(strings.TrimSpace(state.Phase), "finished") || standingStatus == "finished"
 	blueFlagCarID := raceAudioBlueFlagCarID(state, standing, detector.blueFlagCarID)
 	if !detector.initialized {
@@ -573,6 +692,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		detector.finished = isFinished
 		detector.carID = carID
 		detector.phase = phase
+		detector.flag = flag
+		detector.direction = directionStatus
 		detector.sessionType = sessionType
 		detector.position = standingPosition
 		detector.blueFlagCarID = blueFlagCarID
@@ -580,6 +701,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		return nil
 	}
 	previousPhase := detector.phase
+	previousFlag := detector.flag
+	previousDirectionStatus := detector.direction
 	previousPosition := detector.position
 	previousBlueFlagCarID := detector.blueFlagCarID
 	events := make([]raceAudioEvent, 0, 3)
@@ -589,7 +712,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			continue
 		}
 		detector.seenLaps[key] = struct{}{}
-		if isFinished || (state.RaceInfo.TotalLaps > 0 && history.Lap >= state.RaceInfo.TotalLaps) {
+		if safetyActive || isFinished || (state.RaceInfo.TotalLaps > 0 && history.Lap >= state.RaceInfo.TotalLaps) {
 			continue
 		}
 		isFinalLap := sessionType == "race" && state.RaceInfo.TotalLaps > 1 &&
@@ -602,7 +725,34 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, history.Achievement, isFinalLap),
 		})
 	}
-	if sessionType == "race" && phase == "green" && previousPhase != "green" && previousPhase != "paused" {
+	previousWrongWayActive := previousDirectionStatus == "wrong_way" && previousFlag != "red"
+	wrongWayActive := directionStatus == "wrong_way" && flag != "red"
+	if flag == "red" && previousFlag != "red" {
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:red_flag", runID, carID),
+			Kind:         "red_flag",
+			Priority:     120,
+			EnglishText:  "Red flag. Stop safely.",
+			JapaneseText: "レッドフラッグ。安全に停止してください。",
+		})
+	} else if wrongWayActive && !previousWrongWayActive {
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:wrong_way", runID, carID),
+			Kind:         "wrong_way",
+			Priority:     115,
+			EnglishText:  "Wrong way. Turn around.",
+			JapaneseText: "逆走しています。進行方向を戻してください。",
+		})
+	} else if flag == "yellow" && previousFlag != "yellow" {
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:yellow_flag", runID, carID),
+			Kind:         "yellow_flag",
+			Priority:     105,
+			EnglishText:  "Yellow flag. Reduce speed.",
+			JapaneseText: "イエローフラッグ。減速してください。",
+		})
+	}
+	if !safetyActive && sessionType == "race" && phase == "green" && previousPhase != "green" && previousPhase != "paused" {
 		englishText := raceAudioEnglishStartPositionText(standingPosition, state.RaceInfo.TotalLaps == 1)
 		japaneseText := raceAudioJapaneseStartPositionText(standingPosition, state.RaceInfo.TotalLaps == 1)
 		if englishText != "" || japaneseText != "" {
@@ -614,7 +764,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 				JapaneseText: japaneseText,
 			})
 		}
-	} else if sessionType == "race" && phase == "green" && previousPhase == "paused" {
+	} else if !safetyActive && sessionType == "race" && phase == "green" && previousPhase == "paused" {
 		events = append(events, raceAudioEvent{
 			EventID:      fmt.Sprintf("%s:%s:race_resumed", runID, carID),
 			Kind:         "race_resumed",
@@ -622,7 +772,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			EnglishText:  "Green flag. Race resumed.",
 			JapaneseText: "グリーン。レース再開。",
 		})
-	} else if sessionType == "race" && phase == "paused" && previousPhase == "green" {
+	} else if !safetyActive && sessionType == "race" && phase == "paused" && previousPhase == "green" {
 		events = append(events, raceAudioEvent{
 			EventID:      fmt.Sprintf("%s:%s:race_paused", runID, carID),
 			Kind:         "race_paused",
@@ -631,7 +781,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: "レース停止。現在位置を維持してください。",
 		})
 	}
-	if sessionType == "race" && phase == "green" && blueFlagCarID != "" &&
+	if !safetyActive && sessionType == "race" && phase == "green" && blueFlagCarID != "" &&
 		blueFlagCarID != previousBlueFlagCarID {
 		carNumber := raceAudioCarNumber(blueFlagCarID)
 		englishText := "Blue flag. Faster car behind."
@@ -648,7 +798,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: japaneseText,
 		})
 	}
-	if sessionType == "race" && phase == "green" && previousPhase == "green" &&
+	if !safetyActive && sessionType == "race" && phase == "green" && previousPhase == "green" &&
 		standingPosition > 0 && previousPosition > 0 && standingPosition != previousPosition && len(events) == 0 {
 		events = append(events, raceAudioPositionEvent(runID, carID, previousPosition, standingPosition))
 	}
@@ -667,6 +817,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	}
 	detector.carID = carID
 	detector.phase = phase
+	detector.flag = flag
+	detector.direction = directionStatus
 	detector.sessionType = sessionType
 	detector.position = standingPosition
 	detector.blueFlagCarID = blueFlagCarID
@@ -736,6 +888,9 @@ func (detector *raceAudioGameplayDetector) observe(
 	previousDamageRank := raceAudioDamageRank(detector.damageMode)
 	detector.fuelBand = fuelBand
 	detector.damageMode = damageMode
+	if context.SafetyActive {
+		return nil
+	}
 	events := make([]raceAudioEvent, 0, 2)
 	if fuelBand > previousFuelBand {
 		switch fuelBand {
@@ -1014,7 +1169,7 @@ func newRaceAudioSource(r *relay, service *raceAudioServiceClient) *raceAudioSou
 	return &raceAudioSource{
 		relay:   r,
 		service: service,
-		jobs:    make(chan raceAudioJob, raceAudioJobQueueSize),
+		jobs:    newRaceAudioJobQueue(),
 	}
 }
 
@@ -1024,12 +1179,11 @@ func (source *raceAudioSource) start(ctx context.Context) {
 	}
 	go func() {
 		for {
-			select {
-			case <-ctx.Done():
+			job, ok := source.jobs.dequeue(ctx)
+			if !ok {
 				return
-			case job := <-source.jobs:
-				source.dispatch(ctx, job)
 			}
+			source.dispatch(ctx, job)
 		}
 	}()
 }
@@ -1050,12 +1204,23 @@ func (source *raceAudioSource) observeVehicleGameplay(snapshot vehicleHealthSnap
 
 func (source *raceAudioSource) enqueueEvents(events []raceAudioEvent) {
 	for _, event := range events {
-		select {
-		case source.jobs <- raceAudioJob{event: event}:
-		default:
-			log.Printf("source %q: drop race audio event %q because the queue is full", source.relay.name, event.EventID)
+		if !source.enqueueJob(raceAudioJob{event: event}) {
+			log.Printf("source %q: drop race audio event %q because a higher-priority event is queued or the queue is full",
+				source.relay.name, event.EventID)
 		}
 	}
+}
+
+func (source *raceAudioSource) enqueueJob(job raceAudioJob) bool {
+	if source == nil || source.jobs == nil {
+		return false
+	}
+	accepted, dropped := source.jobs.enqueue(job)
+	for _, discarded := range dropped {
+		log.Printf("source %q: supersede queued race audio event %q with %q",
+			source.relay.name, discarded.event.EventID, job.event.EventID)
+	}
+	return accepted
 }
 
 func (source *raceAudioSource) observePit(snapshot pitPresenceSnapshot) {
@@ -1066,10 +1231,9 @@ func (source *raceAudioSource) observePit(snapshot pitPresenceSnapshot) {
 	if event == nil {
 		return
 	}
-	select {
-	case source.jobs <- raceAudioJob{event: *event}:
-	default:
-		log.Printf("source %q: drop race audio event %q because the queue is full", source.relay.name, event.EventID)
+	if !source.enqueueJob(raceAudioJob{event: *event}) {
+		log.Printf("source %q: drop race audio event %q because a higher-priority event is queued or the queue is full",
+			source.relay.name, event.EventID)
 	}
 }
 
@@ -1077,18 +1241,14 @@ func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEve
 	if source == nil || client == nil {
 		return false
 	}
-	select {
-	case source.jobs <- raceAudioJob{event: event, targetClientID: client.id}:
-		return true
-	default:
-		return false
-	}
+	return source.enqueueJob(raceAudioJob{event: event, targetClientID: client.id})
 }
 
 func raceAudioBrowserLocalEvent(kind string) bool {
 	switch kind {
 	case "lap_complete", "pit_service_complete", "gap_ahead", "gap_behind",
 		"race_start", "race_paused", "race_resumed", "position_change", "blue_flag",
+		"yellow_flag", "red_flag", "wrong_way",
 		"fuel_low", "fuel_critical", "fuel_empty", "damage_critical":
 		return true
 	default:

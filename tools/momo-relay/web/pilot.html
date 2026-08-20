@@ -747,8 +747,10 @@
       min-height: 0;
       padding: 18px 22px 20px;
       border-color: #f0c94e;
-      background: rgba(11, 15, 18, 0.78);
-      box-shadow: 0 10px 36px rgba(0, 0, 0, 0.48), 0 0 26px rgba(255, 207, 66, 0.2);
+      background: rgba(11, 15, 18, 0.36);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3), 0 0 24px rgba(255, 207, 66, 0.18);
+      -webkit-backdrop-filter: blur(2px);
+      backdrop-filter: blur(2px);
     }
 
     .race-milestone[data-kind="summary"] > .race-milestone-checker,
@@ -860,6 +862,36 @@
 
     .race-milestone[data-kind="safety"] output {
       color: #ffb0ac;
+    }
+
+    .race-milestone[data-kind="yellow-flag"] {
+      border-color: #ffd447;
+      background: rgba(64, 43, 1, 0.56);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.36), 0 0 24px rgba(255, 210, 50, 0.28);
+    }
+
+    .race-milestone[data-kind="yellow-flag"] output {
+      color: #ffe58a;
+    }
+
+    .race-milestone[data-kind="red-flag"] {
+      border-color: #ff4b45;
+      background: rgba(72, 4, 3, 0.64);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 28px rgba(255, 52, 47, 0.34);
+    }
+
+    .race-milestone[data-kind="red-flag"] output {
+      color: #ffaaa6;
+    }
+
+    .race-milestone[data-kind="wrong-way"] {
+      border-color: #ff824a;
+      background: rgba(66, 17, 2, 0.62);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), 0 0 26px rgba(255, 104, 48, 0.3);
+    }
+
+    .race-milestone[data-kind="wrong-way"] output {
+      color: #ffc19d;
     }
 
     @keyframes rear-attention-warning {
@@ -4768,20 +4800,20 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260820-ui-scale-v1"></script>
-    <script src="../../m5-audio.js?v=20260820-ui-scale-v1"></script>
+    <script src="../../telemetry.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="../../m5-audio.js?v=20260820-race-safety-tts-f1-start-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260820-ui-scale-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-ui-scale-v1'"
+      src="./gamepad-profile.js?v=20260820-race-safety-tts-f1-start-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-race-safety-tts-f1-start-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260820-ui-scale-v1"></script>
-    <script src="./race-battle.js?v=20260820-ui-scale-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260820-ui-scale-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260820-ui-scale-v1"></script>
-    <script src="./notification-controller.js?v=20260820-ui-scale-v1"></script>
-    <script src="../../race-announcer.js?v=20260820-ui-scale-v1"></script>
-    <script src="../../race-ui-performance.js?v=20260820-ui-scale-v1"></script>
-    <script src="./pilot.js?v=20260820-ui-scale-v1"></script>
+    <script src="./ffb-bridge.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="./race-battle.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="./notification-controller.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="../../race-announcer.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260820-race-safety-tts-f1-start-v1"></script>
+    <script src="./pilot.js?v=20260820-race-safety-tts-f1-start-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

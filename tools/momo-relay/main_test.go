@@ -126,32 +126,36 @@ func TestConnectAyamePilotClassifiesPeerBye(t *testing.T) {
 }
 
 func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
-	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200}]}`)
+	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"startSignalMode":"lights_out","standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200,"directionStatus":"wrong_way"}]}`)
 	message, err := raceMessageForCar(state, "CP-2")
 	if err != nil {
 		t.Fatalf("raceMessageForCar returned an error: %v", err)
 	}
 	var payload struct {
-		RaceRunID string `json:"raceRunId"`
-		Sequence  int    `json:"sequence"`
-		ViewerID  string `json:"viewerCarId"`
-		Standings []struct {
+		RaceRunID       string `json:"raceRunId"`
+		Sequence        int    `json:"sequence"`
+		ViewerID        string `json:"viewerCarId"`
+		StartSignalMode string `json:"startSignalMode"`
+		Standings       []struct {
 			CarID              string `json:"carId"`
 			LappingCarBehindID string `json:"lappingCarBehindId"`
 			LappingGapMs       *int   `json:"lappingGapMs"`
+			DirectionStatus    string `json:"directionStatus"`
 		} `json:"standings"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "RACE:")), &payload); err != nil {
 		t.Fatalf("decode race message: %v", err)
 	}
-	if payload.RaceRunID != "rr_123" || payload.Sequence != 17 || payload.ViewerID != "CP-2" {
+	if payload.RaceRunID != "rr_123" || payload.Sequence != 17 || payload.ViewerID != "CP-2" ||
+		payload.StartSignalMode != "lights_out" {
 		t.Fatalf("race identity = %#v, want run rr_123 sequence 17 viewer CP-2", payload)
 	}
 	if len(payload.Standings) != 2 ||
 		payload.Standings[0].CarID != "CP-1" ||
 		payload.Standings[1].LappingCarBehindID != "CP-1" ||
 		payload.Standings[1].LappingGapMs == nil ||
-		*payload.Standings[1].LappingGapMs != 1200 {
+		*payload.Standings[1].LappingGapMs != 1200 ||
+		payload.Standings[1].DirectionStatus != "wrong_way" {
 		t.Fatalf("standings = %#v, want preserved timing values", payload.Standings)
 	}
 }

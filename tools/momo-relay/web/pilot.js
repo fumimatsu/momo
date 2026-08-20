@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260820-ui-scale-v1';
+  const PILOT_BUILD_ID = '20260820-race-safety-tts-f1-start-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -19,6 +19,7 @@
   }
   const raceAnnouncer = window.MomoRaceAnnouncer;
   if (!raceAnnouncer?.buildLapAnnouncement || !raceAnnouncer?.buildRaceSummary ||
+      !raceAnnouncer?.buildSafetyAnnouncement ||
       !raceAnnouncer?.selectPreferredVoice ||
 			!raceAnnouncer?.playSignal || !raceAnnouncer?.normalizeRemoteLanguage ||
 			!raceAnnouncer?.buildRemotePreference || !raceAnnouncer?.buildRemoteCalloutRequest ||
@@ -34,6 +35,7 @@
     DAMAGE: 'vehicle-damage',
     BOOST: 'vehicle-boost',
     SAFETY: 'race-safety',
+    DIRECTION: 'vehicle-direction',
   });
   const DEFAULT_HOST = '192.168.11.3:8080';
   const RECONNECT_BASE_DELAY_MS = 500;
@@ -229,6 +231,7 @@
   const RACE_MILESTONE_LAP_MS = Math.max(1500, getNumberParam('raceMilestoneLapMs', 3000));
   const RACE_MILESTONE_GOAL_MS = Math.max(1000, getNumberParam('raceMilestoneGoalMs', 30_000));
   const RACE_SUMMARY_DELAY_MS = Math.max(0, getNumberParamAllowZero('raceSummaryDelayMs', 10_000));
+  const RACE_SUMMARY_DISPLAY_MS = Math.max(1000, getNumberParam('raceSummaryDisplayMs', 30_000));
   const RACE_MILESTONE_DEMO = getStringParam(['raceMilestoneDemo'], '').trim().toLowerCase();
   const RACE_BLUE_FLAG_DEMO = getBooleanParam('blueFlagDemo', false);
   const RACE_BLUE_FLAG_WARNING_GAP_MS = Math.max(0, getNumberParam('blueFlagGapMs', 3000));
@@ -744,6 +747,9 @@
   const raceState = {
     phase: 'STANDBY',
     phaseCode: 'idle',
+    flag: 'none',
+    directionStatus: 'unknown',
+    startSignalMode: 'green',
     sessionType: '',
     status: '',
     carId: '',
@@ -765,6 +771,8 @@
     clockRunning: false,
     sampledAt: 0,
   };
+  let activeRaceSafetyNotificationId = '';
+  let activeRaceDirectionNotificationId = '';
   const gamepadPedalIdle = {
     throttle: GAMEPAD_THROTTLE_IDLE,
     brake: GAMEPAD_BRAKE_IDLE,
@@ -1965,6 +1973,9 @@
         renderBlueFlag(active.payload.state);
         break;
       case 'safety':
+      case 'yellow-flag':
+      case 'red-flag':
+      case 'wrong-way':
         renderRaceSafetyMilestone(active.payload);
         break;
       case 'goal':
@@ -2264,7 +2275,7 @@
       id: key,
       group: NOTIFICATION_GROUPS.RESULT,
       priority: NOTIFICATION_PRIORITIES.GOAL,
-      persistent: true,
+      durationMs: RACE_SUMMARY_DISPLAY_MS,
       replaceGroup: true,
       payload: { kind: 'summary', summary },
     });
@@ -2292,7 +2303,7 @@
 
   function renderRaceSafetyMilestone(payload) {
     if (!raceMilestone) return;
-    raceMilestone.dataset.kind = 'safety';
+    raceMilestone.dataset.kind = payload.kind || 'safety';
     raceMilestone.dataset.result = 'normal';
     setText(raceMilestoneKicker, 'RACE CONTROL');
     setText(raceMilestoneLabel, payload.label || 'STOP');
@@ -2303,18 +2314,70 @@
   }
 
   function syncRaceSafetyNotification() {
-    if (raceState.phaseCode === 'paused') {
-      notificationController.publish({
-        id: 'race-safety-stop',
-        group: NOTIFICATION_GROUPS.SAFETY,
+    let notification = null;
+    if (raceState.flag === 'red') {
+      notification = {
+        id: 'race-red-flag',
         priority: NOTIFICATION_PRIORITIES.STOP,
+        payload: {
+          kind: 'red-flag', label: 'RED FLAG', value: 'STOP SAFELY', detail: 'RACE SUSPENDED',
+        },
+      };
+    } else if (raceState.phaseCode === 'paused') {
+      notification = {
+        id: 'race-safety-stop',
+        priority: NOTIFICATION_PRIORITIES.STOP,
+        payload: { kind: 'safety', label: 'STOP', value: 'HOLD', detail: 'RACE PAUSED' },
+      };
+    } else if (raceState.flag === 'yellow') {
+      notification = {
+        id: 'race-yellow-flag',
+        priority: NOTIFICATION_PRIORITIES.YELLOW_FLAG,
+        payload: {
+          kind: 'yellow-flag', label: 'YELLOW FLAG', value: 'CAUTION', detail: 'REDUCE SPEED',
+        },
+      };
+    }
+    if (notification) {
+      if (activeRaceSafetyNotificationId === notification.id) return;
+      notificationController.publish({
+        id: notification.id,
+        group: NOTIFICATION_GROUPS.SAFETY,
+        priority: notification.priority,
         persistent: true,
         replaceGroup: true,
-        payload: { kind: 'safety', label: 'STOP', value: 'HOLD', detail: 'RACE PAUSED' },
+        payload: notification.payload,
       });
+      activeRaceSafetyNotificationId = notification.id;
       return;
     }
-    notificationController.clearGroup(NOTIFICATION_GROUPS.SAFETY);
+    if (activeRaceSafetyNotificationId) {
+      notificationController.clearGroup(NOTIFICATION_GROUPS.SAFETY);
+      activeRaceSafetyNotificationId = '';
+    }
+  }
+
+  function syncRaceDirectionNotification() {
+    const isWrongWay = raceState.directionStatus === 'wrong_way';
+    if (isWrongWay) {
+      if (activeRaceDirectionNotificationId === 'vehicle-wrong-way') return;
+      notificationController.publish({
+        id: 'vehicle-wrong-way',
+        group: NOTIFICATION_GROUPS.DIRECTION,
+        priority: NOTIFICATION_PRIORITIES.WRONG_WAY,
+        persistent: true,
+        replaceGroup: true,
+        payload: {
+          kind: 'wrong-way', label: 'WRONG WAY', value: 'TURN AROUND', detail: 'RETURN TO RACE DIRECTION',
+        },
+      });
+      activeRaceDirectionNotificationId = 'vehicle-wrong-way';
+      return;
+    }
+    if (activeRaceDirectionNotificationId) {
+      notificationController.clearGroup(NOTIFICATION_GROUPS.DIRECTION);
+      activeRaceDirectionNotificationId = '';
+    }
   }
 
   function syncRaceMilestone(previousAnnouncement, hadPreviousRaceState) {
@@ -2464,10 +2527,12 @@
 
   function getRaceStartSignalState() {
     if (raceState.phaseCode === 'green') {
+      const lightsOut = raceState.startSignalMode === 'lights_out';
       return {
         visible: raceStartSignalGreenUntil > performance.now(),
-        mode: 'green',
-        litCount: RACE_START_SIGNAL_LIGHT_COUNT,
+        mode: lightsOut ? 'off' : 'green',
+        litCount: lightsOut ? 0 : RACE_START_SIGNAL_LIGHT_COUNT,
+        startCue: true,
       };
     }
     if (raceState.phaseCode === 'ready') {
@@ -2662,7 +2727,7 @@
     if (signal.mode === 'red' && signal.litCount > 0) {
       key = `red:${raceState.startAtMs || 'unknown'}:${signal.litCount}`;
       play = playRaceCountdownSignalSound;
-    } else if (signal.mode === 'green' && signal.visible) {
+    } else if (signal.startCue && signal.visible) {
       key = `green:${activeRaceRunId || raceState.startAtMs || 'unknown'}`;
       play = playRaceGreenSignalSound;
     }
@@ -2818,6 +2883,20 @@
     }
   }
 
+  function normalizeRaceFlag(value) {
+    const flag = String(value || '').trim().toLowerCase();
+    return ['none', 'green', 'yellow', 'red', 'finish'].includes(flag) ? flag : 'none';
+  }
+
+  function normalizeRaceDirectionStatus(value) {
+    const status = String(value || '').trim().toLowerCase();
+    return ['normal', 'wrong_way', 'unknown'].includes(status) ? status : 'unknown';
+  }
+
+  function normalizeRaceStartSignalMode(value) {
+    return value === 'lights_out' ? 'lights_out' : 'green';
+  }
+
   function adaptRaceStateV2(state) {
     if (state?.type !== 'race_state' || state?.version !== 2 || !Array.isArray(state.standings)) {
       return null;
@@ -2874,6 +2953,9 @@
       reset: isNewRun,
       phase: displayRacePhase(state.phase),
       phaseCode,
+      flag: normalizeRaceFlag(state.flag),
+      directionStatus: normalizeRaceDirectionStatus(standing?.directionStatus),
+      startSignalMode: normalizeRaceStartSignalMode(state.startSignalMode),
       sessionType: String(state.raceInfo?.sessionType || '').trim().toLowerCase(),
       status: typeof standing?.status === 'string' ? standing.status.trim().toLowerCase() : '',
       carId,
@@ -3182,6 +3264,11 @@
 	}
 
   function requestPilotCallout() {
+    if (raceState.flag === 'yellow' || raceState.flag === 'red' ||
+        raceState.directionStatus === 'wrong_way') {
+      pilotCalloutPlanner.clear(activeRaceRunId);
+      return false;
+    }
     const battle = getRaceBattle();
     const lappingGapMs = normalizeRaceNumber(battle.self?.lappingGapMs);
     const suppressGapBehind = RACE_BLUE_FLAG_ENABLED &&
@@ -3318,6 +3405,24 @@
     }
   }
 
+  function announceRaceSafetyIfChanged(previousFlag, previousDirectionStatus, hadPreviousRaceState) {
+    if (!hadPreviousRaceState || remoteRaceAudioEnabled || !isRaceAnnouncementEnabled()) {
+      return false;
+    }
+    const previousWrongWayActive = previousDirectionStatus === 'wrong_way' && previousFlag !== 'red';
+    const wrongWayActive = raceState.directionStatus === 'wrong_way' && raceState.flag !== 'red';
+    let kind = '';
+    if (raceState.flag === 'red' && previousFlag !== 'red') {
+      kind = 'red_flag';
+    } else if (wrongWayActive && !previousWrongWayActive) {
+      kind = 'wrong_way';
+    } else if (raceState.flag === 'yellow' && previousFlag !== 'yellow') {
+      kind = 'yellow_flag';
+    }
+    const announcement = raceAnnouncer.buildSafetyAnnouncement(kind, raceAnnounceLanguage);
+    return announcement ? speakRaceLapAnnouncement(announcement) : false;
+  }
+
   function announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState) {
     if (raceState.phaseCode === 'idle' || raceState.phaseCode === 'ready') {
       lastRaceLapAnnouncementKey = '';
@@ -3329,6 +3434,11 @@
       return;
     }
     if (!hadPreviousRaceState) {
+      lastRaceLapAnnouncementKey = nextAnnouncement.key;
+      return;
+    }
+    if (raceState.flag === 'yellow' || raceState.flag === 'red' ||
+        raceState.directionStatus === 'wrong_way') {
       lastRaceLapAnnouncementKey = nextAnnouncement.key;
       return;
     }
@@ -3361,6 +3471,8 @@
     }
     const hadPreviousRaceState = raceState.sampledAt > 0;
     const previousAnnouncement = getRaceLapAnnouncement();
+    const previousFlag = raceState.flag;
+    const previousDirectionStatus = raceState.directionStatus;
     updateRaceClockOffset(nextState);
     const v2State = adaptRaceStateV2(nextState);
     if (v2State !== null) {
@@ -3372,6 +3484,9 @@
       pitStopwatchState = null;
       raceState.phase = 'STANDBY';
       raceState.phaseCode = 'idle';
+      raceState.flag = 'none';
+      raceState.directionStatus = 'unknown';
+      raceState.startSignalMode = 'green';
       raceState.sessionType = '';
       raceState.status = '';
       raceState.carId = '';
@@ -3391,6 +3506,8 @@
       raceState.rivals = [];
       raceState.sectors = [];
       raceState.clockRunning = false;
+      activeRaceSafetyNotificationId = '';
+      activeRaceDirectionNotificationId = '';
       renderedRaceLapHistorySignature = '';
       hideRearAttention(true);
       raceStartSignalGreenUntil = 0;
@@ -3406,6 +3523,15 @@
     }
     if (typeof nextState.phaseCode === 'string' && nextState.phaseCode.trim()) {
       raceState.phaseCode = normalizeRacePhaseCode(nextState.phaseCode);
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'flag')) {
+      raceState.flag = normalizeRaceFlag(nextState.flag);
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'directionStatus')) {
+      raceState.directionStatus = normalizeRaceDirectionStatus(nextState.directionStatus);
+    }
+    if (Object.prototype.hasOwnProperty.call(nextState, 'startSignalMode')) {
+      raceState.startSignalMode = normalizeRaceStartSignalMode(nextState.startSignalMode);
     }
     if (Object.prototype.hasOwnProperty.call(nextState, 'sessionType')) {
       raceState.sessionType = String(nextState.sessionType || '').trim().toLowerCase();
@@ -3453,11 +3579,17 @@
     raceState.sampledAt = performance.now();
 		warmupBrowserKokoroRuntime('race phase');
     syncRaceSafetyNotification();
+    syncRaceDirectionNotification();
     evaluateRaceAttention();
     renderRaceHud();
     syncRaceMilestone(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
     announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
+    announceRaceSafetyIfChanged(
+      previousFlag,
+      previousDirectionStatus,
+      hadPreviousRaceState && nextState.reset !== true,
+    );
     requestPilotCallout();
     return true;
   }
@@ -3580,6 +3712,30 @@
       raceState.phase = 'PAUSED';
       raceState.phaseCode = 'paused';
       syncRaceSafetyNotification();
+      renderRaceHud();
+      return;
+    }
+    if (RACE_MILESTONE_DEMO === 'yellow') {
+      raceState.phase = 'RUNNING';
+      raceState.phaseCode = 'green';
+      raceState.flag = 'yellow';
+      syncRaceSafetyNotification();
+      renderRaceHud();
+      return;
+    }
+    if (RACE_MILESTONE_DEMO === 'red') {
+      raceState.phase = 'PAUSED';
+      raceState.phaseCode = 'paused';
+      raceState.flag = 'red';
+      syncRaceSafetyNotification();
+      renderRaceHud();
+      return;
+    }
+    if (RACE_MILESTONE_DEMO === 'wrong-way') {
+      raceState.phase = 'RUNNING';
+      raceState.phaseCode = 'green';
+      raceState.directionStatus = 'wrong_way';
+      syncRaceDirectionNotification();
       renderRaceHud();
     }
   }

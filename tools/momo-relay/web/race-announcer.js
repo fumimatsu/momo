@@ -55,6 +55,35 @@
     });
   }
 
+  function buildSafetyAnnouncement(kind, language = 'en-US') {
+    const normalizedKind = String(kind || '').trim().toLowerCase();
+    const japanese = normalizeRemoteLanguage(language, true) === 'ja-JP';
+    const messages = {
+      yellow_flag: {
+        priority: 105,
+        en: 'Yellow flag. Reduce speed.',
+        ja: 'イエローフラッグ。減速してください。',
+      },
+      red_flag: {
+        priority: 120,
+        en: 'Red flag. Stop safely.',
+        ja: 'レッドフラッグ。安全に停止してください。',
+      },
+      wrong_way: {
+        priority: 115,
+        en: 'Wrong way. Turn around.',
+        ja: '逆走しています。進行方向を戻してください。',
+      },
+    };
+    const message = messages[normalizedKind];
+    if (!message) return null;
+    return Object.freeze({
+      kind: normalizedKind,
+      priority: message.priority,
+      text: japanese ? message.ja : message.en,
+    });
+  }
+
   function parseRemoteMessage(message) {
     if (typeof message !== 'string' || !message.startsWith('RACE_AUDIO:')) return null;
     try {
@@ -314,6 +343,7 @@
   }
 
   return Object.freeze({
+    buildSafetyAnnouncement,
     buildRemoteCalloutRequest,
     buildRemotePreference,
     buildLapAnnouncement,

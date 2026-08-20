@@ -13,8 +13,10 @@
     LAP: 200,
     PIT: 300,
     GOAL: 400,
-    BLUE_FLAG: 500,
+    BLUE_FLAG: 610,
     SAFETY: 600,
+    YELLOW_FLAG: 625,
+    WRONG_WAY: 650,
     STOP: 700,
   });
 

@@ -115,6 +115,127 @@ func TestRaceAudioDetectorAnnouncesBlueFlagAfterRearm(t *testing.T) {
 	}
 }
 
+func TestRaceAudioDetectorAnnouncesSafetyTransitionsOnceAndRearms(t *testing.T) {
+	detector := raceAudioDetector{}
+	detector.observe(raceAudioSafetyState("run-safety", "green", "none", "normal"), "CP-1")
+
+	yellow := raceAudioSafetyState("run-safety", "green", "yellow", "normal")
+	events := detector.observe(yellow, "CP-1")
+	if len(events) != 1 || events[0].Kind != "yellow_flag" || events[0].Priority != 105 {
+		t.Fatalf("unexpected yellow flag event: %#v", events)
+	}
+	if events := detector.observe(yellow, "CP-1"); len(events) != 0 {
+		t.Fatalf("unchanged yellow flag emitted events: %#v", events)
+	}
+
+	detector.observe(raceAudioSafetyState("run-safety", "green", "none", "normal"), "CP-1")
+	if events := detector.observe(yellow, "CP-1"); len(events) != 1 || events[0].Kind != "yellow_flag" {
+		t.Fatalf("rearmed yellow flag did not emit once: %#v", events)
+	}
+
+	red := raceAudioSafetyState("run-safety", "paused", "red", "normal")
+	events = detector.observe(red, "CP-1")
+	if len(events) != 1 || events[0].Kind != "red_flag" || events[0].Priority != 120 {
+		t.Fatalf("red flag must replace a generic pause announcement: %#v", events)
+	}
+	if events := detector.observe(red, "CP-1"); len(events) != 0 {
+		t.Fatalf("unchanged red flag emitted events: %#v", events)
+	}
+}
+
+func TestRaceAudioDetectorKeepsWrongWayActiveAcrossRedFlag(t *testing.T) {
+	detector := raceAudioDetector{}
+	detector.observe(raceAudioSafetyState("run-wrong", "green", "none", "normal"), "CP-1")
+
+	wrongWay := raceAudioSafetyState("run-wrong", "green", "none", "wrong_way")
+	events := detector.observe(wrongWay, "CP-1")
+	if len(events) != 1 || events[0].Kind != "wrong_way" || events[0].Priority != 115 {
+		t.Fatalf("unexpected wrong-way event: %#v", events)
+	}
+	if events := detector.observe(wrongWay, "CP-1"); len(events) != 0 {
+		t.Fatalf("persistent wrong-way state repeated TTS: %#v", events)
+	}
+
+	redAndWrong := raceAudioSafetyState("run-wrong", "paused", "red", "wrong_way")
+	events = detector.observe(redAndWrong, "CP-1")
+	if len(events) != 1 || events[0].Kind != "red_flag" {
+		t.Fatalf("red flag did not take priority over wrong-way: %#v", events)
+	}
+
+	events = detector.observe(wrongWay, "CP-1")
+	if len(events) != 1 || events[0].Kind != "wrong_way" {
+		t.Fatalf("wrong-way did not resume after red flag cleared: %#v", events)
+	}
+	detector.observe(raceAudioSafetyState("run-wrong", "green", "none", "normal"), "CP-1")
+	if events := detector.observe(wrongWay, "CP-1"); len(events) != 1 || events[0].Kind != "wrong_way" {
+		t.Fatalf("cleared wrong-way state did not rearm TTS: %#v", events)
+	}
+}
+
+func TestRaceAudioDetectorSuppressesLapSpeechDuringSafetyState(t *testing.T) {
+	detector := raceAudioDetector{}
+	detector.observe(raceAudioTestState("run-safety-lap", "green", 1, 14000), "CP-1")
+
+	state := raceAudioTestStateWithAchievement("run-safety-lap", "green", "racing", 2, 13000, "")
+	state = raceAudioStateWithSafety(state, "yellow", "normal")
+	events := detector.observe(state, "CP-1")
+	if len(events) != 1 || events[0].Kind != "yellow_flag" {
+		t.Fatalf("lap speech was not suppressed by yellow flag: %#v", events)
+	}
+
+	cleared := raceAudioStateWithSafety(
+		raceAudioTestStateWithAchievement("run-safety-lap", "green", "racing", 2, 13000, ""),
+		"none",
+		"normal",
+	)
+	if events := detector.observe(cleared, "CP-1"); len(events) != 0 {
+		t.Fatalf("suppressed lap replayed after safety state cleared: %#v", events)
+	}
+}
+
+func TestRaceAudioJobQueuePrioritizesSafetyAndDropsStaleCallouts(t *testing.T) {
+	queue := newRaceAudioJobQueue()
+	for _, event := range []raceAudioEvent{
+		{EventID: "lap", Kind: "lap_complete", Priority: 40},
+		{EventID: "blue", Kind: "blue_flag", Priority: 85},
+	} {
+		if accepted, dropped := queue.enqueue(raceAudioJob{event: event}); !accepted || len(dropped) != 0 {
+			t.Fatalf("ordinary event was not enqueued: accepted=%v dropped=%#v", accepted, dropped)
+		}
+	}
+	yellow := raceAudioJob{event: raceAudioEvent{EventID: "yellow", Kind: "yellow_flag", Priority: 105}}
+	accepted, dropped := queue.enqueue(yellow)
+	if !accepted || len(dropped) != 2 {
+		t.Fatalf("yellow flag did not supersede lower-priority jobs: accepted=%v dropped=%#v", accepted, dropped)
+	}
+
+	job, ok := queue.dequeue(context.Background())
+	if !ok || job.event.EventID != "yellow" {
+		t.Fatalf("dequeued event = %#v, want yellow flag", job.event)
+	}
+
+	red := raceAudioJob{event: raceAudioEvent{EventID: "red", Kind: "red_flag", Priority: 120}}
+	if accepted, _ := queue.enqueue(red); !accepted {
+		t.Fatal("red flag was rejected")
+	}
+	if accepted, _ := queue.enqueue(raceAudioJob{event: raceAudioEvent{
+		EventID: "late-lap", Kind: "lap_complete", Priority: 40,
+	}}); accepted {
+		t.Fatal("lower-priority event was accepted behind a queued red flag")
+	}
+}
+
+func TestRaceAudioJobQueuePreservesFIFOAtEqualPriority(t *testing.T) {
+	queue := newRaceAudioJobQueue()
+	queue.enqueue(raceAudioJob{event: raceAudioEvent{EventID: "first", Priority: 50}})
+	queue.enqueue(raceAudioJob{event: raceAudioEvent{EventID: "second", Priority: 50}})
+	first, _ := queue.dequeue(context.Background())
+	second, _ := queue.dequeue(context.Background())
+	if first.event.EventID != "first" || second.event.EventID != "second" {
+		t.Fatalf("equal-priority queue order = %q, %q", first.event.EventID, second.event.EventID)
+	}
+}
+
 func TestRaceAudioGameplayDetectorAnnouncesThresholdCrossingsAndRearms(t *testing.T) {
 	detector := raceAudioGameplayDetector{}
 	context := raceAudioRaceContext{RunID: "run-resources", CarID: "CP-1", Phase: "green", SessionType: "race"}
@@ -298,6 +419,14 @@ func TestRaceAudioPitDetectorDoesNotReplayExistingCompleteState(t *testing.T) {
 func TestRaceAudioPitCompleteUsesBrowserKokoroPath(t *testing.T) {
 	if !raceAudioBrowserLocalEvent("pit_service_complete") {
 		t.Fatal("PIT complete is not routed through Browser Kokoro")
+	}
+}
+
+func TestRaceAudioSafetyEventsUseBrowserKokoroPath(t *testing.T) {
+	for _, kind := range []string{"yellow_flag", "red_flag", "wrong_way"} {
+		if !raceAudioBrowserLocalEvent(kind) {
+			t.Fatalf("%s is not routed through Browser Kokoro", kind)
+		}
 	}
 }
 
@@ -939,5 +1068,34 @@ func raceAudioScenarioState(
 		"standings": standings, "lapHistory": history,
 	}
 	encoded, _ := json.Marshal(payload)
+	return "RACE:" + string(encoded)
+}
+
+func raceAudioSafetyState(runID string, phase string, flag string, directionStatus string) string {
+	payload := map[string]any{
+		"type": "race_state", "version": 2, "raceId": "race-test", "raceRunId": runID,
+		"phase": phase, "flag": flag, "viewerCarId": "CP-1",
+		"raceInfo": map[string]any{"totalLaps": 10, "sessionType": "race"},
+		"standings": []map[string]any{{
+			"carId": "CP-1", "position": 2, "status": "racing", "lap": 1,
+			"directionStatus": directionStatus,
+		}},
+		"lapHistory": []map[string]any{},
+	}
+	encoded, _ := json.Marshal(payload)
+	return "RACE:" + string(encoded)
+}
+
+func raceAudioStateWithSafety(message string, flag string, directionStatus string) string {
+	payload := strings.TrimPrefix(message, "RACE:")
+	var state map[string]any
+	_ = json.Unmarshal([]byte(payload), &state)
+	state["flag"] = flag
+	if standings, ok := state["standings"].([]any); ok && len(standings) > 0 {
+		if standing, ok := standings[0].(map[string]any); ok {
+			standing["directionStatus"] = directionStatus
+		}
+	}
+	encoded, _ := json.Marshal(state)
 	return "RACE:" + string(encoded)
 }
