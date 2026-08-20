@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -67,6 +68,7 @@ type teamObserverDirectoryPilot struct {
 	Callsign    string                          `json:"callsign"`
 	DisplayName string                          `json:"displayName,omitempty"`
 	TeamName    string                          `json:"teamName,omitempty"`
+	Comment     string                          `json:"comment,omitempty"`
 	PhotoURL    string                          `json:"photoUrl,omitempty"`
 	Color       string                          `json:"color,omitempty"`
 	ThemeSong   *teamObserverDirectoryThemeSong `json:"themeSong,omitempty"`
@@ -125,6 +127,7 @@ type teamObserverDirectoryPilotView struct {
 	Callsign    string `json:"callsign"`
 	DisplayName string `json:"displayName,omitempty"`
 	TeamName    string `json:"teamName,omitempty"`
+	Comment     string `json:"comment,omitempty"`
 	PhotoURL    string `json:"photoUrl,omitempty"`
 	Color       string `json:"color,omitempty"`
 }
@@ -185,7 +188,8 @@ func (source *teamObserverDirectorySource) projection(now time.Time) (teamObserv
 	for _, pilot := range cache.Directory.Pilots {
 		projection.Pilots = append(projection.Pilots, teamObserverDirectoryPilotView{
 			PilotID: pilot.PilotID, PilotNo: pilot.PilotNo, Callsign: pilot.Callsign,
-			DisplayName: pilot.DisplayName, TeamName: pilot.TeamName, PhotoURL: pilot.PhotoURL, Color: pilot.Color,
+			DisplayName: pilot.DisplayName, TeamName: pilot.TeamName, Comment: pilot.Comment,
+			PhotoURL: pilot.PhotoURL, Color: pilot.Color,
 		})
 	}
 	for _, vehicle := range cache.Directory.Vehicles {
@@ -300,11 +304,14 @@ func validateTeamObserverDirectoryCache(cache teamObserverDirectoryCache, organi
 				return err
 			}
 		}
+		if err := optionalTeamObserverDirectoryRunes(pilot.Comment, "comment", 160); err != nil {
+			return err
+		}
 		if _, exists := pilotIDs[pilot.PilotID]; exists {
 			return fmt.Errorf("duplicate pilotId %q", pilot.PilotID)
 		}
 		pilotIDs[pilot.PilotID] = struct{}{}
-		if pilot.PhotoURL != "" && !isTeamObserverDirectoryHTTPURL(pilot.PhotoURL) {
+		if pilot.PhotoURL != "" && !isTeamObserverDirectoryHTTPSURL(pilot.PhotoURL) {
 			return fmt.Errorf("pilot photoUrl is invalid")
 		}
 		if pilot.Color != "" && !isTeamObserverDirectoryColor(pilot.Color) {
@@ -464,6 +471,17 @@ func optionalTeamObserverDirectoryText(value, name string, maximum int) error {
 	return nil
 }
 
+func optionalTeamObserverDirectoryRunes(value, name string, maximum int) error {
+	if value == "" {
+		return nil
+	}
+	if strings.TrimSpace(value) == "" || !utf8.ValidString(value) ||
+		utf8.RuneCountInString(value) > maximum || strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("%s is invalid", name)
+	}
+	return nil
+}
+
 func validateTeamObserverDirectoryThemeSong(song teamObserverDirectoryThemeSong) error {
 	if err := requiredTeamObserverDirectoryText(song.Provider, "themeSong provider", 128); err != nil {
 		return err
@@ -488,6 +506,11 @@ func validateTeamObserverDirectoryThemeSong(song teamObserverDirectoryThemeSong)
 func isTeamObserverDirectoryHTTPURL(value string) bool {
 	parsed, err := url.ParseRequestURI(value)
 	return err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+func isTeamObserverDirectoryHTTPSURL(value string) bool {
+	parsed, err := url.ParseRequestURI(value)
+	return err == nil && parsed.Host != "" && parsed.Scheme == "https" && parsed.User == nil
 }
 
 func isTeamObserverDirectoryColor(value string) bool {

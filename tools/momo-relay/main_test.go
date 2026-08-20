@@ -126,7 +126,7 @@ func TestConnectAyamePilotClassifiesPeerBye(t *testing.T) {
 }
 
 func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
-	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"startSignalMode":"lights_out","standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200,"directionStatus":"wrong_way"}]}`)
+	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"startSignalMode":"lights_out","roster":{"schemaVersion":1,"revision":7,"participants":[{"vehicleId":"vehicle-02","sourceId":"11.4","carId":"CP-2","carName":"GR Supra","displayNumber":"7","pilotId":"pilot-aya","pilotNo":"07","pilotName":"AYA","teamName":"SDK RACING","photoUrl":"https://assets.example.test/pilots/aya.webp","comment":"Keep pushing.","color":"#53DBEF","driveSessionId":"ds_aya_1"}],"updatedAtUnixMs":1787000000000,"locked":true,"raceRunId":"rr_123"},"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200,"directionStatus":"wrong_way"}]}`)
 	message, err := raceMessageForCar(state, "CP-2")
 	if err != nil {
 		t.Fatalf("raceMessageForCar returned an error: %v", err)
@@ -136,7 +136,15 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 		Sequence        int    `json:"sequence"`
 		ViewerID        string `json:"viewerCarId"`
 		StartSignalMode string `json:"startSignalMode"`
-		Standings       []struct {
+		Roster          struct {
+			RaceRunID    string `json:"raceRunId"`
+			Participants []struct {
+				CarID     string `json:"carId"`
+				PilotName string `json:"pilotName"`
+				PhotoURL  string `json:"photoUrl"`
+			} `json:"participants"`
+		} `json:"roster"`
+		Standings []struct {
 			CarID              string `json:"carId"`
 			LappingCarBehindID string `json:"lappingCarBehindId"`
 			LappingGapMs       *int   `json:"lappingGapMs"`
@@ -157,6 +165,12 @@ func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
 		*payload.Standings[1].LappingGapMs != 1200 ||
 		payload.Standings[1].DirectionStatus != "wrong_way" {
 		t.Fatalf("standings = %#v, want preserved timing values", payload.Standings)
+	}
+	if payload.Roster.RaceRunID != "rr_123" || len(payload.Roster.Participants) != 1 ||
+		payload.Roster.Participants[0].CarID != "CP-2" ||
+		payload.Roster.Participants[0].PilotName != "AYA" ||
+		payload.Roster.Participants[0].PhotoURL != "https://assets.example.test/pilots/aya.webp" {
+		t.Fatalf("roster = %#v, want preserved Pilot identity", payload.Roster)
 	}
 }
 

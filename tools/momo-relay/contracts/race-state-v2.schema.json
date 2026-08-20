@@ -32,11 +32,51 @@
         "sessionType": { "enum": ["practice", "qualify", "race"] }
       }
     },
+    "roster": { "$ref": "#/$defs/activeRoster" },
     "self": { "$ref": "#/$defs/standing" },
     "standings": { "type": "array", "items": { "$ref": "#/$defs/standing" } },
     "lapHistory": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/lapHistory" } }
   },
   "$defs": {
+    "rosterParticipant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "carId", "pilotId", "pilotName", "driveSessionId"],
+      "properties": {
+        "vehicleId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sourceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "carId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "carName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayNumber": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "pilotId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "pilotNo": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "pilotName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "teamName": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "photoUrl": { "type": "string", "minLength": 9, "maxLength": 2048, "pattern": "^https://" },
+        "comment": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "driveSessionId": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "activeRoster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "revision", "participants", "updatedAtUnixMs", "locked", "raceRunId"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "directoryRevision": { "type": "string", "minLength": 1, "maxLength": 35 },
+        "participants": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/rosterParticipant" }
+        },
+        "updatedAtUnixMs": { "type": "integer", "minimum": 0 },
+        "locked": { "const": true },
+        "raceRunId": { "type": "string", "minLength": 1 }
+      }
+    },
     "sectorTime": {
       "type": "object",
       "additionalProperties": false,

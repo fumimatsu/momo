@@ -28,7 +28,8 @@ func TestTeamObserverDirectoryProjectionExposesOnlyDisplayData(t *testing.T) {
 	if len(projection.Vehicles) != 1 || projection.Vehicles[0].VehicleID != "vehicle-01" || projection.Vehicles[0].SourceID != "11.3" {
 		t.Fatalf("projection vehicles = %#v", projection.Vehicles)
 	}
-	if len(projection.Pilots) != 1 || projection.Pilots[0].PilotID != "pilot-01" {
+	if len(projection.Pilots) != 1 || projection.Pilots[0].PilotID != "pilot-01" ||
+		projection.Pilots[0].Comment != "Keep it smooth." {
 		t.Fatalf("projection pilots = %#v", projection.Pilots)
 	}
 	if len(projection.Entries) != 1 || projection.Entries[0].EntryID != "entry-01" {
@@ -179,7 +180,8 @@ func validTeamObserverDirectoryCache(organization, event string, fetchedAt time.
     "event": {"eventId":"event-01","slug":"` + event + `","name":"Tokorozawa","status":"open"},
     "pilots": [{
       "pilotId":"pilot-01","pilotNo":"1","callsign":"AYA","displayName":"Aya",
-      "teamName":"SDK Racing","photoUrl":"https://example.test/aya.jpg","color":"#2F8FDA",
+      "teamName":"SDK Racing","comment":"Keep it smooth.",
+      "photoUrl":"https://example.test/aya.jpg","color":"#2F8FDA",
       "themeSong":{"url":"https://example.test/theme.mp3","provider":"Demo"}
     }],
     "vehicles": [{
