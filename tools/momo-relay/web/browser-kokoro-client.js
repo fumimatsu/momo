@@ -21,6 +21,9 @@
     const voice = String(input.voice || '').trim();
     const phonemes = String(input.phonemes || '');
     const speed = Number(input.speed);
+    const priority = Number.isFinite(Number(input.priority))
+      ? Math.max(0, Math.min(100, Math.trunc(Number(input.priority))))
+      : 0;
     const modelInputIds = Array.isArray(input.modelInputIds)
       ? input.modelInputIds.map((value) => Number(value))
       : [];
@@ -37,6 +40,7 @@
       voice,
       phonemes,
       speed,
+      priority,
       modelInputIds: Object.freeze(modelInputIds),
     });
   }
@@ -251,6 +255,12 @@
 
     function enqueue(input) {
       const prompt = normalizePrompt(input);
+      const activePriority = active && !active.dropped ? active.prompt.priority : -1;
+      const pendingPriority = pending ? pending.prompt.priority : -1;
+      if (prompt.priority < Math.max(activePriority, pendingPriority)) {
+        onDropped(prompt, 'lower-priority');
+        return snapshot();
+      }
       const item = { prompt, sequence: ++latestSequence, requestId: '', dropped: false };
       if (active && !active.dropped) {
         active.dropped = true;

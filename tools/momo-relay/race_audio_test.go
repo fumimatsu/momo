@@ -28,6 +28,159 @@ func TestRaceAudioDetectorIgnoresHistoryOnInitialState(t *testing.T) {
 	}
 }
 
+func TestRaceAudioDetectorAnnouncesStartPositionPauseAndResumeOnce(t *testing.T) {
+	detector := raceAudioDetector{}
+	ready := raceAudioScenarioState("run-start", "ready", "race", 10, 3, 0, nil, nil)
+	if events := detector.observe(ready, "CP-1"); len(events) != 0 {
+		t.Fatalf("ready baseline emitted events: %#v", events)
+	}
+
+	green := raceAudioScenarioState("run-start", "green", "race", 10, 3, 0, nil, nil)
+	events := detector.observe(green, "CP-1")
+	if len(events) != 1 || events[0].Kind != "race_start" ||
+		events[0].EnglishText != "Race started. Position 3." ||
+		events[0].JapaneseText != "レーススタート。現在3位。" {
+		t.Fatalf("unexpected race start events: %#v", events)
+	}
+	if events := detector.observe(green, "CP-1"); len(events) != 0 {
+		t.Fatalf("duplicate green state emitted events: %#v", events)
+	}
+
+	positionTwo := raceAudioScenarioState("run-start", "green", "race", 10, 2, 0, nil, nil)
+	events = detector.observe(positionTwo, "CP-1")
+	if len(events) != 1 || events[0].Kind != "position_change" ||
+		events[0].JapaneseText != "2位に上がりました。" {
+		t.Fatalf("unexpected position event: %#v", events)
+	}
+
+	paused := raceAudioScenarioState("run-start", "paused", "race", 10, 2, 0, nil, nil)
+	events = detector.observe(paused, "CP-1")
+	if len(events) != 1 || events[0].Kind != "race_paused" {
+		t.Fatalf("unexpected pause event: %#v", events)
+	}
+	events = detector.observe(positionTwo, "CP-1")
+	if len(events) != 1 || events[0].Kind != "race_resumed" {
+		t.Fatalf("unexpected resume event: %#v", events)
+	}
+}
+
+func TestRaceAudioDetectorAppendsFinalLapToPreviousLapAnnouncement(t *testing.T) {
+	detector := raceAudioDetector{}
+	historyEight := []raceAudioLapHistory{{CarID: "CP-1", Lap: 8, LapTimeMS: 14000}}
+	detector.observe(
+		raceAudioScenarioState("run-final", "green", "race", 10, 2, 8, historyEight, nil),
+		"CP-1",
+	)
+	historyNine := append(historyEight, raceAudioLapHistory{
+		CarID: "CP-1", Lap: 9, LapTimeMS: 13500, Achievement: "personal_best",
+	})
+	events := detector.observe(
+		raceAudioScenarioState("run-final", "green", "race", 10, 2, 9, historyNine, nil),
+		"CP-1",
+	)
+	if len(events) != 1 || events[0].Kind != "lap_complete" ||
+		events[0].EnglishText != "Lap 9. 13 point five zero zero seconds. New personal best. Final lap." ||
+		events[0].JapaneseText != "9周目、13.500。自己ベスト更新。ファイナルラップ。" {
+		t.Fatalf("unexpected final lap event: %#v", events)
+	}
+}
+
+func TestRaceAudioDetectorAnnouncesBlueFlagAfterRearm(t *testing.T) {
+	detector := raceAudioDetector{}
+	baseline := raceAudioScenarioState("run-blue", "green", "race", 10, 3, 3, nil, nil)
+	detector.observe(baseline, "CP-1")
+	blue := raceAudioScenarioState(
+		"run-blue", "green", "race", 10, 3, 3, nil,
+		map[string]any{"lappingCarBehindId": "CP-2", "lappingGapMs": 2500},
+		map[string]any{"carId": "CP-2", "position": 1, "status": "racing", "lap": 4},
+	)
+	events := detector.observe(blue, "CP-1")
+	if len(events) != 1 || events[0].Kind != "blue_flag" ||
+		events[0].EnglishText != "Blue flag. Car 2 behind." {
+		t.Fatalf("unexpected blue flag event: %#v", events)
+	}
+	if events := detector.observe(blue, "CP-1"); len(events) != 0 {
+		t.Fatalf("duplicate blue flag emitted events: %#v", events)
+	}
+
+	clear := raceAudioScenarioState(
+		"run-blue", "green", "race", 10, 3, 3, nil,
+		map[string]any{"lappingCarBehindId": "CP-2", "lappingGapMs": 4500},
+		map[string]any{"carId": "CP-2", "position": 1, "status": "racing", "lap": 4},
+	)
+	if events := detector.observe(clear, "CP-1"); len(events) != 0 {
+		t.Fatalf("blue flag release emitted events: %#v", events)
+	}
+	if events := detector.observe(blue, "CP-1"); len(events) != 1 || events[0].Kind != "blue_flag" {
+		t.Fatalf("rearmed blue flag did not emit once: %#v", events)
+	}
+}
+
+func TestRaceAudioGameplayDetectorAnnouncesThresholdCrossingsAndRearms(t *testing.T) {
+	detector := raceAudioGameplayDetector{}
+	context := raceAudioRaceContext{RunID: "run-resources", CarID: "CP-1", Phase: "green", SessionType: "race"}
+	if events := detector.observe(vehicleHealthSnapshot{Fuel: 100, Mode: "healthy"}, context); len(events) != 0 {
+		t.Fatalf("gameplay baseline emitted events: %#v", events)
+	}
+
+	for _, test := range []struct {
+		fuel float64
+		mode string
+		kind string
+	}{
+		{fuel: 19, mode: "healthy", kind: "fuel_low"},
+		{fuel: 7, mode: "healthy", kind: "fuel_critical"},
+		{fuel: 0, mode: "healthy", kind: "fuel_empty"},
+	} {
+		events := detector.observe(vehicleHealthSnapshot{Fuel: test.fuel, Mode: test.mode}, context)
+		if len(events) != 1 || events[0].Kind != test.kind {
+			t.Fatalf("fuel=%v emitted %#v, want %s", test.fuel, events, test.kind)
+		}
+	}
+	if events := detector.observe(vehicleHealthSnapshot{Fuel: 0, Mode: "healthy"}, context); len(events) != 0 {
+		t.Fatalf("unchanged empty fuel emitted events: %#v", events)
+	}
+
+	// PIT回復などでしきい値を上回った後は、次の低下を新しい警告として扱う。
+	detector.observe(vehicleHealthSnapshot{Fuel: 100, Mode: "healthy"}, context)
+	if events := detector.observe(vehicleHealthSnapshot{Fuel: 19, Mode: "healthy"}, context); len(events) != 1 || events[0].Kind != "fuel_low" {
+		t.Fatalf("rearmed fuel warning emitted %#v", events)
+	}
+
+	detector.observe(vehicleHealthSnapshot{Fuel: 19, Mode: "healthy"}, context)
+	events := detector.observe(vehicleHealthSnapshot{Fuel: 19, Mode: "critical"}, context)
+	if len(events) != 1 || events[0].Kind != "damage_critical" ||
+		events[0].JapaneseText != "重大ダメージ。出力制限中。" {
+		t.Fatalf("unexpected critical damage event: %#v", events)
+	}
+	if events := detector.observe(vehicleHealthSnapshot{Fuel: 19, Mode: "critical"}, context); len(events) != 0 {
+		t.Fatalf("unchanged critical damage emitted events: %#v", events)
+	}
+}
+
+func TestRaceAudioGameplayDetectorSeedsSilentlyAndRunsOnlyDuringGreenRace(t *testing.T) {
+	detector := raceAudioGameplayDetector{}
+	greenRace := raceAudioRaceContext{
+		RunID: "run-seed", CarID: "CP-1", Phase: "green", SessionType: "race",
+	}
+	critical := vehicleHealthSnapshot{Fuel: 7, Mode: "critical"}
+	if events := detector.observe(critical, greenRace); len(events) != 0 {
+		t.Fatalf("initial critical snapshot replayed events: %#v", events)
+	}
+	practice := raceAudioRaceContext{
+		RunID: "run-practice", CarID: "CP-1", Phase: "green", SessionType: "practice",
+	}
+	if events := detector.observe(vehicleHealthSnapshot{Fuel: 0, Mode: "limp"}, practice); len(events) != 0 {
+		t.Fatalf("practice snapshot emitted events: %#v", events)
+	}
+	pausedRace := raceAudioRaceContext{
+		RunID: "run-seed", CarID: "CP-1", Phase: "paused", SessionType: "race",
+	}
+	if events := detector.observe(vehicleHealthSnapshot{Fuel: 0, Mode: "limp"}, pausedRace); len(events) != 0 {
+		t.Fatalf("paused race snapshot emitted events: %#v", events)
+	}
+}
+
 func TestRaceAudioDetectorEmitsNewLapAndFinishOnce(t *testing.T) {
 	detector := raceAudioDetector{}
 	detector.observe(raceAudioTestState("run-1", "green", 1, 13444), "CP-1")
@@ -756,6 +909,35 @@ func raceAudioTestStateWithAchievement(
 		"raceInfo":   map[string]any{"totalLaps": 10},
 		"standings":  []map[string]any{{"carId": "CP-1", "position": 2, "status": status, "lap": newestLap}},
 		"lapHistory": history,
+	}
+	encoded, _ := json.Marshal(payload)
+	return "RACE:" + string(encoded)
+}
+
+func raceAudioScenarioState(
+	runID string,
+	phase string,
+	sessionType string,
+	totalLaps int,
+	position int,
+	lap int,
+	history []raceAudioLapHistory,
+	selfOverrides map[string]any,
+	rivals ...map[string]any,
+) string {
+	self := map[string]any{
+		"carId": "CP-1", "position": position, "status": "racing", "lap": lap,
+	}
+	for key, value := range selfOverrides {
+		self[key] = value
+	}
+	standings := []map[string]any{self}
+	standings = append(standings, rivals...)
+	payload := map[string]any{
+		"type": "race_state", "version": 2, "raceId": "race-test", "raceRunId": runID,
+		"phase": phase, "viewerCarId": "CP-1",
+		"raceInfo":  map[string]any{"totalLaps": totalLaps, "sessionType": sessionType},
+		"standings": standings, "lapHistory": history,
 	}
 	encoded, _ := json.Marshal(payload)
 	return "RACE:" + string(encoded)

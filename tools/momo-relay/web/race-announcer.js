@@ -131,11 +131,15 @@
     const achievement = String(input.achievement || '').trim().toLowerCase();
     const isPersonalBestUpdate = achievement === 'personal_best';
     const isOverallBestUpdate = achievement === 'overall_best';
+    const isFinalLap = input.finalLap === true;
     const language = normalizeRemoteLanguage(input.language);
     if (language === 'ja-JP') {
       const suffix = isOverallBestUpdate
         ? '。全体ベスト更新。'
         : isPersonalBestUpdate ? '。自己ベスト更新。' : '';
+      const finalLapSuffix = isFinalLap
+        ? `${suffix ? '' : '。'}ファイナルラップ。`
+        : '';
       return Object.freeze({
         lap: roundedLap,
         lapTimeMs: roundedLapTimeMs,
@@ -145,12 +149,14 @@
         isOverallBest,
         isPersonalBestUpdate,
         isOverallBestUpdate,
-        text: `${roundedLap}周目、${(roundedLapTimeMs / 1000).toFixed(3)}${suffix}`,
+        isFinalLap,
+        text: `${roundedLap}周目、${(roundedLapTimeMs / 1000).toFixed(3)}${suffix}${finalLapSuffix}`,
       });
     }
     const suffix = isOverallBestUpdate
       ? '. New overall best.'
       : isPersonalBestUpdate ? '. New personal best.' : '';
+    const finalLapSuffix = isFinalLap ? `${suffix ? ' ' : '. '}Final lap.` : '';
     return Object.freeze({
       lap: roundedLap,
       lapTimeMs: roundedLapTimeMs,
@@ -160,7 +166,8 @@
       isOverallBest,
       isPersonalBestUpdate,
       isOverallBestUpdate,
-      text: `Lap ${roundedLap}. ${(roundedLapTimeMs / 1000).toFixed(3)} seconds${suffix}`,
+      isFinalLap,
+      text: `Lap ${roundedLap}. ${(roundedLapTimeMs / 1000).toFixed(3)} seconds${suffix}${finalLapSuffix}`,
     });
   }
 

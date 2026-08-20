@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260820-sector-achievement-v1';
+  const PILOT_BUILD_ID = '20260820-race-audio-sector-v1';
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
     throw new Error('MomoNotificationController is required.');
@@ -3035,6 +3035,7 @@
 			const prompt = {
 				...payload.prompt,
 				promptId: payload.eventId,
+				priority: Number(payload.priority) || 0,
 				fallbackText: payload.fallbackText,
 				ducking: payload.ducking,
 			};
@@ -3086,10 +3087,17 @@
 	}
 
   function requestPilotCallout() {
+    const battle = getRaceBattle();
+    const lappingGapMs = normalizeRaceNumber(battle.self?.lappingGapMs);
+    const suppressGapBehind = RACE_BLUE_FLAG_ENABLED &&
+      typeof battle.self?.lappingCarBehindId === 'string' &&
+      battle.self.lappingCarBehindId.trim() !== '' &&
+      lappingGapMs !== null && lappingGapMs > 0 && lappingGapMs <= RACE_BLUE_FLAG_RELEASE_GAP_MS;
     const callout = pilotCalloutPlanner.evaluate({
       raceRunId: activeRaceRunId,
       phaseCode: raceState.phaseCode,
-      battle: getRaceBattle(),
+      battle,
+      suppressGapBehind,
     });
     if (!callout || !isRaceAnnouncementEnabled() || !remoteRaceAudioEnabled ||
         getRaceAudioMode() !== browserKokoro?.MODE || raceAudioChannel?.readyState !== 'open') {
@@ -3158,6 +3166,8 @@
     const roundedLapTimeMs = Math.round(lapTimeMs);
     const bestLapMs = normalizeRaceNumber(raceState.bestLapMs);
     const overallBestLapMs = normalizeRaceNumber(raceState.overallBestLapMs);
+    const isFinalLap = raceState.sessionType === 'race' && raceState.lapCount !== null &&
+      raceState.lapCount > 1 && Math.floor(lap) === Math.floor(raceState.lapCount) - 1;
     const announcement = raceAnnouncer.buildLapAnnouncement({
       lap,
       lapTimeMs: roundedLapTimeMs,
@@ -3166,6 +3176,7 @@
       achievement: latestLap?.achievement,
       position: raceState.position,
       language: raceAnnounceLanguage,
+      finalLap: isFinalLap,
     });
     if (!announcement) return null;
     return {

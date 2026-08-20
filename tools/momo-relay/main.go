@@ -1648,6 +1648,17 @@ func operationsPageHandler(operationsHTML []byte) http.HandlerFunc {
 	}
 }
 
+func webAssetHandler(webRoot fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(webRoot))
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasSuffix(strings.ToLower(req.URL.Path), ".mjs") {
+			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		}
+		fileServer.ServeHTTP(w, req)
+	})
+}
+
 // 新しい Viewer は relay に蓄積されていない差分フレームから受信を始める。
 // 上流 Momo に IDR を要求しないと、次の自然発生キーフレームまで映像を
 // 復号できず、黒画面のままになる。
@@ -2000,6 +2011,9 @@ func (r *relay) broadcastVehicleGameplay(health vehicleHealthSnapshot) {
 		return
 	}
 	r.broadcastTelemetry(webrtc.DataChannelMessage{Data: []byte(message), IsString: true})
+	if r.raceAudio != nil {
+		r.raceAudio.observeVehicleGameplay(health)
+	}
 }
 
 // Race Control の状態は操縦テレメトリーと分離して配る。
@@ -3696,11 +3710,7 @@ func main() {
 	mux.HandleFunc("/api/v1/gameplay/pit-presence-events",
 		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitPresenceEvent)))
 	mux.HandleFunc("/garage.html", garagePolicy.wrap(operationsPageHandler(garageHTML)))
-	fileServer := http.FileServer(http.FS(webRoot))
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		fileServer.ServeHTTP(w, req)
-	}))
+	mux.Handle("/", webAssetHandler(webRoot))
 	mux.HandleFunc("/pilot", func(w http.ResponseWriter, req *http.Request) {
 		target := "/pilot.html"
 		if req.URL.RawQuery != "" {

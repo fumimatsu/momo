@@ -123,9 +123,11 @@
       const ahead = battle.ahead
         ? observe('gap_ahead', battle.ahead, battle.self?.intervalToAheadMs, battle.self)
         : null;
-      const behind = battle.behind
-        ? observe('gap_behind', battle.behind, battle.behind.intervalToAheadMs)
-        : null;
+      const behind = input.suppressGapBehind === true
+        ? null
+        : battle.behind
+          ? observe('gap_behind', battle.behind, battle.behind.intervalToAheadMs)
+          : null;
       const timestamp = now();
       const candidates = [
         candidateFor('gap_behind', behind, timestamp),

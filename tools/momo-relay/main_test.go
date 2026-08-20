@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1285,6 +1286,28 @@ func TestOperationsPageHandlerHonorsCIDRAndHTTPMethod(t *testing.T) {
 	handler(recorder, request)
 	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodGet {
 		t.Fatalf("POST page = %d Allow=%q, want 405 GET", recorder.Code, recorder.Header().Get("Allow"))
+	}
+}
+
+func TestWebAssetHandlerServesModuleWorkersAsJavaScript(t *testing.T) {
+	webRoot, err := fs.Sub(webAssets, "web")
+	if err != nil {
+		t.Fatalf("create embedded web root: %v", err)
+	}
+	handler := webAssetHandler(webRoot)
+	request := httptest.NewRequest(http.MethodGet, "http://relay.test/browser-kokoro-worker.mjs", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("module worker response = %d, want 200", recorder.Code)
+	}
+	if contentType := recorder.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/javascript") {
+		t.Fatalf("module worker Content-Type = %q, want text/javascript", contentType)
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("module worker Cache-Control = %q, want no-store", recorder.Header().Get("Cache-Control"))
 	}
 }
 

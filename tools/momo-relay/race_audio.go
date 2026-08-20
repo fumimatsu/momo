@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,10 @@ const (
 	raceAudioCalloutMinimumGap     = 2 * time.Second
 	raceAudioCalloutSeenTTL        = 2 * time.Minute
 	raceAudioCalloutMaximumMessage = 512
+	raceAudioBlueFlagWarningGapMS  = 3000
+	raceAudioBlueFlagReleaseGapMS  = 4000
+	raceAudioFuelLowThreshold      = 20.0
+	raceAudioFuelCriticalThreshold = 8.0
 )
 
 var raceAudioCalloutRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
@@ -144,6 +149,15 @@ type raceAudioLapHistory struct {
 	Achievement string `json:"achievement"`
 }
 
+type raceAudioStanding struct {
+	CarID              string `json:"carId"`
+	Position           int    `json:"position"`
+	Status             string `json:"status"`
+	Lap                int    `json:"lap"`
+	LappingCarBehindID string `json:"lappingCarBehindId"`
+	LappingGapMS       int    `json:"lappingGapMs"`
+}
+
 type raceAudioState struct {
 	Type        string `json:"type"`
 	Version     int    `json:"version"`
@@ -152,23 +166,39 @@ type raceAudioState struct {
 	Phase       string `json:"phase"`
 	ViewerCarID string `json:"viewerCarId"`
 	RaceInfo    struct {
-		TotalLaps int `json:"totalLaps"`
+		TotalLaps   int    `json:"totalLaps"`
+		SessionType string `json:"sessionType"`
 	} `json:"raceInfo"`
-	Standings []struct {
-		CarID    string `json:"carId"`
-		Position int    `json:"position"`
-		Status   string `json:"status"`
-		Lap      int    `json:"lap"`
-	} `json:"standings"`
+	Standings  []raceAudioStanding   `json:"standings"`
 	LapHistory []raceAudioLapHistory `json:"lapHistory"`
 }
 
 type raceAudioDetector struct {
+	mu            sync.Mutex
+	initialized   bool
+	runID         string
+	carID         string
+	phase         string
+	sessionType   string
+	position      int
+	blueFlagCarID string
+	finished      bool
+	seenLaps      map[string]struct{}
+}
+
+type raceAudioRaceContext struct {
+	RunID       string
+	CarID       string
+	Phase       string
+	SessionType string
+}
+
+type raceAudioGameplayDetector struct {
 	mu          sync.Mutex
 	initialized bool
 	runID       string
-	finished    bool
-	seenLaps    map[string]struct{}
+	fuelBand    int
+	damageMode  string
 }
 
 type raceAudioPitDetector struct {
@@ -182,11 +212,12 @@ type raceAudioPitDetector struct {
 }
 
 type raceAudioSource struct {
-	relay       *relay
-	service     *raceAudioServiceClient
-	detector    raceAudioDetector
-	pitDetector raceAudioPitDetector
-	jobs        chan raceAudioJob
+	relay            *relay
+	service          *raceAudioServiceClient
+	detector         raceAudioDetector
+	gameplayDetector raceAudioGameplayDetector
+	pitDetector      raceAudioPitDetector
+	jobs             chan raceAudioJob
 }
 
 type raceAudioJob struct {
@@ -418,6 +449,66 @@ func validateRaceAudioResponse(response raceAudioSynthesisResponse) ([][]byte, e
 	return packets, nil
 }
 
+func (detector *raceAudioDetector) context() raceAudioRaceContext {
+	detector.mu.Lock()
+	defer detector.mu.Unlock()
+	return raceAudioRaceContext{
+		RunID:       detector.runID,
+		CarID:       detector.carID,
+		Phase:       detector.phase,
+		SessionType: detector.sessionType,
+	}
+}
+
+func raceAudioStandingForCar(state raceAudioState, carID string) *raceAudioStanding {
+	for index := range state.Standings {
+		if state.Standings[index].CarID == carID {
+			return &state.Standings[index]
+		}
+	}
+	return nil
+}
+
+func raceAudioCarNumber(carID string) int {
+	carID = strings.TrimSpace(carID)
+	start := len(carID)
+	for start > 0 && carID[start-1] >= '0' && carID[start-1] <= '9' {
+		start--
+	}
+	if start == len(carID) {
+		return 0
+	}
+	value, err := strconv.Atoi(carID[start:])
+	if err != nil || value < 1 || value > 999 {
+		return 0
+	}
+	return value
+}
+
+func raceAudioBlueFlagCarID(state raceAudioState, self *raceAudioStanding, previousCarID string) string {
+	if self == nil || !strings.EqualFold(strings.TrimSpace(state.Phase), "green") ||
+		!strings.EqualFold(strings.TrimSpace(self.Status), "racing") {
+		return ""
+	}
+	carID := strings.TrimSpace(self.LappingCarBehindID)
+	if carID == "" || self.LappingGapMS <= 0 {
+		return ""
+	}
+	lapping := raceAudioStandingForCar(state, carID)
+	if lapping == nil || !strings.EqualFold(strings.TrimSpace(lapping.Status), "racing") ||
+		lapping.Lap <= self.Lap || lapping.Position >= self.Position {
+		return ""
+	}
+	maximumGapMS := raceAudioBlueFlagWarningGapMS
+	if carID == previousCarID {
+		maximumGapMS = raceAudioBlueFlagReleaseGapMS
+	}
+	if self.LappingGapMS > maximumGapMS {
+		return ""
+	}
+	return carID
+}
+
 func (detector *raceAudioDetector) observe(message string, configuredCarID string) []raceAudioEvent {
 	payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(message), "RACE:"))
 	if payload == "" {
@@ -441,11 +532,18 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	if runID == "" {
 		return nil
 	}
+	phase := strings.ToLower(strings.TrimSpace(state.Phase))
+	sessionType := strings.ToLower(strings.TrimSpace(state.RaceInfo.SessionType))
 	detector.mu.Lock()
 	defer detector.mu.Unlock()
 	if detector.runID != runID {
 		detector.initialized = false
 		detector.runID = runID
+		detector.carID = carID
+		detector.phase = ""
+		detector.sessionType = ""
+		detector.position = 0
+		detector.blueFlagCarID = ""
 		detector.finished = false
 		detector.seenLaps = make(map[string]struct{})
 	}
@@ -459,25 +557,32 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		}
 	}
 	sort.Slice(histories, func(left, right int) bool { return histories[left].Lap < histories[right].Lap })
+	standing := raceAudioStandingForCar(state, carID)
 	standingPosition := 0
 	standingStatus := ""
-	for _, standing := range state.Standings {
-		if standing.CarID == carID {
-			standingPosition = standing.Position
-			standingStatus = strings.ToLower(strings.TrimSpace(standing.Status))
-			break
-		}
+	if standing != nil {
+		standingPosition = standing.Position
+		standingStatus = strings.ToLower(strings.TrimSpace(standing.Status))
 	}
 	isFinished := strings.EqualFold(strings.TrimSpace(state.Phase), "finished") || standingStatus == "finished"
+	blueFlagCarID := raceAudioBlueFlagCarID(state, standing, detector.blueFlagCarID)
 	if !detector.initialized {
 		for _, history := range histories {
 			detector.seenLaps[raceAudioLapKey(runID, carID, history.Lap, history.LapTimeMS)] = struct{}{}
 		}
 		detector.finished = isFinished
+		detector.carID = carID
+		detector.phase = phase
+		detector.sessionType = sessionType
+		detector.position = standingPosition
+		detector.blueFlagCarID = blueFlagCarID
 		detector.initialized = true
 		return nil
 	}
-	events := make([]raceAudioEvent, 0, 1)
+	previousPhase := detector.phase
+	previousPosition := detector.position
+	previousBlueFlagCarID := detector.blueFlagCarID
+	events := make([]raceAudioEvent, 0, 3)
 	for _, history := range histories {
 		key := raceAudioLapKey(runID, carID, history.Lap, history.LapTimeMS)
 		if _, exists := detector.seenLaps[key]; exists {
@@ -487,13 +592,63 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		if isFinished || (state.RaceInfo.TotalLaps > 0 && history.Lap >= state.RaceInfo.TotalLaps) {
 			continue
 		}
+		isFinalLap := sessionType == "race" && state.RaceInfo.TotalLaps > 1 &&
+			history.Lap == state.RaceInfo.TotalLaps-1
 		events = append(events, raceAudioEvent{
 			EventID:      key,
 			Kind:         "lap_complete",
 			Priority:     40,
-			EnglishText:  raceAudioEnglishLapText(history.Lap, history.LapTimeMS, history.Achievement),
-			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, history.Achievement),
+			EnglishText:  raceAudioEnglishLapText(history.Lap, history.LapTimeMS, history.Achievement, isFinalLap),
+			JapaneseText: raceAudioJapaneseLapText(history.Lap, history.LapTimeMS, history.Achievement, isFinalLap),
 		})
+	}
+	if sessionType == "race" && phase == "green" && previousPhase != "green" {
+		kind := "race_start"
+		priority := 55
+		englishText := raceAudioEnglishStartText(standingPosition, state.RaceInfo.TotalLaps == 1)
+		japaneseText := raceAudioJapaneseStartText(standingPosition, state.RaceInfo.TotalLaps == 1)
+		if previousPhase == "paused" {
+			kind = "race_resumed"
+			priority = 90
+			englishText = "Green flag. Race resumed."
+			japaneseText = "グリーン。レース再開。"
+		}
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:%s", runID, carID, kind),
+			Kind:         kind,
+			Priority:     priority,
+			EnglishText:  englishText,
+			JapaneseText: japaneseText,
+		})
+	} else if sessionType == "race" && phase == "paused" && previousPhase == "green" {
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:race_paused", runID, carID),
+			Kind:         "race_paused",
+			Priority:     95,
+			EnglishText:  "Race stopped. Hold position.",
+			JapaneseText: "レース停止。現在位置を維持してください。",
+		})
+	}
+	if sessionType == "race" && phase == "green" && blueFlagCarID != "" &&
+		blueFlagCarID != previousBlueFlagCarID {
+		carNumber := raceAudioCarNumber(blueFlagCarID)
+		englishText := "Blue flag. Faster car behind."
+		japaneseText := "ブルーフラッグ。後方から速い車両が接近しています。"
+		if carNumber > 0 {
+			englishText = fmt.Sprintf("Blue flag. Car %d behind.", carNumber)
+			japaneseText = fmt.Sprintf("ブルーフラッグ。後方、%d号車。", carNumber)
+		}
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:blue_flag:%s", runID, carID, blueFlagCarID),
+			Kind:         "blue_flag",
+			Priority:     85,
+			EnglishText:  englishText,
+			JapaneseText: japaneseText,
+		})
+	}
+	if sessionType == "race" && phase == "green" && previousPhase == "green" &&
+		standingPosition > 0 && previousPosition > 0 && standingPosition != previousPosition && len(events) == 0 {
+		events = append(events, raceAudioPositionEvent(runID, carID, previousPosition, standingPosition))
 	}
 	if !detector.finished && isFinished {
 		finalLapTimeMS := 0
@@ -508,7 +663,127 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 			JapaneseText: raceAudioJapaneseFinishText(standingPosition, finalLapTimeMS),
 		})
 	}
+	detector.carID = carID
+	detector.phase = phase
+	detector.sessionType = sessionType
+	detector.position = standingPosition
+	detector.blueFlagCarID = blueFlagCarID
 	detector.finished = detector.finished || isFinished
+	sort.SliceStable(events, func(left, right int) bool {
+		return events[left].Priority > events[right].Priority
+	})
+	return events
+}
+
+func raceAudioFuelBand(fuel float64) int {
+	switch {
+	case fuel <= 0:
+		return 3
+	case fuel <= raceAudioFuelCriticalThreshold:
+		return 2
+	case fuel <= raceAudioFuelLowThreshold:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func raceAudioDamageRank(mode string) int {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "limp":
+		return 3
+	case "critical":
+		return 2
+	case "damaged":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (detector *raceAudioGameplayDetector) observe(
+	snapshot vehicleHealthSnapshot,
+	context raceAudioRaceContext,
+) []raceAudioEvent {
+	detector.mu.Lock()
+	defer detector.mu.Unlock()
+
+	runID := strings.TrimSpace(context.RunID)
+	carID := strings.TrimSpace(context.CarID)
+	activeRace := runID != "" && strings.EqualFold(context.SessionType, "race") &&
+		strings.EqualFold(context.Phase, "green")
+	if !activeRace {
+		detector.initialized = false
+		detector.runID = runID
+		return nil
+	}
+	if detector.runID != runID {
+		detector.initialized = false
+		detector.runID = runID
+	}
+	fuelBand := raceAudioFuelBand(snapshot.Fuel)
+	damageMode := strings.ToLower(strings.TrimSpace(snapshot.Mode))
+	if !detector.initialized {
+		detector.initialized = true
+		detector.fuelBand = fuelBand
+		detector.damageMode = damageMode
+		return nil
+	}
+
+	previousFuelBand := detector.fuelBand
+	previousDamageRank := raceAudioDamageRank(detector.damageMode)
+	detector.fuelBand = fuelBand
+	detector.damageMode = damageMode
+	events := make([]raceAudioEvent, 0, 2)
+	if fuelBand > previousFuelBand {
+		switch fuelBand {
+		case 1:
+			events = append(events, raceAudioEvent{
+				EventID:      fmt.Sprintf("%s:%s:fuel_low", runID, carID),
+				Kind:         "fuel_low",
+				Priority:     45,
+				EnglishText:  "Fuel low.",
+				JapaneseText: "燃料残量低下。",
+			})
+		case 2:
+			events = append(events, raceAudioEvent{
+				EventID:      fmt.Sprintf("%s:%s:fuel_critical", runID, carID),
+				Kind:         "fuel_critical",
+				Priority:     75,
+				EnglishText:  "Fuel critical.",
+				JapaneseText: "燃料残量、危険域。",
+			})
+		case 3:
+			events = append(events, raceAudioEvent{
+				EventID:      fmt.Sprintf("%s:%s:fuel_empty", runID, carID),
+				Kind:         "fuel_empty",
+				Priority:     100,
+				EnglishText:  "Fuel empty. Power limited.",
+				JapaneseText: "燃料切れ。出力制限中。",
+			})
+		}
+	}
+	currentDamageRank := raceAudioDamageRank(damageMode)
+	if previousDamageRank < 2 && currentDamageRank >= 2 {
+		englishText := "Critical damage. Power limited."
+		japaneseText := "重大ダメージ。出力制限中。"
+		priority := 80
+		if currentDamageRank >= 3 {
+			englishText = "Critical damage. Power severely limited."
+			japaneseText = "重大ダメージ。出力を大幅に制限しています。"
+			priority = 95
+		}
+		events = append(events, raceAudioEvent{
+			EventID:      fmt.Sprintf("%s:%s:damage_critical", runID, carID),
+			Kind:         "damage_critical",
+			Priority:     priority,
+			EnglishText:  englishText,
+			JapaneseText: japaneseText,
+		})
+	}
+	sort.SliceStable(events, func(left, right int) bool {
+		return events[left].Priority > events[right].Priority
+	})
 	return events
 }
 
@@ -554,16 +829,60 @@ func (detector *raceAudioPitDetector) observe(snapshot pitPresenceSnapshot) *rac
 	}
 }
 
-func raceAudioEnglishLapText(lap int, lapTimeMS int, achievement string) string {
+func raceAudioEnglishStartText(position int, finalLap bool) string {
+	text := "Race started."
+	if position > 0 {
+		text += fmt.Sprintf(" Position %d.", position)
+	}
+	if finalLap {
+		text += " Final lap."
+	}
+	return text
+}
+
+func raceAudioJapaneseStartText(position int, finalLap bool) string {
+	text := "レーススタート。"
+	if position > 0 {
+		text += fmt.Sprintf("現在%d位。", position)
+	}
+	if finalLap {
+		text += "ファイナルラップ。"
+	}
+	return text
+}
+
+func raceAudioPositionEvent(runID string, carID string, previousPosition int, position int) raceAudioEvent {
+	direction := "gained"
+	englishText := fmt.Sprintf("Position gained. Position %d.", position)
+	japaneseText := fmt.Sprintf("%d位に上がりました。", position)
+	if position > previousPosition {
+		direction = "lost"
+		englishText = fmt.Sprintf("Position lost. Position %d.", position)
+		japaneseText = fmt.Sprintf("現在%d位。", position)
+	}
+	return raceAudioEvent{
+		EventID:      fmt.Sprintf("%s:%s:position:%d:%s", runID, carID, position, direction),
+		Kind:         "position_change",
+		Priority:     50,
+		EnglishText:  englishText,
+		JapaneseText: japaneseText,
+	}
+}
+
+func raceAudioEnglishLapText(lap int, lapTimeMS int, achievement string, finalLap ...bool) string {
 	text := fmt.Sprintf("Lap %d. %s seconds.", lap, raceAudioEnglishLapTime(lapTimeMS))
 	switch achievement {
 	case "overall_best":
-		return text + " New overall best."
+		text += " New overall best."
 	case "personal_best":
-		return text + " New personal best."
+		text += " New personal best."
 	default:
-		return strings.TrimSuffix(text, ".")
+		text = strings.TrimSuffix(text, ".")
 	}
+	if len(finalLap) > 0 && finalLap[0] {
+		text = strings.TrimSuffix(text, ".") + ". Final lap."
+	}
+	return text
 }
 
 func raceAudioEnglishLapTime(lapTimeMS int) string {
@@ -582,16 +901,18 @@ func raceAudioEnglishLapTime(lapTimeMS int) string {
 	)
 }
 
-func raceAudioJapaneseLapText(lap int, lapTimeMS int, achievement string) string {
+func raceAudioJapaneseLapText(lap int, lapTimeMS int, achievement string, finalLap ...bool) string {
 	text := fmt.Sprintf("%d周目、%d.%03d", lap, lapTimeMS/1000, lapTimeMS%1000)
 	switch achievement {
 	case "overall_best":
-		return text + "。全体ベスト更新。"
+		text += "。全体ベスト更新。"
 	case "personal_best":
-		return text + "。自己ベスト更新。"
-	default:
-		return text
+		text += "。自己ベスト更新。"
 	}
+	if len(finalLap) > 0 && finalLap[0] {
+		text = strings.TrimSuffix(text, "。") + "。ファイナルラップ。"
+	}
+	return text
 }
 
 func raceAudioEventFromCallout(clientID uint64, request raceAudioCalloutRequest) (raceAudioEvent, error) {
@@ -715,7 +1036,18 @@ func (source *raceAudioSource) observe(message string) {
 	if source == nil {
 		return
 	}
-	for _, event := range source.detector.observe(message, source.relay.raceCarID) {
+	source.enqueueEvents(source.detector.observe(message, source.relay.raceCarID))
+}
+
+func (source *raceAudioSource) observeVehicleGameplay(snapshot vehicleHealthSnapshot) {
+	if source == nil {
+		return
+	}
+	source.enqueueEvents(source.gameplayDetector.observe(snapshot, source.detector.context()))
+}
+
+func (source *raceAudioSource) enqueueEvents(events []raceAudioEvent) {
+	for _, event := range events {
 		select {
 		case source.jobs <- raceAudioJob{event: event}:
 		default:
@@ -753,7 +1085,9 @@ func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEve
 
 func raceAudioBrowserLocalEvent(kind string) bool {
 	switch kind {
-	case "lap_complete", "pit_service_complete", "gap_ahead", "gap_behind":
+	case "lap_complete", "pit_service_complete", "gap_ahead", "gap_behind",
+		"race_start", "race_paused", "race_resumed", "position_change", "blue_flag",
+		"fuel_low", "fuel_critical", "fuel_empty", "damage_critical":
 		return true
 	default:
 		return false
