@@ -74,15 +74,51 @@ func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T)
 	}
 }
 
-func TestVehicleHealthRestoresDamageWhenRaceLeavesGreen(t *testing.T) {
+func TestVehicleHealthResetsGameplayWhenRaceFinishes(t *testing.T) {
 	base := time.Date(2026, 8, 15, 14, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
 	health.observeRaceState(true, "rr_finished_recovery", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base)
+	health.mu.Lock()
+	health.fuel = 17
+	health.boost = vehicleBoostMaximum
+	health.boostActiveUntil = base.Add(3 * time.Second)
+	health.requestedGear = vehicleNormalGearMaximum
+	health.requestedThrottle = 1
+	health.effectiveThrottle = 0.8
+	health.pitPresent = true
+	health.position = 2
+	health.fieldSize = 4
+	health.raceGapKnown = true
+	health.gapToAheadMS = 1500
+	health.mu.Unlock()
 	snapshot, changed := health.observeRacePhase("finished", base.Add(time.Second))
 
-	if !changed || snapshot.HP != vehicleHealthMaximum {
-		t.Fatalf("finished damage restoration = %#v changed=%t", snapshot, changed)
+	if !changed || snapshot.HP != vehicleHealthMaximum || snapshot.Fuel != vehicleFuelMaximum || snapshot.Boost != 0 ||
+		snapshot.BoostRemainingMS != 0 || snapshot.Gear != 1 || snapshot.RequestedThrottle != 0 ||
+		snapshot.EffectiveThrottle != 0 {
+		t.Fatalf("finished gameplay reset = %#v changed=%t", snapshot, changed)
+	}
+	if _, changed := health.observeRacePhase("finished", base.Add(2*time.Second)); changed {
+		t.Fatal("repeated finished state must not reset or publish again")
+	}
+}
+
+func TestVehicleHealthClearsRaceGapOutsideGreen(t *testing.T) {
+	base := time.Date(2026, 8, 15, 14, 15, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.observeRaceStateWithGap(true, "rr_finished_gap", "green", 2, 4,
+		vehicleRaceGap{Known: true, IntervalToAheadMS: 1250}, base, "race")
+	snapshot, changed := health.observeRaceStateWithGap(true, "rr_finished_gap", "finished", 2, 4,
+		vehicleRaceGap{Known: true, IntervalToAheadMS: 1250}, base.Add(time.Second), "race")
+
+	if !changed || snapshot.Position != 0 || snapshot.FieldSize != 0 || snapshot.RaceGapKnown ||
+		snapshot.GapToAheadMS != nil || snapshot.LapDeltaToAhead != nil {
+		t.Fatalf("finished race gap = %#v changed=%t", snapshot, changed)
+	}
+	if _, changed := health.observeRaceStateWithGap(true, "rr_finished_gap", "finished", 2, 4,
+		vehicleRaceGap{Known: true, IntervalToAheadMS: 1250}, base.Add(2*time.Second), "race"); changed {
+		t.Fatal("repeated finished state must not rebroadcast unchanged gameplay")
 	}
 }
 

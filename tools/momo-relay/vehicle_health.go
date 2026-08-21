@@ -211,6 +211,10 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 		return
 	}
 	health.activeRaceRunID = raceRunID
+	health.resetGameplayLocked(now)
+}
+
+func (health *vehicleHealth) resetGameplayLocked(now time.Time) {
 	health.hp = vehicleHealthMaximum
 	health.fuel = vehicleFuelMaximum
 	health.boost = 0
@@ -259,7 +263,7 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 		return health.snapshotLocked(now), false
 	}
 	health.lastRacePhase = phase
-	if phase != "ready" {
+	if phase != "ready" && phase != "finished" {
 		changed := false
 		if phase != "green" {
 			changed = health.restoreDamageLocked(now)
@@ -267,23 +271,7 @@ func (health *vehicleHealth) observeRacePhase(phase string, now time.Time) (vehi
 		return health.snapshotLocked(now), changed
 	}
 
-	health.hp = vehicleHealthMaximum
-	health.fuel = vehicleFuelMaximum
-	health.boost = 0
-	health.boostActiveUntil = time.Time{}
-	health.requestedGear = 1
-	health.fuelRatePerSec = 0
-	health.resetThrottleVariationLocked()
-	health.requestedThrottle = 0
-	health.effectiveThrottle = 0
-	health.pitPresent = false
-	health.lastUpdatedAt = now
-	health.lastUnsafeAt = time.Time{}
-	health.resetDamageEpisodeLocked()
-	health.lastForwardAt = time.Time{}
-	health.lastPublishedAt = now
-	health.resetPitRecoveryLocked()
-	health.resetImpactDedupeLocked()
+	health.resetGameplayLocked(now)
 	return health.snapshotLocked(now), true
 }
 
@@ -312,17 +300,25 @@ func (health *vehicleHealth) observeRaceStateWithGap(connected bool, raceRunID s
 	defer health.mu.Unlock()
 	health.raceConnected = connected
 	health.lastRaceStateAt = now
-	health.position = position
-	health.fieldSize = fieldSize
-	health.raceGapKnown = gap.Known
-	health.gapToAheadMS = maxInt64(0, gap.IntervalToAheadMS)
-	health.lapDeltaToAhead = maxInt(0, gap.LapDeltaToAhead)
+	if strings.EqualFold(strings.TrimSpace(phase), "green") {
+		health.position = position
+		health.fieldSize = fieldSize
+		health.raceGapKnown = gap.Known
+		health.gapToAheadMS = maxInt64(0, gap.IntervalToAheadMS)
+		health.lapDeltaToAhead = maxInt(0, gap.LapDeltaToAhead)
+	} else {
+		health.position = 0
+		health.fieldSize = 0
+		health.raceGapKnown = false
+		health.gapToAheadMS = 0
+		health.lapDeltaToAhead = 0
+	}
 	health.lastSessionType = normalizeRaceSessionType(firstString(sessionTypes))
 	if !connected && health.restoreDamageLocked(now) {
 		changed = true
 	}
 	if previousConnected != connected || previousPhase != strings.ToLower(strings.TrimSpace(phase)) || previousRunID != raceRunID ||
-		previousPosition != position || previousFieldSize != fieldSize || previousSessionType != health.lastSessionType ||
+		previousPosition != health.position || previousFieldSize != health.fieldSize || previousSessionType != health.lastSessionType ||
 		previousGapKnown != health.raceGapKnown || previousGapToAheadMS != health.gapToAheadMS || previousLapDeltaToAhead != health.lapDeltaToAhead ||
 		snapshot.BoostState != health.boostStateLocked(now) {
 		changed = true

@@ -146,6 +146,9 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 	}
 
 	for _, source := range server.sourceSnapshot() {
+		if currentPhase == "finished" && (previous.RaceRunID != currentRunID || previous.Phase != currentPhase) {
+			source.boostRegen.reset()
+		}
 		position := 0
 		gap := vehicleRaceGap{}
 		var progressStanding *raceStateStanding
