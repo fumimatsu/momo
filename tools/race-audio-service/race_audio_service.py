@@ -889,7 +889,7 @@ def main() -> None:
         default="japanese_pronunciation_dictionary.json",
     )
     parser.add_argument("--voicevox-url", default="http://127.0.0.1:50021")
-    parser.add_argument("--voicevox-speaker", type=int, default=3)
+    parser.add_argument("--voicevox-speaker", type=int, default=51)
     parser.add_argument("--piper-model", default="models/css10-ja-6lang-fp16.onnx")
     parser.add_argument("--piper-config", default="models/css10-ja-6lang-config.json")
     parser.add_argument("--piper-nltk-data", default="models/nltk_data")

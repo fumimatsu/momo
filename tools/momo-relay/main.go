@@ -124,6 +124,7 @@ type viewer struct {
 	raceAudioLanguage    atomic.Value
 	raceAudioMode        atomic.Value
 	raceAudioTrack       *webrtc.TrackLocalStaticSample
+	raceAudioQueueMu     sync.Mutex
 	raceAudioQueue       chan raceAudioClip
 	raceAudioStop        chan struct{}
 	raceAudioStopOnce    sync.Once
@@ -375,32 +376,34 @@ type relay struct {
 }
 
 type relayServer struct {
-	sourcesMu             sync.RWMutex
-	sourceMutationMu      sync.Mutex
-	sources               map[string]*relay
-	sourceOrder           []string
-	managedSources        map[string]*managedRelaySource
-	sourceRuntime         relaySourceRuntime
-	dynamicSourceRegistry *dynamicSourceRegistry
-	recorder              *telemetryRecorder
-	raceMu                sync.RWMutex
-	raceContext           relayRaceContext
-	raceStreamMu          sync.RWMutex
-	raceState             string
-	raceSubscribers       map[uint64]*raceSubscriber
-	nextRaceSubscriberID  atomic.Uint64
-	racePublishedMessages atomic.Uint64
-	racePublishedBytes    atomic.Uint64
-	raceDeliveredMessages atomic.Uint64
-	raceDeliveredBytes    atomic.Uint64
-	raceQueueReplacements atomic.Uint64
-	raceWriteErrors       atomic.Uint64
-	raceLastPublishedAt   atomic.Int64
-	raceLastDeliveredAt   atomic.Int64
-	pitEventsMu           sync.Mutex
-	pitEvents             map[string]pitPresenceReceipt
-	pitEventIDs           []string
-	teamObserverDirectory *teamObserverDirectorySource
+	sourcesMu               sync.RWMutex
+	sourceMutationMu        sync.Mutex
+	sources                 map[string]*relay
+	sourceOrder             []string
+	managedSources          map[string]*managedRelaySource
+	sourceRuntime           relaySourceRuntime
+	dynamicSourceRegistry   *dynamicSourceRegistry
+	recorder                *telemetryRecorder
+	raceMu                  sync.RWMutex
+	raceContext             relayRaceContext
+	raceStreamMu            sync.RWMutex
+	raceState               string
+	raceSubscribers         map[uint64]*raceSubscriber
+	nextRaceSubscriberID    atomic.Uint64
+	raceAudioAnnouncementMu sync.Mutex
+	raceAudioAnnouncements  map[string]raceAudioAnnouncementReceipt
+	racePublishedMessages   atomic.Uint64
+	racePublishedBytes      atomic.Uint64
+	raceDeliveredMessages   atomic.Uint64
+	raceDeliveredBytes      atomic.Uint64
+	raceQueueReplacements   atomic.Uint64
+	raceWriteErrors         atomic.Uint64
+	raceLastPublishedAt     atomic.Int64
+	raceLastDeliveredAt     atomic.Int64
+	pitEventsMu             sync.Mutex
+	pitEvents               map[string]pitPresenceReceipt
+	pitEventIDs             []string
+	teamObserverDirectory   *teamObserverDirectorySource
 }
 
 type raceStateEnvelope struct {
@@ -3430,6 +3433,7 @@ func main() {
 	var raceAudioEnglishVoice string
 	var raceAudioJapaneseVoice string
 	var raceAudioSpeed float64
+	var raceAudioBrowserKokoro bool
 	var ayameSignalingURL string
 	var ayameClientIDPrefix string
 	var ayameSignalingKey string
@@ -3461,6 +3465,7 @@ func main() {
 	flag.StringVar(&raceAudioEnglishVoice, "race-audio-en-voice", raceAudioDefaultEnglishVoice, "English voice name sent to the race audio service")
 	flag.StringVar(&raceAudioJapaneseVoice, "race-audio-ja-voice", raceAudioDefaultJapaneseVoice, "Japanese voice name sent to the race audio service")
 	flag.Float64Var(&raceAudioSpeed, "race-audio-speed", 1.04, "race audio speech speed from 0.5 to 2.0")
+	flag.BoolVar(&raceAudioBrowserKokoro, "race-audio-browser-kokoro", true, "advertise Browser Kokoro synthesis to Pilot viewers")
 	flag.StringVar(&ayameSignalingURL, "ayame-signaling-url", "", "Ayame signaling WebSocket URL for external pilot distribution")
 	flag.StringVar(&ayameClientIDPrefix, "ayame-client-id-prefix", "momo-relay", "Ayame client ID prefix; source name is appended")
 	flag.StringVar(&ayameSignalingKey, "ayame-signaling-key", strings.TrimSpace(os.Getenv("MOMO_AYAME_SIGNALING_KEY")), "Ayame backend signaling key for external pilot distribution; prefer MOMO_AYAME_SIGNALING_KEY")
@@ -3519,6 +3524,7 @@ func main() {
 		raceAudioEnglishVoice,
 		raceAudioJapaneseVoice,
 		raceAudioSpeed,
+		raceAudioBrowserKokoro,
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -3710,6 +3716,8 @@ func main() {
 		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitRecoveryTick)))
 	mux.HandleFunc("/api/v1/gameplay/pit-presence-events",
 		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitPresenceEvent)))
+	mux.HandleFunc("/api/v1/race-audio/announcements",
+		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.serveRaceAudioAnnouncement)))
 	mux.HandleFunc("/garage.html", garagePolicy.wrap(operationsPageHandler(garageHTML)))
 	mux.Handle("/", webAssetHandler(webRoot))
 	mux.HandleFunc("/pilot", func(w http.ResponseWriter, req *http.Request) {

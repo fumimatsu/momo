@@ -60,6 +60,33 @@ uv run python .\race_audio_service.py `
   --engine kokoro
 ```
 
+### 日本語イベント用VOICEVOX
+
+VOICEVOXを同じPCの`127.0.0.1:50021`で先に起動する。MADSYSTEMの通常設定に寄せ、話者は
+`†聖騎士 紅桜†`ノーマル（speaker ID `51`）、速度は`1.0`とする。
+
+```powershell
+cd C:\src\momo\tools\race-audio-service
+$tokenFile = Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets\race-audio-service-token.txt'
+$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
+uv run python .\race_audio_service.py `
+  --listen 0.0.0.0:18090 `
+  --engine voicevox `
+  --voicevox-url http://127.0.0.1:50021 `
+  --voicevox-speaker 51
+```
+
+MADSYSTEMはVOICEVOX GUI側のカスタム`preset_id=2`を参照するが、presetは端末間で共有されない。
+Race Audio Serviceはspeaker IDと速度を明示し、VOICEVOXの既定pitch `0.0`、intonation `1.0`、
+volume `1.0`を使う。完全一致が必要になった場合は、MADSYSTEM実機のpreset内容を別途採取する。
+
+Race Operations Consoleの`FORMATION + START`は、CoordinatorからRelayの
+`POST /api/v1/race-audio/announcements`を呼ぶ。Relayは固定の
+`pre_race_formation`だけを受け付け、ロスター全車分のPilot audio trackを確認してからVOICEVOXで1回だけ
+生成し、同じOpus packet列を全員へ配る。任意文言、話者ID、URLはAPIから指定できない。
+この内部APIは`MOMO_RELAY_GAMEPLAY_TOKEN`と`-gameplay-allow-cidr`で保護する。Coordinatorにも同じtokenと
+`relayGameplayBaseUrl`が必要である。
+
 起動後、同じ PC で確認する。
 
 ```powershell
@@ -212,6 +239,18 @@ $env:MOMO_RACE_AUDIO_SERVICE_TOKEN = '<TTS service と同じ token>'
 -race-audio-speed 1.04
 ```
 
+VOICEVOXを全Pilotの中央生成経路として使う場合は、Browser Kokoroを広告せず、日本語と速度`1.0`を指定する。
+
+```powershell
+.\tools\start-mads-observer.ps1 `
+  -RaceAudioDefaultLanguage ja-JP `
+  -RaceAudioSpeed 1.0 `
+  -DisableBrowserKokoro
+```
+
+この時Relayが通知するmodeは`remote`だけになる。Pilot Viewerの`Race Voice`は`日本語`を選択する。
+`Off`を選ぶと中央VOICEVOXを含むレース音声全体が無効になる。
+
 Relay のビルドと再起動だけでは不十分である。TTS service の起動、URL、token、Race Control 接続を
 すべて確認する。
 
@@ -241,7 +280,7 @@ Relay log の synthesis error を確認する。
 
 1. `GET /healthz` が TTS host と `11.100` の両方から成功する。
 2. Relay status と Race Control の race channel が接続済みである。
-3. Viewer を再接続し、`momo-race-audio` capability を確認する。
+3. Viewer を再接続し、`momo-race-audio` capabilityのmodeが`remote`だけであることを確認する。
 4. 新しい LAP で radio cue と LAP 音声を 1 回だけ再生する。
 5. GOAL で finish 音声を 1 回だけ再生する。
 6. TTS 再生中だけ M5Audio gain が 40% になり、終了後 100% へ戻る。

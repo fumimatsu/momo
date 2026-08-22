@@ -1,6 +1,6 @@
 # Race Audio Scaling Implementation Plan
 
-Status: Phase 1 automated verification complete; live race validation pending
+Status: Phase 1 and the first central pre-race slice are implemented; live race validation pending
 
 ## Goal
 
@@ -90,6 +90,14 @@ Initial global events are pre-race briefing, grid ready, race start warning,
 finish and safety announcements. Countdown light sounds remain local and
 clock-based so audio generation cannot affect the start signal.
 
+The first implemented slice is `pre_race_formation`. Race Operations sends a
+fixed command for the locked `raceRunId` and complete car set. Relay accepts no
+arbitrary text, synthesizes the Japanese phrase once, queues the same Opus clip
+to every active Pilot track, and returns its duration. Coordinator waits for
+that duration plus the configured formation hold before invoking the existing
+Countdown-to-Green state machine. A missing Pilot audio track, Race Voice Off,
+or synthesis failure leaves the run Prepared.
+
 ## Phase 3: remove central prepare work for fixed phrases
 
 For 20 to 30 cars, browser inference scales with Pilot hardware, but central
@@ -127,8 +135,8 @@ For 20 to 30 cars, browser inference scales with Pilot hardware, but central
 | A4 | Relay validation, rate limit and fixed templates | done |
 | A5 | Viewer distribution sync and automated tests | done |
 | A6 | Live multi-car gap and audio-priority validation | pending |
-| B1 | Server-level global event detector | pending |
-| B2 | One-clip multi-Pilot Opus broadcast | pending |
+| B1 | Server-level global event detector | partial: fixed pre-race command complete |
+| B2 | One-clip multi-Pilot Opus broadcast | automated verification complete |
 | B3 | Pre-race announcement operational test | pending |
 | C1 | Versioned browser phrase grammar | pending |
 | C2 | 32-Pilot prepare/inference load test | pending |

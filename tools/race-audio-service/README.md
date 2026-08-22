@@ -22,6 +22,26 @@ Kokoro は起動時に英語`am_michael`と日本語`jf_alpha`をウォームア
 初回LAPにONNX初期化や日本語辞書初期化を混ぜないため、起動完了まで数秒かかる。
 Relayの既定voiceは英語`am_michael`である。
 
+### VOICEVOX Japanese event profile
+
+日本語中心のローカルイベントでは、MADSYSTEMの通常設定に合わせて
+`†聖騎士 紅桜†`のノーマル（speaker ID `51`）と速度`1.0`を使う。
+MADSYSTEMは`audio_query_from_preset?preset_id=2`を呼ぶが、VOICEVOXのカスタムpresetは
+端末ローカルであり、このserviceの必須条件にはしない。pitch `0.0`、intonation `1.0`、volume `1.0`は
+VOICEVOXのspeaker既定値を使う。
+
+```powershell
+$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = '<random-token>'
+uv run python .\race_audio_service.py `
+  --listen 0.0.0.0:18090 `
+  --engine voicevox `
+  --voicevox-url http://127.0.0.1:50021 `
+  --voicevox-speaker 51
+```
+
+Relayは`-race-audio-speed 1.0 -race-audio-browser-kokoro=false`で起動する。Pilot Viewerの
+`Race Voice`は`日本語`を選ぶ。`Off`はローカル生成だけでなく中央VOICEVOX音声も停止する。
+
 ## Comparison engines
 
 ### Browser Pilot Kokoro

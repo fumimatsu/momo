@@ -14,6 +14,7 @@ param(
     [string]$RaceAudioJapaneseVoice = 'jf_alpha',
     [ValidateRange(0.5, 2.0)]
     [double]$RaceAudioSpeed = 1.04,
+    [switch]$DisableBrowserKokoro,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
     [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
@@ -317,6 +318,9 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
         $relayArgs += '-race-audio-ja-voice', $RaceAudioJapaneseVoice.Trim()
         $relayArgs += '-race-audio-speed', $RaceAudioSpeed.ToString(
             '0.00', [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($DisableBrowserKokoro) {
+            $relayArgs += '-race-audio-browser-kokoro=false'
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
         $relayArgs += '-telemetry-log-dir', $TelemetryLogDirectory.Trim()

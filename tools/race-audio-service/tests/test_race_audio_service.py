@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import threading
+import urllib.parse
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -14,12 +17,70 @@ from race_audio_service import (
     KokoroEngine,
     RaceAudioApplication,
     RaceAudioHTTPServer,
+    VoicevoxEngine,
     _normalize_piper_text,
     encode_opus_packets,
     parse_prompt_request,
     parse_synthesis_request,
     require_token_for_non_loopback,
 )
+
+
+class _FakeHTTPResponse:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_FakeHTTPResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _pcm_wave_fixture() -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24_000)
+        wav.writeframes(b"\x00\x00" * 240)
+    return output.getvalue()
+
+
+def test_voicevox_uses_madsystem_speaker_and_speed(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[object] = []
+    query = {
+        "speedScale": 1.0,
+        "pitchScale": 0.0,
+        "intonationScale": 1.0,
+        "volumeScale": 1.0,
+    }
+
+    def fake_urlopen(request: object, timeout: int) -> _FakeHTTPResponse:
+        requests.append(request)
+        assert timeout in {10, 20}
+        url = request.full_url  # type: ignore[attr-defined]
+        if "/audio_query?" in url:
+            parameters = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            assert parameters["speaker"] == ["51"]
+            return _FakeHTTPResponse(json.dumps(query).encode("utf-8"))
+        payload = json.loads(request.data)  # type: ignore[attr-defined]
+        assert payload["speedScale"] == 1.0
+        assert payload["outputSamplingRate"] == 24_000
+        assert payload["outputStereo"] is False
+        return _FakeHTTPResponse(_pcm_wave_fixture())
+
+    monkeypatch.setattr("race_audio_service.urllib.request.urlopen", fake_urlopen)
+    engine = VoicevoxEngine("http://127.0.0.1:50021", 51)
+    samples, sample_rate = engine.synthesize("4周目、13.715", "ja-JP", "unused", 1.0)
+
+    assert len(requests) == 2
+    assert samples.shape == (240,)
+    assert sample_rate == 24_000
+    assert engine.identity.endswith("speaker-51")
 
 
 def test_http_server_accepts_a_full_pilot_field_burst() -> None:

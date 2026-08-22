@@ -66,6 +66,7 @@ type raceAudioServiceClient struct {
 	englishVoice    string
 	japaneseVoice   string
 	speed           float64
+	browserKokoro   bool
 	httpClient      *http.Client
 }
 
@@ -332,7 +333,7 @@ func (queue *raceAudioJobQueue) dequeue(ctx context.Context) (raceAudioJob, bool
 }
 
 func newRaceAudioServiceClient(baseURL string, token string, defaultLanguage string,
-	englishVoice string, japaneseVoice string, speed float64) (*raceAudioServiceClient, error) {
+	englishVoice string, japaneseVoice string, speed float64, browserKokoro bool) (*raceAudioServiceClient, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
 		return nil, nil
@@ -366,8 +367,24 @@ func newRaceAudioServiceClient(baseURL string, token string, defaultLanguage str
 		englishVoice:    strings.TrimSpace(englishVoice),
 		japaneseVoice:   strings.TrimSpace(japaneseVoice),
 		speed:           speed,
+		browserKokoro:   browserKokoro,
 		httpClient:      &http.Client{Timeout: raceAudioSynthesisTimeout},
 	}, nil
+}
+
+func (client *raceAudioServiceClient) supportedModes() []string {
+	modes := []string{raceAudioModeRemote}
+	if client != nil && client.browserKokoro {
+		modes = append(modes, raceAudioModeBrowserKokoro)
+	}
+	return modes
+}
+
+func (client *raceAudioServiceClient) supportsMode(mode string) bool {
+	if mode == raceAudioModeRemote {
+		return true
+	}
+	return client != nil && client.browserKokoro && mode == raceAudioModeBrowserKokoro
 }
 
 func normalizeRaceAudioLanguage(value string) (string, error) {
@@ -1302,6 +1319,8 @@ func (source *raceAudioSource) dispatch(parent context.Context, job raceAudioJob
 		return
 	}
 	clip.event = event
+	client.raceAudioQueueMu.Lock()
+	defer client.raceAudioQueueMu.Unlock()
 	select {
 	case client.raceAudioQueue <- clip:
 		source.relay.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("ready", language, event, durationMS, ""))
@@ -1448,7 +1467,7 @@ func (r *relay) handleRaceAudioChannel(client *viewer, channel *webrtc.DataChann
 			Version:  raceAudioProtocolVersion,
 			State:    "enabled",
 			Language: language,
-			Modes:    []string{raceAudioModeRemote, raceAudioModeBrowserKokoro},
+			Modes:    r.raceAudio.service.supportedModes(),
 		})
 	})
 	channel.OnMessage(func(message webrtc.DataChannelMessage) {
@@ -1473,14 +1492,14 @@ func (r *relay) handleRaceAudioChannel(client *viewer, channel *webrtc.DataChann
 				return
 			}
 			mode, err := normalizeRaceAudioMode(preference.Mode)
-			if err != nil {
+			if err != nil || !r.raceAudio.service.supportsMode(mode) {
 				return
 			}
 			client.raceAudioLanguage.Store(language)
 			client.raceAudioMode.Store(mode)
 			log.Printf("source %q: viewer %d race audio language=%s mode=%s", r.name, client.id, language, mode)
 		case "race_audio_callout_request":
-			if client.raceAudioModeValue() != raceAudioModeBrowserKokoro || r.activeRaceAudioPilotID() != client.id {
+			if r.activeRaceAudioPilotID() != client.id {
 				return
 			}
 			var request raceAudioCalloutRequest

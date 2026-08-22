@@ -73,7 +73,8 @@ ViewerへRace Audio Service tokenや辞書を配布しない。全体実況は�
 前後差通知は既存のReliableな`momo-race-audio` DataChannelを双方向で使う。ブラウザは任意文言を送れず、
 `gap_ahead | gap_behind`、車番、100 ms単位のgap、64文字以内のrequest IDだけを送る。Relayは
 `前、11号車、差0.8`または`Car 11 ahead. Gap zero point eight seconds`相当の固定文言に変換し、
-`/v1/prepare`結果だけを同じPilotへ返す。正式な`carNumber`がTiming/Directoryから届くまでは、
+`browser-kokoro`では`/v1/prepare`結果を、`remote`では中央生成したOpusを同じPilotだけへ返す。
+正式な`carNumber`がTiming/Directoryから届くまでは、
 `CP-2`や`FPV-02`の末尾番号を移行用fallbackとして使う。
 
 2026-08-19の20文比較では、ブラウザWebGPU/FP32がgeneration P50 388 ms、P95 524 ms、Python基準との
@@ -311,7 +312,9 @@ Viewer から Relay への設定:
 ```
 
 `mode`は`remote`または`browser-kokoro`である。未指定は後方互換のため`remote`とする。Viewerは
-WebGPU/FP32 modelのload完了前に`browser-kokoro`を送らない。
+WebGPU/FP32 modelのload完了前に`browser-kokoro`を送らない。Relayを
+`-race-audio-browser-kokoro=false`で起動した場合はcapabilityに`remote`だけを載せ、Viewerから届いた
+`browser-kokoro` preferenceも受理しない。
 
 Relay から Viewer への message は `RACE_AUDIO:` prefix の後ろに JSON を置く。
 
@@ -340,8 +343,9 @@ Relay から Viewer への message は `RACE_AUDIO:` prefix の後ろに JSON �
 `state`は`queued`、`prompt`、`ready`、`playing`、`ended`、`failed`を使う。`prompt`は
 `lap_complete`のBrowser Kokoro用で、phonemesとmodel input IDsを含む。Viewerは生成中に次のLAPが来たら
 最新1件だけを残し、古い生成結果を再生しない。`failed`ではViewerが選択言語の`fallbackText`をWeb Speech
-APIで読む。capabilityは同じprefixで`type: race_audio_capabilities`、`state: enabled`と
-`modes: ["remote", "browser-kokoro"]`を送る。
+APIで読む。capabilityは同じprefixで`type: race_audio_capabilities`、`state: enabled`と利用可能な
+`modes`を送る。中央VOICEVOX運用では`modes: ["remote"]`、Browser Kokoro併用時は
+`modes: ["remote", "browser-kokoro"]`となる。
 
 `eventId` は `(raceRunId, carId, kind, lap)` から決める。timing correction で lap time が変わっても同じ LAP を
 再度読まない。Relay 再起動または途中接続時は、その時点の既存 `lapHistory` を baseline とし、過去 LAP を

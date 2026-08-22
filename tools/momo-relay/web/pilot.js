@@ -3282,9 +3282,8 @@
 	}
 
 	function ensureBrowserKokoroRuntime(options = {}) {
-		const allowBeforeCapability = options.allowBeforeCapability === true;
 		if (!isRaceAnnouncementEnabled() || browserKokoroFailure ||
-			(!allowBeforeCapability && !remoteRaceAudioModes.has(browserKokoro?.MODE)) ||
+			!remoteRaceAudioModes.has(browserKokoro?.MODE) ||
 			!browserKokoro?.isSupported?.(window)) {
 			return Promise.resolve(false);
 		}
@@ -3422,7 +3421,7 @@
       suppressGapBehind,
     });
     if (!callout || !isRaceAnnouncementEnabled() || !remoteRaceAudioEnabled ||
-        getRaceAudioMode() !== browserKokoro?.MODE || raceAudioChannel?.readyState !== 'open') {
+        raceAudioChannel?.readyState !== 'open') {
       return false;
     }
     try {
@@ -3450,7 +3449,7 @@
 		stopRaceAnnouncement();
 		selectedRaceAnnouncementVoiceName = '';
 		if (isRaceAnnouncementEnabled()) prepareRaceAnnouncement();
-		ensureBrowserKokoroRuntime({ allowBeforeCapability: true, reason: 'language' });
+		ensureBrowserKokoroRuntime({ reason: 'language' });
 		sendRaceAudioPreference();
 		recordEvent('race audio preference', nextLanguage);
 	}
@@ -7060,7 +7059,6 @@
       updateUiState();
       return;
     }
-		ensureBrowserKokoroRuntime({ allowBeforeCapability: true, reason: 'connect' });
     if (roomLockBusy) {
       return;
     }

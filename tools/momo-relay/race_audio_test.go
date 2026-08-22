@@ -516,7 +516,7 @@ func TestRaceAudioCalloutRateLimitAndDeduplication(t *testing.T) {
 
 func TestRaceAudioServiceClientDefaultsToMichael(t *testing.T) {
 	client, err := newRaceAudioServiceClient(
-		"http://127.0.0.1:18090", "", "en-US", "", "", 1.04,
+		"http://127.0.0.1:18090", "", "en-US", "", "", 1.04, true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -576,7 +576,7 @@ func TestRaceAudioServiceClientUsesBearerTokenAndDecodesPackets(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	client, err := newRaceAudioServiceClient(server.URL, token, "en-US", "af_heart", "jf_alpha", 1.04)
+	client, err := newRaceAudioServiceClient(server.URL, token, "en-US", "af_heart", "jf_alpha", 1.04, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,7 +623,7 @@ func TestRaceAudioServiceClientPreparesBrowserKokoroPrompt(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	client, err := newRaceAudioServiceClient(server.URL, token, "en-US", "am_michael", "jf_alpha", 1.04)
+	client, err := newRaceAudioServiceClient(server.URL, token, "en-US", "am_michael", "jf_alpha", 1.04, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -669,14 +669,39 @@ func TestNormalizeRaceAudioModeKeepsLegacyPreferenceRemote(t *testing.T) {
 	}
 }
 
+func TestRaceAudioServiceClientCanRestrictPilotToRemoteAudio(t *testing.T) {
+	remoteOnly, err := newRaceAudioServiceClient(
+		"http://127.0.0.1:18090", "", "ja-JP", "am_michael", "jf_alpha", 1.0, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modes := remoteOnly.supportedModes(); len(modes) != 1 || modes[0] != raceAudioModeRemote {
+		t.Fatalf("remote-only modes = %#v", modes)
+	}
+	if !remoteOnly.supportsMode(raceAudioModeRemote) || remoteOnly.supportsMode(raceAudioModeBrowserKokoro) {
+		t.Fatal("remote-only client accepted an unsupported browser mode")
+	}
+
+	hybrid, err := newRaceAudioServiceClient(
+		"http://127.0.0.1:18090", "", "ja-JP", "am_michael", "jf_alpha", 1.0, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modes := hybrid.supportedModes(); len(modes) != 2 || modes[1] != raceAudioModeBrowserKokoro {
+		t.Fatalf("hybrid modes = %#v", modes)
+	}
+}
+
 func TestRaceAudioServiceClientRequiresTokenForNonLoopbackURL(t *testing.T) {
 	if _, err := newRaceAudioServiceClient(
-		"http://192.168.11.105:18090", "", "en-US", "af_heart", "jf_alpha", 1.04,
+		"http://192.168.11.105:18090", "", "en-US", "af_heart", "jf_alpha", 1.04, true,
 	); err == nil || !strings.Contains(err.Error(), "TOKEN is required") {
 		t.Fatalf("non-loopback URL without token returned %v", err)
 	}
 	if _, err := newRaceAudioServiceClient(
-		"http://127.0.0.1:18090", "", "en-US", "af_heart", "jf_alpha", 1.04,
+		"http://127.0.0.1:18090", "", "en-US", "af_heart", "jf_alpha", 1.04, true,
 	); err != nil {
 		t.Fatalf("loopback fixture URL was rejected: %v", err)
 	}
@@ -847,6 +872,7 @@ func TestRaceAudioExternalServiceDeliversEnglishAndJapanese(t *testing.T) {
 		englishVoice,
 		japaneseVoice,
 		1.04,
+		true,
 	)
 	if err != nil {
 		t.Fatal(err)
