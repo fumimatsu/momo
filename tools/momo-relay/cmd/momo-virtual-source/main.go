@@ -24,7 +24,10 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 )
 
-const virtualSourcePrefix = "/ws/"
+const (
+	virtualSourcePrefix   = "/ws/"
+	maximumVirtualSources = 64
+)
 
 var virtualH264Codec = webrtc.RTPCodecCapability{
 	MimeType:    webrtc.MimeTypeH264,
@@ -127,8 +130,8 @@ func parseSourceIDs(value string) ([]string, error) {
 		seen[sourceID] = struct{}{}
 		result = append(result, sourceID)
 	}
-	if len(result) == 0 || len(result) > 32 {
-		return nil, fmt.Errorf("sources must contain 1 to 32 IDs")
+	if len(result) == 0 || len(result) > maximumVirtualSources {
+		return nil, fmt.Errorf("sources must contain 1 to %d IDs", maximumVirtualSources)
 	}
 	sort.Strings(result)
 	return result, nil

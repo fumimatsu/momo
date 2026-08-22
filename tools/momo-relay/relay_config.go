@@ -11,7 +11,7 @@ import (
 
 const (
 	relayConfigVersion       = 1
-	maximumConfiguredSources = 32
+	maximumConfiguredSources = 64
 	relaySourceKindVehicle   = "vehicle"
 	relaySourceKindVenue     = "venue"
 )

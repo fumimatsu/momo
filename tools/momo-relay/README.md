@@ -147,6 +147,13 @@ Relay 起動時に管理 LAN の CIDR を明示する。
 Windows Firewall も同じ管理用サブネットだけに制限する。Relay、Pi、Observer をインターネットへ
 公開するための機能ではない。
 
+Dedicated Marker Receiverは同じ読み取り専用ポリシー下の
+`GET /api/v1/marker-sources`から、そのrunで検出対象とするvehicle sourceを取得する。race rosterが
+lock済みならroster、run開始前ならDRIVE ONのsourceを返す。shadow/replay検証に限り
+`?selection=all`で設定済みの全vehicle sourceを取得できる。`ETag`はrunまたはsource構成が変わった時だけ
+更新され、接続healthやrace sequenceの変化では更新されない。別PCでMarker Receiverを動かす場合も
+`-operations-allow-cidr`にはそのPCを含む管理LANだけを指定する。
+
 API version 3ではversion 2の接続診断に加え、sourceごとの`drive.enabled`、`revision`、
 `sessionId`、`changedAt`、`reason`を返す。`ownerViewerId`は現在のViewer接続を診断するための
 一時IDであり、人のパイロットIDとして扱わない。実際のON/OFF遷移だけがrevisionを増やし、
@@ -165,7 +172,7 @@ JSONへまとめられる。雛形は`relay-config.example.json`である。
 ../start-mads-observer.ps1 -RelayConfigPath ./momo-relay/relay-config.json -RebuildRelay
 ```
 
-`version`は現在`1`、有効source数は`1..32`である。未知の項目、重複source ID、重複car ID、
+`version`は現在`1`、有効source数は`1..64`である。未知の項目、重複source ID、重複car ID、
 重複`ayamePilotRoom`、`ws://`/`wss://`以外のURLは起動時に拒否する。`enabled: false`で予備sourceを設定に残せる。
 `-config`は`-upstream`、`-source`、`-race-car`、`-ayame-pilot-room`と併用しない。
 

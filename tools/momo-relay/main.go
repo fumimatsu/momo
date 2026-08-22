@@ -3709,6 +3709,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/status", operationsPolicy.wrap(serverRelay.serveOperationsStatus))
+	mux.HandleFunc("/api/v1/marker-sources", operationsPolicy.wrap(serverRelay.serveMarkerSources))
 	mux.HandleFunc("/api/v1/coordinator-directory-cache", operationsPolicy.wrap(serverRelay.serveCoordinatorDirectoryCache))
 	mux.HandleFunc("/api/v1/sources", sourceAdminPolicy.wrap(sourceAdminTokenHandler(sourceAdminToken, serverRelay.serveSources)))
 	mux.HandleFunc("/api/v1/sources/", sourceAdminPolicy.wrap(sourceAdminTokenHandler(sourceAdminToken, serverRelay.serveSourceByID)))

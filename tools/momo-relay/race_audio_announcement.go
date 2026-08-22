@@ -165,8 +165,8 @@ func validateRaceAudioAnnouncementRequest(request raceAudioAnnouncementRequest) 
 		!raceAudioAnnouncementKeyPattern.MatchString(strings.TrimSpace(request.RaceRunID)) {
 		return nil, fmt.Errorf("schemaVersion=1, command=pre_race_formation, commandId, and raceRunId are required")
 	}
-	if len(request.CarIDs) < 1 || len(request.CarIDs) > 32 {
-		return nil, fmt.Errorf("carIds must contain 1..32 cars")
+	if len(request.CarIDs) < 1 || len(request.CarIDs) > maximumConfiguredSources {
+		return nil, fmt.Errorf("carIds must contain 1..%d cars", maximumConfiguredSources)
 	}
 	carIDs := make([]string, 0, len(request.CarIDs))
 	seen := make(map[string]struct{}, len(request.CarIDs))

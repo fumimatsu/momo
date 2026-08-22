@@ -112,6 +112,16 @@ class MarkerObservationIpcTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "another Marker Observer producer"):
                 MarkerObservationSharedMemoryWriter(mapping_name)
 
+    def test_writer_updates_advertised_detection_rate(self):
+        mapping_name = rf"Local\MomoMarkerObservationTest-{uuid.uuid4()}"
+        with MarkerObservationSharedMemoryWriter(mapping_name, 50) as writer:
+            writer.set_detection_hz(33)
+            self.assertEqual(33, writer.detection_hz)
+            self.assertEqual(33, struct.unpack_from("<I", writer.mapping, 36)[0])
+
+            with self.assertRaisesRegex(ValueError, "positive"):
+                writer.set_detection_hz(0)
+
 
 if __name__ == "__main__":
     unittest.main()

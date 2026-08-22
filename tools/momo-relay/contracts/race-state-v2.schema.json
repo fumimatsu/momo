@@ -34,7 +34,7 @@
     },
     "roster": { "$ref": "#/$defs/activeRoster" },
     "self": { "$ref": "#/$defs/standing" },
-    "standings": { "type": "array", "items": { "$ref": "#/$defs/standing" } },
+    "standings": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/standing" } },
     "lapHistory": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/lapHistory" } }
   },
   "$defs": {
@@ -45,7 +45,7 @@
       "properties": {
         "vehicleId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "sourceId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "carId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "carId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "carName": { "type": "string", "minLength": 1, "maxLength": 128 },
         "displayNumber": { "type": "string", "minLength": 1, "maxLength": 32 },
         "pilotId": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -69,7 +69,7 @@
         "participants": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 4,
+          "maxItems": 64,
           "items": { "$ref": "#/$defs/rosterParticipant" }
         },
         "updatedAtUnixMs": { "type": "integer", "minimum": 0 },
@@ -93,11 +93,11 @@
       "additionalProperties": false,
       "required": ["carId", "position", "status", "lap"],
       "properties": {
-        "carId": { "type": "string", "minLength": 1 },
+        "carId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "roomId": { "type": "string" },
         "driver": { "type": "string" },
         "directionStatus": { "enum": ["normal", "wrong_way", "unknown"] },
-        "position": { "type": "integer", "minimum": 1 },
+        "position": { "type": "integer", "minimum": 1, "maximum": 64 },
         "status": { "type": "string", "minLength": 1, "maxLength": 64 },
         "lap": { "type": "integer", "minimum": 0 },
         "lapTimeMs": { "type": "integer", "minimum": 0 },
@@ -106,7 +106,7 @@
         "currentLapMs": { "type": "integer", "minimum": 0 },
         "intervalToAheadMs": { "type": "integer", "minimum": 0 },
         "lapDeltaToAhead": { "type": "integer", "minimum": 1 },
-        "lappingCarBehindId": { "type": "string", "minLength": 1 },
+        "lappingCarBehindId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "lappingGapMs": { "type": "integer", "minimum": 1 },
         "currentSector": { "type": "integer", "minimum": 1, "maximum": 6 },
         "sectorCount": { "type": "integer", "minimum": 1, "maximum": 6 },
@@ -133,7 +133,7 @@
       "additionalProperties": false,
       "required": ["carId", "lap", "completedAtRaceMs", "lapTimeMs", "sectorTimes"],
       "properties": {
-        "carId": { "type": "string", "minLength": 1 },
+        "carId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "lap": { "type": "integer", "minimum": 1 },
         "completedAtRaceMs": { "type": "integer", "minimum": 0 },
         "lapTimeMs": { "type": "integer", "minimum": 1 },

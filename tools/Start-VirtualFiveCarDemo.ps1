@@ -2,11 +2,14 @@
 param(
     [string]$InputPath = "$HOME\Downloads\cpu-shadow-20260731T093643811Z-9ee91411\cpu-shadow-20260731T093643811Z-9ee91411.webm",
     [string]$FFmpegPath = '',
+    [string]$GoExecutable = '',
     [string]$ListenHost = '127.0.0.1',
     [int]$VirtualSourcePort = 18880,
     [int]$RelayPort = 18190,
-    [ValidateRange(1, 32)]
+    [ValidateRange(1, 64)]
     [int]$CarCount = 5,
+    [ValidateRange(1, 60)]
+    [int]$FrameRate = 50,
     [switch]$ForceTranscode,
     [switch]$NoOpen
 )
@@ -16,7 +19,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $relayRoot = Join-Path $PSScriptRoot 'momo-relay'
 $artifactRoot = Join-Path $PSScriptRoot '.artifacts\virtual-five-car'
 $runtimePath = Join-Path $artifactRoot 'runtime.json'
-$h264Path = Join-Path $artifactRoot 'recording-upright-30fps.h264'
+$h264Path = Join-Path $artifactRoot "recording-upright-${FrameRate}fps.h264"
 $virtualSourceExe = Join-Path $artifactRoot 'momo-virtual-source.exe'
 $relayExe = Join-Path $artifactRoot 'momo-relay.exe'
 $virtualSourceLog = Join-Path $artifactRoot 'momo-virtual-source.log'
@@ -52,13 +55,14 @@ if ([string]::IsNullOrWhiteSpace($FFmpegPath)) {
 if ([string]::IsNullOrWhiteSpace($FFmpegPath) -or -not (Test-Path -LiteralPath $FFmpegPath -PathType Leaf)) {
     throw 'ffmpeg.exe was not found. Pass -FFmpegPath explicitly.'
 }
+$go = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') -RequestedPath $GoExecutable -RequiredVersionPattern 'go1\.26(?:\.|\s)'
 
 if ($ForceTranscode -or -not (Test-Path -LiteralPath $h264Path -PathType Leaf)) {
     Write-Host 'Preparing upright H.264 loop input...'
     & $FFmpegPath -hide_banner -loglevel warning -y -i $InputPath -an `
-        -vf 'hflip,vflip,scale=960:528' -r 30 `
+        -vf 'hflip,vflip,scale=960:528' -r $FrameRate `
         -c:v libx264 -preset veryfast -tune zerolatency -profile:v baseline -level 3.1 `
-        -pix_fmt yuv420p -g 30 -keyint_min 30 -sc_threshold 0 `
+        -pix_fmt yuv420p -g $FrameRate -keyint_min $FrameRate -sc_threshold 0 `
         -x264-params 'aud=1:repeat-headers=1' -f h264 $h264Path
     if ($LASTEXITCODE -ne 0) {
         throw "ffmpeg failed with exit code $LASTEXITCODE"
@@ -67,9 +71,9 @@ if ($ForceTranscode -or -not (Test-Path -LiteralPath $h264Path -PathType Leaf)) 
 
 Push-Location $relayRoot
 try {
-    & go build -o $virtualSourceExe .\cmd\momo-virtual-source
+    & $go build -o $virtualSourceExe .\cmd\momo-virtual-source
     if ($LASTEXITCODE -ne 0) { throw 'momo-virtual-source build failed' }
-    & go build -o $relayExe .
+    & $go build -o $relayExe .
     if ($LASTEXITCODE -ne 0) { throw 'momo-relay build failed' }
 }
 finally {
@@ -89,7 +93,7 @@ $relay = $null
 try {
     $virtualSource = Start-Process -FilePath $virtualSourceExe -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $virtualSourceLog -RedirectStandardError $virtualSourceErrorLog `
-        -ArgumentList @('-listen', "${ListenHost}:$VirtualSourcePort", '-input', $h264Path, '-fps', '30', '-sources', ($sourceIDs -join ','))
+        -ArgumentList @('-listen', "${ListenHost}:$VirtualSourcePort", '-input', $h264Path, '-fps', "$FrameRate", '-sources', ($sourceIDs -join ','))
 
     $relayEnvironmentNames = @(
         'MOMO_RELAY_SOURCE_REGISTRY',
@@ -128,6 +132,8 @@ try {
         relayPid = $relay.Id
         virtualSourceUrl = "http://${ListenHost}:$VirtualSourcePort"
         relayUrl = "http://${ListenHost}:$RelayPort"
+        frameRate = $FrameRate
+        carCount = $CarCount
         sources = $sourceIDs
     } | ConvertTo-Json | Set-Content -LiteralPath $runtimePath -Encoding utf8
 

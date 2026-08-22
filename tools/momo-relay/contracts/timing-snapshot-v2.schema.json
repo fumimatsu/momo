@@ -10,7 +10,7 @@
     "raceRunId": { "type": "string", "minLength": 1 },
     "sequence": { "type": "integer", "minimum": 1 },
     "allTimeMode": { "enum": ["elapsed", "countdown"] },
-    "standings": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/standing" } },
+    "standings": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/standing" } },
     "lapHistory": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/lapHistory" } }
   },
   "$defs": {
@@ -30,10 +30,10 @@
       "additionalProperties": false,
       "required": ["carId", "position", "status", "lap"],
       "properties": {
-        "carId": { "enum": ["CP-1", "CP-2", "CP-3", "CP-4"] },
+        "carId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "driver": { "type": "string" },
         "directionStatus": { "enum": ["normal", "wrong_way", "unknown"] },
-        "position": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "position": { "type": "integer", "minimum": 1, "maximum": 64 },
         "status": { "enum": ["racing", "finished", "retired"] },
         "lap": { "type": "integer", "minimum": 0 },
         "lapTimeMs": { "type": "integer", "minimum": 0 },
@@ -42,7 +42,7 @@
         "currentLapMs": { "type": "integer", "minimum": 0 },
         "intervalToAheadMs": { "type": "integer", "minimum": 0 },
         "lapDeltaToAhead": { "type": "integer", "minimum": 1 },
-        "lappingCarBehindId": { "enum": ["CP-1", "CP-2", "CP-3", "CP-4"] },
+        "lappingCarBehindId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "lappingGapMs": { "type": "integer", "minimum": 1 },
         "currentSector": { "type": "integer", "minimum": 1, "maximum": 6 },
         "sectorCount": { "type": "integer", "minimum": 1, "maximum": 6 },
@@ -73,7 +73,7 @@
       "additionalProperties": false,
       "required": ["carId", "lap", "completedAtRaceMs", "lapTimeMs", "sectorTimes"],
       "properties": {
-        "carId": { "enum": ["CP-1", "CP-2", "CP-3", "CP-4"] },
+        "carId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "lap": { "type": "integer", "minimum": 1 },
         "completedAtRaceMs": { "type": "integer", "minimum": 0 },
         "lapTimeMs": { "type": "integer", "minimum": 1 },

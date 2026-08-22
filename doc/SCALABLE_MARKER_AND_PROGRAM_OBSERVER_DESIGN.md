@@ -314,9 +314,11 @@ GPU detectorを直接呼び出すか、ローカルworkerを独立サービス�
 - 姿勢推定: marker ID判定だけの場合はOFF
 - corner refinement: 正確なcorner座標を使わない場合はOFF
 
-台数追加後に publication rate、処理 p95、CPU / GPU の運用余力を満たせない場合だけ、
-明示的に25 Hz profileへ切り替える。検出周期は台数から自動決定せず、実走録画のmarker visible durationと
-実機soak testで判断する。25 Hzへ落としても余力を満たさない場合はMarker Nodeを分割する。
+Dedicated Marker Receiverではnode全体の検出周期を`50 -> 40 -> 33 -> 25 Hz`の離散profileで
+自動調整する。車両別には変更せず、全sourceを同じtickでsampleする。Green中の自動降格を有効にする前に、
+通過確認を固定batch数ではなく経過時間と一意なsource sequenceで判定する。自動昇格は次のPrepareでだけ行い、
+25 Hzでも余力を満たさない場合は`capacity_exceeded`としてMarker Node分割を要求する。詳細契約は
+[Dynamic Marker Receiver and MLY2](../docs/issues/2026-08-23-dynamic-marker-receiver-mly2.md)を正本とする。
 
 ### 50 Hz live経路の現状
 
@@ -350,30 +352,29 @@ Relayへ直接接続する構成を採用する。
 
 ```text
 Relay
-  -> Dedicated Marker Receiver / WebRTC + hardware decode
-  -> source別 latest I420 Y plane / queue depth 1
-  -> GPU worker group
-       profile A: 4 source x 50 Hz
-       profile B: 8 source x 25 Hz
-  -> Local\MomoMarkerObservationsV1
+  -> Dedicated Marker Receiver / WebRTC + hardware decode (1..32 source)
+  -> MLY2 source別 latest I420 Y plane / queue depth 1
+  -> variable-size GPU batch / shared detection tick
+  -> Local\MomoMarkerObservationsV1 (1..32 source)
 ```
 
 Dedicated Marker ReceiverはSDL grid、BGRA合成、音声再生、共有FHD出力を持たない。sourceごとに
 独立した接続状態、sequence、frame age、reconnect backoffを管理し、1台停止時も他sourceのbatchを
-止めない。decode後は最新Y planeだけを保持し、古いframeをqueueしない。GPU workerは4 source単位の
-固定workspaceを基本とし、5から8台は2 groupへ分離する。1つのglobal batchへ8台を強制的に束ねると、
-遅い1台の再接続とframe到着jitterが全車のpublicationを落とすため採用しない。
+止めない。decode後はsourceごとに最新Y planeだけを保持し、古いframeをqueueしない。各検出tickでは
+全sourceの最新frameを同時にsnapshotし、freshnessまたはskew上限を外れたsourceだけを
+`videoValid=false`とする。遅いsourceを待ってglobal batchを止めず、同じframe sequenceを複数回の
+通過確認へ利用しない。
 
 現行`p2p-recv-multi`と`Local\MomoObserverLumaV1`はsource上限4をcompile-time固定しており、
-8台化の土台にはしない。Marker observation IPCは最大32 sourceを保持できるため維持する。
+動的台数化の土台にはしない。新しいMLY2は1 mappingで最大32 sourceの独立latest-frame slotを持つ。
+Marker observation IPCは最大32 sourceを保持できるため維持する。
 移行は次の順に行う。
 
 1. 現行Native Observer + GPU workerの4 source 50 Hzを10分、1時間soakする。
 2. Dedicated Marker Receiverへ同じ4 sourceを接続し、source sequence、frame age、marker parityをshadow比較する。
-3. 6、8 sourceを追加し、まず25 Hzで各source coverage 95%以上を確認する。
-4. 8 source 50 Hzは別profileとして測る。4 source groupを2つ同一GPUで逐次実行した結果を、
-   8 source 50 Hzの合格根拠にはしない。
-5. 8 sourceで余力20%を満たさない場合は、検出周期を黙って落とさずMarker Nodeを2台へ分割する。
+3. 5 sourceを1つのMLY2と可変GPU batchで50 Hz検証し、1 source停止時の残り4 sourceを確認する。
+4. 過負荷注入で50、40、33、25 Hzのnode全体遷移、ヒステリシス、frame freshnessを確認する。
+5. 8、12、20、32 sourceを順に追加し、25 Hzでも余力20%を満たさない点でMarker Nodeを分割する。
 
 2026-08-21の2 source実走では、Native Observerを50 Hz、GPU workerを50 Hzとして共有メモリ上の
 publication rate 49.195 Hzを確認した。5周レースは全LAPで3 sectorを取得し、Marker eventは全件1回目で
@@ -685,9 +686,9 @@ HDMI capture、Momo publisher、Relay、別PC Observerを通した後続作業�
 Marker Observerを20台対応にしても、race data contractが4台固定ならシステム全体は拡張できない。
 実装時には少なくとも次を別タスクとして扱う。
 
-- Race Controlの`TIMING_CAR_IDS`固定allowlistをactive race roster検証へ変更する
-- standings最大4台を設定可能な上限へ変更する
-- `carId`をopaque stringとして扱い、表示上のcar numberと分離する
+- Race Controlの固定allowlistは廃止済み。active race rosterに含まれるopaqueな`carId`で検証する
+- roster / standings / Relay sourceの契約上限は64へ統一済み。実運用上限は容量試験で下げられる
+- `carId`はopaque stringとして扱い、表示上のcar numberと分離する
 - MADSYSTEMの固定4台境界は拡張せず、外部Timing Engineへの移行比較とrollback条件を固定する
 - Relay、Viewer、Web Observerのレイアウトとbounded historyを20台で検証する
 - `sourceId -> carId -> driverId`をrace run開始時に固定し、途中で無断変更しない

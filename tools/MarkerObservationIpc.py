@@ -194,6 +194,16 @@ class MarkerObservationSharedMemoryWriter:
         self.sequence = next_sequence
         return next_sequence
 
+    def set_detection_hz(self, detection_hz: int) -> None:
+        if detection_hz < 1:
+            raise ValueError("detection_hz must be positive")
+        self._lock()
+        try:
+            struct.pack_into("<I", self.mapping, 36, detection_hz)
+        finally:
+            self._unlock()
+        self.detection_hz = detection_hz
+
     def close(self) -> None:
         if getattr(self, "mapping", None) is not None:
             self.mapping.close()
