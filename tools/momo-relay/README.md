@@ -374,6 +374,30 @@ Team Observer の選択正本は物理車両の `vehicleId` である。URL は 
 http://<relay-host>:8090/observer.html?teamVehicles=<vehicle-id-1>,<vehicle-id-2>
 ```
 
+### Virtual Momo fleet
+
+実車を用意せずに Relay と Team Observer の台数境界を確認する場合は、録画を H.264 へ変換し、
+Momo P2P WebSocket と互換の仮想上流としてループ配信できる。既定では既存の CPU shadow 録画を
+正立させ、5 本の独立した WebRTC / RTP session を隔離 Relay `127.0.0.1:18190` へ接続する。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\Start-VirtualFiveCarDemo.ps1
+```
+
+停止は次で行う。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\Stop-VirtualFiveCarDemo.ps1
+```
+
+台数を変える場合は `-CarCount 20` のように指定する。Relay は最大 32 source、Team Observer は
+最大 100 台を一覧化できるが、同時に接続して表示する映像は選択した最大 4 台である。
+
+このツールが再現するのは、複数 Momo 上流から Relay へ入る H.264 WebRTC / RTP と Observer への
+再配信である。S3 telemetry、実車 control、Marker Observer、Race Control の race state は生成しない。
+同一録画を複製するため、異なるカメラ映像のエンコード負荷やネットワーク損失を再現する試験でもない。
+Race Control と Coordinator の参加台数契約は別途拡張してから、5 台以上の正式な計時試験を行う。
+
 Relay は `GET /api/v1/team-observer-directory` で Coordinator の local Race Directory cache から
 非 secret の vehicle/pilot display projection を返し、`GET /api/v1/pilot-devices` で現在の vehicle
 source availability を返す。両 endpoint は Garage と同じ CIDR policy で保護する。Relay は private
