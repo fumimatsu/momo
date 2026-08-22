@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 800" role="img" aria-labelledby="title description">
+  <title id="title">Experience course map</title>
+  <desc id="description">Transparent course map with a road-style surface and Start, S1, and S2 boundaries. Raised sections and a pit lane are intentionally omitted.</desc>
+  <style>
+    .course-stroke {
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .course-shadow { stroke: rgba(0, 0, 0, .88); stroke-width: 50; }
+    .course-road { stroke: #28343a; stroke-width: 38; }
+    .course-reference { stroke: #6fcfe1; stroke-width: 3; }
+    .boundary-shadow { stroke: rgba(0, 0, 0, .82); stroke-width: 13; }
+    .boundary-line { stroke: #f0f5f6; stroke-width: 7; }
+    .boundary-label {
+      fill: #f0f5f6;
+      stroke: #071013;
+      stroke-width: 5;
+      paint-order: stroke fill;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-anchor: middle;
+    }
+    .sector-one .boundary-line { stroke: #70d9ee; }
+    .sector-one .boundary-label { fill: #70d9ee; }
+    .sector-two .boundary-line { stroke: #f0c84e; }
+    .sector-two .boundary-label { fill: #f0c84e; }
+  </style>
+
+  <defs>
+    <path
+      id="coursePath"
+      pathLength="1000"
+      d="M476 144
+         C555 144 617 177 646 222
+         C672 263 681 347 686 424
+         C690 491 690 561 687 619
+         C685 657 659 682 625 697
+         C584 715 541 704 510 688
+         C486 676 473 658 478 638
+         C484 616 506 596 544 578
+         C579 562 599 544 604 514
+         C610 477 607 430 597 398
+         C588 369 566 353 542 352
+         C520 351 502 365 480 380
+         C459 395 442 397 419 390
+         C391 382 367 365 341 348
+         C315 331 292 322 272 327
+         C247 333 229 351 218 377
+         C207 403 211 433 224 458
+         C239 486 264 504 292 513
+         C318 520 345 519 365 529
+         C390 542 403 566 403 591
+         C403 617 389 638 366 653
+         C341 670 308 674 274 673
+         C222 672 182 657 158 630
+         C134 603 132 563 134 513
+         C136 458 137 398 139 341
+         L142 286
+         C145 239 159 206 183 182
+         C210 155 249 148 287 148
+         C350 149 421 143 476 144
+         Z" />
+  </defs>
+
+  <g id="courseSurface" aria-label="Main course, clockwise from Start">
+    <use href="#coursePath" class="course-stroke course-shadow" />
+    <use href="#coursePath" class="course-stroke course-road" />
+    <use href="#coursePath" class="course-stroke course-reference" />
+  </g>
+
+  <g id="courseBoundaries" fill="none" stroke-linecap="round">
+    <g id="boundaryStart" data-course-progress="0" aria-label="Start and sector 3 end">
+      <line class="boundary-shadow" x1="476" y1="119" x2="476" y2="169" />
+      <line class="boundary-line" x1="476" y1="119" x2="476" y2="169" />
+      <text class="boundary-label" x="476" y="105">START</text>
+    </g>
+    <g id="boundaryS1" class="sector-one" data-course-progress="0.32346" aria-label="Sector 1 end">
+      <line class="boundary-shadow" x1="532" y1="555" x2="555" y2="595" />
+      <line class="boundary-line" x1="532" y1="555" x2="555" y2="595" />
+      <text class="boundary-label" x="507" y="548">S1</text>
+    </g>
+    <g id="boundaryS2" class="sector-two" data-course-progress="0.70503" aria-label="Sector 2 end">
+      <line class="boundary-shadow" x1="274" y1="648" x2="274" y2="698" />
+      <line class="boundary-line" x1="274" y1="648" x2="274" y2="698" />
+      <text class="boundary-label" x="274" y="730">S2</text>
+    </g>
+  </g>
+</svg>

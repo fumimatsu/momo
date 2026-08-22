@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#050708">
   <title>Momo Team Observer</title>
-  <link rel="stylesheet" href="observer.css?v=20260820-team-observer-v13">
-  <script src="/telemetry.js?v=20260820-team-observer-v13"></script>
-  <script src="../../race-ui-performance.js?v=20260820-team-observer-v13"></script>
-  <script type="module" src="observer.js?v=20260820-team-observer-v13"></script>
+  <link rel="stylesheet" href="observer.css?v=20260822-team-observer-v14">
+  <script src="/telemetry.js?v=20260822-team-observer-v14"></script>
+  <script src="../../race-ui-performance.js?v=20260822-team-observer-v14"></script>
+  <script src="../../course-layout.js?v=20260822-team-observer-v14"></script>
+  <script type="module" src="observer.js?v=20260822-team-observer-v14"></script>
 </head>
 <body>
   <div class="observer-app">
@@ -58,46 +59,30 @@
           </div>
         </div>
         <div class="track-stage">
-          <svg id="trackMap" class="track-map" viewBox="0 0 900 520" role="img" aria-label="Tokorozawa Base clockwise course reference">
+          <svg id="trackMap" class="track-map" viewBox="0 0 760 800" role="img" aria-label="Configured clockwise experience course">
             <defs>
               <filter id="markerGlow" x="-80%" y="-80%" width="260%" height="260%">
                 <feGaussianBlur stdDeviation="6" result="blur"></feGaussianBlur>
                 <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
               </filter>
-              <marker id="courseArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-                <path d="M 0 0 L 10 5 L 0 10 z"></path>
-              </marker>
             </defs>
-            <g class="pit-route" aria-label="Pit lane branch and rejoin">
-              <path class="pit-shadow" d="M850 320 C852 380 827 430 763 455 C704 477 615 483 557 466 C528 457 515 442 516 419 C517 394 504 378 478 355"></path>
-              <path class="pit-road" d="M850 320 C852 380 827 430 763 455 C704 477 615 483 557 466 C528 457 515 442 516 419 C517 394 504 378 478 355"></path>
-              <path id="pitPath" class="pit-line" pathLength="1000" d="M850 320 C852 380 827 430 763 455 C704 477 615 483 557 466 C528 457 515 442 516 419 C517 394 504 378 478 355"></path>
-            </g>
-
             <g aria-label="Main course, clockwise">
-              <path class="track-shadow" d="M855 230 C858 300 850 355 812 382 C770 414 690 430 600 418 C540 410 495 390 478 355 C459 317 475 287 508 273 C544 257 590 272 634 270 C690 268 730 241 734 207 C738 175 714 155 674 150 C610 140 520 150 443 168 C387 184 352 215 328 270 C303 328 242 374 154 375 C73 377 31 330 23 280 C17 240 19 190 32 151 C50 98 105 70 190 58 C330 39 620 39 755 64 C823 77 852 129 855 230"></path>
-              <path class="track-road" d="M855 230 C858 300 850 355 812 382 C770 414 690 430 600 418 C540 410 495 390 478 355 C459 317 475 287 508 273 C544 257 590 272 634 270 C690 268 730 241 734 207 C738 175 714 155 674 150 C610 140 520 150 443 168 C387 184 352 215 328 270 C303 328 242 374 154 375 C73 377 31 330 23 280 C17 240 19 190 32 151 C50 98 105 70 190 58 C330 39 620 39 755 64 C823 77 852 129 855 230"></path>
-              <path id="coursePath" class="track-line" pathLength="1000" d="M855 230 C858 300 850 355 812 382 C770 414 690 430 600 418 C540 410 495 390 478 355 C459 317 475 287 508 273 C544 257 590 272 634 270 C690 268 730 241 734 207 C738 175 714 155 674 150 C610 140 520 150 443 168 C387 184 352 215 328 270 C303 328 242 374 154 375 C73 377 31 330 23 280 C17 240 19 190 32 151 C50 98 105 70 190 58 C330 39 620 39 755 64 C823 77 852 129 855 230"></path>
+              <path class="track-shadow" data-course-path></path>
+              <path class="track-road" data-course-path></path>
+              <path id="coursePath" class="track-line" data-course-path pathLength="1000"></path>
             </g>
 
-            <g class="pit-overlay" aria-label="Pit recovery status">
-              <path id="pitRecoveryZone" class="pit-recovery-zone" d="M735 464 C681 480 614 482 568 469"></path>
-              <g class="pit-marker" transform="translate(645 476)">
-                <rect x="-7" y="-7" width="14" height="14" transform="rotate(45)"></rect>
-                <text x="16" y="4">ARUCO RECOVERY ZONE</text>
+            <g class="course-boundaries" aria-label="Course sector boundaries">
+              <g class="course-boundary boundary-start" data-course-boundary="start">
+                <line class="boundary-shadow"></line><line class="boundary-line"></line><text></text>
               </g>
-              <text class="pit-route-label" x="817" y="342">PIT IN</text>
-              <text class="pit-route-label" x="480" y="410">REJOIN</text>
+              <g class="course-boundary boundary-s1" data-course-boundary="s1">
+                <line class="boundary-shadow"></line><line class="boundary-line"></line><text></text>
+              </g>
+              <g class="course-boundary boundary-s2" data-course-boundary="s2">
+                <line class="boundary-shadow"></line><line class="boundary-line"></line><text></text>
+              </g>
             </g>
-
-            <g class="sector-label sector-one"><text x="642" y="352">S1</text></g>
-            <g class="sector-label sector-two"><text x="137" y="294">S2</text></g>
-            <g class="sector-label sector-three"><text x="500" y="92">S3</text></g>
-
-            <g class="checkpoint checkpoint-start"><line x1="839" y1="229" x2="871" y2="231"></line><text x="828" y="212">START</text></g>
-            <g class="checkpoint checkpoint-marker-one"><line x1="430" y1="155" x2="451" y2="180"></line><text x="397" y="145">MARKER 1</text></g>
-            <g class="checkpoint checkpoint-marker-two"><line x1="198" y1="47" x2="201" y2="76"></line><text x="170" y="38">MARKER 2</text></g>
-            <path class="course-direction" d="M596 47 C662 49 716 55 756 66" marker-end="url(#courseArrow)"></path>
 
             <g id="trackMarkers" class="track-marker-layer" aria-label="Estimated vehicle positions"></g>
 
@@ -105,7 +90,6 @@
 
           <div class="map-caption">
             <span><i class="map-dot"></i>LAP PACE ESTIMATE / CHECKPOINT CORRECTED</span>
-            <span><i class="map-dot pit-dot"></i>PIT SERVICE ZONE</span>
             <strong>NO GPS / NO RACING LINE</strong>
           </div>
         </div>

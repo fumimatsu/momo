@@ -3660,6 +3660,10 @@
       transform-origin: bottom left;
     }
 
+    body:not(.drive-ui) .race-tactical-map {
+      bottom: calc(110px + env(safe-area-inset-bottom));
+    }
+
     .race-tactical-map .race-battle-head {
       padding: 0 1px 5px;
       border-bottom-color: rgba(132, 195, 218, 0.17);
@@ -3668,11 +3672,12 @@
     .race-course-map {
       display: block;
       width: 100%;
-      height: 136px;
+      height: 180px;
       overflow: visible;
     }
 
     .race-map-track-shadow,
+    .race-map-track-road,
     .race-map-track-line,
     .race-map-pit path {
       fill: none;
@@ -3681,13 +3686,18 @@
     }
 
     .race-map-track-shadow {
-      stroke: rgba(0, 0, 0, 0.72);
-      stroke-width: 58;
+      stroke: rgba(0, 0, 0, 0.88);
+      stroke-width: 50;
+    }
+
+    .race-map-track-road {
+      stroke: #28343a;
+      stroke-width: 38;
     }
 
     .race-map-track-line {
-      stroke: rgba(183, 211, 225, 0.65);
-      stroke-width: 22;
+      stroke: rgba(111, 207, 225, 0.92);
+      stroke-width: 3;
     }
 
     .race-map-pit path {
@@ -3700,6 +3710,25 @@
       stroke: rgba(240, 250, 255, 0.86);
       stroke-width: 9;
     }
+
+    .race-map-boundary line { fill: none; stroke-linecap: round; }
+    .race-map-boundary .boundary-shadow { stroke: rgba(0, 0, 0, 0.82); stroke-width: 13; }
+    .race-map-boundary .boundary-line { stroke: rgba(240, 250, 255, 0.92); stroke-width: 7; }
+    .race-map-boundary text {
+      fill: #f0f5f6;
+      stroke: #071013;
+      stroke-width: 5;
+      paint-order: stroke fill;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-anchor: middle;
+    }
+    .race-map-boundary.boundary-s1 .boundary-line { stroke: #70d9ee; }
+    .race-map-boundary.boundary-s1 text { fill: #70d9ee; }
+    .race-map-boundary.boundary-s2 .boundary-line { stroke: #f0c84e; }
+    .race-map-boundary.boundary-s2 text { fill: #f0c84e; }
 
     .race-course-marker {
       --race-map-car: #6fe9ff;
@@ -4391,10 +4420,13 @@
       }
 
       .race-tactical-map {
-        bottom: calc(8px + env(safe-area-inset-bottom));
         left: calc(8px + env(safe-area-inset-left));
         width: 218px;
         padding: 6px 7px 7px;
+      }
+
+      body.drive-ui .race-tactical-map {
+        bottom: calc(8px + env(safe-area-inset-bottom));
       }
 
       .race-right-stack {
@@ -4404,7 +4436,7 @@
       }
 
       .race-course-map {
-        height: 104px;
+        height: 124px;
       }
 
       .race-map-gaps {
@@ -4572,18 +4604,22 @@
           <span class="race-label">COURSE MAP</span>
           <span id="raceBattleState" class="race-battle-state">WAITING</span>
         </div>
-        <svg id="raceCourseMap" class="race-course-map" viewBox="0 20 900 470" role="img" aria-label="Estimated vehicle positions on the Tokorozawa course">
-          <g class="race-map-pit" aria-hidden="true">
-            <path d="M850 320 C852 380 827 430 763 455 C704 477 615 483 557 466 C528 457 515 442 516 419 C517 394 504 378 478 355"></path>
-          </g>
+        <svg id="raceCourseMap" class="race-course-map" viewBox="0 0 760 800" role="img" aria-label="Estimated vehicle positions on the configured experience course">
           <g class="race-map-track" aria-hidden="true">
-            <path class="race-map-track-shadow" d="M855 230 C858 300 850 355 812 382 C770 414 690 430 600 418 C540 410 495 390 478 355 C459 317 475 287 508 273 C544 257 590 272 634 270 C690 268 730 241 734 207 C738 175 714 155 674 150 C610 140 520 150 443 168 C387 184 352 215 328 270 C303 328 242 374 154 375 C73 377 31 330 23 280 C17 240 19 190 32 151 C50 98 105 70 190 58 C330 39 620 39 755 64 C823 77 852 129 855 230"></path>
-            <path id="raceCoursePath" class="race-map-track-line" pathLength="1000" d="M855 230 C858 300 850 355 812 382 C770 414 690 430 600 418 C540 410 495 390 478 355 C459 317 475 287 508 273 C544 257 590 272 634 270 C690 268 730 241 734 207 C738 175 714 155 674 150 C610 140 520 150 443 168 C387 184 352 215 328 270 C303 328 242 374 154 375 C73 377 31 330 23 280 C17 240 19 190 32 151 C50 98 105 70 190 58 C330 39 620 39 755 64 C823 77 852 129 855 230"></path>
+            <path class="race-map-track-shadow" data-course-path></path>
+            <path class="race-map-track-road" data-course-path></path>
+            <path id="raceCoursePath" class="race-map-track-line" data-course-path pathLength="1000"></path>
           </g>
-          <g class="race-map-checkpoints" aria-hidden="true">
-            <line x1="839" y1="229" x2="871" y2="231"></line>
-            <line x1="430" y1="155" x2="451" y2="180"></line>
-            <line x1="198" y1="47" x2="201" y2="76"></line>
+          <g class="race-map-boundaries" aria-hidden="true">
+            <g class="race-map-boundary boundary-start" data-course-boundary="start">
+              <line class="boundary-shadow"></line><line class="boundary-line"></line><text></text>
+            </g>
+            <g class="race-map-boundary boundary-s1" data-course-boundary="s1">
+              <line class="boundary-shadow"></line><line class="boundary-line"></line><text></text>
+            </g>
+            <g class="race-map-boundary boundary-s2" data-course-boundary="s2">
+              <line class="boundary-shadow"></line><line class="boundary-line"></line><text></text>
+            </g>
           </g>
           <g id="raceCourseMarkers" class="race-course-markers" aria-label="Estimated vehicle positions"></g>
         </svg>
@@ -4895,20 +4931,21 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260820-pilot-identity-v1"></script>
-    <script src="../../m5-audio.js?v=20260820-pilot-identity-v1"></script>
+    <script src="../../telemetry.js?v=20260822-experience-course-v1"></script>
+    <script src="../../m5-audio.js?v=20260822-experience-course-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260820-pilot-identity-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260820-pilot-identity-v1'"
+      src="./gamepad-profile.js?v=20260822-experience-course-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260822-experience-course-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260820-pilot-identity-v1"></script>
-    <script src="./race-battle.js?v=20260820-pilot-identity-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260820-pilot-identity-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260820-pilot-identity-v1"></script>
-    <script src="./notification-controller.js?v=20260820-pilot-identity-v1"></script>
-    <script src="../../race-announcer.js?v=20260820-pilot-identity-v1"></script>
-    <script src="../../race-ui-performance.js?v=20260820-pilot-identity-v1"></script>
-    <script src="./pilot.js?v=20260820-pilot-identity-v1"></script>
+    <script src="./ffb-bridge.js?v=20260822-experience-course-v1"></script>
+    <script src="./race-battle.js?v=20260822-experience-course-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260822-experience-course-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260822-experience-course-v1"></script>
+    <script src="./notification-controller.js?v=20260822-experience-course-v1"></script>
+    <script src="../../race-announcer.js?v=20260822-experience-course-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260822-experience-course-v1"></script>
+    <script src="../../course-layout.js?v=20260822-experience-course-v1"></script>
+    <script src="./pilot.js?v=20260822-experience-course-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

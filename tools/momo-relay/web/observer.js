@@ -32,13 +32,18 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260820-team-observer-v13';
+} from './observer-core.js?v=20260822-team-observer-v14';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
     || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler
     || !raceUiPerformance?.normalizeSnapshotRate) {
   throw new Error('MomoRaceUiPerformance is required.');
+}
+const courseLayout = window.MomoCourseLayout;
+if (!courseLayout?.applyToSvg || courseLayout.id !== 'experience-v1'
+    || !Array.isArray(courseLayout.sectorBoundaries)) {
+  throw new Error('MomoCourseLayout experience-v1 is required.');
 }
 const startupParams = new URLSearchParams(location.search);
 const UI_TEST_MODE = startupParams.get('uiTest') === '1';
@@ -79,7 +84,7 @@ const CAMERA_ESC_WARNING_C = 70;
 const CAMERA_ESC_CRITICAL_C = 85;
 const CAMERA_MOTOR_WARNING_C = 80;
 const CAMERA_MOTOR_CRITICAL_C = 100;
-const COURSE_SECTOR_BOUNDARIES = [0, 0.42277, 0.73115, 1];
+const COURSE_SECTOR_BOUNDARIES = courseLayout.sectorBoundaries;
 const CAR_EFFECTS = Object.freeze({
   'gravel': { label: 'GRAVEL', durationMs: 1100, priority: 20 },
   'impact': { label: 'IMPACT', durationMs: 1900, priority: 80 },
@@ -1510,13 +1515,13 @@ function updateTrackMarkerLabel(nodes, car, standing) {
 function readTrackGeometry() {
   const coursePath = document.getElementById('coursePath');
   const pitPath = document.getElementById('pitPath');
-  if (!coursePath || !pitPath || typeof coursePath.getTotalLength !== 'function'
-      || typeof pitPath.getTotalLength !== 'function') return null;
+  if (!coursePath || typeof coursePath.getTotalLength !== 'function') return null;
+  const pitAvailable = pitPath && typeof pitPath.getTotalLength === 'function';
   return {
     coursePath,
-    pitPath,
+    pitPath: pitAvailable ? pitPath : null,
     courseLength: coursePath.getTotalLength(),
-    pitLength: pitPath.getTotalLength(),
+    pitLength: pitAvailable ? pitPath.getTotalLength() : 0,
   };
 }
 
@@ -1629,6 +1634,7 @@ function advanceMotionClock(motion, now, running) {
 }
 
 function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath, pitLength) {
+  if (!pitPath || !pitLength) return null;
   const pit = pitByCar.get(car.carId);
   let motion = pitMotionByCar.get(car.carId);
   if (!motion || motion.entryId !== pit?.entryId) return null;
@@ -2779,6 +2785,7 @@ async function initialize() {
 		};
 		selectedTeamVehicleIds = initialTeamSelection(params);
     document.getElementById('trackName').textContent = observerConfig.trackName;
+    courseLayout.applyToSvg(document.getElementById('trackMap'));
     createTrackMarkers();
     trackGeometry = readTrackGeometry();
     createCameraTiles();

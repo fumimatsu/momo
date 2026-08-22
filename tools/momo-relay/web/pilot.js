@@ -1,11 +1,16 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260820-pilot-identity-v1';
+  const PILOT_BUILD_ID = '20260822-experience-course-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
     throw new Error('MomoRaceUiPerformance is required.');
+  }
+  const courseLayout = window.MomoCourseLayout;
+  if (!courseLayout?.applyToSvg || courseLayout.id !== 'experience-v1'
+      || !Array.isArray(courseLayout.sectorBoundaries)) {
+    throw new Error('MomoCourseLayout experience-v1 is required.');
   }
   const notificationModule = window.MomoNotificationController;
   if (!notificationModule?.createNotificationController || !notificationModule?.PRIORITIES) {
@@ -212,7 +217,7 @@
   const RACE_MAP_DEFAULT_LAP_MS = Math.max(3000, getNumberParam('raceMapDefaultLapMs', 24000));
   const RACE_MAP_RENDER_INTERVAL_MS = 1000 / 20;
   const RACE_LAP_HISTORY_LIMIT = 20;
-  const RACE_MAP_SECTOR_BOUNDARIES = Object.freeze([0, 0.42277, 0.73115, 1]);
+  const RACE_MAP_SECTOR_BOUNDARIES = courseLayout.sectorBoundaries;
   const RACE_MAP_COLORS = Object.freeze(['green', 'yellow', 'cyan', 'red']);
   const RACE_REAR_ATTENTION_ENABLED = getBooleanParam('rearAttention', true);
   const RACE_REAR_ATTENTION_DEMO = getBooleanParam('rearAttentionDemo', false);
@@ -424,6 +429,7 @@
   const raceBattleBehindName = document.getElementById('raceBattleBehindName');
   const raceBattleBehindGap = document.getElementById('raceBattleBehindGap');
   const raceCourseMap = document.getElementById('raceCourseMap');
+  courseLayout.applyToSvg(raceCourseMap);
   const raceCoursePath = document.getElementById('raceCoursePath');
   const raceCourseMarkers = document.getElementById('raceCourseMarkers');
   const raceSectorStrip = document.getElementById('raceSectorStrip');
