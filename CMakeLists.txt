@@ -119,11 +119,14 @@ target_sources(momo
     src/main.cpp
     src/metrics/metrics_server.cpp
     src/metrics/metrics_session.cpp
+    src/marker/marker_luma_shared_memory.cpp
+    src/p2p/marker_video_track_receiver.cpp
     src/momo_version.cpp
     src/p2p/p2p_server.cpp
     src/p2p/p2p_session.cpp
     src/p2p/p2p_receiver_client.cpp
     src/p2p/p2p_multi_receiver_client.cpp
+    src/p2p/p2p_marker_receiver_client.cpp
     src/p2p/observer_audio_mixer.cpp
     src/p2p/observer_audio_receiver.cpp
     src/p2p/pilot_data_channel.cpp

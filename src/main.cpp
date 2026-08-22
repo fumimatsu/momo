@@ -47,6 +47,7 @@
 
 #include "ayame/ayame_client.h"
 #include "metrics/metrics_server.h"
+#include "p2p/p2p_marker_receiver_client.h"
 #include "p2p/p2p_multi_receiver_client.h"
 #include "p2p/pilot_data_channel.h"
 #include "p2p/pilot_input.h"
@@ -102,21 +103,23 @@ int main(int argc, char* argv[]) {
   bool use_p2p = false;
   bool use_p2p_receiver = false;
   bool use_p2p_multi_receiver = false;
+  bool use_p2p_marker_receiver = false;
   bool use_p2p_pilot = false;
   bool use_ayame = false;
   bool use_sora = false;
   int log_level = webrtc::LS_NONE;
 
-  Util::ParseArgs(argc, argv, use_p2p, use_p2p_receiver,
-                  use_p2p_multi_receiver, use_p2p_pilot, use_ayame, use_sora, log_level,
-                  args);
+  Util::ParseArgs(argc, argv, use_p2p, use_p2p_receiver, use_p2p_multi_receiver,
+                  use_p2p_marker_receiver, use_p2p_pilot, use_ayame, use_sora,
+                  log_level, args);
 
-  if (use_p2p_receiver || use_p2p_multi_receiver || use_p2p_pilot) {
+  if (use_p2p_receiver || use_p2p_multi_receiver || use_p2p_marker_receiver ||
+      use_p2p_pilot) {
     // 受信専用モードではローカルのカメラ・音声入力を作らない。
     args.no_video_device = true;
     args.no_audio_device = true;
     args.no_audio_input = true;
-    args.use_sdl = true;
+    args.use_sdl = !use_p2p_marker_receiver;
   }
 
 #if defined(__linux__)
@@ -352,6 +355,7 @@ int main(int argc, char* argv[]) {
     std::shared_ptr<SoraClient> sora_client;
     std::shared_ptr<P2PReceiverClient> p2p_receiver_client;
     std::shared_ptr<P2PMultiReceiverClient> p2p_multi_receiver_client;
+    std::shared_ptr<P2PMarkerReceiverClient> p2p_marker_receiver_client;
     std::shared_ptr<AyameClient> ayame_client;
     std::shared_ptr<P2PServer> p2p_server;
     std::shared_ptr<PilotDataChannel> pilot_data_channel;
@@ -479,6 +483,29 @@ int main(int argc, char* argv[]) {
       p2p_multi_receiver_client->Connect();
     }
 
+    if (use_p2p_marker_receiver) {
+      P2PMarkerReceiverClientConfig config;
+      config.manifest_url = args.p2p_marker_manifest_url;
+      config.mapping_name = args.p2p_marker_mapping_name;
+      config.no_google_stun = args.no_google_stun;
+      config.flip_vertical = args.flip_vertical;
+      config.flip_horizontal = args.flip_horizontal;
+      config.maximum_framerate = args.p2p_marker_max_fps;
+      config.maximum_concurrent_connections =
+          static_cast<size_t>(args.p2p_marker_connect_parallelism);
+      config.connection_timeout =
+          std::chrono::milliseconds(args.p2p_marker_connect_timeout_ms);
+      config.manifest_poll_interval =
+          std::chrono::milliseconds(args.p2p_marker_manifest_poll_ms);
+      p2p_marker_receiver_client = P2PMarkerReceiverClient::Create(
+          ioc, rtc_manager.get(), std::move(config));
+      if (!p2p_marker_receiver_client->IsReady()) {
+        std::cerr << "failed to open MLY2 marker shared memory" << std::endl;
+        return 1;
+      }
+      p2p_marker_receiver_client->Connect();
+    }
+
     if (use_ayame) {
       AyameClientConfig config;
       config.insecure = args.insecure;
@@ -540,6 +567,8 @@ int main(int argc, char* argv[]) {
         p2p_receiver_client->Shutdown(stop_ioc);
       } else if (p2p_multi_receiver_client) {
         p2p_multi_receiver_client->Shutdown(stop_ioc);
+      } else if (p2p_marker_receiver_client) {
+        p2p_marker_receiver_client->Shutdown(stop_ioc);
       } else if (ayame_client) {
         ayame_client->Shutdown(stop_ioc);
       } else {

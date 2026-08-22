@@ -17,6 +17,7 @@ class Util {
                         bool& use_p2p,
                         bool& use_p2p_receiver,
                         bool& use_p2p_multi_receiver,
+                        bool& use_p2p_marker_receiver,
                         bool& use_p2p_pilot,
                         bool& use_ayame,
                         bool& use_sora,

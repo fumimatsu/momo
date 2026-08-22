@@ -11,6 +11,15 @@ from MarkerDetectionRateController import (
 
 
 class MarkerDetectionRateControllerTest(unittest.TestCase):
+    def test_can_start_at_a_lower_profile_for_capacity_validation(self):
+        controller = AdaptiveDetectionRateController(initial_detection_hz=25)
+
+        self.assertEqual(25, controller.detection_hz)
+
+    def test_rejects_an_initial_rate_outside_the_profiles(self):
+        with self.assertRaisesRegex(ValueError, "initial_detection_hz"):
+            AdaptiveDetectionRateController(initial_detection_hz=30)
+
     def test_downgrades_one_profile_after_three_overload_windows(self):
         controller = AdaptiveDetectionRateController()
         overloaded = DetectionWindow(5.0, 17.0, 0.0)

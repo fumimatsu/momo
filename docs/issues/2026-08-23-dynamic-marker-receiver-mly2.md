@@ -4,10 +4,11 @@ Status: doing
 
 ## Context
 
-The current live marker path publishes four fixed 960x528 Y planes through `MLY1` and runs one
-GPU worker against that fixed batch. Four is an IPC implementation limit, not a WebRTC, ArUco,
-MMO1, or race contract limit. Exposing groups of four to race operations would make source addition,
-removal, and detector assignment unnecessarily fragile.
+The legacy live marker path publishes four fixed 960x528 Y planes through `MLY1` and runs one GPU
+worker against that fixed batch. Four is an IPC implementation limit, not a WebRTC, ArUco, MMO1, or
+race contract limit. Exposing groups of four to race operations would make source addition, removal,
+and detector assignment unnecessarily fragile. The `MLY2` path described here is now implemented;
+the legacy path remains only as migration rollback.
 
 ## Goal
 
@@ -38,6 +39,20 @@ the new operating contract.
 6. A disconnected source keeps its source slot but publishes no observation until a new frame arrives.
 7. Finish keeps the run mapping for diagnostics. The next Prepare may replace it without restarting the
    service.
+
+## Connection lifecycle
+
+The Marker Receiver keeps one long-lived process and reconciles source topology without a process
+restart. It does not start all PeerConnections at once. A bounded queue starts four WebRTC media
+negotiations concurrently by default, with CLI overrides from one through eight and a 20-second
+per-attempt timeout. A completed, failed, or timed-out attempt releases its queue slot immediately so
+another source can proceed.
+
+Every callback carries the receiver generation and a source-local attempt ID. Notifications from a
+closed PeerConnection therefore cannot disconnect or reconnect a same-named source in a newer run.
+The connection queue is cleared on topology replacement; source reconnects return to that queue and
+do not block healthy sources. This removes the simultaneous ICE/NVDEC allocation burst observed when
+32 local sources were started together.
 
 ## MLY2 latest-frame contract
 
@@ -111,10 +126,12 @@ period utilization and less than one percent deadline misses. The controller nev
 drops below 25 Hz. Continued overload at 25 Hz sets `capacity_exceeded`, keeps latest-frame dropping,
 and requires fewer cars or another Marker Node.
 
-Changing Hz must not change passage semantics. Before Green-time adaptation is enabled, Timing Engine
-qualification must be based on elapsed presence time and unique source sequences rather than a fixed
-number of batches. Until that change is verified, automatic selection runs during preflight and the
-selected profile remains locked for the race.
+Changing Hz must not change passage semantics. Timing Engine now offers the explicit
+`qualification.mode=elapsed_time` path, using unique source sequences, `minimumPresenceMs`, and
+`exitDurationMs`. Tests apply the same passage to 50, 40, 33, and 25 Hz and verify that replaying one
+frozen source sequence cannot qualify a passage. Existing configurations default to
+`legacy_frames`; elapsed-time mode must be selected explicitly until site replay fixes production
+durations.
 
 A noisy image must not consume an unbounded share of a tick. Connected components and marker
 candidates remain bounded per source. A source exceeding its per-frame budget is marked
@@ -138,18 +155,54 @@ source's cadence.
 ## Verification
 
 The Relay manifest contract, stable topology revision, conditional GET, source-local latest-frame
-selection, and the isolated adaptive rate controller have unit tests. The frame sampler covers stale,
-skewed, missing, and duplicate source frames without blocking another source. MMO1 writers can update
-the advertised effective detection rate. The controller is not connected to the legacy MLY1 worker
-because fixed-batch qualification still has frame-count semantics.
+selection, MLY2 writer/reader, frame sampler, variable GPU batch, MMO1 output, and adaptive rate
+controller have automated tests. Timing Engine has elapsed-time qualification tests at 50, 40, 33,
+and 25 Hz. The legacy MLY1 worker and legacy frame-count qualifier remain unchanged.
 
-MLY2 writer/reader, variable GPU batch, time-based qualification, and end-to-end adaptive-rate tests
-are still required before a live five-car authority run.
+The dummy upstream is one looped 960x528 H.264 50 fps recording exposed as independent Relay sources.
+Momo receives every source through WebRTC, decodes each stream with NVDEC, publishes MLY2, and runs
+one GPU detector tick. Measurements were made on Windows with an AMD Ryzen 7 9700X, NVIDIA GeForce
+RTX 5070 12 GB, and driver 610.47.
+
+| Sources | Duration | Result | Final profile | Publication rate | Cycle p95 |
+| ---: | ---: | --- | ---: | ---: | ---: |
+| 1 | 10 s | pass | 50 Hz | 49.80 Hz | 2.99 ms |
+| 5 | 15 s | pass | 50 Hz | 49.87 Hz | 5.07 ms |
+| 8 | 20 s | pass | 50 Hz | 49.90 Hz | 5.65 ms |
+| 12 | 30 s | pass | 50 Hz | 48.97 Hz | 8.45 ms |
+| 20 | 60 s | pass | 50 Hz | 49.88 Hz | 12.97 ms |
+| 32 | 60 s | pass | 50 -> 40 -> 33 Hz | 37.73 Hz mixed average | 23.88 ms |
+| 32 | 30 s | pass | fixed 25 Hz | 24.93 Hz | 21.84 ms |
+
+At 32 sources the controller stepped down after the configured three-window overload rule and stayed
+at 33 Hz. A separate 25 Hz run kept all 32 sources active, remained below the 40 ms period at p95,
+and did not report capacity exhaustion. The measured 50 Hz operating boundary on this machine is at
+least 20 sources and below 32 under the current 80 percent headroom policy; the exact crossover was
+not narrowed further in this run.
+
+A long-lived receiver changed from one to 32 sources without restarting or exiting; that transition
+became video-valid in approximately 30 seconds. A cold 32-source start took 60.23 seconds with four
+concurrent negotiations, compared with approximately 85 seconds and a heavy ICE/candidate burst when
+all negotiations started simultaneously. The bounded queue prioritizes stability over minimum cold
+start time; preflight must allow at least 90 seconds for a 32-source cold start. The reusable
+`tools/Invoke-DynamicMarkerCapacityValidation.ps1` command runs an ascending source matrix through
+one receiver and writes one JSON report per source count plus a summary.
+
+```powershell
+.\tools\Invoke-DynamicMarkerCapacityValidation.ps1 `
+  -InputPath E:\recordings\marker-test.mp4 `
+  -SourceCounts 1,5,8,12,20,32 `
+  -FrameRate 50 `
+  -MeasurementSeconds 60
+```
 
 ## Notes
 
 - Existing MLY1 and the legacy MADSYSTEM adapter remain available for rollback during migration.
 - MLY2 does not increase WebRTC bandwidth; it removes fixed four-plane publication and unnecessary
   whole-batch copies after decode.
-- GPU throughput still sets a physical node limit. Supporting 32 sources in the contract is not a
-  claim that every GPU can detect 32 sources at 25 or 50 Hz.
+- GPU throughput still sets a physical node limit. The verified RTX 5070 result is not a guarantee
+  for an RTX 3060 or another host. The contract stops at 32, so this run does not claim that 32 is the
+  hardware failure point; larger races still require another Marker Node or a future contract change.
+- Real independent Momo cameras, one-source loss/recovery, and event-day soak evidence remain before
+  this path replaces the four-source production marker path.

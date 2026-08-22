@@ -93,6 +93,13 @@ struct MomoArgs {
   std::vector<std::string> p2p_multi_receiver_source_flips;
   std::string p2p_multi_receiver_audio_source;
   double p2p_multi_receiver_audio_gain = 1.0;
+  std::string p2p_marker_manifest_url =
+      "http://127.0.0.1:8090/api/v1/marker-sources";
+  std::string p2p_marker_mapping_name = "Local\\MomoMarkerLumaV2";
+  int p2p_marker_manifest_poll_ms = 1000;
+  int p2p_marker_max_fps = 50;
+  int p2p_marker_connect_parallelism = 4;
+  int p2p_marker_connect_timeout_ms = 20000;
   std::string p2p_pilot_endpoint = "ws://127.0.0.1:8090/ws?role=pilot";
   std::string p2p_pilot_input_config = "input.json";
   std::string p2p_pilot_label = "";

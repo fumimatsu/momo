@@ -80,7 +80,7 @@ finally {
     Pop-Location
 }
 
-$sourceIDs = 1..$CarCount | ForEach-Object { 'virtual-{0:d2}' -f $_ }
+$sourceIDs = @(1..$CarCount | ForEach-Object { 'virtual-{0:d2}' -f $_ })
 $sourceArguments = @()
 foreach ($index in 1..$CarCount) {
     $sourceID = $sourceIDs[$index - 1]

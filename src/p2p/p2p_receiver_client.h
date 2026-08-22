@@ -27,6 +27,7 @@ struct P2PReceiverClientConfig {
   // Offer を作成する前に DataChannel などを追加するためのフック。
   std::function<void(std::shared_ptr<RTCConnection>)> configure_connection;
   std::function<void()> on_connected;
+  std::function<void()> on_media_connected;
   std::function<void()> on_disconnected;
 };
 
@@ -85,6 +86,7 @@ class P2PReceiverClient : public std::enable_shared_from_this<P2PReceiverClient>
   std::vector<IceCandidate> pending_candidates_;
 
   std::atomic_bool shutting_down_ = false;
+  std::atomic_bool media_connected_notified_ = false;
   std::atomic_bool disconnected_notified_ = false;
   bool has_remote_description_ = false;
 };

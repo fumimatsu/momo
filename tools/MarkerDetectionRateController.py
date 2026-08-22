@@ -30,6 +30,7 @@ class AdaptiveDetectionRateController:
         upgrade_utilization_limit: float = 0.55,
         upgrade_deadline_miss_limit: float = 0.01,
         upgrade_healthy_seconds: float = 60.0,
+        initial_detection_hz: int | None = None,
     ):
         if not profiles_hz or any(value <= 0 for value in profiles_hz):
             raise ValueError("profiles_hz must contain positive values")
@@ -37,6 +38,8 @@ class AdaptiveDetectionRateController:
             raise ValueError("profiles_hz must be strictly descending")
         if len(set(profiles_hz)) != len(profiles_hz):
             raise ValueError("profiles_hz must not contain duplicates")
+        if initial_detection_hz is not None and initial_detection_hz not in profiles_hz:
+            raise ValueError("initial_detection_hz must be one of profiles_hz")
         if overload_windows < 1:
             raise ValueError("overload_windows must be positive")
         self.profiles_hz = profiles_hz
@@ -47,7 +50,11 @@ class AdaptiveDetectionRateController:
         self.upgrade_utilization_limit = upgrade_utilization_limit
         self.upgrade_deadline_miss_limit = upgrade_deadline_miss_limit
         self.upgrade_healthy_seconds = upgrade_healthy_seconds
-        self.profile_index = 0
+        self.profile_index = (
+            0
+            if initial_detection_hz is None
+            else profiles_hz.index(initial_detection_hz)
+        )
         self.consecutive_overload_windows = 0
         self.healthy_seconds = 0.0
         self.hold_until = 0.0

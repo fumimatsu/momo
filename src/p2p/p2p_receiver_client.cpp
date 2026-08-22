@@ -376,6 +376,10 @@ void P2PReceiverClient::OnIceConnectionStateChange(
       new_state ==
           webrtc::PeerConnectionInterface::kIceConnectionCompleted) {
     RTC_LOG(LS_INFO) << "P2P receiver media connection established";
+    if (!media_connected_notified_.exchange(true) &&
+        config_.on_media_connected) {
+      config_.on_media_connected();
+    }
   }
   if (new_state ==
           webrtc::PeerConnectionInterface::kIceConnectionFailed ||

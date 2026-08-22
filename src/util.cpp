@@ -47,6 +47,7 @@ void Util::ParseArgs(int argc,
                      bool& use_p2p,
                      bool& use_p2p_receiver,
                      bool& use_p2p_multi_receiver,
+                     bool& use_p2p_marker_receiver,
                      bool& use_p2p_pilot,
                      bool& use_ayame,
                      bool& use_sora,
@@ -272,6 +273,9 @@ void Util::ParseArgs(int argc,
       "p2p-recv", "Receive one video stream from a Momo P2P server");
   auto p2p_multi_receiver_app = app.add_subcommand(
       "p2p-recv-multi", "Receive up to four P2P video streams in a fixed grid");
+  auto p2p_marker_receiver_app = app.add_subcommand(
+      "p2p-marker-recv",
+      "Dynamically receive up to 32 Relay marker video sources");
   auto p2p_pilot_app = app.add_subcommand(
       "p2p-pilot", "Receive relay video and send wheel commands as a Pilot");
   auto ayame_app = app.add_subcommand(
@@ -351,6 +355,40 @@ void Util::ParseArgs(int argc,
                                    "Flip every received video vertically");
   p2p_multi_receiver_app->add_flag("--flip-horizontal", args.flip_horizontal,
                                    "Flip every received video horizontally");
+
+  p2p_marker_receiver_app
+      ->add_option("--manifest-url", args.p2p_marker_manifest_url,
+                   "Relay marker-source manifest HTTP URL")
+      ->check(CLI::Validator(
+          [](std::string input) {
+            return input.rfind("http://", 0) == 0
+                       ? std::string()
+                       : std::string("URL must start with http://.");
+          },
+          "HTTP_URL"));
+  p2p_marker_receiver_app->add_option(
+      "--mapping-name", args.p2p_marker_mapping_name,
+      "Windows MLY2 shared-memory mapping name");
+  p2p_marker_receiver_app
+      ->add_option("--manifest-poll-ms", args.p2p_marker_manifest_poll_ms,
+                   "Relay marker-source manifest polling interval")
+      ->check(CLI::Range(100, 10000));
+  p2p_marker_receiver_app
+      ->add_option("--max-fps", args.p2p_marker_max_fps,
+                   "Maximum decoded frame delivery rate per source")
+      ->check(CLI::Range(1, MAX_FRAMERATE));
+  p2p_marker_receiver_app
+      ->add_option("--connect-parallelism", args.p2p_marker_connect_parallelism,
+                   "Maximum concurrent marker WebRTC negotiations")
+      ->check(CLI::Range(1, 8));
+  p2p_marker_receiver_app
+      ->add_option("--connect-timeout-ms", args.p2p_marker_connect_timeout_ms,
+                   "Marker WebRTC media connection timeout")
+      ->check(CLI::Range(1000, 60000));
+  p2p_marker_receiver_app->add_flag("--flip-vertical", args.flip_vertical,
+                                    "Flip every marker image vertically");
+  p2p_marker_receiver_app->add_flag("--flip-horizontal", args.flip_horizontal,
+                                    "Flip every marker image horizontally");
 
   p2p_pilot_app->add_option("--endpoint", args.p2p_pilot_endpoint,
                             "Relay Pilot WebSocket endpoint (for example "
@@ -563,8 +601,8 @@ void Util::ParseArgs(int argc,
   }
 
   if (!p2p_app->parsed() && !p2p_receiver_app->parsed() &&
-      !p2p_multi_receiver_app->parsed() && !p2p_pilot_app->parsed() &&
-      !sora_app->parsed() && !ayame_app->parsed()) {
+      !p2p_multi_receiver_app->parsed() && !p2p_marker_receiver_app->parsed() &&
+      !p2p_pilot_app->parsed() && !sora_app->parsed() && !ayame_app->parsed()) {
     std::cout << app.help() << std::endl;
     exit(1);
   }
@@ -583,6 +621,10 @@ void Util::ParseArgs(int argc,
 
   if (p2p_multi_receiver_app->parsed()) {
     use_p2p_multi_receiver = true;
+  }
+
+  if (p2p_marker_receiver_app->parsed()) {
+    use_p2p_marker_receiver = true;
   }
 
   if (p2p_pilot_app->parsed()) {
