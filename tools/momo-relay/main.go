@@ -600,6 +600,7 @@ type telemetryOperationsState struct {
 }
 
 type vehicleHealthOperationsState struct {
+	DamageEnabled       bool    `json:"damageEnabled"`
 	HP                  float64 `json:"hp"`
 	SpeedCap            float64 `json:"speedCap"`
 	Mode                string  `json:"mode"`
@@ -1150,6 +1151,7 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		VideoHealth: videoHealth.String(),
 		Drive:       r.driveStatusSnapshot(),
 		VehicleHealth: vehicleHealthOperationsState{
+			DamageEnabled:       health.DamageEnabled,
 			HP:                  health.HP,
 			SpeedCap:            health.SpeedCap,
 			Mode:                health.Mode,
@@ -3442,6 +3444,7 @@ func main() {
 	var telemetryLogDir string
 	var telemetryLogRetention time.Duration
 	var healthRecoveryModeValue string
+	var vehicleDamageEnabled bool
 	var fuelDriveDuration time.Duration
 	var teamObserverDirectoryCache string
 	var teamObserverDirectoryOrganization string
@@ -3474,6 +3477,7 @@ func main() {
 	flag.StringVar(&telemetryLogDir, "telemetry-log-dir", "", "directory for Relay-local interleaved telemetry NDJSON logs (disabled when empty)")
 	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "retain telemetry NDJSON logs for this duration; clean every 2h while race is idle (0 disables cleanup)")
 	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
+	flag.BoolVar(&vehicleDamageEnabled, "vehicle-damage-enabled", true, "apply confirmed vehicle impacts to HP and forward speed limits")
 	flag.DurationVar(&fuelDriveDuration, "fuel-drive-duration", vehicleFuelDefaultDriveDuration, "active forward-driving time required to consume a full fuel tank")
 	flag.StringVar(&teamObserverDirectoryCache, "team-observer-directory-cache", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_CACHE")), "validated Race Directory cache used for the read-only Team Observer projection")
 	flag.StringVar(&teamObserverDirectoryOrganization, "team-observer-directory-organization", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION")), "expected organization slug for the Team Observer directory cache")
@@ -3666,6 +3670,7 @@ func main() {
 			rtpStallTimeout:      rtpStallTimeout,
 			upstreamStartTimeout: upstreamStartTimeout,
 			healthRecoveryMode:   healthRecoveryMode,
+			vehicleDamageEnabled: vehicleDamageEnabled,
 			fuelDriveDuration:    fuelDriveDuration,
 			raceAudioService:     raceAudioService,
 			ayameSignalingURL:    strings.TrimSpace(ayameSignalingURL),
@@ -3712,6 +3717,8 @@ func main() {
 	mux.HandleFunc("/operations.html", operationsPolicy.wrap(operationsPageHandler(operationsHTML)))
 	mux.HandleFunc("/api/v1/pilot-devices", garagePolicy.wrap(serverRelay.servePilotDevices))
 	mux.HandleFunc("/api/v1/team-observer-directory", garagePolicy.wrap(serverRelay.serveTeamObserverDirectory))
+	mux.HandleFunc("/api/v1/gameplay/status",
+		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serveGameplayStatus)))
 	mux.HandleFunc("/api/v1/gameplay/pit-recovery-ticks",
 		gameplayPolicy.wrap(bearerTokenHandler(gameplayToken, serverRelay.servePitRecoveryTick)))
 	mux.HandleFunc("/api/v1/gameplay/pit-presence-events",

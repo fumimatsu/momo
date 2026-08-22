@@ -21,15 +21,15 @@ Web Observer は 4 台分の PeerConnection を同時に持つ。各車両の tr
 
 ## 配置
 
-現在の試験構成:
+推奨する常用構成:
 
 | role | host | endpoint |
 | --- | --- | --- |
-| Relay / Race Control | `192.168.11.100` | Relay `:8090` |
-| TTS service | `192.168.11.105` | `:18090` |
+| Relay / Race Control | Relay PC | Relay `:8090` |
+| VOICEVOX / TTS service | Relay PC | loopback `127.0.0.1:50021` / `:18090` |
 
-TTS service の IP は起動前に確認する。DHCP で変わった場合は Relay の
-`MOMO_RACE_AUDIO_SERVICE_URL` も更新する。
+検証時は VOICEVOX / TTS service を別 PC で起動してもよい。その場合だけ TTS host の IP、Windows Firewall、
+Relay の `MOMO_RACE_AUDIO_SERVICE_URL` を更新する。常用時は Relay と同居させ、DHCP に依存させない。
 
 ## TTS service の起動
 
@@ -75,6 +75,16 @@ uv run python .\race_audio_service.py `
   --voicevox-url http://127.0.0.1:50021 `
   --voicevox-speaker 51
 ```
+
+通常は token を command line や親 process の environment に残さない起動 helper を使う。
+
+```powershell
+cd C:\src\momo
+.\tools\Start-RaceAudioService.ps1
+```
+
+既定値は `127.0.0.1:18090`、VOICEVOX `127.0.0.1:50021`、speaker ID `51` である。再起動は
+`-Restart`、別 PC の Relay から接続させる検証だけ `-Listen 0.0.0.0:18090` を指定する。
 
 MADSYSTEMはVOICEVOX GUI側のカスタム`preset_id=2`を参照するが、presetは端末間で共有されない。
 Race Audio Serviceはspeaker IDと速度を明示し、VOICEVOXの既定pitch `0.0`、intonation `1.0`、
@@ -122,13 +132,11 @@ LAN 向け firewall rule、TTS host の固定 IP、別 PC の稼働維持が不�
 
 ### 初回セットアップ
 
-`11.100` の更新済み `momo` repository で実行する。model は Git に含まれないため、repository の pull
-だけでは起動できない。
+`11.100` の更新済み `momo` repository で実行する。VOICEVOX Engine は Git に含まれないため、repository の
+pull だけでは起動できない。VOICEVOX Engine を `127.0.0.1:50021` で起動できる状態にする。
 
 ```powershell
-cd C:\src\momo\tools\race-audio-service
-uv sync --group dev
-.\download-kokoro-models.ps1
+Invoke-RestMethod http://127.0.0.1:50021/version
 ```
 
 token は Git 管理外へ 1 回だけ生成する。TTS service と Relay は同じ token file を読む。
@@ -162,42 +170,14 @@ $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 ### TTS service の起動
 
-動作確認中は foreground で起動する。
+VOICEVOX Engine を先に起動し、Race Audio Service を hidden process で起動する。
 
 ```powershell
-cd C:\src\momo\tools\race-audio-service
-$tokenFile = Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets\race-audio-service-token.txt'
-$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
-uv run python .\race_audio_service.py `
-  --listen 127.0.0.1:18090 `
-  --engine kokoro
+cd C:\src\momo
+.\tools\Start-RaceAudioService.ps1
 ```
 
-通常運用で terminal を占有しない場合は hidden process として起動する。
-
-```powershell
-$serviceDirectory = 'C:\src\momo\tools\race-audio-service'
-$runtimeDirectory = Join-Path $env:LOCALAPPDATA 'MomoFPV'
-$logDirectory = Join-Path $runtimeDirectory 'logs'
-$tokenFile = Join-Path $runtimeDirectory 'secrets\race-audio-service-token.txt'
-New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
-$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
-$process = Start-Process `
-  -FilePath (Get-Command uv).Source `
-  -ArgumentList 'run','python','.\race_audio_service.py','--listen','127.0.0.1:18090','--engine','kokoro' `
-  -WorkingDirectory $serviceDirectory `
-  -WindowStyle Hidden `
-  -RedirectStandardOutput (Join-Path $logDirectory 'race-audio-service.stdout.log') `
-  -RedirectStandardError (Join-Path $logDirectory 'race-audio-service.stderr.log') `
-  -PassThru
-Remove-Item Env:MOMO_RACE_AUDIO_SERVICE_TOKEN
-[IO.File]::WriteAllText(
-  (Join-Path $runtimeDirectory 'race-audio-service.pid'),
-  [string]$process.Id
-)
-```
-
-Kokoro の model load と warmup に数秒かかる。Relay より先に health check を通す。
+Relay より先に health check を通す。
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:18090/healthz
@@ -210,11 +190,11 @@ Relay を起動する PowerShell で同じ token file を読み、service URL �
 ```powershell
 $tokenFile = Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets\race-audio-service-token.txt'
 $env:MOMO_RACE_AUDIO_SERVICE_URL = 'http://127.0.0.1:18090'
-$env:MOMO_RACE_AUDIO_SERVICE_TOKEN = [IO.File]::ReadAllText($tokenFile).Trim()
 ```
 
 この environment を設定した同じ PowerShell から、通常の Relay 起動コマンドまたは
-`tools/start-mads-observer.ps1` を実行する。Relay 起動後に environment を設定しても反映されない。
+`tools/start-mads-observer.ps1` を実行する。helper は既定の token file を読み、Relay 子 process だけへ token を
+渡す。Relay 起動後に URL を設定しても反映されない。
 
 現在の hidden process 起動は Windows 再起動後に自動復帰しない。本番常用前に Task Scheduler または
 Windows service として TTS の起動、health check、Relay の順序を固定する。

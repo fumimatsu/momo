@@ -370,6 +370,20 @@ func bearerTokenHandler(token string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+type gameplayStatusResponse struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Status        string `json:"status"`
+}
+
+func serveGameplayStatus(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writePitRecoveryError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET is required", 0)
+		return
+	}
+	writePitRecoveryJSON(w, http.StatusOK, gameplayStatusResponse{SchemaVersion: 1, Status: "ready"})
+}
+
 func writePitRecoveryError(w http.ResponseWriter, status int, code string, message string, retryAfterMs int64) {
 	writePitRecoveryJSON(w, status, pitRecoveryErrorResponse{
 		SchemaVersion: 1,

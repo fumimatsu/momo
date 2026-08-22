@@ -33,7 +33,17 @@ short hold.
 - A three-Pilot live run hears one synchronized announcement, then the existing
   red-light sequence starts after the configured hold.
 
+### 2026-08-22 local VoiceVox check
+
+- Race Audio Service health reported `voicevox:http://127.0.0.1:50021:speaker-51`.
+- The first uncached fixed phrase took about 4.2 seconds to synthesize.
+- The cached fixed phrase took about 12 milliseconds in the service and was accepted by Relay in about 83 milliseconds.
+- The generated Opus clip was 14.661 seconds and was queued once for the connected `CP-1` Pilot.
+- The Pilot advertised `ja-JP` with remote audio mode; Browser Kokoro was disabled.
+- Marker Observer continued to receive about 50 new frames per source each second with a cycle p95 near 15 milliseconds.
+- Relay kept `11.3`, `11.4`, and `11.5` at 49 to 50 fps during the check.
+
 ## Notes
 
-Automated verification is complete. Three-Pilot audible timing, M5 audio
+Automated verification and one-Pilot transport verification are complete. Three-Pilot audible timing, M5 audio
 ducking, and event-room volume remain live gates.

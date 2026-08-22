@@ -6,6 +6,8 @@ param(
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
+    [string]$AyamePilotRoom114 = $env:MOMO_AYAME_PILOT_ROOM_114,
+    [string]$AyamePilotRoom115 = $env:MOMO_AYAME_PILOT_ROOM_115,
     [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
     [string]$TeamObserverDirectoryCache = $env:MOMO_TEAM_OBSERVER_DIRECTORY_CACHE,
     [string]$TeamObserverDirectoryOrganization = $env:MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION,
@@ -158,6 +160,8 @@ try {
         GameplayAllowCidr = $GameplayAllowCidr
         AyameSignalingUrl = $AyameSignalingUrl
         AyamePilotRoom113 = $AyamePilotRoom113
+        AyamePilotRoom114 = $AyamePilotRoom114
+        AyamePilotRoom115 = $AyamePilotRoom115
         AyamePilotRoom116 = $AyamePilotRoom116
         TeamObserverDirectoryCache = $TeamObserverDirectoryCache
         TeamObserverDirectoryOrganization = $TeamObserverDirectoryOrganization

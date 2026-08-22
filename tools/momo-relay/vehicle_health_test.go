@@ -31,6 +31,23 @@ func TestVehicleHealthAppliesDamageAndClampsForwardThrottle(t *testing.T) {
 	}
 }
 
+func TestVehicleHealthDamageDisabledPreservesHP(t *testing.T) {
+	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	health := newVehicleHealth(base)
+	health.setDamageEnabled(false)
+	health.observeRaceState(true, "rr_no_damage", "green", 1, 3, base)
+
+	snapshot, _, event := health.ingestTelemetry(
+		`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":24.6,"a":[-0.166,0.866,0.471],"j":1575}}`,
+		"CP-1", base.Add(time.Second))
+	if event == nil || event.DamageApplied || event.Damage != 0 || event.SuppressionReason != "damage_disabled" {
+		t.Fatalf("disabled damage event = %#v", event)
+	}
+	if snapshot.HP != vehicleHealthMaximum || snapshot.SpeedCap != 1 || snapshot.DamageEnabled {
+		t.Fatalf("disabled damage snapshot = %#v", snapshot)
+	}
+}
+
 func TestVehicleHealthSpeedCapUsesGentleHealthyRange(t *testing.T) {
 	tests := []struct {
 		hp   float64

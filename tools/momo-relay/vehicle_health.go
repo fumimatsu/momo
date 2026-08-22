@@ -52,6 +52,7 @@ const (
 )
 
 type vehicleHealthSnapshot struct {
+	DamageEnabled       bool    `json:"damageEnabled"`
 	HP                  float64 `json:"hp"`
 	SpeedCap            float64 `json:"speedCap"`
 	Mode                string  `json:"mode"`
@@ -120,6 +121,7 @@ type pitRecoveryReceipt struct {
 type vehicleHealth struct {
 	mu sync.Mutex
 
+	damageEnabled          bool
 	hp                     float64
 	fuel                   float64
 	boost                  float64
@@ -170,6 +172,7 @@ func newVehicleHealthWithFuelDuration(now time.Time, fuelDriveDuration time.Dura
 		fuelDriveDuration = vehicleFuelDefaultDriveDuration
 	}
 	return &vehicleHealth{
+		damageEnabled:     true,
 		hp:                vehicleHealthMaximum,
 		fuel:              vehicleFuelMaximum,
 		requestedGear:     1,
@@ -179,6 +182,19 @@ func newVehicleHealthWithFuelDuration(now time.Time, fuelDriveDuration time.Dura
 		pitReceipts:       make(map[string]pitRecoveryReceipt),
 		pitSeenEntries:    make(map[string]struct{}),
 		impactSeen:        make(map[string]struct{}),
+	}
+}
+
+func (health *vehicleHealth) setDamageEnabled(enabled bool) {
+	if health == nil {
+		return
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.damageEnabled = enabled
+	if !enabled {
+		health.hp = vehicleHealthMaximum
+		health.resetDamageEpisodeLocked()
 	}
 }
 
@@ -512,7 +528,10 @@ func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.
 			damage := relayImpactDamage(impactClass)
 			damageApplied := false
 			suppressionReason := ""
-			if damage > 0 && !health.raceGameplayActiveLocked() {
+			if damage > 0 && !health.damageEnabled {
+				damage = 0
+				suppressionReason = "damage_disabled"
+			} else if damage > 0 && !health.raceGameplayActiveLocked() {
 				damage = 0
 				suppressionReason = "race_inactive"
 			} else if damage > 0 && health.boostStateLocked(now) == "active" {
@@ -679,6 +698,7 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 
 func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot {
 	snapshot := vehicleHealthSnapshot{
+		DamageEnabled:       health.damageEnabled,
 		HP:                  health.hp,
 		SpeedCap:            vehicleHealthSpeedCap(health.hp),
 		Mode:                vehicleHealthMode(health.hp),
@@ -719,7 +739,7 @@ func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot
 
 func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
 	return vehicleHealthSnapshot{
-		HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
+		DamageEnabled: true, HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
 		Fuel: vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
 		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, FuelRateMultiplier: 1, FuelPowerScale: vehicleFuelMinimumDriveScale,
 		FuelRoughMultiplier: 1, FuelBoostMultiplier: 1, SessionType: "unknown",

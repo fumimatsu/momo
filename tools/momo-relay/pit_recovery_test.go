@@ -31,6 +31,32 @@ func TestParseVehicleHealthRecoveryMode(t *testing.T) {
 	}
 }
 
+func TestGameplayStatusRequiresTheConfiguredToken(t *testing.T) {
+	handler := bearerTokenHandler("test-token", serveGameplayStatus)
+
+	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/gameplay/status", nil)
+	unauthorizedResult := httptest.NewRecorder()
+	handler(unauthorizedResult, unauthorized)
+	if unauthorizedResult.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want %d", unauthorizedResult.Code, http.StatusUnauthorized)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/gameplay/status", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	handler(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	var payload gameplayStatusResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SchemaVersion != 1 || payload.Status != "ready" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestVehicleHealthRecoveryModeCapabilities(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

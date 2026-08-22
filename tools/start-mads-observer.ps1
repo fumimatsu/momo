@@ -8,6 +8,7 @@ param(
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
     [string]$RaceAudioServiceUrl = $env:MOMO_RACE_AUDIO_SERVICE_URL,
+    [string]$RaceAudioServiceTokenPath = (Join-Path $env:LOCALAPPDATA 'MomoFPV\secrets\race-audio-service-token.txt'),
     [ValidateSet('en-US', 'ja-JP')]
     [string]$RaceAudioDefaultLanguage = 'en-US',
     [string]$RaceAudioEnglishVoice = 'am_michael',
@@ -17,6 +18,8 @@ param(
     [switch]$DisableBrowserKokoro,
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,
+    [string]$AyamePilotRoom114 = $env:MOMO_AYAME_PILOT_ROOM_114,
+    [string]$AyamePilotRoom115 = $env:MOMO_AYAME_PILOT_ROOM_115,
     [string]$AyamePilotRoom116 = $env:MOMO_AYAME_PILOT_ROOM_116,
     [string]$AyameClientIdPrefix = 'momo-relay',
     [string]$AyameRoomPrefix = $env:MOMO_AYAME_ROOM_PREFIX,
@@ -32,6 +35,7 @@ param(
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
     [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
+    [bool]$VehicleDamageEnabled = $true,
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,
     [string]$TelemetryLogDirectory = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_TELEMETRY_LOG_DIR)) { 'C:\fpv-telemetry-logs' } else { $env:MOMO_RELAY_TELEMETRY_LOG_DIR }),
@@ -108,9 +112,19 @@ if (-not $SkipRelay -and -not [string]::IsNullOrWhiteSpace($RaceAudioServiceUrl)
         -or $raceAudioServiceUri.Scheme -notin @('http', 'https')) {
         throw "RaceAudioServiceUrl must be an absolute http:// or https:// URL: $RaceAudioServiceUrl"
     }
-    if ([string]::IsNullOrWhiteSpace($env:MOMO_RACE_AUDIO_SERVICE_TOKEN)) {
-        throw 'MOMO_RACE_AUDIO_SERVICE_TOKEN is required when RaceAudioServiceUrl is set.'
+    $raceAudioServiceToken = $env:MOMO_RACE_AUDIO_SERVICE_TOKEN
+    if ([string]::IsNullOrWhiteSpace($raceAudioServiceToken)) {
+        if (-not (Test-Path -LiteralPath $RaceAudioServiceTokenPath -PathType Leaf)) {
+            throw "Race Audio Service token file was not found: $RaceAudioServiceTokenPath"
+        }
+        $raceAudioServiceToken = [IO.File]::ReadAllText($RaceAudioServiceTokenPath).Trim()
     }
+    if ($raceAudioServiceToken.Length -lt 32) {
+        throw 'Race Audio Service token must contain at least 32 characters.'
+    }
+}
+else {
+    $raceAudioServiceToken = ''
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -273,6 +287,7 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
         '-operations-allow-cidr', $OperationsAllowCidr,
         '-source-admin-allow-cidr', $SourceAdminAllowCidr,
         '-health-recovery-mode', $HealthRecoveryMode,
+        "-vehicle-damage-enabled=$($VehicleDamageEnabled.ToString().ToLowerInvariant())",
         '-fuel-drive-duration', "$($FuelDriveDurationSeconds)s",
         '-garage-allow-cidr', '127.0.0.1/32',
         '-garage-allow-cidr', $GarageAllowCidr
@@ -329,6 +344,8 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
     $ayamePilotRooms = @(if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
         @(
             if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom113)) { "11.3=$($AyamePilotRoom113.Trim())" }
+            if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom114)) { "11.4=$($AyamePilotRoom114.Trim())" }
+            if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom115)) { "11.5=$($AyamePilotRoom115.Trim())" }
             if (-not [string]::IsNullOrWhiteSpace($AyamePilotRoom116)) { "11.6=$($AyamePilotRoom116.Trim())" }
         )
     })
@@ -356,10 +373,18 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
             $relayArgs += '-ayame-pilot-room', $ayamePilotRoom
         }
     }
-    Start-Process -FilePath $relayExe -ArgumentList $relayArgs `
-        -RedirectStandardOutput (Join-Path $relayLogDirectory 'relay-unity.stdout.log') `
-        -RedirectStandardError (Join-Path $relayLogDirectory 'relay-unity.stderr.log') `
-        -WindowStyle Hidden | Out-Null
+    $relayStartParameters = @{
+        FilePath = $relayExe
+        ArgumentList = $relayArgs
+        RedirectStandardOutput = (Join-Path $relayLogDirectory 'relay-unity.stdout.log')
+        RedirectStandardError = (Join-Path $relayLogDirectory 'relay-unity.stderr.log')
+        WindowStyle = 'Hidden'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($raceAudioServiceToken)) {
+        $relayStartParameters.Environment = @{ MOMO_RACE_AUDIO_SERVICE_TOKEN = $raceAudioServiceToken }
+    }
+    Start-Process @relayStartParameters | Out-Null
+    $raceAudioServiceToken = $null
     Write-Host 'Relay started: http://127.0.0.1:8090/'
     if (-not [string]::IsNullOrWhiteSpace($TelemetryLogDirectory)) {
         Write-Host "Telemetry log directory: $($TelemetryLogDirectory.Trim()) (retention: $TelemetryLogRetentionHours h)"
