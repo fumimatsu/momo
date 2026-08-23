@@ -407,6 +407,48 @@ one receiver and writes one JSON report per source count plus a summary.
   -MeasurementSeconds 60
 ```
 
+### Current schema-v2 capacity boundary
+
+The QPC deadline scheduler and partial MMO1 publication path were rerun with the strict per-source
+fresh-frame gate on the RTX 5070 host. Fixed 50 Hz remained inside the 80 percent processing
+headroom limit through 20 sources. Twenty-four and 28 sources retained more than 98 percent fresh
+coverage but exceeded the headroom gate; 32 sources also fell below the 95 percent fresh-coverage
+gate. Fixed 25 Hz passed at 32 sources.
+
+| Sources | Requested profile | Result | Minimum fresh ratio | Processing p95 | Headroom limit |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 24 | fixed 50 Hz | fail | 98.933% | 19.524 ms | 16.000 ms |
+| 28 | fixed 50 Hz | fail | 98.499% | 20.819 ms | 16.000 ms |
+| 32 | fixed 50 Hz | fail | 93.240% | 22.797 ms | 16.000 ms |
+| 32 | fixed 25 Hz | pass | 99.800% | 22.856 ms | 32.000 ms |
+
+Current adaptive runs establish a conservative initial-profile table for this host:
+
+| Sources | Profile history | Result | Minimum fresh ratio | Processing p95 | Final limit |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 24 | 50 -> 40 Hz at 15.056 s | pass | 99.714% | 17.695 ms | 20.000 ms |
+| 28 | 50 -> 40 Hz at 15.042 s | fail | 99.778% | 20.247 ms | 20.000 ms |
+| 28 | initial 33 Hz | pass | 99.838% | 19.693 ms | 24.242 ms |
+| 32 | 50 -> 40 -> 33 Hz at 15.020 s and 30.040 s | pass | 98.093% | 22.311 ms | 24.242 ms |
+
+The 28-source adaptive run exposes a control-boundary mismatch: no three consecutive five-second
+windows exceeded the downgrade threshold, so the controller remained at 40 Hz, while the aggregate
+run p95 exceeded the same 80 percent headroom gate by 0.247 ms. Fresh coverage remained healthy, so
+this was a safety-margin failure rather than an observation-loss failure. Before production use,
+select the initial profile from the frozen roster and retain measured-load fallback:
+
+- 1 through 20 sources: initial 50 Hz
+- 21 through 24 sources: initial 40 Hz
+- 25 through 32 sources: initial 33 Hz
+- overload at 33 Hz: downgrade to 25 Hz
+- continued overload at 25 Hz: set `capacity_exceeded` and assign another Marker Node
+
+The count bands are conservative operating defaults, not hardware-independent protocol limits.
+The controller still needs a slightly conservative downgrade margin or an explicit near-limit rule
+so 28 sources cannot remain at a profile that fails the final acceptance gate. Profile selection and
+settling belong in Preflight/Prepare; Green must not begin while the node is still converging from an
+obviously excessive initial profile.
+
 ## Notes
 
 - Existing MLY1 and the legacy MADSYSTEM adapter remain available for rollback during migration.
