@@ -32,7 +32,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260823-team-observer-v15';
+} from './observer-core.js?v=20260824-team-observer-v16';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -117,7 +117,6 @@ const activeEffectByCar = new Map();
 const markerMotionByCar = new Map();
 const markerRenderByCar = new Map();
 const markerNodesByCar = new Map();
-const currentLapNodeByCar = new Map();
 const sectorLiveNodeByCar = new Map();
 const sectorCompletionHoldByCar = new Map();
 const sectorCompletionNodeByCar = new Map();
@@ -974,13 +973,13 @@ class ObserverPeer {
   }
 }
 
-function createLeaderboardResource(label) {
-  const root = element('div', `leader-resource leader-resource-${label.toLowerCase()}`);
-  const track = element('i', 'leader-resource-track');
-  const fill = element('b', 'leader-resource-fill');
+function createLeaderboardHealth() {
+  const root = element('div', 'leader-health');
+  const track = element('i', 'leader-health-track');
+  const fill = element('b', 'leader-health-fill');
   const value = element('strong', '', '--');
   track.append(fill);
-  root.append(element('span', '', label), track, value);
+  root.append(element('span', '', 'HP'), track, value);
   return { root, fill, value };
 }
 
@@ -990,17 +989,15 @@ function createLeaderboardRow(car) {
     car,
     row,
     position: element('div', 'leader-pos'),
+    positionValue: element('strong'),
     avatar: element('span', 'leader-avatar'),
     avatarKey: '',
     driverName: element('strong'),
     carNumber: element('span', 'leader-car'),
     gap: element('div', 'leader-gap'),
-    current: element('strong'),
     last: element('strong'),
     best: element('strong'),
-    hp: createLeaderboardResource('HP'),
-    fuel: createLeaderboardResource('FUEL'),
-    boost: createLeaderboardResource('BOOST'),
+    health: createLeaderboardHealth(),
   };
   row.tabIndex = 0;
   row.setAttribute('role', 'button');
@@ -1010,19 +1007,16 @@ function createLeaderboardRow(car) {
     event.preventDefault();
     requestTeamCar(nodes.car);
   });
+  nodes.position.append(nodes.positionValue, nodes.carNumber);
   const driver = element('div', 'leader-driver');
-  driver.append(nodes.driverName, nodes.carNumber);
+  driver.append(nodes.driverName);
   const times = element('div', 'leader-times');
-  const current = element('span', 'leader-time-current', 'CURRENT ');
   const last = element('span', 'leader-time-last', 'LAST ');
   const best = element('span', 'leader-time-best', 'BEST ');
-  current.append(nodes.current);
   last.append(nodes.last);
   best.append(nodes.best);
-  times.append(current, last, best);
-  const resources = element('div', 'leader-resources');
-  resources.append(nodes.hp.root, nodes.fuel.root, nodes.boost.root);
-  row.append(nodes.position, nodes.avatar, driver, nodes.gap, times, resources);
+  times.append(last, best);
+  row.append(nodes.position, nodes.avatar, driver, nodes.gap, times, nodes.health.root);
   return nodes;
 }
 
@@ -1043,11 +1037,11 @@ function updateLeaderboardAvatar(nodes, car, standing) {
   }
 }
 
-function updateLeaderboardResource(nodes, value, state, text) {
+function updateLeaderboardHealth(nodes, value, state) {
   const level = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
   setDatasetIfChanged(nodes.root, 'state', state || 'unknown');
   if (nodes.fill.style.width !== `${level}%`) nodes.fill.style.width = `${level}%`;
-  setTextIfChanged(nodes.value, text);
+  setTextIfChanged(nodes.value, Number.isFinite(value) ? String(Math.round(value)) : '--');
 }
 
 function updateLeaderboardRow(nodes, car, standing) {
@@ -1064,50 +1058,34 @@ function updateLeaderboardRow(nodes, car, standing) {
   if (nodes.row.getAttribute('aria-pressed') !== pressed) nodes.row.setAttribute('aria-pressed', pressed);
   const ariaLabel = `Monitor CAR ${car.displayNumber} ${name}`;
   if (nodes.row.getAttribute('aria-label') !== ariaLabel) nodes.row.setAttribute('aria-label', ariaLabel);
-  setTextIfChanged(nodes.position, standing?.position ? `P${standing.position}` : 'P--');
+  setTextIfChanged(nodes.positionValue, standing?.position ? `P${standing.position}` : 'P--');
   updateLeaderboardAvatar(nodes, car, standing);
   setTextIfChanged(nodes.driverName, name);
-  setTextIfChanged(nodes.carNumber, `CAR ${car.displayNumber}`);
+  setTextIfChanged(nodes.carNumber, `#${car.displayNumber}`);
   setTextIfChanged(nodes.gap, formatStandingGap(standing));
-  setTextIfChanged(nodes.current, formatDuration(standing?.currentLapMs));
-  setTextIfChanged(nodes.last, formatDuration(standing?.lapTimeMs));
-  setTextIfChanged(nodes.best, formatDuration(standing?.bestLapMs));
-  nodes.current.dataset.currentLap = car.carId;
-  currentLapNodeByCar.set(car.carId, nodes.current);
+  setTextIfChanged(nodes.last, formatSplitTime(standing?.lapTimeMs));
+  setTextIfChanged(nodes.best, formatSplitTime(standing?.bestLapMs));
   const hp = Number.isFinite(health?.hp) ? Math.round(health.hp) : null;
-  const fuel = Number.isFinite(health?.fuel) ? Math.round(health.fuel) : null;
-  const boost = Number.isFinite(health?.boost) ? Math.round(health.boost) : null;
-  updateLeaderboardResource(nodes.hp, hp, hp === null ? 'unknown' : health.mode, hp ?? '--');
-  updateLeaderboardResource(
-    nodes.fuel,
-    fuel,
-    health?.fuelState || 'unknown',
-    health?.fuelState === 'empty' ? 'EMPTY' : fuel ?? '--',
-  );
-  updateLeaderboardResource(
-    nodes.boost,
-    boost,
-    health?.boostState || 'unknown',
-    health?.boostState === 'ready'
-      ? 'READY'
-      : health?.boostState === 'active' ? `${(health.boostRemainingMs / 1000).toFixed(1)}s` : boost ?? '--',
-  );
+  updateLeaderboardHealth(nodes.health, hp, hp === null ? 'unknown' : health.mode);
 }
 
 function renderLeaderboard() {
   const root = document.getElementById('leaderboardRows');
   const rows = standingsByConfiguredCar(raceParticipantCars(observerConfig.cars, raceState), raceState);
-  const signature = JSON.stringify(rows.map(({ car, standing }) => ({
-    carId: car.carId,
-    standing: standing ? {
-      position: standing.position, status: standing.status, lapTimeMs: standing.lapTimeMs,
-      bestLapMs: standing.bestLapMs, driver: standing.driver,
-      intervalToAheadMs: standing.intervalToAheadMs,
-      lapDeltaToAhead: standing.lapDeltaToAhead,
-    } : null,
-    health: healthByCar.get(car.carId) || null,
-    selected: isTeamCarSelected(car),
-  })));
+  const signature = JSON.stringify(rows.map(({ car, standing }) => {
+    const health = healthByCar.get(car.carId);
+    return {
+      carId: car.carId,
+      standing: standing ? {
+        position: standing.position, status: standing.status, lapTimeMs: standing.lapTimeMs,
+        bestLapMs: standing.bestLapMs, driver: standing.driver,
+        intervalToAheadMs: standing.intervalToAheadMs,
+        lapDeltaToAhead: standing.lapDeltaToAhead,
+      } : null,
+      health: health ? { hp: health.hp, mode: health.mode } : null,
+      selected: isTeamCarSelected(car),
+    };
+  }));
   if (signature === leaderboardSignature) return;
   const startedAt = UI_METRICS_ENABLED ? performance.now() : 0;
   leaderboardSignature = signature;
@@ -1116,7 +1094,6 @@ function renderLeaderboard() {
     if (previousScrollTop === null) previousScrollTop = root.scrollTop;
   };
   const activeCarIds = new Set();
-  currentLapNodeByCar.clear();
   rows.forEach(({ car, standing }, index) => {
     activeCarIds.add(car.carId);
     let nodes = leaderboardContentByCar.get(car.carId);
@@ -1139,7 +1116,6 @@ function renderLeaderboard() {
     nodes.row.remove();
     leaderboardContentByCar.delete(carId);
     leaderboardNodesByCar.delete(carId);
-    currentLapNodeByCar.delete(carId);
   }
   if (previousScrollTop !== null) root.scrollTop = previousScrollTop;
   if (UI_METRICS_ENABLED) leaderboardRenderSampler.record(performance.now() - startedAt);
@@ -1822,8 +1798,6 @@ function renderClocks(now) {
     for (const car of observerConfig.cars) {
       const standing = standingByCar.get(car.carId);
       const currentLapElapsed = currentLapClocks.value(car.carId, now);
-      const value = formatDuration(currentLapElapsed);
-      setTextIfChanged(currentLapNodeByCar.get(car.carId), value);
       const raceElapsed = markerRaceElapsedMs(car.carId, standing, now, currentLapElapsed);
       setTextIfChanged(
         sectorLiveNodeByCar.get(car.carId),
@@ -2647,6 +2621,7 @@ function seedObserverUiTest() {
 			carId: car.carId, driver: drivers[index] || car.driver, position: index + 1, status: 'racing',
 			lap: Math.max(1, 6 - Math.floor(index / 20)),
 			currentLapMs: 9100 + index * 430, lapTimeMs: 14200 + index * 510, bestLapMs: 13700 + index * 390,
+			...(index > 0 ? { intervalToAheadMs: index === 1 ? 0 : 180 + ((index % 11) * 73) } : {}),
 			sectorCount: 3, currentSector: (index % 3) + 1, lastMarkerIndex: index % 3,
 			lastMarkerRaceMs: 78000 + index * 900, raceElapsedMs: 84500,
 			sectorTimes: [1, 2, 3].map((sector) => ({

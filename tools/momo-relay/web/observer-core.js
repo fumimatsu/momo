@@ -627,9 +627,12 @@ export function formatGap(milliseconds) {
 }
 
 export function formatStandingGap(standing) {
+  if (standing?.position === 1) return 'LEADER';
   const lapDelta = finiteNumber(standing?.lapDeltaToAhead);
   if (lapDelta !== null && lapDelta > 0) return `+${lapDelta} LAP`;
-  return standing?.position === 1 ? 'LEADER' : formatGap(standing?.intervalToAheadMs);
+  const interval = finiteNumber(standing?.intervalToAheadMs);
+  if (interval === null) return '--';
+  return `+${(Math.max(0, interval) / 1000).toFixed(3)}`;
 }
 
 export function displayRaceStatus(state) {
