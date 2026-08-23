@@ -127,6 +127,7 @@
     .client-line { display: grid; grid-template-columns: minmax(86px, 1fr) minmax(84px, auto) minmax(86px, auto); gap: 8px; color: var(--muted); font-size: 10px; }
     .client-line strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
     .client-line .fault { color: var(--red); }
+    .client-health { display: grid; gap: 2px; text-align: right; }
     .recovery { display: flex; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
     .recovery strong { color: var(--text); }
     .recovery .fault { color: var(--red); text-align: right; overflow-wrap: anywhere; }
@@ -210,7 +211,12 @@
 
       function clientHealth(client) {
         const ageText = Number.isFinite(client?.lastTelemetryDeliveryAgeMs) ? `${client.lastTelemetryDeliveryAgeMs}ms` : '--';
-        return `TX ${ageText} T${client?.telemetryThrottled || 0} D${client?.telemetryDropped || 0} E${client?.telemetrySendErrors || 0}`;
+        return `TEL ${ageText} T${client?.telemetryThrottled || 0} D${client?.telemetryDropped || 0} E${client?.telemetrySendErrors || 0}`;
+      }
+
+      function clientRaceHealth(client) {
+        const ageText = Number.isFinite(client?.lastRaceDeliveryAgeMs) ? `${client.lastRaceDeliveryAgeMs}ms` : '--';
+        return `RACE ${ageText} Q${client?.raceQueueReplacements || 0} E${client?.raceSendErrors || 0} B${client?.raceBufferedBytes || 0}`;
       }
 
       function clientsPanel(clients) {
@@ -221,7 +227,11 @@
         }
         clients.forEach((client) => {
           const row = element('div', 'client-line');
-          const health = element('strong', (client.telemetryDropped || client.telemetrySendErrors) ? 'fault' : '', clientHealth(client));
+          const health = element('div', 'client-health');
+          health.append(
+            element('strong', (client.telemetryDropped || client.telemetrySendErrors) ? 'fault' : '', clientHealth(client)),
+            element('strong', client.raceSendErrors ? 'fault' : '', clientRaceHealth(client))
+          );
           row.append(element('strong', '', clientLabel(client)), element('span', '', clientTransport(client)), health);
           root.append(row);
         });

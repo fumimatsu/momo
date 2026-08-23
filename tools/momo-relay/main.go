@@ -83,51 +83,56 @@ type signalMessage struct {
 }
 
 type viewer struct {
-	id                   uint64
-	role                 string
-	clientKind           string
-	remoteAddr           string
-	pc                   *webrtc.PeerConnection
-	state                atomic.Int32
-	telemetry            atomic.Pointer[webrtc.DataChannel]
-	command              atomic.Pointer[webrtc.DataChannel]
-	race                 atomic.Pointer[webrtc.DataChannel]
-	raceAudio            atomic.Pointer[webrtc.DataChannel]
-	drive                atomic.Pointer[webrtc.DataChannel]
-	events               atomic.Pointer[webrtc.DataChannel]
-	lastCommandUnixNano  atomic.Int64
-	lastCommandDropLog   atomic.Int64
-	lastTelemetryLog     atomic.Int64
-	lastTelemetrySentAt  atomic.Int64
-	telemetryMessages    atomic.Uint64
-	telemetryBytes       atomic.Uint64
-	telemetrySendErrors  atomic.Uint64
-	telemetryDropped     atomic.Uint64
-	telemetryThrottled   atomic.Uint64
-	telemetryWS          chan string
-	telemetryStateWS     *sourceLatestTelemetryQueue
-	gameplayWS           chan string
-	commandWS            chan string
-	raceWS               chan string
-	audioWS              chan string
-	eventsWS             chan string
-	audioSubscribed      atomic.Bool
-	telemetrySendMu      sync.Mutex
-	observerStateMu      sync.Mutex
-	observerStateAt      map[string]int64
-	raceSendMu           sync.Mutex
-	eventsSendMu         sync.Mutex
-	raceAudioSendMu      sync.Mutex
-	raceAudioCalloutMu   sync.Mutex
-	raceAudioCalloutAt   time.Time
-	raceAudioCalloutSeen map[string]time.Time
-	raceAudioLanguage    atomic.Value
-	raceAudioMode        atomic.Value
-	raceAudioTrack       *webrtc.TrackLocalStaticSample
-	raceAudioQueueMu     sync.Mutex
-	raceAudioQueue       chan raceAudioClip
-	raceAudioStop        chan struct{}
-	raceAudioStopOnce    sync.Once
+	id                    uint64
+	role                  string
+	clientKind            string
+	remoteAddr            string
+	pc                    *webrtc.PeerConnection
+	state                 atomic.Int32
+	telemetry             atomic.Pointer[webrtc.DataChannel]
+	command               atomic.Pointer[webrtc.DataChannel]
+	race                  atomic.Pointer[webrtc.DataChannel]
+	raceAudio             atomic.Pointer[webrtc.DataChannel]
+	drive                 atomic.Pointer[webrtc.DataChannel]
+	events                atomic.Pointer[webrtc.DataChannel]
+	lastCommandUnixNano   atomic.Int64
+	lastCommandDropLog    atomic.Int64
+	lastTelemetryLog      atomic.Int64
+	lastTelemetrySentAt   atomic.Int64
+	telemetryMessages     atomic.Uint64
+	telemetryBytes        atomic.Uint64
+	telemetrySendErrors   atomic.Uint64
+	telemetryDropped      atomic.Uint64
+	telemetryThrottled    atomic.Uint64
+	lastRaceSentAt        atomic.Int64
+	raceMessages          atomic.Uint64
+	raceBytes             atomic.Uint64
+	raceSendErrors        atomic.Uint64
+	raceQueueReplacements atomic.Uint64
+	telemetryWS           chan string
+	telemetryStateWS      *sourceLatestTelemetryQueue
+	gameplayWS            chan string
+	commandWS             chan string
+	raceWS                chan string
+	audioWS               chan string
+	eventsWS              chan string
+	audioSubscribed       atomic.Bool
+	telemetrySendMu       sync.Mutex
+	observerStateMu       sync.Mutex
+	observerStateAt       map[string]int64
+	raceSendMu            sync.Mutex
+	eventsSendMu          sync.Mutex
+	raceAudioSendMu       sync.Mutex
+	raceAudioCalloutMu    sync.Mutex
+	raceAudioCalloutAt    time.Time
+	raceAudioCalloutSeen  map[string]time.Time
+	raceAudioLanguage     atomic.Value
+	raceAudioMode         atomic.Value
+	raceAudioTrack        *webrtc.TrackLocalStaticSample
+	raceAudioQueueMu      sync.Mutex
+	raceAudioQueue        chan raceAudioClip
+	raceAudioStop         chan struct{}
+	raceAudioStopOnce     sync.Once
 }
 
 // sourceLatestTelemetryQueue keeps one latest state per telemetry source.
@@ -646,12 +651,18 @@ type viewerOperationsState struct {
 	RaceWebSocket              bool   `json:"raceWebSocket"`
 	EventsWebSocket            bool   `json:"eventsWebSocket"`
 	LastTelemetryDeliveryAgeMs *int64 `json:"lastTelemetryDeliveryAgeMs"`
+	LastRaceDeliveryAgeMs      *int64 `json:"lastRaceDeliveryAgeMs"`
 	LastCommandAgeMs           *int64 `json:"lastCommandAgeMs"`
 	TelemetryMessages          uint64 `json:"telemetryMessages"`
 	TelemetryBytes             uint64 `json:"telemetryBytes"`
 	TelemetrySendErrors        uint64 `json:"telemetrySendErrors"`
 	TelemetryDropped           uint64 `json:"telemetryDropped"`
 	TelemetryThrottled         uint64 `json:"telemetryThrottled"`
+	RaceMessages               uint64 `json:"raceMessages"`
+	RaceBytes                  uint64 `json:"raceBytes"`
+	RaceSendErrors             uint64 `json:"raceSendErrors"`
+	RaceQueueReplacements      uint64 `json:"raceQueueReplacements"`
+	RaceBufferedBytes          uint64 `json:"raceBufferedBytes"`
 }
 
 type pliRequestCounts struct {
@@ -1254,13 +1265,26 @@ func viewerStatusSnapshot(client *viewer, now time.Time) viewerOperationsState {
 		RaceWebSocket:              client.raceWS != nil,
 		EventsWebSocket:            client.eventsWS != nil,
 		LastTelemetryDeliveryAgeMs: ageSinceUnixNano(client.lastTelemetrySentAt.Load(), now),
+		LastRaceDeliveryAgeMs:      ageSinceUnixNano(client.lastRaceSentAt.Load(), now),
 		LastCommandAgeMs:           ageSinceUnixNano(client.lastCommandUnixNano.Load(), now),
 		TelemetryMessages:          client.telemetryMessages.Load(),
 		TelemetryBytes:             client.telemetryBytes.Load(),
 		TelemetrySendErrors:        client.telemetrySendErrors.Load(),
 		TelemetryDropped:           client.telemetryDropped.Load(),
 		TelemetryThrottled:         client.telemetryThrottled.Load(),
+		RaceMessages:               client.raceMessages.Load(),
+		RaceBytes:                  client.raceBytes.Load(),
+		RaceSendErrors:             client.raceSendErrors.Load(),
+		RaceQueueReplacements:      client.raceQueueReplacements.Load(),
+		RaceBufferedBytes:          dataChannelBufferedAmount(client.race.Load()),
 	}
+}
+
+func dataChannelBufferedAmount(channel *webrtc.DataChannel) uint64 {
+	if channel == nil {
+		return 0
+	}
+	return channel.BufferedAmount()
 }
 
 func viewerDownlinkTransport(client *viewer) string {
@@ -2045,7 +2069,9 @@ func (r *relay) broadcastRaceState(message string) {
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
 		if client.raceWS != nil {
-			enqueueLatestTelemetry(client.raceWS, message)
+			if enqueueLatestRaceState(client.raceWS, message) {
+				client.raceQueueReplacements.Add(1)
+			}
 			continue
 		}
 		if channel := client.race.Load(); channel != nil {
@@ -2174,12 +2200,20 @@ func (r *relay) sendRaceStateLocked(client *viewer, channel *webrtc.DataChannel,
 		return false
 	}
 	if err := channel.SendText(message); err != nil {
+		client.raceSendErrors.Add(1)
 		client.race.CompareAndSwap(channel, nil)
 		log.Printf("send race state to viewer %d: %v", client.id, err)
 		_ = channel.Close()
 		return false
 	}
+	recordRaceStateDelivery(client, message)
 	return true
+}
+
+func recordRaceStateDelivery(client *viewer, message string) {
+	client.lastRaceSentAt.Store(time.Now().UnixNano())
+	client.raceMessages.Add(1)
+	client.raceBytes.Add(uint64(len(message)))
 }
 
 func (r *relay) sendCurrentRaceState(client *viewer, channel *webrtc.DataChannel) {
@@ -3013,6 +3047,14 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		defer writeMu.Unlock()
 		return ws.WriteJSON(message)
 	}
+	sendRaceStateSignal := func(payload string) error {
+		if err := sendSignal(signalMessage{Type: "race-state", Data: payload}); err != nil {
+			client.raceSendErrors.Add(1)
+			return err
+		}
+		recordRaceStateDelivery(client, payload)
+		return nil
+	}
 	viewerDataDone := make(chan struct{})
 	defer close(viewerDataDone)
 	if role == "pilot" || clientKind == "web-observer" {
@@ -3035,7 +3077,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			for {
 				select {
 				case payload := <-client.raceWS:
-					if err := sendSignal(signalMessage{Type: "race-state", Data: payload}); err != nil {
+					if err := sendRaceStateSignal(payload); err != nil {
 						log.Printf("source %q: send WebSocket race state to viewer %d: %v", r.name, client.id, err)
 						return
 					}
@@ -3091,7 +3133,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 						return
 					}
 				case payload := <-client.raceWS:
-					if err := sendSignal(signalMessage{Type: "race-state", Data: payload}); err != nil {
+					if err := sendRaceStateSignal(payload); err != nil {
 						log.Printf("source %q: send WebSocket race state to viewer %d: %v", r.name, client.id, err)
 						return
 					}
@@ -3251,7 +3293,9 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			}
 			if client.raceWS != nil {
 				if state := r.currentRaceState(); state != "" {
-					enqueueLatestTelemetry(client.raceWS, state)
+					if enqueueLatestRaceState(client.raceWS, state) {
+						client.raceQueueReplacements.Add(1)
+					}
 				}
 			}
 			if err := sendSignal(signalMessage{Type: "answer", SDP: answer.SDP}); err != nil {
@@ -3290,23 +3334,38 @@ func parseSource(value string) (string, string, error) {
 }
 
 func raceMessageForCar(state []byte, carID string) (string, error) {
-	if strings.TrimSpace(carID) == "" {
-		return "", errors.New("race car ID is empty")
+	messages, err := raceMessagesForCars(state, []string{carID})
+	if err != nil {
+		return "", err
+	}
+	return messages[0], nil
+}
+
+func raceMessagesForCars(state []byte, carIDs []string) ([]string, error) {
+	if len(carIDs) == 0 {
+		return []string{}, nil
 	}
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(state, &payload); err != nil {
-		return "", fmt.Errorf("decode race state: %w", err)
+		return nil, fmt.Errorf("decode race state: %w", err)
 	}
-	carIDJSON, err := json.Marshal(carID)
-	if err != nil {
-		return "", fmt.Errorf("encode race car ID: %w", err)
+	messages := make([]string, 0, len(carIDs))
+	for _, carID := range carIDs {
+		if strings.TrimSpace(carID) == "" {
+			return nil, errors.New("race car ID is empty")
+		}
+		carIDJSON, err := json.Marshal(carID)
+		if err != nil {
+			return nil, fmt.Errorf("encode race car ID: %w", err)
+		}
+		payload["viewerCarId"] = carIDJSON
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("encode race state: %w", err)
+		}
+		messages = append(messages, "RACE:"+string(encoded))
 	}
-	payload["viewerCarId"] = carIDJSON
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("encode race state: %w", err)
-	}
-	return "RACE:" + string(encoded), nil
+	return messages, nil
 }
 
 func (server *relayServer) startRaceControl(ctx context.Context, raceURL string, viewerToken string) {
@@ -3400,16 +3459,26 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			})
 		}
 		server.observeRaceContext(envelope, time.Now())
+		vehicleSources := make([]*relay, 0)
+		carIDs := make([]string, 0)
 		for _, source := range server.sourceSnapshot() {
 			if effectiveRelaySourceKind(source.sourceKind) != relaySourceKindVehicle {
 				continue
 			}
-			message, err := raceMessageForCar(payload, source.raceCarID)
-			if err != nil {
-				log.Printf("source %q: ignore Race Control state: %v", source.name, err)
+			if strings.TrimSpace(source.raceCarID) == "" {
+				log.Printf("source %q: ignore Race Control state: race car ID is empty", source.name)
 				continue
 			}
-			source.publishRaceState(message)
+			vehicleSources = append(vehicleSources, source)
+			carIDs = append(carIDs, source.raceCarID)
+		}
+		messages, err := raceMessagesForCars(payload, carIDs)
+		if err != nil {
+			log.Printf("ignore Race Control fan-out: %v", err)
+			continue
+		}
+		for index, source := range vehicleSources {
+			source.publishRaceState(messages[index])
 		}
 	}
 }

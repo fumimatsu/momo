@@ -373,6 +373,9 @@ Race state は専用の `/ws/race-state` 1 本で受信する。
 ブラウザへ Race Control token は渡さない。Relay が Race Control へ 1 本だけ認証接続し、
 Web Observer へ Race state を重複させず配る。
 
+Race state の1〜64 source変換benchmark、最適化結果、`/api/v1/status`で確認できる配信指標は
+[Relay race-state scale validation](../../docs/relay-race-state-scaling.md)を参照する。
+
 Team Observer の選択正本は物理車両の `vehicleId` である。URL は `teamVehicles`、browser storage は
 `momoTeamObserverVehiclesV2` を使う。旧 `teamCars` と `videoDevices` は source/car ID から解決して
 一度移行する互換入力として維持する。

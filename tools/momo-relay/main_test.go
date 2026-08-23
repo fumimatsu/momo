@@ -78,6 +78,48 @@ func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
 	}
 }
 
+func TestRaceMessagesForCarsAddDistinctViewerCarIDs(t *testing.T) {
+	messages, err := raceMessagesForCars(
+		[]byte(`{"type":"race_state","version":2,"standings":[]}`),
+		[]string{"CP-1", "CP-2"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(messages))
+	}
+	for index, message := range messages {
+		var payload struct {
+			ViewerCarID string `json:"viewerCarId"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "RACE:")), &payload); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("CP-%d", index+1)
+		if payload.ViewerCarID != want {
+			t.Fatalf("messages[%d].viewerCarId = %q, want %q", index, payload.ViewerCarID, want)
+		}
+	}
+}
+
+func TestRaceWebSocketQueueKeepsLatestStateAndCountsReplacement(t *testing.T) {
+	client := &viewer{id: 1, raceWS: make(chan string, 1)}
+	source := &relay{viewers: map[uint64]*viewer{client.id: client}}
+	source.broadcastRaceState("first")
+	source.broadcastRaceState("second")
+	if got := <-client.raceWS; got != "second" {
+		t.Fatalf("queued race state = %q, want second", got)
+	}
+	if got := client.raceQueueReplacements.Load(); got != 1 {
+		t.Fatalf("race queue replacements = %d, want 1", got)
+	}
+	status := viewerStatusSnapshot(client, time.Now())
+	if status.RaceQueueReplacements != 1 || status.RaceMessages != 0 || status.RaceBytes != 0 {
+		t.Fatalf("race delivery status = %#v", status)
+	}
+}
+
 func TestAyamePilotRetryDelay(t *testing.T) {
 	if got := ayamePilotRetryDelay(fmt.Errorf("signaling ended: %w", errAyamePeerLeft)); got != 0 {
 		t.Fatalf("peer departure retry delay = %s, want immediate retry", got)
