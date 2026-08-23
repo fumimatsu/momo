@@ -7,6 +7,8 @@ param(
     [string]$MomoExecutable = '',
     [string]$RaceControlRepository = '',
     [string]$TimingRepository = '',
+    [string]$ReplayProfileManifestPath = '',
+    [string]$CommandReplayJsonl = '',
     [ValidateRange(1, 32)]
     [int]$CarCount = 5,
     [ValidateSet(25, 33, 40, 50)]
@@ -153,7 +155,6 @@ if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
 }
 
 foreach ($requiredFile in @(
-    $InputPath,
     $MomoExecutable,
     $PythonExecutable,
     (Join-Path $RaceControlRepository 'package.json'),
@@ -163,6 +164,17 @@ foreach ($requiredFile in @(
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required file was not found: $requiredFile"
     }
+}
+if ([string]::IsNullOrWhiteSpace($ReplayProfileManifestPath)) {
+    if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
+        throw "Required replay input was not found: $InputPath"
+    }
+}
+elseif (-not (Test-Path -LiteralPath $ReplayProfileManifestPath -PathType Leaf)) {
+    throw "Replay profile manifest was not found: $ReplayProfileManifestPath"
+}
+if (-not [string]::IsNullOrWhiteSpace($CommandReplayJsonl) -and -not (Test-Path -LiteralPath $CommandReplayJsonl -PathType Leaf)) {
+    throw "Command replay JSONL was not found: $CommandReplayJsonl"
 }
 if (Test-Path -LiteralPath $runtimePath -PathType Leaf) {
     & (Join-Path $PSScriptRoot 'Stop-VirtualFleetMapDemo.ps1')
@@ -348,7 +360,6 @@ try {
     Wait-HttpReady -Url $raceControlBaseUrl -Name 'Race Control'
 
     $virtualArgs = @{
-        InputPath = $InputPath
         FFmpegPath = $FFmpegPath
         GoExecutable = $go
         ListenHost = $ListenHost
@@ -363,6 +374,12 @@ try {
         RaceControlWsUrl = "ws://${ListenHost}:$RaceControlPort/ws/races/$raceID"
         RaceControlViewerToken = [string]$devVars['VIEWER_TOKEN']
         NoOpen = $true
+    }
+    if ([string]::IsNullOrWhiteSpace($ReplayProfileManifestPath)) {
+        $virtualArgs.InputPath = $InputPath
+    }
+    else {
+        $virtualArgs.ReplayProfileManifestPath = $ReplayProfileManifestPath
     }
     if ($ForceTranscode) { $virtualArgs.ForceTranscode = $true }
     & (Join-Path $PSScriptRoot 'Start-VirtualFiveCarDemo.ps1') @virtualArgs
@@ -382,10 +399,14 @@ try {
         -RedirectStandardError (Join-Path $runRoot 'gpu-marker-observer.stderr.log') `
         -ArgumentList @((Join-Path $PSScriptRoot 'Run-GpuMarkerObserverLumaV2.py'), '--required-source-count', "$CarCount", '--duration-seconds', '0', '--initial-detection-hz', "$DetectionHz")
 
+    $pilotLoadArguments = @('-relay-url', $relayBaseUrl, '-source-count', "$CarCount", '-observers-per-source', '0', '-pilot-sources', ($sourceIDs -join ','), '-listen', "${ListenHost}:$PilotLoadPort")
+    if (-not [string]::IsNullOrWhiteSpace($CommandReplayJsonl)) {
+        $pilotLoadArguments += @('-command-replay-jsonl', ([IO.Path]::GetFullPath($CommandReplayJsonl)), '-spread-command-starts')
+    }
     $pilotLoad = Start-Process -FilePath $pilotLoadExe -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $runRoot 'pilot-load.stdout.log') `
         -RedirectStandardError (Join-Path $runRoot 'pilot-load.stderr.log') `
-        -ArgumentList @('-relay-url', $relayBaseUrl, '-source-count', "$CarCount", '-observers-per-source', '0', '-pilot-sources', ($sourceIDs -join ','), '-listen', "${ListenHost}:$PilotLoadPort")
+        -ArgumentList $pilotLoadArguments
     Wait-HttpReady -Url "http://${ListenHost}:$PilotLoadPort/healthz" -Name 'Pilot load clients'
 
     $driveDeadline = [DateTimeOffset]::UtcNow.AddSeconds(45)
@@ -445,6 +466,8 @@ try {
         sourceVideoOffsetsEnabled = $true
         spreadStartMaxPercent = $SpreadStartMaxPercent
         replayClipDurationSeconds = $ReplayClipDurationSeconds
+        replayProfileManifestPath = if ([string]::IsNullOrWhiteSpace($ReplayProfileManifestPath)) { $null } else { [IO.Path]::GetFullPath($ReplayProfileManifestPath) }
+        commandReplayJsonl = if ([string]::IsNullOrWhiteSpace($CommandReplayJsonl)) { $null } else { [IO.Path]::GetFullPath($CommandReplayJsonl) }
         raceControlPid = $raceControl.Id
         markerReceiverPid = $markerReceiver.Id
         gpuObserverPid = $gpuObserver.Id
@@ -455,6 +478,8 @@ try {
         raceControlUrl = $raceControlBaseUrl
         coordinatorUrl = $coordinatorBaseUrl
         relayUrl = $relayBaseUrl
+        virtualSourceUrl = [string]$virtualRuntime.virtualSourceUrl
+        pilotLoadUrl = "http://${ListenHost}:$PilotLoadPort"
         teamObserverUrl = "$relayBaseUrl/observer.html?relayHost=${ListenHost}:$RelayPort"
         validationPath = (Join-Path $runRoot 'validation.json')
     }

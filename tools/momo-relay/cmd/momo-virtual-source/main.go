@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -25,8 +26,10 @@ import (
 )
 
 const (
-	virtualSourcePrefix   = "/ws/"
-	maximumVirtualSources = 64
+	virtualSourcePrefix    = "/ws/"
+	maximumVirtualSources  = 64
+	virtualSerialLabel     = "serial"
+	telemetryHighWatermark = 1024 * 1024
 )
 
 var virtualH264Codec = webrtc.RTPCodecCapability{
@@ -47,24 +50,44 @@ type signalMessage struct {
 }
 
 type virtualSourceServer struct {
-	api           *webrtc.API
-	accessUnits   []h264AccessUnit
-	frameDuration time.Duration
-	allowed       map[string]struct{}
-	playback      map[string]playbackProfile
+	api      *webrtc.API
+	allowed  map[string]struct{}
+	playback map[string]playbackProfile
+	runtime  map[string]*sourceRuntimeStatus
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
 }
 
 type playbackProfile struct {
-	startIndex int
+	asset             *videoAsset
+	startIndex        int
+	telemetry         []timedReplayMessage
+	telemetryPath     string
+	captureReplayRate float64
 }
 
 type playbackProfileStatus struct {
-	SourceID      string `json:"sourceId"`
-	StartFrame    int    `json:"startFrame"`
-	StartOffsetMS int64  `json:"startOffsetMs"`
+	SourceID            string  `json:"sourceId"`
+	InputPath           string  `json:"inputPath"`
+	StartFrame          int     `json:"startFrame"`
+	StartOffsetMS       int64   `json:"startOffsetMs"`
+	CaptureReplayRate   float64 `json:"captureReplayRate"`
+	TelemetryPath       string  `json:"telemetryPath,omitempty"`
+	TelemetryEventCount int     `json:"telemetryEventCount"`
+	SerialOpen          bool    `json:"serialOpen"`
+	TelemetrySent       uint64  `json:"telemetrySent"`
+	TelemetryDropped    uint64  `json:"telemetryDropped"`
+	TelemetrySendErrors uint64  `json:"telemetrySendErrors"`
+	CommandsReceived    uint64  `json:"commandsReceived"`
+}
+
+type sourceRuntimeStatus struct {
+	serialOpen          atomic.Bool
+	telemetrySent       atomic.Uint64
+	telemetryDropped    atomic.Uint64
+	telemetrySendErrors atomic.Uint64
+	commandsReceived    atomic.Uint64
 }
 
 func main() {
@@ -74,43 +97,64 @@ func main() {
 	var fps int
 	var spreadStarts bool
 	var spreadStartMaxPercent int
+	var profileManifest string
 	flag.StringVar(&listen, "listen", "127.0.0.1:18880", "HTTP and WebSocket listen address")
 	flag.StringVar(&input, "input", "", "H.264 Annex-B input with AUD NAL units")
 	flag.StringVar(&sourceList, "sources", "virtual-01,virtual-02,virtual-03,virtual-04,virtual-05", "comma-separated source IDs")
 	flag.IntVar(&fps, "fps", 30, "playback frame rate")
 	flag.BoolVar(&spreadStarts, "spread-starts", false, "spread source start positions across input keyframes")
 	flag.IntVar(&spreadStartMaxPercent, "spread-start-max-percent", 0, "optional inclusive maximum input position for spread starts (1-100; 0 uses the full legacy spread)")
+	flag.StringVar(&profileManifest, "profile-manifest", "", "optional per-source replay profile manifest")
 	flag.Parse()
 
-	if input == "" || fps < 1 || fps > 120 || spreadStartMaxPercent < 0 || spreadStartMaxPercent > 100 {
-		log.Fatal("-input is required, -fps must be between 1 and 120, and -spread-start-max-percent must be 0 to 100")
+	if fps < 1 || fps > 120 || spreadStartMaxPercent < 0 || spreadStartMaxPercent > 100 {
+		log.Fatal("-fps must be between 1 and 120, and -spread-start-max-percent must be 0 to 100")
 	}
-	data, err := os.ReadFile(input)
-	if err != nil {
-		log.Fatalf("read H.264 input: %v", err)
+	var profiles map[string]playbackProfile
+	if profileManifest != "" {
+		var err error
+		profiles, err = loadReplayManifest(profileManifest)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		if input == "" {
+			log.Fatal("-input is required when -profile-manifest is not configured")
+		}
+		asset, err := loadVideoAsset(input, fps)
+		if err != nil {
+			log.Fatal(err)
+		}
+		sourceIDs, err := parseSourceIDs(sourceList)
+		if err != nil {
+			log.Fatal(err)
+		}
+		profiles = buildPlaybackProfiles(asset.accessUnits, sourceIDs, spreadStarts, spreadStartMaxPercent)
+		for sourceID, profile := range profiles {
+			profile.asset = asset
+			profile.captureReplayRate = 1
+			profiles[sourceID] = profile
+		}
 	}
-	accessUnits, err := splitH264AccessUnits(data)
-	if err != nil {
-		log.Fatalf("parse H.264 input: %v", err)
+	sourceIDs := make([]string, 0, len(profiles))
+	for sourceID := range profiles {
+		sourceIDs = append(sourceIDs, sourceID)
 	}
-	sourceIDs, err := parseSourceIDs(sourceList)
-	if err != nil {
-		log.Fatal(err)
-	}
+	sort.Strings(sourceIDs)
 	api, err := newVirtualSourceAPI()
 	if err != nil {
 		log.Fatal(err)
 	}
 	server := &virtualSourceServer{
-		api:           api,
-		accessUnits:   accessUnits,
-		frameDuration: time.Second / time.Duration(fps),
-		allowed:       make(map[string]struct{}, len(sourceIDs)),
-		playback:      buildPlaybackProfiles(accessUnits, sourceIDs, spreadStarts, spreadStartMaxPercent),
-		active:        make(map[string]context.CancelFunc),
+		api:      api,
+		allowed:  make(map[string]struct{}, len(sourceIDs)),
+		playback: profiles,
+		runtime:  make(map[string]*sourceRuntimeStatus, len(sourceIDs)),
+		active:   make(map[string]context.CancelFunc),
 	}
 	for _, sourceID := range sourceIDs {
 		server.allowed[sourceID] = struct{}{}
+		server.runtime[sourceID] = &sourceRuntimeStatus{}
 	}
 
 	mux := http.NewServeMux()
@@ -126,10 +170,10 @@ func main() {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
-	log.Printf("virtual Momo source listening on http://%s for %s (%d frames at %d fps, spread starts=%t, spread max=%d%%)", listen, strings.Join(sourceIDs, ", "), len(accessUnits), fps, spreadStarts, spreadStartMaxPercent)
+	log.Printf("virtual Momo source listening on http://%s for %s (profile manifest=%t)", listen, strings.Join(sourceIDs, ", "), profileManifest != "")
 	for _, sourceID := range sourceIDs {
 		profile := server.playback[sourceID]
-		log.Printf("source %q playback starts at frame %d (%s)", sourceID, profile.startIndex, time.Duration(profile.startIndex)*server.frameDuration)
+		log.Printf("source %q input=%q playback starts at frame %d (%s), telemetry events=%d", sourceID, profile.asset.inputPath, profile.startIndex, time.Duration(profile.startIndex)*profile.asset.frameDuration, len(profile.telemetry))
 	}
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -218,10 +262,20 @@ func (server *virtualSourceServer) serveHealth(w http.ResponseWriter, _ *http.Re
 	profiles := make([]playbackProfileStatus, 0, len(server.allowed))
 	for sourceID := range server.allowed {
 		profile := server.playback[sourceID]
+		runtime := server.runtime[sourceID]
 		profiles = append(profiles, playbackProfileStatus{
-			SourceID:      sourceID,
-			StartFrame:    profile.startIndex,
-			StartOffsetMS: (time.Duration(profile.startIndex) * server.frameDuration).Milliseconds(),
+			SourceID:            sourceID,
+			InputPath:           profile.asset.inputPath,
+			StartFrame:          profile.startIndex,
+			StartOffsetMS:       (time.Duration(profile.startIndex) * profile.asset.frameDuration).Milliseconds(),
+			CaptureReplayRate:   profile.captureReplayRate,
+			TelemetryPath:       profile.telemetryPath,
+			TelemetryEventCount: len(profile.telemetry),
+			SerialOpen:          runtime.serialOpen.Load(),
+			TelemetrySent:       runtime.telemetrySent.Load(),
+			TelemetryDropped:    runtime.telemetryDropped.Load(),
+			TelemetrySendErrors: runtime.telemetrySendErrors.Load(),
+			CommandsReceived:    runtime.commandsReceived.Load(),
 		})
 	}
 	sort.Slice(profiles, func(left, right int) bool { return profiles[left].SourceID < profiles[right].SourceID })
@@ -300,6 +354,20 @@ func (server *virtualSourceServer) runPeer(ctx context.Context, sourceID string,
 	})
 	peer.OnDataChannel(func(channel *webrtc.DataChannel) {
 		log.Printf("source %q DataChannel %q opened by Relay", sourceID, channel.Label())
+		if channel.Label() != virtualSerialLabel {
+			return
+		}
+		runtime := server.runtime[sourceID]
+		channel.OnOpen(func() {
+			runtime.serialOpen.Store(true)
+			if len(server.playback[sourceID].telemetry) > 0 {
+				go server.playTelemetry(ctx, sourceID, channel)
+			}
+		})
+		channel.OnMessage(func(webrtc.DataChannelMessage) {
+			runtime.commandsReceived.Add(1)
+		})
+		channel.OnClose(func() { runtime.serialOpen.Store(false) })
 	})
 
 	done := make(chan struct{})
@@ -402,24 +470,72 @@ func (server *virtualSourceServer) play(
 		}
 	}()
 
-	ticker := time.NewTicker(server.frameDuration)
+	profile := server.playback[sourceID]
+	asset := profile.asset
+	ticker := time.NewTicker(asset.frameDuration)
 	defer ticker.Stop()
-	index := server.playback[sourceID].startIndex
+	index := profile.startIndex
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-keyframeRequests:
-			index = nextKeyframe(server.accessUnits, index)
+			index = nextKeyframe(asset.accessUnits, index)
 		case <-ticker.C:
-			unit := server.accessUnits[index]
-			if err := track.WriteSample(media.Sample{Data: unit.data, Duration: server.frameDuration}); err != nil {
+			unit := asset.accessUnits[index]
+			if err := track.WriteSample(media.Sample{Data: unit.data, Duration: asset.frameDuration}); err != nil {
 				if !errors.Is(err, io.ErrClosedPipe) {
 					log.Printf("source %q write H.264 sample: %v", sourceID, err)
 				}
 				return
 			}
-			index = (index + 1) % len(server.accessUnits)
+			index = (index + 1) % len(asset.accessUnits)
+		}
+	}
+}
+
+func (server *virtualSourceServer) playTelemetry(ctx context.Context, sourceID string, channel *webrtc.DataChannel) {
+	profile := server.playback[sourceID]
+	runtime := server.runtime[sourceID]
+	if len(profile.telemetry) == 0 {
+		return
+	}
+	loopDuration := profile.asset.duration()
+	loopStartedAt := time.Now()
+	index := 0
+	for {
+		due := loopStartedAt.Add(profile.telemetry[index].offset)
+		delay := time.Until(due)
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+		if channel.BufferedAmount() >= telemetryHighWatermark {
+			runtime.telemetryDropped.Add(1)
+		} else if err := channel.SendText(profile.telemetry[index].data); err != nil {
+			runtime.telemetrySendErrors.Add(1)
+			return
+		} else {
+			runtime.telemetrySent.Add(1)
+		}
+		index++
+		if index == len(profile.telemetry) {
+			index = 0
+			loopStartedAt = loopStartedAt.Add(loopDuration)
+			if time.Since(loopStartedAt) > loopDuration {
+				loopStartedAt = time.Now()
+			}
 		}
 	}
 }

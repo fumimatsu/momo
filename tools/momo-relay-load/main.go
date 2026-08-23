@@ -40,11 +40,16 @@ type loadClient struct {
 	rtpPackets      atomic.Uint64
 	rtpFrames       atomic.Uint64
 	telemetry       atomic.Uint64
+	commandErrors   atomic.Uint64
 	lastRTPUnixNano atomic.Int64
+	commandReplay   *commandReplay
+	commandOffset   time.Duration
 }
 
 type loadRunner struct {
-	clients []*loadClient
+	clients           []*loadClient
+	commandReplayPath string
+	commandRecords    int
 }
 
 func main() {
@@ -54,12 +59,16 @@ func main() {
 	var pilotSource string
 	var pilotSourceList string
 	var listen string
+	var commandReplayPath string
+	var spreadCommandStarts bool
 	flag.StringVar(&relayURL, "relay-url", "http://127.0.0.1:18090", "Relay HTTP base URL")
 	flag.IntVar(&sourceCount, "source-count", 4, "simulated source count")
 	flag.IntVar(&observersPerSource, "observers-per-source", 1, "Observer PeerConnections per source")
 	flag.StringVar(&pilotSource, "pilot-source", "", "optional source ID that receives one Pilot client")
 	flag.StringVar(&pilotSourceList, "pilot-sources", "", "optional comma-separated source IDs that each receive one Pilot client")
 	flag.StringVar(&listen, "listen", "127.0.0.1:18100", "status HTTP listen address")
+	flag.StringVar(&commandReplayPath, "command-replay-jsonl", "", "optional CPU-shadow JSONL command replay")
+	flag.BoolVar(&spreadCommandStarts, "spread-command-starts", false, "spread command replay starting positions across Pilot clients")
 	flag.Parse()
 	pilotSources, err := parsePilotSources(pilotSource, pilotSourceList)
 	if err != nil {
@@ -73,9 +82,19 @@ func main() {
 		log.Fatal("-relay-url must be an absolute http:// or https:// URL")
 	}
 
+	var replay *commandReplay
+	if commandReplayPath != "" {
+		replay, err = loadCommandReplay(commandReplayPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runner := &loadRunner{}
+	runner := &loadRunner{commandReplayPath: commandReplayPath}
+	if replay != nil {
+		runner.commandRecords = len(replay.events)
+	}
 	for sourceIndex := 1; sourceIndex <= sourceCount; sourceIndex++ {
 		for observerIndex := 1; observerIndex <= observersPerSource; observerIndex++ {
 			client := &loadClient{id: fmt.Sprintf("sim-%02d/observer-%d", sourceIndex, observerIndex), role: "observer"}
@@ -84,8 +103,11 @@ func main() {
 			go client.run(ctx, parsed, device)
 		}
 	}
-	for _, sourceID := range pilotSources {
-		client := &loadClient{id: sourceID + "/pilot", role: "pilot"}
+	for sourceIndex, sourceID := range pilotSources {
+		client := &loadClient{id: sourceID + "/pilot", role: "pilot", commandReplay: replay}
+		if replay != nil && spreadCommandStarts && len(pilotSources) > 1 {
+			client.commandOffset = time.Duration(sourceIndex) * replay.duration / time.Duration(len(pilotSources))
+		}
 		runner.clients = append(runner.clients, client)
 		go client.run(ctx, parsed, sourceID)
 	}
@@ -124,8 +146,10 @@ func (runner *loadRunner) serveStatus(w http.ResponseWriter, _ *http.Request) {
 		clients = append(clients, map[string]any{
 			"id": client.id, "role": client.role, "connected": client.connected.Load(),
 			"commandOpen": client.commandOpen.Load(), "driveOpen": client.driveOpen.Load(),
-			"commandsSent": client.commandsSent.Load(),
-			"rtpPackets":   client.rtpPackets.Load(), "rtpFrames": client.rtpFrames.Load(),
+			"commandsSent":          client.commandsSent.Load(),
+			"commandErrors":         client.commandErrors.Load(),
+			"commandReplayOffsetMs": client.commandOffset.Milliseconds(),
+			"rtpPackets":            client.rtpPackets.Load(), "rtpFrames": client.rtpFrames.Load(),
 			"telemetry": client.telemetry.Load(),
 			"lastRtpAgeMs": func() any {
 				if lastRTP == 0 {
@@ -139,6 +163,7 @@ func (runner *loadRunner) serveStatus(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"clientCount": len(runner.clients), "connectedCount": connected,
 		"rtpPackets": packets, "rtpFrames": frames, "telemetry": telemetry,
+		"commandReplayPath": runner.commandReplayPath, "commandReplayRecords": runner.commandRecords,
 		"clients": clients,
 	})
 }
@@ -288,6 +313,10 @@ func (client *loadClient) connect(ctx context.Context, relayURL *url.URL, device
 }
 
 func (client *loadClient) writeCommands(ctx context.Context, channel *webrtc.DataChannel) {
+	if client.commandReplay != nil {
+		client.writeReplayCommands(ctx, channel)
+		return
+	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -296,9 +325,50 @@ func (client *loadClient) writeCommands(ctx context.Context, channel *webrtc.Dat
 			return
 		case <-ticker.C:
 			if err := channel.SendText("S:1500,T:1000\n"); err != nil {
+				client.commandErrors.Add(1)
 				return
 			}
 			client.commandsSent.Add(1)
+		}
+	}
+}
+
+func (client *loadClient) writeReplayCommands(ctx context.Context, channel *webrtc.DataChannel) {
+	schedule := client.commandReplay.schedule(client.commandOffset)
+	if len(schedule) == 0 {
+		return
+	}
+	loopStartedAt := time.Now()
+	index := 0
+	for {
+		delay := time.Until(loopStartedAt.Add(schedule[index].offset))
+		if delay < 0 {
+			delay = 0
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		case <-timer.C:
+		}
+		if err := channel.SendText(schedule[index].line); err != nil {
+			client.commandErrors.Add(1)
+			return
+		}
+		client.commandsSent.Add(1)
+		index++
+		if index == len(schedule) {
+			index = 0
+			loopStartedAt = loopStartedAt.Add(client.commandReplay.duration)
+			if time.Since(loopStartedAt) > client.commandReplay.duration {
+				loopStartedAt = time.Now()
+			}
 		}
 	}
 }

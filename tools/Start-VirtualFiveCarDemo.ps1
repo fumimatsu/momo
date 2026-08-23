@@ -18,6 +18,7 @@ param(
     [int]$SpreadStartMaxPercent = 0,
     [string]$RaceControlWsUrl = '',
     [string]$RaceControlViewerToken = '',
+    [string]$ReplayProfileManifestPath = '',
     [switch]$ForceTranscode,
     [switch]$NoOpen
 )
@@ -43,19 +44,40 @@ foreach ($port in @($VirtualSourcePort, $RelayPort)) {
         throw "TCP port $port is already in use. Pass a different port explicitly."
     }
 }
-if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
-    throw "Replay input was not found: $InputPath"
-}
 if (-not [string]::IsNullOrWhiteSpace($RaceControlWsUrl) -and [string]::IsNullOrWhiteSpace($RaceControlViewerToken)) {
     throw 'RaceControlViewerToken is required when RaceControlWsUrl is configured'
 }
-$inputItem = Get-Item -LiteralPath $InputPath
-$inputIdentity = '{0}|{1}|{2}|{3}|{4}|{5}' -f $inputItem.FullName, $inputItem.Length, $inputItem.LastWriteTimeUtc.Ticks, $FrameRate, [bool]$InputAlreadyUpright, $ClipDurationSeconds
-$inputIdentityBytes = [Text.Encoding]::UTF8.GetBytes($inputIdentity)
-$inputIdentityHash = [Security.Cryptography.SHA256]::HashData($inputIdentityBytes)
-$inputFingerprint = ([Convert]::ToHexString($inputIdentityHash)).Substring(0, 12).ToLowerInvariant()
-$inputBaseName = [IO.Path]::GetFileNameWithoutExtension($inputItem.Name) -replace '[^A-Za-z0-9._-]', '-'
-$h264Path = Join-Path $artifactRoot ("{0}-{1}-{2}fps.h264" -f $inputBaseName, $inputFingerprint, $FrameRate)
+$inputItem = $null
+$h264Path = $null
+$profileManifestItem = $null
+if (-not [string]::IsNullOrWhiteSpace($ReplayProfileManifestPath)) {
+    if (-not (Test-Path -LiteralPath $ReplayProfileManifestPath -PathType Leaf)) {
+        throw "Replay profile manifest was not found: $ReplayProfileManifestPath"
+    }
+    $profileManifestItem = Get-Item -LiteralPath $ReplayProfileManifestPath
+    $profileManifest = Get-Content -LiteralPath $profileManifestItem.FullName -Raw | ConvertFrom-Json
+    if ([int]$profileManifest.schemaVersion -ne 1) {
+        throw 'Replay profile manifest schemaVersion must be 1.'
+    }
+    $manifestSources = @($profileManifest.sources)
+    if ($manifestSources.Count -ne $CarCount) {
+        throw "Replay profile manifest has $($manifestSources.Count) sources but CarCount is $CarCount."
+    }
+    $sourceIDs = @($manifestSources | ForEach-Object { [string]$_.sourceId })
+}
+else {
+    if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
+        throw "Replay input was not found: $InputPath"
+    }
+    $inputItem = Get-Item -LiteralPath $InputPath
+    $inputIdentity = '{0}|{1}|{2}|{3}|{4}|{5}' -f $inputItem.FullName, $inputItem.Length, $inputItem.LastWriteTimeUtc.Ticks, $FrameRate, [bool]$InputAlreadyUpright, $ClipDurationSeconds
+    $inputIdentityBytes = [Text.Encoding]::UTF8.GetBytes($inputIdentity)
+    $inputIdentityHash = [Security.Cryptography.SHA256]::HashData($inputIdentityBytes)
+    $inputFingerprint = ([Convert]::ToHexString($inputIdentityHash)).Substring(0, 12).ToLowerInvariant()
+    $inputBaseName = [IO.Path]::GetFileNameWithoutExtension($inputItem.Name) -replace '[^A-Za-z0-9._-]', '-'
+    $h264Path = Join-Path $artifactRoot ("{0}-{1}-{2}fps.h264" -f $inputBaseName, $inputFingerprint, $FrameRate)
+    $sourceIDs = @(1..$CarCount | ForEach-Object { 'virtual-{0:d2}' -f $_ })
+}
 
 if ([string]::IsNullOrWhiteSpace($FFmpegPath)) {
     $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
@@ -74,7 +96,7 @@ if ([string]::IsNullOrWhiteSpace($FFmpegPath) -or -not (Test-Path -LiteralPath $
 }
 $go = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') -RequestedPath $GoExecutable -RequiredVersionPattern 'go1\.26(?:\.|\s)'
 
-if ($ForceTranscode -or -not (Test-Path -LiteralPath $h264Path -PathType Leaf)) {
+if ($null -ne $inputItem -and ($ForceTranscode -or -not (Test-Path -LiteralPath $h264Path -PathType Leaf))) {
     Write-Host 'Preparing upright H.264 loop input...'
     $videoFilter = if ($InputAlreadyUpright) { 'scale=960:528' } else { 'hflip,vflip,scale=960:528' }
     $durationArguments = if ($ClipDurationSeconds -gt 0) {
@@ -104,7 +126,6 @@ finally {
     Pop-Location
 }
 
-$sourceIDs = @(1..$CarCount | ForEach-Object { 'virtual-{0:d2}' -f $_ })
 $sourceArguments = @()
 foreach ($index in 1..$CarCount) {
     $sourceID = $sourceIDs[$index - 1]
@@ -115,8 +136,13 @@ foreach ($index in 1..$CarCount) {
 $virtualSource = $null
 $relay = $null
 try {
-    $virtualSourceArguments = @('-listen', "${ListenHost}:$VirtualSourcePort", '-input', $h264Path, '-fps', "$FrameRate", '-sources', ($sourceIDs -join ','))
-    if ($SpreadStartPositions) {
+    if ($null -ne $profileManifestItem) {
+        $virtualSourceArguments = @('-listen', "${ListenHost}:$VirtualSourcePort", '-profile-manifest', $profileManifestItem.FullName)
+    }
+    else {
+        $virtualSourceArguments = @('-listen', "${ListenHost}:$VirtualSourcePort", '-input', $h264Path, '-fps', "$FrameRate", '-sources', ($sourceIDs -join ','))
+    }
+    if ($null -eq $profileManifestItem -and $SpreadStartPositions) {
         $virtualSourceArguments += '-spread-starts'
         if ($SpreadStartMaxPercent -gt 0) {
             $virtualSourceArguments += @('-spread-start-max-percent', "$SpreadStartMaxPercent")
@@ -171,8 +197,9 @@ try {
         clipDurationSeconds = $ClipDurationSeconds
         carCount = $CarCount
         sources = $sourceIDs
-        inputPath = $inputItem.FullName
+        inputPath = if ($null -ne $inputItem) { $inputItem.FullName } else { $null }
         h264Path = $h264Path
+        replayProfileManifestPath = if ($null -ne $profileManifestItem) { $profileManifestItem.FullName } else { $null }
         spreadStartPositions = [bool]$SpreadStartPositions
         spreadStartMaxPercent = $SpreadStartMaxPercent
         raceControlConnected = -not [string]::IsNullOrWhiteSpace($RaceControlWsUrl)
