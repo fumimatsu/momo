@@ -45,7 +45,12 @@ Sending steering commands from virtual Momo would test the wrong direction and i
   and commands received.
 - `momo-relay-load -command-replay-jsonl -spread-command-starts` replaces the constant synthetic
   command with the original 50 Hz steering lines. Each Pilot begins at a different point in the
-  command log.
+  command log. Replay-only command audit lines carry virtual `G:5` so the Team Observer displays
+  the recorded `T:1500..1700` range instead of saturating it against the normal G1 range. Vehicle
+  gameplay state remains unchanged.
+- Replay telemetry is normalized once at startup to source-local monotonic `seq` and `t_us` values.
+  Two deterministic eight-hex-digit `boot` IDs alternate at loop boundaries, so Viewer sequence
+  validation accepts the next loop without per-message JSON processing during playback.
 - `Start-VirtualFleetMapDemo.ps1` accepts both replay inputs and still uses real Marker detection,
   Coordinator timing, Race Control snapshots, and Team Observer rendering.
 - `Measure-VirtualFleetReplay.ps1` records ranking order transitions and before/after transport
@@ -83,6 +88,12 @@ The initial 30-second ranking and transport sample produced:
 | IMU telemetry dropped / send errors | 0 / 0 |
 | Commands sent / received by virtual Momo | 30,550 / 30,587 |
 | Command send errors | 0 |
+
+After the HUD replay correction, virtual source 05 was selected because its approximately 77-second
+capture starts near 79 percent and crosses the source loop boundary early. Team Observer samples
+remained active after the boundary. Throttle changed `35 -> 40 -> 40 -> 38` percent, brake remained
+at the recorded zero percent, and the G marker moved through `55.8/49.3`, `60.9/49.7`, `50.3/50.1`,
+and `47.5/52.1` percent positions while `motionActive` stayed true.
 
 The final recording used 15 fps screen capture to preserve headroom for the four selected WebRTC
 videos while leaving every virtual Momo source at 50 fps and Marker detection at 25 Hz.

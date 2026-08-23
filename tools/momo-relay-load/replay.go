@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
+
+const recordedReplayDisplayGear = 5
 
 type captureCommandRecord struct {
 	Kind         string  `json:"kind"`
@@ -43,7 +46,7 @@ func loadCommandReplay(path string) (*commandReplay, error) {
 		}
 		events = append(events, timedCommand{
 			offset: time.Duration(record.RunElapsedMS * float64(time.Millisecond)),
-			line:   record.Line,
+			line:   commandWithDisplayGear(record.Line, recordedReplayDisplayGear),
 		})
 	}
 	if err := scanner.Err(); err != nil {
@@ -55,6 +58,12 @@ func loadCommandReplay(path string) (*commandReplay, error) {
 	sort.SliceStable(events, func(left, right int) bool { return events[left].offset < events[right].offset })
 	duration := events[len(events)-1].offset + 20*time.Millisecond
 	return &commandReplay{events: events, duration: duration}, nil
+}
+
+func commandWithDisplayGear(line string, gear int) string {
+	body := strings.TrimRight(line, "\r\n")
+	lineEnding := line[len(body):]
+	return fmt.Sprintf("%s,G:%d%s", body, gear, lineEnding)
 }
 
 func (replay *commandReplay) schedule(startOffset time.Duration) []timedCommand {

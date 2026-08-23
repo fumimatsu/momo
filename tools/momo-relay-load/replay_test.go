@@ -23,3 +23,9 @@ func TestCommandReplayScheduleRotatesWithoutChangingCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandWithDisplayGearPreservesLineEnding(t *testing.T) {
+	if got := commandWithDisplayGear("S:1500,T:1700\n", 5); got != "S:1500,T:1700,G:5\n" {
+		t.Fatalf("decorated command=%q", got)
+	}
+}

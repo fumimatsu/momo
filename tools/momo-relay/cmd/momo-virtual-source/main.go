@@ -503,6 +503,7 @@ func (server *virtualSourceServer) playTelemetry(ctx context.Context, sourceID s
 	loopDuration := profile.asset.duration()
 	loopStartedAt := time.Now()
 	index := 0
+	loopVariant := 0
 	for {
 		due := loopStartedAt.Add(profile.telemetry[index].offset)
 		delay := time.Until(due)
@@ -521,9 +522,13 @@ func (server *virtualSourceServer) playTelemetry(ctx context.Context, sourceID s
 			return
 		case <-timer.C:
 		}
+		message := profile.telemetry[index].data
+		if loopVariant == 1 && profile.telemetry[index].alternateData != "" {
+			message = profile.telemetry[index].alternateData
+		}
 		if channel.BufferedAmount() >= telemetryHighWatermark {
 			runtime.telemetryDropped.Add(1)
-		} else if err := channel.SendText(profile.telemetry[index].data); err != nil {
+		} else if err := channel.SendText(message); err != nil {
 			runtime.telemetrySendErrors.Add(1)
 			return
 		} else {
@@ -532,6 +537,7 @@ func (server *virtualSourceServer) playTelemetry(ctx context.Context, sourceID s
 		index++
 		if index == len(profile.telemetry) {
 			index = 0
+			loopVariant = 1 - loopVariant
 			loopStartedAt = loopStartedAt.Add(loopDuration)
 			if time.Since(loopStartedAt) > loopDuration {
 				loopStartedAt = time.Now()

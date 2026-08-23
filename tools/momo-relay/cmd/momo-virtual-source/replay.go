@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,8 +37,9 @@ func (asset *videoAsset) duration() time.Duration {
 }
 
 type timedReplayMessage struct {
-	offset time.Duration
-	data   string
+	offset        time.Duration
+	data          string
+	alternateData string
 }
 
 type captureReplayRecord struct {
@@ -121,12 +123,52 @@ func loadReplayManifest(path string) (map[string]playbackProfile, error) {
 				telemetryLogs[telemetryPath] = events
 			}
 			startOffset := time.Duration(startIndex) * asset.frameDuration
-			profile.telemetry = buildLoopSchedule(events, rate, startOffset, asset.duration())
+			schedule := buildLoopSchedule(events, rate, startOffset, asset.duration())
+			profile.telemetry, err = normalizeReplayTelemetrySchedule(source.SourceID, schedule)
+			if err != nil {
+				return nil, fmt.Errorf("source %q: %w", source.SourceID, err)
+			}
 			profile.telemetryPath = telemetryPath
 		}
 		profiles[source.SourceID] = profile
 	}
 	return profiles, nil
+}
+
+func normalizeReplayTelemetrySchedule(sourceID string, schedule []timedReplayMessage) ([]timedReplayMessage, error) {
+	result := make([]timedReplayMessage, len(schedule))
+	bootIDs := [2]string{replayBootID(sourceID, 0), replayBootID(sourceID, 1)}
+	for index, message := range schedule {
+		body := strings.TrimSpace(strings.TrimPrefix(message.data, "TEL:"))
+		if body == message.data {
+			return nil, fmt.Errorf("telemetry record %d does not start with TEL:", index)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			return nil, fmt.Errorf("decode telemetry record %d: %w", index, err)
+		}
+		messageData := [2]string{}
+		for variant := range bootIDs {
+			payload["boot"] = bootIDs[variant]
+			payload["seq"] = index + 1
+			payload["t_us"] = message.offset.Microseconds()
+			encoded, err := json.Marshal(payload)
+			if err != nil {
+				return nil, fmt.Errorf("encode telemetry record %d: %w", index, err)
+			}
+			messageData[variant] = "TEL:" + string(encoded)
+		}
+		message.data = messageData[0]
+		message.alternateData = messageData[1]
+		result[index] = message
+	}
+	return result, nil
+}
+
+func replayBootID(sourceID string, variant int) string {
+	hash := fnv.New32a()
+	_, _ = fmt.Fprintf(hash, "%s:%d", sourceID, variant)
+	return fmt.Sprintf("%08x", hash.Sum32())
 }
 
 func resolveReplayPath(baseDirectory string, value string) string {
