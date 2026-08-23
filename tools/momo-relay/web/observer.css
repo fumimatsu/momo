@@ -223,7 +223,7 @@ button, input, select, textarea { font: inherit; }
 .course-boundary.boundary-s2 text { fill: var(--yellow); }
 
 .track-marker-layer { pointer-events: none; }
-.car-marker { pointer-events: all; cursor: pointer; }
+.car-marker { --car: var(--green); color: var(--car); pointer-events: all; cursor: pointer; }
 .car-marker[hidden] { display: none; }
 .marker-hit { fill: transparent; pointer-events: all; }
 .car-marker text { font-weight: 900; text-anchor: middle; }
@@ -263,11 +263,6 @@ button, input, select, textarea { font: inherit; }
 .battle-map-link line { stroke: var(--yellow); stroke-width: 2; stroke-dasharray: 5 5; opacity: .75; }
 .battle-map-link rect { fill: #161203; stroke: var(--yellow); stroke-width: 1; }
 .battle-map-link text { fill: var(--yellow); font-size: 9px; font-weight: 900; text-anchor: middle; }
-.car-green { color: var(--green); }
-.car-yellow { color: var(--yellow); }
-.car-cyan { color: var(--cyan); }
-.car-red { color: var(--red); }
-
 html[data-mode="live"] .battle-map-link { display: none; }
 
 .map-caption {
@@ -375,10 +370,6 @@ td:last-child { color: var(--cyan); }
 .team-selection-title h2 { margin: 2px 0 0; font-size: 13px; line-height: 1; }
 .team-selection-slots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 0; }
 .team-selection-slot { --car: #7f9096; position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 28px; min-width: 0; border-right: 1px solid var(--line-soft); color: var(--car); }
-.team-selection-slot.car-green { --car: var(--green); }
-.team-selection-slot.car-yellow { --car: var(--yellow); }
-.team-selection-slot.car-cyan { --car: var(--cyan); }
-.team-selection-slot.car-red { --car: var(--red); }
 .team-slot-main, .team-slot-remove, .team-selector-open, .team-selector-close, .team-selector-row, .team-replacement-choices button, .team-selector-footer button, .camera-slot-select { border: 0; color: inherit; background: transparent; cursor: pointer; }
 .team-slot-main { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 10px; color: var(--muted); text-align: left; }
 .team-selection-slot.is-filled .team-slot-main { border-bottom: 2px solid var(--car); color: var(--text); background: color-mix(in srgb, var(--car) 7%, transparent); }
@@ -593,10 +584,6 @@ td:last-child { color: var(--cyan); }
 @keyframes leader-position-down { 50% { transform: translateY(3px); background-color: color-mix(in srgb, var(--red) 18%, transparent); } }
 .situation-empty { grid-column: 1 / -1; color: var(--muted); }
 
-.camera-green, .leader-row.car-green, .sector-row.car-green { --car: var(--green); }
-.camera-yellow, .leader-row.car-yellow, .sector-row.car-yellow { --car: var(--yellow); }
-.camera-cyan, .leader-row.car-cyan, .sector-row.car-cyan { --car: var(--cyan); }
-.camera-red, .leader-row.car-red, .sector-row.car-red { --car: var(--red); }
 .camera-tile { border-top: 2px solid var(--car); }
 .camera-head { background: linear-gradient(90deg, color-mix(in srgb, var(--car) 13%, #080c0e), #080c0e 68%); }
 
@@ -618,14 +605,11 @@ td:last-child { color: var(--cyan); }
 .team-replacement-panel > strong { color: var(--yellow); font-size: 12px; }
 .team-replacement-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
 .team-replacement-choices button { min-height: 34px; border: 1px solid var(--line); color: var(--text); font-size: 10px; font-weight: 800; }
+.team-replacement-choices button.car-accent { border-left: 3px solid var(--car); }
 .team-replacement-choices button:hover, .team-replacement-choices button:focus-visible { border-color: var(--cyan); outline: none; }
 .team-replacement-choices .team-replacement-cancel { color: var(--muted); }
 .team-selector-list { min-height: 0; overflow-y: auto; }
 .team-selector-row { --car: #7f9096; display: grid; grid-template-columns: minmax(0, 1fr) 82px 86px; align-items: center; gap: 8px; width: 100%; min-height: 58px; padding: 8px 16px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-align: left; content-visibility: auto; contain-intrinsic-block-size: 58px; }
-.team-selector-row.car-green { --car: var(--green); }
-.team-selector-row.car-yellow { --car: var(--yellow); }
-.team-selector-row.car-cyan { --car: var(--cyan); }
-.team-selector-row.car-red { --car: var(--red); }
 .team-selector-row.is-selected { background: color-mix(in srgb, var(--car) 10%, transparent); box-shadow: inset 3px 0 var(--car); }
 .team-selector-row:hover, .team-selector-row:focus-visible { background-color: rgba(255, 255, 255, .05); outline: 1px solid var(--cyan); outline-offset: -2px; }
 .team-selector-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }

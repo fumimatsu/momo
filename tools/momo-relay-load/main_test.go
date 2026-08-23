@@ -20,3 +20,25 @@ func TestStatusCountsConnectedClients(t *testing.T) {
 		t.Fatal("empty response")
 	}
 }
+
+func TestParsePilotSourcesCombinesCompatibilityAndListInputs(t *testing.T) {
+	sources, err := parsePilotSources("virtual-01", " virtual-02,virtual-03 ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"virtual-01", "virtual-02", "virtual-03"}
+	if len(sources) != len(want) {
+		t.Fatalf("sources=%v want=%v", sources, want)
+	}
+	for index := range want {
+		if sources[index] != want[index] {
+			t.Fatalf("sources=%v want=%v", sources, want)
+		}
+	}
+}
+
+func TestParsePilotSourcesRejectsDuplicates(t *testing.T) {
+	if _, err := parsePilotSources("virtual-01", "virtual-02,virtual-01"); err == nil {
+		t.Fatal("expected duplicate pilot source error")
+	}
+}

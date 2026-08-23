@@ -538,14 +538,23 @@ class GpuArucoDetector:
         self._batch_workspace = None
 
     def _get_batch_workspace(self, batch_size: int, height: int, width: int):
-        key = (batch_size, height, width)
-        if self._batch_workspace_key == key and self._batch_workspace is not None:
-            return self._batch_workspace
+        if self._batch_workspace_key is not None and self._batch_workspace is not None:
+            capacity, workspace_height, workspace_width = self._batch_workspace_key
+            if (
+                workspace_height == height
+                and workspace_width == width
+                and capacity >= batch_size
+            ):
+                return {
+                    name: value[:batch_size]
+                    for name, value in self._batch_workspace.items()
+                }
 
         cp = self.cp
+        capacity = batch_size
         stats_shape = (batch_size, width * height + 1)
         frame_shape = (batch_size, height, width)
-        self._batch_workspace_key = key
+        self._batch_workspace_key = (capacity, height, width)
         self._batch_workspace = {
             "horizontal": cp.empty(frame_shape, dtype=cp.uint32),
             "labels": cp.empty(frame_shape, dtype=cp.uint32),
@@ -563,7 +572,10 @@ class GpuArucoDetector:
                 (batch_size, width * height + 1, 4, 2), dtype=cp.float32
             ),
         }
-        return self._batch_workspace
+        return {
+            name: value[:batch_size]
+            for name, value in self._batch_workspace.items()
+        }
 
     def _extract_candidate_corners_batch(
         self,

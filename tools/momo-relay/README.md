@@ -403,7 +403,37 @@ powershell -ExecutionPolicy Bypass -File .\tools\Stop-VirtualFiveCarDemo.ps1
 このツールが再現するのは、複数 Momo 上流から Relay へ入る H.264 WebRTC / RTP と Observer への
 再配信である。S3 telemetry、実車 control、Marker Observer、Race Control の race state は生成しない。
 同一録画を複製するため、異なるカメラ映像のエンコード負荷やネットワーク損失を再現する試験でもない。
-Race Control と Coordinator の参加台数契約は別途拡張してから、5 台以上の正式な計時試験を行う。
+正式な計時・マップ経路まで確認する場合は、次の E2E ランチャーを使用する。
+
+Team Observer の全車マップ表示と正式な Marker 計時経路を確認する場合は、50 fps 実録画の
+Marker 1、2、3 が含まれる先頭 30 秒を既定のループ入力とし、source ごとに異なる
+キーフレームから再生して次の実 E2E を起動する。
+
+```text
+5 offset videos -> Relay -> p2p-marker-recv -> MLY2 -> GPU ArUco -> MMO1
+  -> Coordinator / Timing Engine -> Race Control -> Team Observer
+```
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\tools\Start-VirtualFleetMapDemo.ps1 -CarCount 10
+```
+
+この構成では録画の開始位置を source ごとにずらし、録画内の Marker 1、2、3 を各車で実際に認識する。
+Marker 1 は lap gate、2 と 3 は checkpoint として Timing Engine へ入り、Race Control の standings と
+Team Observer のマップ位置を更新する。合成 timing snapshot は使用しない。ランチャーは全車からの
+Marker event、3 ID、異なるマップ進捗が成立するまで待ち、実行ディレクトリへ `validation.json` を残す。
+`-ReplayClipDurationSeconds 0` で長尺全体に戻せるが、Marker の疎な区間も含むため、全車の
+証跡完了時間は大きくばらつく。
+
+マップと順位表には全車を表示し、オンボード映像は Team Observer の仕様どおり選択した最大 4 台だけを
+表示する。停止は次で行う。
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\tools\Stop-VirtualFleetMapDemo.ps1
+```
+
+`Start-VirtualFiveCarDemo.ps1` 単体は映像・Relay負荷試験であり、Marker計時を起動しない。この区別を
+維持し、正式なマップ経路の検証には `Start-VirtualFleetMapDemo.ps1` を使用する。
 
 Relay は `GET /api/v1/team-observer-directory` で Coordinator の local Race Directory cache から
 非 secret の vehicle/pilot display projection を返し、`GET /api/v1/pilot-devices` で現在の vehicle

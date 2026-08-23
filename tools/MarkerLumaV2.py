@@ -184,6 +184,9 @@ def read_source_from_buffer(
 
 class MarkerLumaV2Reader:
     _FILE_MAP_READ = 0x0004
+    _SYNCHRONIZE = 0x00100000
+    _WAIT_OBJECT_0 = 0x00000000
+    _WAIT_TIMEOUT = 0x00000102
 
     def __init__(self, mapping_name: str):
         if os.name != "nt":
@@ -207,6 +210,17 @@ class MarkerLumaV2Reader:
         self.kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
         self.kernel32.UnmapViewOfFile.restype = ctypes.c_int
         self.kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        self.kernel32.OpenEventW.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.c_wchar_p,
+        ]
+        self.kernel32.OpenEventW.restype = ctypes.c_void_p
+        self.kernel32.WaitForSingleObject.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
+        self.kernel32.WaitForSingleObject.restype = ctypes.c_uint32
         self.kernel32.CloseHandle.restype = ctypes.c_int
         self.kernel32.QueryPerformanceCounter.argtypes = [ctypes.POINTER(ctypes.c_int64)]
         self.kernel32.QueryPerformanceCounter.restype = ctypes.c_int
@@ -233,6 +247,9 @@ class MarkerLumaV2Reader:
             raise OSError(error, f"MapViewOfFile failed: {mapping_name}")
         self.buffer = (ctypes.c_ubyte * MAPPING_SIZE).from_address(self.view)
         self.array = np.ctypeslib.as_array(self.buffer)
+        self.frame_event_handle = self.kernel32.OpenEventW(
+            self._SYNCHRONIZE, 0, f"{mapping_name}-FrameReady"
+        )
         try:
             if self.read_topology() is None:
                 raise RuntimeError("MLY2 topology remained unstable")
@@ -248,6 +265,45 @@ class MarkerLumaV2Reader:
 
     def read_topology(self) -> Mly2Topology | None:
         return read_topology_from_buffer(self.buffer)
+
+    @property
+    def frame_event_available(self) -> bool:
+        return bool(self.frame_event_handle)
+
+    def wait_for_frame(self, timeout_seconds: float) -> bool:
+        if timeout_seconds <= 0:
+            return False
+        if not self.frame_event_handle:
+            time.sleep(min(timeout_seconds, 0.001))
+            return False
+        timeout_ms = max(1, int(timeout_seconds * 1000.0 + 0.999))
+        result = self.kernel32.WaitForSingleObject(
+            self.frame_event_handle, timeout_ms
+        )
+        if result == self._WAIT_OBJECT_0:
+            return True
+        if result == self._WAIT_TIMEOUT:
+            return False
+        raise OSError(ctypes.get_last_error(), "WaitForSingleObject failed")
+
+    def wait_for_frame_precise(self, timeout_seconds: float) -> bool:
+        """Poll the frame event until a QPC deadline without coarse timer overshoot."""
+        if timeout_seconds <= 0:
+            return False
+        deadline = time.perf_counter() + timeout_seconds
+        while True:
+            if self.frame_event_handle:
+                result = self.kernel32.WaitForSingleObject(
+                    self.frame_event_handle, 0
+                )
+                if result == self._WAIT_OBJECT_0:
+                    return True
+                if result != self._WAIT_TIMEOUT:
+                    raise OSError(
+                        ctypes.get_last_error(), "WaitForSingleObject failed"
+                    )
+            if time.perf_counter() >= deadline:
+                return False
 
     def read_sources(
         self, topology: Mly2Topology
@@ -294,6 +350,9 @@ class MarkerLumaV2Reader:
     def close(self) -> None:
         self.array = None
         self.buffer = None
+        if getattr(self, "frame_event_handle", None):
+            self.kernel32.CloseHandle(self.frame_event_handle)
+            self.frame_event_handle = None
         if getattr(self, "view", None):
             self.kernel32.UnmapViewOfFile(self.view)
             self.view = None

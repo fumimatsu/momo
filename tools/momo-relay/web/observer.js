@@ -32,7 +32,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260822-team-observer-v14';
+} from './observer-core.js?v=20260823-team-observer-v15';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -184,6 +184,11 @@ function element(tag, className, text) {
   return node;
 }
 
+function applyCarAccent(node, car) {
+  if (node && car?.color) node.style.setProperty('--car', car.color);
+  return node;
+}
+
 function svgElement(tag, attributes = {}) {
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value));
@@ -322,7 +327,10 @@ function renderTeamReplacementPanel() {
   panel.append(element('strong', '', `REPLACE WITH CAR ${candidate.displayNumber}`));
   const choices = element('div', 'team-replacement-choices');
   selectedTeamCars().forEach((car, index) => {
-    const button = element('button', `car-${car.color}`, `SLOT ${index + 1} / CAR ${car.displayNumber}`);
+    const button = applyCarAccent(
+      element('button', 'car-accent', `SLOT ${index + 1} / CAR ${car.displayNumber}`),
+      car,
+    );
     button.type = 'button';
     button.addEventListener('click', () => {
 			const next = [...selectedTeamVehicleIds];
@@ -362,7 +370,7 @@ function renderTeamSelectionControls() {
     const cars = selectedTeamCars();
     slots.replaceChildren(...Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => {
       const car = cars[index];
-      const slot = element('div', `team-selection-slot${car ? ` car-${car.color} is-filled` : ''}`);
+      const slot = element('div', `team-selection-slot${car ? ' is-filled' : ''}`);
       if (!car) {
         const empty = element('button', 'team-slot-main', `SLOT ${index + 1}`);
         empty.type = 'button';
@@ -371,6 +379,7 @@ function renderTeamSelectionControls() {
         slot.append(empty);
         return slot;
       }
+      applyCarAccent(slot, car);
       const standing = standingByCar.get(car.carId);
       const main = element('button', 'team-slot-main');
       main.type = 'button';
@@ -394,7 +403,10 @@ function renderTeamSelectionControls() {
   if (list) {
     list.replaceChildren(...orderedCars.map(({ car, standing }) => {
       const selected = isTeamCarSelected(car);
-      const row = element('button', `team-selector-row car-${car.color}${selected ? ' is-selected' : ''}`);
+      const row = applyCarAccent(
+        element('button', `team-selector-row${selected ? ' is-selected' : ''}`),
+        car,
+      );
       row.type = 'button';
       row.setAttribute('aria-pressed', selected ? 'true' : 'false');
       const identity = element('span', 'team-selector-identity');
@@ -1044,9 +1056,10 @@ function updateLeaderboardRow(nodes, car, standing) {
     ? standing.status : 'waiting';
   const selected = isTeamCarSelected(car);
   const name = carName(car, standing);
-  const className = `leader-row car-${car.color} is-${status}${standing?.position === 1 ? ' is-leader' : ''}${selected ? ' is-team-selected' : ''}`;
+  const className = `leader-row is-${status}${standing?.position === 1 ? ' is-leader' : ''}${selected ? ' is-team-selected' : ''}`;
   nodes.car = car;
   if (nodes.row.className !== className) nodes.row.className = className;
+  applyCarAccent(nodes.row, car);
   const pressed = selected ? 'true' : 'false';
   if (nodes.row.getAttribute('aria-pressed') !== pressed) nodes.row.setAttribute('aria-pressed', pressed);
   const ariaLabel = `Monitor CAR ${car.displayNumber} ${name}`;
@@ -1133,7 +1146,7 @@ function renderLeaderboard() {
 }
 
 function createSectorRow(car) {
-  const row = element('div', `sector-row car-${car.color}`);
+  const row = applyCarAccent(element('div', 'sector-row'), car);
   const carNumber = element('span', 'sector-car', `#${car.displayNumber}`);
   const barsRoot = element('div', 'sector-bars');
   const bars = [1, 2, 3].map((sector) => element('i', '', `S${sector}`));
@@ -1148,8 +1161,9 @@ function createSectorRow(car) {
 function updateSectorRow(nodes, car, standing, personalSectorBest, overallSectorBest, now) {
   const currentSector = Number.isInteger(standing?.currentSector) ? standing.currentSector : null;
   const active = currentSector !== null && standing?.status === 'racing';
-  const rowClass = `sector-row car-${car.color}${active ? ' is-active' : ''}`;
+  const rowClass = `sector-row${active ? ' is-active' : ''}`;
   if (nodes.row.className !== rowClass) nodes.row.className = rowClass;
+  applyCarAccent(nodes.row, car);
   setTextIfChanged(nodes.carNumber, `#${car.displayNumber}`);
   const sectorCount = Number.isInteger(standing?.sectorCount) ? Math.min(3, standing.sectorCount) : 3;
   const sectorByNumber = new Map((standing?.sectorTimes || []).map((timing) => [timing.sector, timing]));
@@ -1339,7 +1353,7 @@ function renderTimingRows() {
       const cell = document.createElement('td');
       if (index === 1) {
         const badge = element('span', 'table-car', value);
-        badge.style.setProperty('--car', `var(--${car?.color || 'green'})`);
+        badge.style.setProperty('--car', car?.color || '#75E36A');
         badge.title = driverName;
         cell.append(badge);
       } else cell.textContent = value;
@@ -1440,13 +1454,14 @@ function createTrackMarkers() {
     const selected = isTeamCarSelected(car);
     const marker = svgElement('g', {
       id: `marker-${car.carId}`,
-      class: `car-marker car-${car.color}${selected ? ' is-team-selected' : ''}`,
+      class: `car-marker${selected ? ' is-team-selected' : ''}`,
       'aria-label': `${car.carId} estimated course position`,
       'aria-pressed': selected ? 'true' : 'false',
       role: 'button',
       tabindex: '0',
       hidden: '',
     });
+    applyCarAccent(marker, car);
     const hit = svgElement('circle', { class: 'marker-hit', r: 30 });
     const confidence = svgElement('circle', { class: 'marker-confidence', r: 23 });
     const core = svgElement('circle', { class: 'marker-core', r: 16 });
@@ -2011,7 +2026,7 @@ function renderCameraHealthDisplays() {
 function createCameraTile(car) {
     const cached = cameraTileNodesByCar.get(car.carId);
     if (cached) return cached;
-    const tile = element('article', `camera-tile camera-${car.color}`);
+    const tile = applyCarAccent(element('article', 'camera-tile'), car);
     tile.dataset.carId = car.carId;
     const head = element('div', 'camera-head');
     const title = element('strong', '', `CAR ${car.displayNumber} `);
@@ -2516,12 +2531,20 @@ function clearCameraNodeMaps() {
 	]) map.clear();
 }
 
+function syncPersistentCarAccents() {
+	for (const car of observerConfig?.cars || []) {
+		applyCarAccent(markerNodesByCar.get(car.carId)?.marker, car);
+		applyCarAccent(cameraTileNodesByCar.get(car.carId), car);
+	}
+}
+
 function applyTeamObserverFleet(roster = raceState?.roster || null) {
 	if (!baseObserverConfig) return false;
 	const nextCars = mergeTeamObserverFleet(baseObserverConfig, teamDirectory, pilotDevices, roster);
 	if (observerConfig && fleetTopologySignature(observerConfig.cars) === fleetTopologySignature(nextCars)) {
 		if (JSON.stringify(observerConfig.cars) === JSON.stringify(nextCars)) return false;
 		observerConfig = { ...baseObserverConfig, cars: nextCars };
+		syncPersistentCarAccents();
 		leaderboardSignature = '';
 		sectorRowsSignature = '';
 		timingRowsSignature = '';

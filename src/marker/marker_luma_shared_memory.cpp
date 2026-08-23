@@ -181,6 +181,13 @@ class MarkerLumaSharedMemoryWriter::Impl {
       producer_mutex_ = nullptr;
       return;
     }
+    const std::wstring frame_ready_name = wide_name + L"-FrameReady";
+    frame_ready_event_ =
+        CreateEventW(nullptr, FALSE, FALSE, frame_ready_name.c_str());
+    if (frame_ready_event_ == nullptr) {
+      RTC_LOG(LS_WARNING) << "CreateEventW for MLY2 frame notification failed: "
+                          << GetLastError();
+    }
 
     std::memset(view_, 0, kMappingSize);
     auto* header = Header();
@@ -217,6 +224,9 @@ class MarkerLumaSharedMemoryWriter::Impl {
     }
     if (producer_mutex_ != nullptr) {
       CloseHandle(producer_mutex_);
+    }
+    if (frame_ready_event_ != nullptr) {
+      CloseHandle(frame_ready_event_);
     }
 #endif
   }
@@ -347,9 +357,15 @@ class MarkerLumaSharedMemoryWriter::Impl {
       scale_destination += (kHeight - 1) * kStride;
       scale_stride = -kStride;
     }
-    libyuv::ScalePlane(source_y, source_stride, source_width, source_height,
-                       scale_destination, scale_stride, kWidth, kHeight,
-                       libyuv::kFilterNone);
+    if (source_width == kWidth && source_height == kHeight &&
+        !source_config.flip_horizontal && !source_config.flip_vertical) {
+      libyuv::CopyPlane(source_y, source_stride, destination, kStride, kWidth,
+                        kHeight);
+    } else {
+      libyuv::ScalePlane(source_y, source_stride, source_width, source_height,
+                         scale_destination, scale_stride, kWidth, kHeight,
+                         libyuv::kFilterNone);
+    }
     if (source_config.flip_horizontal) {
       const auto& scratch = flip_scratch_[slot];
       libyuv::MirrorPlane(scratch.data(), kStride, destination, kStride, kWidth,
@@ -374,6 +390,9 @@ class MarkerLumaSharedMemoryWriter::Impl {
     metadata->stride = kStride;
     MemoryBarrier();
     InterlockedIncrement64(&metadata->write_guard);
+    if (frame_ready_event_ != nullptr) {
+      SetEvent(frame_ready_event_);
+    }
 #else
     static_cast<void>(slot);
     static_cast<void>(generation);
@@ -425,6 +444,7 @@ class MarkerLumaSharedMemoryWriter::Impl {
 
   HANDLE mapping_ = nullptr;
   HANDLE producer_mutex_ = nullptr;
+  HANDLE frame_ready_event_ = nullptr;
   uint8_t* view_ = nullptr;
   std::shared_mutex topology_mutex_;
   std::array<std::mutex, kMaximumSources> slot_mutexes_;

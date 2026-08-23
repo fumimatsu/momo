@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,11 +23,11 @@ import (
 )
 
 type signalMessage struct {
-	Type string                   `json:"type"`
-	Data string                   `json:"data,omitempty"`
+	Type  string                   `json:"type"`
+	Data  string                   `json:"data,omitempty"`
 	Error string                   `json:"error,omitempty"`
-	SDP  string                   `json:"sdp,omitempty"`
-	ICE  *webrtc.ICECandidateInit `json:"ice,omitempty"`
+	SDP   string                   `json:"sdp,omitempty"`
+	ICE   *webrtc.ICECandidateInit `json:"ice,omitempty"`
 }
 
 type loadClient struct {
@@ -51,15 +52,21 @@ func main() {
 	var sourceCount int
 	var observersPerSource int
 	var pilotSource string
+	var pilotSourceList string
 	var listen string
 	flag.StringVar(&relayURL, "relay-url", "http://127.0.0.1:18090", "Relay HTTP base URL")
 	flag.IntVar(&sourceCount, "source-count", 4, "simulated source count")
 	flag.IntVar(&observersPerSource, "observers-per-source", 1, "Observer PeerConnections per source")
 	flag.StringVar(&pilotSource, "pilot-source", "", "optional source ID that receives one Pilot client")
+	flag.StringVar(&pilotSourceList, "pilot-sources", "", "optional comma-separated source IDs that each receive one Pilot client")
 	flag.StringVar(&listen, "listen", "127.0.0.1:18100", "status HTTP listen address")
 	flag.Parse()
-	if sourceCount < 1 || sourceCount > 32 || observersPerSource < 0 || observersPerSource > 8 || (observersPerSource == 0 && pilotSource == "") {
-		log.Fatal("-source-count must be in 1..32; observers must be in 0..8 and a zero value requires -pilot-source")
+	pilotSources, err := parsePilotSources(pilotSource, pilotSourceList)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if sourceCount < 1 || sourceCount > 32 || observersPerSource < 0 || observersPerSource > 8 || (observersPerSource == 0 && len(pilotSources) == 0) {
+		log.Fatal("-source-count must be in 1..32; observers must be in 0..8 and a zero value requires -pilot-source or -pilot-sources")
 	}
 	parsed, err := url.Parse(relayURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -77,10 +84,10 @@ func main() {
 			go client.run(ctx, parsed, device)
 		}
 	}
-	if pilotSource != "" {
-		client := &loadClient{id: pilotSource + "/pilot", role: "pilot"}
+	for _, sourceID := range pilotSources {
+		client := &loadClient{id: sourceID + "/pilot", role: "pilot"}
 		runner.clients = append(runner.clients, client)
-		go client.run(ctx, parsed, pilotSource)
+		go client.run(ctx, parsed, sourceID)
 	}
 
 	mux := http.NewServeMux()
@@ -299,3 +306,23 @@ func (client *loadClient) writeCommands(ctx context.Context, channel *webrtc.Dat
 func boolPointer(value bool) *bool { return &value }
 
 func uint16Pointer(value uint16) *uint16 { return &value }
+
+func parsePilotSources(single string, list string) ([]string, error) {
+	values := make([]string, 0)
+	if value := strings.TrimSpace(single); value != "" {
+		values = append(values, value)
+	}
+	for _, raw := range strings.Split(list, ",") {
+		if value := strings.TrimSpace(raw); value != "" {
+			values = append(values, value)
+		}
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			return nil, fmt.Errorf("pilot source %q is duplicated", value)
+		}
+		seen[value] = struct{}{}
+	}
+	return values, nil
+}

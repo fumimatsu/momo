@@ -51,9 +51,20 @@ type virtualSourceServer struct {
 	accessUnits   []h264AccessUnit
 	frameDuration time.Duration
 	allowed       map[string]struct{}
+	playback      map[string]playbackProfile
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
+}
+
+type playbackProfile struct {
+	startIndex int
+}
+
+type playbackProfileStatus struct {
+	SourceID      string `json:"sourceId"`
+	StartFrame    int    `json:"startFrame"`
+	StartOffsetMS int64  `json:"startOffsetMs"`
 }
 
 func main() {
@@ -61,14 +72,18 @@ func main() {
 	var input string
 	var sourceList string
 	var fps int
+	var spreadStarts bool
+	var spreadStartMaxPercent int
 	flag.StringVar(&listen, "listen", "127.0.0.1:18880", "HTTP and WebSocket listen address")
 	flag.StringVar(&input, "input", "", "H.264 Annex-B input with AUD NAL units")
 	flag.StringVar(&sourceList, "sources", "virtual-01,virtual-02,virtual-03,virtual-04,virtual-05", "comma-separated source IDs")
 	flag.IntVar(&fps, "fps", 30, "playback frame rate")
+	flag.BoolVar(&spreadStarts, "spread-starts", false, "spread source start positions across input keyframes")
+	flag.IntVar(&spreadStartMaxPercent, "spread-start-max-percent", 0, "optional inclusive maximum input position for spread starts (1-100; 0 uses the full legacy spread)")
 	flag.Parse()
 
-	if input == "" || fps < 1 || fps > 120 {
-		log.Fatal("-input is required and -fps must be between 1 and 120")
+	if input == "" || fps < 1 || fps > 120 || spreadStartMaxPercent < 0 || spreadStartMaxPercent > 100 {
+		log.Fatal("-input is required, -fps must be between 1 and 120, and -spread-start-max-percent must be 0 to 100")
 	}
 	data, err := os.ReadFile(input)
 	if err != nil {
@@ -91,6 +106,7 @@ func main() {
 		accessUnits:   accessUnits,
 		frameDuration: time.Second / time.Duration(fps),
 		allowed:       make(map[string]struct{}, len(sourceIDs)),
+		playback:      buildPlaybackProfiles(accessUnits, sourceIDs, spreadStarts, spreadStartMaxPercent),
 		active:        make(map[string]context.CancelFunc),
 	}
 	for _, sourceID := range sourceIDs {
@@ -110,7 +126,11 @@ func main() {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
-	log.Printf("virtual Momo source listening on http://%s for %s (%d frames at %d fps)", listen, strings.Join(sourceIDs, ", "), len(accessUnits), fps)
+	log.Printf("virtual Momo source listening on http://%s for %s (%d frames at %d fps, spread starts=%t, spread max=%d%%)", listen, strings.Join(sourceIDs, ", "), len(accessUnits), fps, spreadStarts, spreadStartMaxPercent)
+	for _, sourceID := range sourceIDs {
+		profile := server.playback[sourceID]
+		log.Printf("source %q playback starts at frame %d (%s)", sourceID, profile.startIndex, time.Duration(profile.startIndex)*server.frameDuration)
+	}
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
@@ -135,6 +155,38 @@ func parseSourceIDs(value string) ([]string, error) {
 	}
 	sort.Strings(result)
 	return result, nil
+}
+
+func buildPlaybackProfiles(units []h264AccessUnit, sourceIDs []string, spread bool, maximumPercent int) map[string]playbackProfile {
+	profiles := make(map[string]playbackProfile, len(sourceIDs))
+	if len(sourceIDs) == 0 {
+		return profiles
+	}
+	keyframes := make([]int, 0)
+	for index, unit := range units {
+		if unit.keyframe {
+			keyframes = append(keyframes, index)
+		}
+	}
+	if len(keyframes) == 0 {
+		keyframes = append(keyframes, 0)
+	}
+	for index, sourceID := range sourceIDs {
+		startIndex := keyframes[0]
+		if spread {
+			keyframeIndex := index * len(keyframes) / len(sourceIDs)
+			if maximumPercent > 0 && len(sourceIDs) > 1 {
+				maximumKeyframeIndex := (len(keyframes) - 1) * maximumPercent / 100
+				keyframeIndex = index * maximumKeyframeIndex / (len(sourceIDs) - 1)
+			}
+			if keyframeIndex >= len(keyframes) {
+				keyframeIndex = len(keyframes) - 1
+			}
+			startIndex = keyframes[keyframeIndex]
+		}
+		profiles[sourceID] = playbackProfile{startIndex: startIndex}
+	}
+	return profiles
 }
 
 func newVirtualSourceAPI() (*webrtc.API, error) {
@@ -163,11 +215,22 @@ func (server *virtualSourceServer) serveHealth(w http.ResponseWriter, _ *http.Re
 	}
 	server.mu.Unlock()
 	sort.Strings(active)
+	profiles := make([]playbackProfileStatus, 0, len(server.allowed))
+	for sourceID := range server.allowed {
+		profile := server.playback[sourceID]
+		profiles = append(profiles, playbackProfileStatus{
+			SourceID:      sourceID,
+			StartFrame:    profile.startIndex,
+			StartOffsetMS: (time.Duration(profile.startIndex) * server.frameDuration).Milliseconds(),
+		})
+	}
+	sort.Slice(profiles, func(left, right int) bool { return profiles[left].SourceID < profiles[right].SourceID })
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":  "ok",
-		"active":  active,
-		"sources": len(server.allowed),
+		"status":   "ok",
+		"active":   active,
+		"sources":  len(server.allowed),
+		"playback": profiles,
 	})
 }
 
@@ -341,7 +404,7 @@ func (server *virtualSourceServer) play(
 
 	ticker := time.NewTicker(server.frameDuration)
 	defer ticker.Stop()
-	index := 0
+	index := server.playback[sourceID].startIndex
 	for {
 		select {
 		case <-ctx.Done():

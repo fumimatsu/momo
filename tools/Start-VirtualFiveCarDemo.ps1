@@ -10,6 +10,14 @@ param(
     [int]$CarCount = 5,
     [ValidateRange(1, 60)]
     [int]$FrameRate = 50,
+    [ValidateRange(0, 600)]
+    [double]$ClipDurationSeconds = 0,
+    [switch]$InputAlreadyUpright,
+    [switch]$SpreadStartPositions,
+    [ValidateRange(0, 100)]
+    [int]$SpreadStartMaxPercent = 0,
+    [string]$RaceControlWsUrl = '',
+    [string]$RaceControlViewerToken = '',
     [switch]$ForceTranscode,
     [switch]$NoOpen
 )
@@ -19,7 +27,6 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $relayRoot = Join-Path $PSScriptRoot 'momo-relay'
 $artifactRoot = Join-Path $PSScriptRoot '.artifacts\virtual-five-car'
 $runtimePath = Join-Path $artifactRoot 'runtime.json'
-$h264Path = Join-Path $artifactRoot "recording-upright-${FrameRate}fps.h264"
 $virtualSourceExe = Join-Path $artifactRoot 'momo-virtual-source.exe'
 $relayExe = Join-Path $artifactRoot 'momo-relay.exe'
 $virtualSourceLog = Join-Path $artifactRoot 'momo-virtual-source.log'
@@ -39,6 +46,16 @@ foreach ($port in @($VirtualSourcePort, $RelayPort)) {
 if (-not (Test-Path -LiteralPath $InputPath -PathType Leaf)) {
     throw "Replay input was not found: $InputPath"
 }
+if (-not [string]::IsNullOrWhiteSpace($RaceControlWsUrl) -and [string]::IsNullOrWhiteSpace($RaceControlViewerToken)) {
+    throw 'RaceControlViewerToken is required when RaceControlWsUrl is configured'
+}
+$inputItem = Get-Item -LiteralPath $InputPath
+$inputIdentity = '{0}|{1}|{2}|{3}|{4}|{5}' -f $inputItem.FullName, $inputItem.Length, $inputItem.LastWriteTimeUtc.Ticks, $FrameRate, [bool]$InputAlreadyUpright, $ClipDurationSeconds
+$inputIdentityBytes = [Text.Encoding]::UTF8.GetBytes($inputIdentity)
+$inputIdentityHash = [Security.Cryptography.SHA256]::HashData($inputIdentityBytes)
+$inputFingerprint = ([Convert]::ToHexString($inputIdentityHash)).Substring(0, 12).ToLowerInvariant()
+$inputBaseName = [IO.Path]::GetFileNameWithoutExtension($inputItem.Name) -replace '[^A-Za-z0-9._-]', '-'
+$h264Path = Join-Path $artifactRoot ("{0}-{1}-{2}fps.h264" -f $inputBaseName, $inputFingerprint, $FrameRate)
 
 if ([string]::IsNullOrWhiteSpace($FFmpegPath)) {
     $ffmpeg = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
@@ -59,8 +76,15 @@ $go = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') -RequestedPath $GoE
 
 if ($ForceTranscode -or -not (Test-Path -LiteralPath $h264Path -PathType Leaf)) {
     Write-Host 'Preparing upright H.264 loop input...'
+    $videoFilter = if ($InputAlreadyUpright) { 'scale=960:528' } else { 'hflip,vflip,scale=960:528' }
+    $durationArguments = if ($ClipDurationSeconds -gt 0) {
+        @('-t', $ClipDurationSeconds.ToString('0.###', [Globalization.CultureInfo]::InvariantCulture))
+    }
+    else {
+        @()
+    }
     & $FFmpegPath -hide_banner -loglevel warning -y -i $InputPath -an `
-        -vf 'hflip,vflip,scale=960:528' -r $FrameRate `
+        -vf $videoFilter -r $FrameRate @durationArguments `
         -c:v libx264 -preset veryfast -tune zerolatency -profile:v baseline -level 3.1 `
         -pix_fmt yuv420p -g $FrameRate -keyint_min $FrameRate -sc_threshold 0 `
         -x264-params 'aud=1:repeat-headers=1' -f h264 $h264Path
@@ -91,9 +115,16 @@ foreach ($index in 1..$CarCount) {
 $virtualSource = $null
 $relay = $null
 try {
+    $virtualSourceArguments = @('-listen', "${ListenHost}:$VirtualSourcePort", '-input', $h264Path, '-fps', "$FrameRate", '-sources', ($sourceIDs -join ','))
+    if ($SpreadStartPositions) {
+        $virtualSourceArguments += '-spread-starts'
+        if ($SpreadStartMaxPercent -gt 0) {
+            $virtualSourceArguments += @('-spread-start-max-percent', "$SpreadStartMaxPercent")
+        }
+    }
     $virtualSource = Start-Process -FilePath $virtualSourceExe -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $virtualSourceLog -RedirectStandardError $virtualSourceErrorLog `
-        -ArgumentList @('-listen', "${ListenHost}:$VirtualSourcePort", '-input', $h264Path, '-fps', "$FrameRate", '-sources', ($sourceIDs -join ','))
+        -ArgumentList $virtualSourceArguments
 
     $relayEnvironmentNames = @(
         'MOMO_RELAY_SOURCE_REGISTRY',
@@ -116,6 +147,10 @@ try {
             $previousRelayEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
             [Environment]::SetEnvironmentVariable($name, $null, 'Process')
         }
+        if (-not [string]::IsNullOrWhiteSpace($RaceControlWsUrl)) {
+            [Environment]::SetEnvironmentVariable('MOMO_RACE_CONTROL_WS_URL', $RaceControlWsUrl.Trim(), 'Process')
+            [Environment]::SetEnvironmentVariable('MOMO_RACE_CONTROL_VIEWER_TOKEN', $RaceControlViewerToken, 'Process')
+        }
         $relay = Start-Process -FilePath $relayExe -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $relayLog -RedirectStandardError $relayErrorLog `
             -ArgumentList (@('-listen', "${ListenHost}:$RelayPort", '-health-recovery-mode', 'disabled', '-operations-allow-cidr', '127.0.0.0/8', '-garage-allow-cidr', '127.0.0.0/8') + $sourceArguments)
@@ -133,8 +168,14 @@ try {
         virtualSourceUrl = "http://${ListenHost}:$VirtualSourcePort"
         relayUrl = "http://${ListenHost}:$RelayPort"
         frameRate = $FrameRate
+        clipDurationSeconds = $ClipDurationSeconds
         carCount = $CarCount
         sources = $sourceIDs
+        inputPath = $inputItem.FullName
+        h264Path = $h264Path
+        spreadStartPositions = [bool]$SpreadStartPositions
+        spreadStartMaxPercent = $SpreadStartMaxPercent
+        raceControlConnected = -not [string]::IsNullOrWhiteSpace($RaceControlWsUrl)
     } | ConvertTo-Json | Set-Content -LiteralPath $runtimePath -Encoding utf8
 
     $deadline = (Get-Date).AddSeconds(30)

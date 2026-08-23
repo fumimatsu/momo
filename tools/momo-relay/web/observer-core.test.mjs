@@ -6,7 +6,52 @@ const source = await readFile(new URL('./observer-core.js', import.meta.url), 'u
 const observerSource = await readFile(new URL('./observer.js', import.meta.url), 'utf8');
 const raceFixture = JSON.parse(await readFile(new URL('../contracts/sector-progress.race-state-v2.json', import.meta.url), 'utf8'));
 const observerCore = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
-const { classifyCompletedSectorTime, parseRaceState, selectVideoDevices } = observerCore;
+const {
+  classifyCompletedSectorTime,
+  mergeTeamObserverFleet,
+  normalizeObserverConfig,
+  parseRaceState,
+  resolveTeamObserverCarColors,
+  selectVideoDevices,
+  TEAM_OBSERVER_CAR_PALETTE,
+} = observerCore;
+
+test('team observer exposes sixteen unique fallback car colors', () => {
+  assert.equal(TEAM_OBSERVER_CAR_PALETTE.length, 16);
+  assert.equal(new Set(TEAM_OBSERVER_CAR_PALETTE).size, 16);
+  assert.ok(TEAM_OBSERVER_CAR_PALETTE.every((color) => /^#[0-9A-F]{6}$/.test(color)));
+  const config = normalizeObserverConfig({
+    cars: Array.from({ length: 16 }, (_, index) => ({
+      device: `source-${index + 1}`,
+      carId: `CAR-${index + 1}`,
+    })),
+  });
+  assert.deepEqual(config.cars.map((car) => car.color), TEAM_OBSERVER_CAR_PALETTE);
+});
+
+test('team observer honors locked roster colors and resolves exact duplicates', () => {
+  const config = normalizeObserverConfig({
+    cars: Array.from({ length: 3 }, (_, index) => ({
+      device: `source-${index + 1}`,
+      carId: `CAR-${index + 1}`,
+    })),
+  });
+  const participants = Array.from({ length: 3 }, (_, index) => ({
+    vehicleId: `vehicle-${index + 1}`,
+    sourceId: `source-${index + 1}`,
+    carId: `CAR-${index + 1}`,
+    displayNumber: String(index + 1),
+    pilotId: `pilot-${index + 1}`,
+    pilotName: `Pilot ${index + 1}`,
+    color: index < 2 ? '#123456' : '#ABCDEF',
+  }));
+  const cars = mergeTeamObserverFleet(config, null, null, { participants });
+  assert.equal(cars[0].color, '#123456');
+  assert.notEqual(cars[1].color, '#123456');
+  assert.equal(cars[2].color, '#ABCDEF');
+  assert.equal(new Set(cars.map((car) => car.color)).size, 3);
+  assert.deepEqual(resolveTeamObserverCarColors(['green', '#75e36a']), ['#75E36A', '#F0C54A']);
+});
 
 test('video device selection defaults to all and accepts device or car ID', () => {
   const cars = [
@@ -61,6 +106,8 @@ test('team observer keeps selected per-car WebRTC video-only and uses one global
   assert.match(observerSource, /function syncSelectedTeamPeers\(\)/);
   assert.match(observerSource, /for \(const car of selectedTeamCars\(\)\)/);
   assert.match(observerSource, /syncSelectedTeamPeers\(\)/);
+  assert.match(observerSource, /function applyCarAccent\(/);
+  assert.doesNotMatch(observerSource, /car-\$\{car\.color\}/);
 });
 
 test('automatic HTTP Race fallback polls only while the Race WebSocket is unhealthy', () => {

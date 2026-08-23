@@ -12,6 +12,49 @@ function finiteNumber(value) {
 
 export const TEAM_OBSERVER_MAXIMUM_CARS = 100;
 
+// Ordered to keep adjacent race entries visually separated on the dark Observer UI.
+// Color remains a secondary cue; the car number is the stable primary identifier.
+export const TEAM_OBSERVER_CAR_PALETTE = Object.freeze([
+  '#75E36A', '#F0C54A', '#3FD4E8', '#ED6B74',
+  '#C37AE5', '#FF9F43', '#5B8FF9', '#F08DB8',
+  '#B8C4CE', '#C99A6B', '#34CFA1', '#CBEA55',
+  '#8C8FF0', '#F57C55', '#72D6B1', '#D56BD7',
+]);
+
+const LEGACY_CAR_COLORS = Object.freeze({
+  green: '#75E36A',
+  yellow: '#F0C54A',
+  cyan: '#3FD4E8',
+  red: '#ED6B74',
+  purple: '#C37AE5',
+});
+
+function normalizeCarColor(value) {
+  const color = String(value || '').trim();
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color.toUpperCase();
+  return LEGACY_CAR_COLORS[color.toLowerCase()] || '';
+}
+
+export function resolveTeamObserverCarColors(requestedColors) {
+  if (!Array.isArray(requestedColors)) throw new Error('requested car colors must be an array');
+  const used = new Set();
+  return requestedColors.map((requested, index) => {
+    let color = normalizeCarColor(requested);
+    if (!color || used.has(color)) {
+      for (let offset = 0; offset < TEAM_OBSERVER_CAR_PALETTE.length; offset += 1) {
+        const candidate = TEAM_OBSERVER_CAR_PALETTE[(index + offset) % TEAM_OBSERVER_CAR_PALETTE.length];
+        if (!used.has(candidate)) {
+          color = candidate;
+          break;
+        }
+      }
+    }
+    if (!color) color = TEAM_OBSERVER_CAR_PALETTE[index % TEAM_OBSERVER_CAR_PALETTE.length];
+    used.add(color);
+    return color;
+  });
+}
+
 export function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -718,7 +761,7 @@ export function normalizeObserverConfig(config) {
   }
   const devices = new Set();
   const carIds = new Set();
-  const colors = ['green', 'yellow', 'cyan', 'red'];
+  const colors = resolveTeamObserverCarColors(config.cars.map((car) => car?.color));
   const cars = config.cars.map((car, index) => {
     const device = String(car?.device || '').trim();
     const carId = String(car?.carId || '').trim();
@@ -742,7 +785,7 @@ export function normalizeObserverConfig(config) {
       initials: String(car.initials || displayNumber).trim().slice(0, 3),
       portraitUrl: String(car.portraitUrl || '').trim(),
       flip: car.flip !== false,
-      color: colors[index % colors.length],
+      color: colors[index],
       speedProfileId,
       speedProfile: vehicleSpeedProfiles[speedProfileId] || null,
     };
@@ -960,9 +1003,8 @@ export function mergeTeamObserverFleet(config, directory = null, pilotDevices = 
 	if (records.length < 1 || records.length > TEAM_OBSERVER_MAXIMUM_CARS) {
 		throw new Error(`Team Observer fleet requires 1 to ${TEAM_OBSERVER_MAXIMUM_CARS} vehicles`);
 	}
-	const colors = ['green', 'yellow', 'cyan', 'red'];
 	const carIds = new Set();
-	return records.map((record, index) => {
+	const cars = records.map((record, index) => {
 		const participant = rosterByVehicle.get(record.vehicleId) || rosterBySource.get(record.sourceId) || null;
 		const device = deviceBySource.get(participant?.sourceId || record.sourceId) || null;
 		const sourceId = participant?.sourceId || record.sourceId || '';
@@ -984,7 +1026,7 @@ export function mergeTeamObserverFleet(config, directory = null, pilotDevices = 
 			initials: abbreviateDriverName(driver, staticCar?.initials || displayNumber),
 			portraitUrl: pilot?.photoUrl || staticCar?.portraitUrl || '',
 			flip: staticCar?.flip !== false,
-			color: staticCar?.color || colors[index % colors.length],
+			color: participant?.color || pilot?.color || staticCar?.color || '',
 			speedProfileId: staticCar?.speedProfileId || '',
 			speedProfile: staticCar?.speedProfile || null,
 			vehicleName: String(participant?.carName || record.directoryVehicle?.vehicleName || '').trim(),
@@ -993,6 +1035,8 @@ export function mergeTeamObserverFleet(config, directory = null, pilotDevices = 
 			sourceBound: Boolean(sourceId),
 		};
 	});
+	const colors = resolveTeamObserverCarColors(cars.map((car) => car.color));
+	return cars.map((car, index) => ({ ...car, color: colors[index] }));
 }
 
 export function normalizeTeamVehicleSelection(cars, value, limit = 4) {

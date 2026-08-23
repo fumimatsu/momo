@@ -74,6 +74,20 @@ class GpuArucoDetectorTest(unittest.TestCase):
         self.assertGreater(timings["candidateGpuMs"], 0.0)
         self.assertIn("decodeGpuMs", timings)
 
+    def test_batch_workspace_reuses_larger_capacity_for_smaller_micro_batch(self):
+        try:
+            detector = MODULE.GpuArucoDetector(allowed_marker_ids=[1])
+        except RuntimeError as exc:
+            self.skipTest(str(exc))
+
+        detector._get_batch_workspace(5, 64, 64)
+        original_workspace = detector._batch_workspace
+        smaller = detector._get_batch_workspace(2, 64, 64)
+
+        self.assertIs(original_workspace, detector._batch_workspace)
+        self.assertEqual((5, 64, 64), detector._batch_workspace_key)
+        self.assertEqual((2, 64, 64), smaller["labels"].shape)
+
     def test_gpu_detector_finds_all_dict_4x4_50_ids_including_16(self):
         try:
             detector = MODULE.GpuArucoDetector(allowed_marker_ids=range(50))

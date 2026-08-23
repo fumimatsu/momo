@@ -7,6 +7,7 @@ import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from MarkerObservationIpc import (
+    BATCH_PARTIAL,
     HEADER_SIZE,
     MAGIC,
     MAX_DETECTIONS,
@@ -51,6 +52,7 @@ class MarkerObservationIpcTest(unittest.TestCase):
         )
         self.assertEqual(struct.unpack_from("<q", payload, 8)[0], 3)
         self.assertEqual(struct.unpack_from("<I", payload, 24)[0], 1)
+        self.assertEqual(struct.unpack_from("<I", payload, 28)[0], 0)
         source_offset = SLOT_HEADER_SIZE
         self.assertEqual(payload[source_offset : source_offset + 6], b"sim-03")
         self.assertEqual(struct.unpack_from("<I", payload, source_offset + 32)[0], 2)
@@ -60,6 +62,20 @@ class MarkerObservationIpcTest(unittest.TestCase):
             struct.unpack_from("<i", payload, source_offset + SOURCE_HEADER_SIZE + 16)[0],
             1,
         )
+
+    def test_batch_marks_partial_updates_in_reserved_slot_flags(self):
+        payload = encode_batch(
+            1,
+            1000,
+            [SourceObservation(0, "sim", 1, 800, 900, True, 0, [])],
+            batch_flags=BATCH_PARTIAL,
+        )
+
+        self.assertEqual(struct.unpack_from("<I", payload, 28)[0], BATCH_PARTIAL)
+
+    def test_batch_rejects_unknown_batch_flags(self):
+        with self.assertRaisesRegex(ValueError, "unknown batch flags"):
+            encode_batch(1, 1, [], batch_flags=2)
 
     def test_batch_rejects_duplicate_source_index(self):
         source = SourceObservation(0, "sim", 1, 1, 1, True, 0, [])

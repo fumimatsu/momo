@@ -27,6 +27,8 @@ MAPPING_SIZE = HEADER_SIZE + RING_CAPACITY * SLOT_SIZE
 DEFAULT_MAPPING_NAME = r"Local\MomoMarkerObservationsV1"
 VIDEO_VALID = 1
 DETECTIONS_TRUNCATED = 2
+BATCH_PARTIAL = 1
+KNOWN_BATCH_FLAGS = BATCH_PARTIAL
 
 
 @dataclass(frozen=True)
@@ -49,15 +51,32 @@ class SourceObservation:
     detections: list[MarkerDetection] = field(default_factory=list)
 
 
-def encode_batch(sequence: int, published_at_unix_ns: int, sources: Iterable[SourceObservation]) -> bytes:
+def encode_batch(
+    sequence: int,
+    published_at_unix_ns: int,
+    sources: Iterable[SourceObservation],
+    *,
+    batch_flags: int = 0,
+) -> bytes:
     source_list = list(sources)
     if sequence < 1:
         raise ValueError("sequence must be positive")
     if len(source_list) > MAX_SOURCES:
         raise ValueError(f"source count exceeds {MAX_SOURCES}")
+    if batch_flags < 0 or batch_flags & ~KNOWN_BATCH_FLAGS:
+        raise ValueError(f"unknown batch flags: 0x{batch_flags:x}")
 
     payload = bytearray(SLOT_SIZE)
-    struct.pack_into("<qqqII", payload, 0, sequence, sequence, published_at_unix_ns, len(source_list), 0)
+    struct.pack_into(
+        "<qqqII",
+        payload,
+        0,
+        sequence,
+        sequence,
+        published_at_unix_ns,
+        len(source_list),
+        batch_flags,
+    )
     seen_indices: set[int] = set()
     for record_index, source in enumerate(source_list):
         if source.source_index < 0 or source.source_index >= MAX_SOURCES:
@@ -180,9 +199,20 @@ class MarkerObservationSharedMemoryWriter:
         if not self.kernel32.ReleaseMutex(self.mutex):
             raise OSError(ctypes.get_last_error(), "ReleaseMutex failed")
 
-    def write(self, published_at_unix_ns: int, sources: Iterable[SourceObservation]) -> int:
+    def write(
+        self,
+        published_at_unix_ns: int,
+        sources: Iterable[SourceObservation],
+        *,
+        batch_flags: int = 0,
+    ) -> int:
         next_sequence = self.sequence + 1
-        payload = encode_batch(next_sequence, published_at_unix_ns, sources)
+        payload = encode_batch(
+            next_sequence,
+            published_at_unix_ns,
+            sources,
+            batch_flags=batch_flags,
+        )
         slot_index = (next_sequence - 1) % RING_CAPACITY
         slot_offset = HEADER_SIZE + slot_index * SLOT_SIZE
         self._lock()
