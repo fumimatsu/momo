@@ -38,7 +38,9 @@ Sending steering commands from virtual Momo would test the wrong direction and i
 
 - `New-CpuShadowFleetReplay.ps1` discovers complete CPU-shadow triplets in one directory, selects the
   two longest captures, prepares four 50 fps H.264 pace variants, and writes a 1-to-64-source replay
-  manifest. Every fifth source uses the second capture; the others use the primary capture.
+  manifest. Every fifth source uses the second capture by default; the others use the primary capture.
+  `-SecondaryCaptureEvery 0` keeps every source on the primary capture when the secondary recording
+  does not contain all configured checkpoint markers.
 - `momo-virtual-source -profile-manifest` loads unique H.264 assets once, assigns one asset and
   keyframe-aligned start point per source, and replays recorded `TEL:` messages through each
   upstream `serial` DataChannel. Health output includes serial state, telemetry sent/dropped/errors,
@@ -118,7 +120,8 @@ Run the same test after placing the extracted CPU-shadow triplets in one directo
 ```powershell
 $replay = .\tools\New-CpuShadowFleetReplay.ps1 `
   -CaptureDirectory E:\recordings\cpu-shadow `
-  -CarCount 20
+  -CarCount 20 `
+  -SecondaryCaptureEvery 0
 
 .\tools\Start-VirtualFleetMapDemo.ps1 `
   -CarCount 20 `

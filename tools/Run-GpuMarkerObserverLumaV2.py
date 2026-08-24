@@ -529,7 +529,8 @@ def main(argv: list[str] | None = None) -> int:
                 period = 1.0 / controller.detection_hz
                 scheduled_at = next_tick
                 schedule_late = max(0.0, now - scheduled_at)
-                if schedule_late >= period:
+                tick_missed_deadline = schedule_late >= period
+                if tick_missed_deadline:
                     deadline_misses += 1
                     total_deadline_misses += 1
                     skipped_periods = math.floor(schedule_late / period)
@@ -858,7 +859,7 @@ def main(argv: list[str] | None = None) -> int:
                 processing_window.append(processing_ms)
                 all_cycle_ms.append(cycle_ms)
                 all_processing_ms.append(processing_ms)
-                if cycle_ms > period * 1000.0:
+                if cycle_ms > period * 1000.0 and not tick_missed_deadline:
                     deadline_misses += 1
                     total_deadline_misses += 1
 

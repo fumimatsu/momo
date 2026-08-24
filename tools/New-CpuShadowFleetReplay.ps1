@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)] [string]$CaptureDirectory,
     [ValidateRange(1, 64)] [int]$CarCount = 20,
     [double[]]$PlaybackRates = @(0.92, 0.98, 1.04, 1.10),
+    [ValidateRange(0, 64)] [int]$SecondaryCaptureEvery = 5,
     [ValidateRange(1, 120)] [int]$FrameRate = 50,
     [string]$OutputDirectory = '',
     [string]$FFmpegPath = '',
@@ -55,8 +56,9 @@ foreach ($summaryFile in Get-ChildItem -LiteralPath $captureRoot -File -Filter '
     }
 }
 $captures = @($captures | Sort-Object DurationMS -Descending)
-if ($captures.Count -lt 2) {
-    throw "At least two complete CPU-shadow captures are required; found $($captures.Count)."
+$requiredCaptureCount = if ($SecondaryCaptureEvery -gt 0) { 2 } else { 1 }
+if ($captures.Count -lt $requiredCaptureCount) {
+    throw "At least $requiredCaptureCount complete CPU-shadow capture(s) are required; found $($captures.Count)."
 }
 
 $culture = [Globalization.CultureInfo]::InvariantCulture
@@ -87,8 +89,9 @@ function Get-ReplayAsset {
 
 $sources = @()
 for ($index = 0; $index -lt $CarCount; $index++) {
-    # Keep the long run as the primary source while interleaving the second real run.
-    $captureIndex = if (($index + 1) % 5 -eq 0) { 1 } else { 0 }
+    # Keep the long run as the primary source. The shorter secondary run is optional because
+    # a capture without all configured markers cannot complete a timing lap.
+    $captureIndex = if ($SecondaryCaptureEvery -gt 0 -and ($index + 1) % $SecondaryCaptureEvery -eq 0) { 1 } else { 0 }
     $capture = $captures[$captureIndex]
     $rate = [double]$PlaybackRates[$index % $PlaybackRates.Count]
     $asset = Get-ReplayAsset -Capture $capture -Rate $rate
@@ -105,10 +108,11 @@ for ($index = 0; $index -lt $CarCount; $index++) {
 }
 
 $manifestPath = Join-Path $outputRoot "cpu-shadow-fleet-${CarCount}cars.json"
+$usedCaptureCount = @($sources | ForEach-Object { $_.telemetryPath } | Sort-Object -Unique).Count
 $manifest = [ordered]@{
     schemaVersion = 1
     generatedAt = [DateTimeOffset]::UtcNow.ToString('o')
-    sourceCaptureCount = 2
+    sourceCaptureCount = $usedCaptureCount
     sources = $sources
 }
 [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
@@ -117,7 +121,7 @@ $result = [pscustomobject]@{
     ManifestPath = $manifestPath
     CommandReplayJsonl = $captures[0].JsonlPath
     SourceCount = $CarCount
-    CaptureCount = 2
+    CaptureCount = $usedCaptureCount
     AssetCount = $assetCache.Count
 }
 $result
