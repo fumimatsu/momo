@@ -104,8 +104,16 @@
         "bestLapMs": { "type": "integer", "minimum": 0 },
         "allTimeMs": { "type": "integer", "minimum": 0 },
         "currentLapMs": { "type": "integer", "minimum": 0 },
-        "intervalToAheadMs": { "type": "integer", "minimum": 0 },
-        "lapDeltaToAhead": { "type": "integer", "minimum": 1 },
+        "intervalToAheadMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Time from the predecessor to this car at this car's latest comparable checkpoint, including across a completed-lap counter boundary."
+        },
+        "lapDeltaToAhead": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Confirmed full-lap difference at this car's latest checkpoint, not the raw completed-lap counter difference."
+        },
         "lappingCarBehindId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
         "lappingGapMs": { "type": "integer", "minimum": 1 },
         "currentSector": { "type": "integer", "minimum": 1, "maximum": 6 },

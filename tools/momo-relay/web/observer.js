@@ -15,6 +15,7 @@ import {
   formatDuration,
   formatSplitTime,
   formatStandingGap,
+	leaderboardPositionChange,
 	mergeTeamObserverFleet,
   normalizeLapHistory,
   normalizeObserverConfig,
@@ -32,7 +33,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260824-team-observer-v16';
+} from './observer-core.js?v=20260824-team-observer-v18';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -71,6 +72,7 @@ const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
 const TEAM_SELECTION_LIMIT = 4;
+const LEADERBOARD_POSITION_CHANGE_HOLD_MS = 2200;
 const TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverVehiclesV2';
 const LEGACY_TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverCarsV1';
 const PILOT_DEVICES_POLL_MS = 5000;
@@ -114,6 +116,8 @@ const clientByCar = new Map();
 const vehicleEventTimers = new Map();
 const carEffectTimers = new Map();
 const activeEffectByCar = new Map();
+const leaderboardPositionChangeByCar = new Map();
+const leaderboardPositionChangeTimers = new Map();
 const markerMotionByCar = new Map();
 const markerRenderByCar = new Map();
 const markerNodesByCar = new Map();
@@ -990,6 +994,7 @@ function createLeaderboardRow(car) {
     row,
     position: element('div', 'leader-pos'),
     positionValue: element('strong'),
+    positionChange: element('span', 'leader-position-change'),
     avatar: element('span', 'leader-avatar'),
     avatarKey: '',
     driverName: element('strong'),
@@ -1007,7 +1012,9 @@ function createLeaderboardRow(car) {
     event.preventDefault();
     requestTeamCar(nodes.car);
   });
-  nodes.position.append(nodes.positionValue, nodes.carNumber);
+  const positionLine = element('span', 'leader-pos-line');
+  positionLine.append(nodes.positionValue, nodes.positionChange);
+  nodes.position.append(positionLine, nodes.carNumber);
   const driver = element('div', 'leader-driver');
   driver.append(nodes.driverName);
   const times = element('div', 'leader-times');
@@ -1059,6 +1066,20 @@ function updateLeaderboardRow(nodes, car, standing) {
   const ariaLabel = `Monitor CAR ${car.displayNumber} ${name}`;
   if (nodes.row.getAttribute('aria-label') !== ariaLabel) nodes.row.setAttribute('aria-label', ariaLabel);
   setTextIfChanged(nodes.positionValue, standing?.position ? `P${standing.position}` : 'P--');
+  const positionChange = leaderboardPositionChangeByCar.get(car.carId);
+  nodes.positionChange.hidden = !positionChange;
+  if (positionChange) {
+    const className = `leader-position-change is-${positionChange.direction}`;
+    if (nodes.positionChange.className !== className) nodes.positionChange.className = className;
+    setTextIfChanged(nodes.positionChange, String(positionChange.places));
+    const label = `${positionChange.direction === 'up' ? 'Up' : 'Down'} ${positionChange.places} position${positionChange.places === 1 ? '' : 's'}`;
+    if (nodes.positionChange.getAttribute('aria-label') !== label) nodes.positionChange.setAttribute('aria-label', label);
+    if (nodes.positionChange.title !== label) nodes.positionChange.title = label;
+  } else {
+    setTextIfChanged(nodes.positionChange, '');
+    nodes.positionChange.removeAttribute('aria-label');
+    nodes.positionChange.removeAttribute('title');
+  }
   updateLeaderboardAvatar(nodes, car, standing);
   setTextIfChanged(nodes.driverName, name);
   setTextIfChanged(nodes.carNumber, `#${car.displayNumber}`);
@@ -1067,6 +1088,69 @@ function updateLeaderboardRow(nodes, car, standing) {
   setTextIfChanged(nodes.best, formatSplitTime(standing?.bestLapMs));
   const hp = Number.isFinite(health?.hp) ? Math.round(health.hp) : null;
   updateLeaderboardHealth(nodes.health, hp, hp === null ? 'unknown' : health.mode);
+}
+
+function setLeaderboardPositionChange(carId, previousPosition, nextPosition) {
+  const change = leaderboardPositionChange(previousPosition, nextPosition);
+  if (!change) return;
+  const token = `${carId}:${previousPosition}:${nextPosition}:${performance.now()}`;
+  leaderboardPositionChangeByCar.set(carId, { ...change, token });
+  if (leaderboardPositionChangeTimers.has(carId)) {
+    window.clearTimeout(leaderboardPositionChangeTimers.get(carId));
+  }
+  leaderboardPositionChangeTimers.set(carId, window.setTimeout(() => {
+    leaderboardPositionChangeTimers.delete(carId);
+    if (leaderboardPositionChangeByCar.get(carId)?.token !== token) return;
+    leaderboardPositionChangeByCar.delete(carId);
+    renderLeaderboard();
+  }, LEADERBOARD_POSITION_CHANGE_HOLD_MS));
+}
+
+function clearLeaderboardPositionChanges() {
+  for (const timer of leaderboardPositionChangeTimers.values()) window.clearTimeout(timer);
+  leaderboardPositionChangeTimers.clear();
+  leaderboardPositionChangeByCar.clear();
+}
+
+function captureLeaderboardRowPositions() {
+  const positions = new Map();
+  for (const [carId, nodes] of leaderboardContentByCar) {
+    if (!nodes.row.isConnected) continue;
+    positions.set(carId, nodes.row.getBoundingClientRect().top);
+    nodes.reorderAnimation?.cancel();
+    nodes.reorderAnimation = null;
+    nodes.row.style.zIndex = '';
+  }
+  return positions;
+}
+
+function animateLeaderboardReorder(previousPositions) {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  for (const [carId, previousTop] of previousPositions) {
+    const nodes = leaderboardContentByCar.get(carId);
+    if (!nodes?.row.isConnected) continue;
+    const deltaY = previousTop - nodes.row.getBoundingClientRect().top;
+    if (Math.abs(deltaY) < 1) continue;
+    nodes.row.style.zIndex = '2';
+    const animation = nodes.row.animate([
+      { transform: `translateY(${deltaY}px)` },
+      { transform: 'translateY(0)' },
+    ], {
+      duration: 420,
+      easing: 'cubic-bezier(.2, .8, .2, 1)',
+    });
+    nodes.reorderAnimation = animation;
+    animation.addEventListener('finish', () => {
+      if (nodes.reorderAnimation !== animation) return;
+      nodes.reorderAnimation = null;
+      nodes.row.style.zIndex = '';
+    }, { once: true });
+    animation.addEventListener('cancel', () => {
+      if (nodes.reorderAnimation !== animation) return;
+      nodes.reorderAnimation = null;
+      nodes.row.style.zIndex = '';
+    }, { once: true });
+  }
 }
 
 function renderLeaderboard() {
@@ -1084,10 +1168,12 @@ function renderLeaderboard() {
       } : null,
       health: health ? { hp: health.hp, mode: health.mode } : null,
       selected: isTeamCarSelected(car),
+      positionChange: leaderboardPositionChangeByCar.get(car.carId) || null,
     };
   }));
   if (signature === leaderboardSignature) return;
   const startedAt = UI_METRICS_ENABLED ? performance.now() : 0;
+  const previousPositions = captureLeaderboardRowPositions();
   leaderboardSignature = signature;
   let previousScrollTop = null;
   const preserveScroll = () => {
@@ -1118,6 +1204,7 @@ function renderLeaderboard() {
     leaderboardNodesByCar.delete(carId);
   }
   if (previousScrollTop !== null) root.scrollTop = previousScrollTop;
+  animateLeaderboardReorder(previousPositions);
   if (UI_METRICS_ENABLED) leaderboardRenderSampler.record(performance.now() - startedAt);
 }
 
@@ -2212,6 +2299,7 @@ function handleRaceState(state, source = 'websocket') {
     markerRenderByCar.clear();
     sectorCompletionHoldByCar.clear();
     seenSectorAchievements.clear();
+    clearLeaderboardPositionChanges();
   }
   const previousStandingByCar = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
   for (const standing of state.standings || []) {
@@ -2222,6 +2310,7 @@ function handleRaceState(state, source = 'websocket') {
     if (completedLap) sectorCompletionHoldByCar.set(standing.carId, performance.now() + 2500);
     if (previousRunId === nextRunId && Number.isInteger(previous?.position)
         && Number.isInteger(standing.position) && previous.position !== standing.position) {
+      setLeaderboardPositionChange(standing.carId, previous.position, standing.position);
       triggerCarEffect(standing.carId, standing.position < previous.position ? 'position-up' : 'position-down');
     }
     for (const timing of standing.sectorTimes || []) {
@@ -2852,6 +2941,7 @@ window.addEventListener('pagehide', () => {
   vehicleEventTimers.clear();
   for (const timer of carEffectTimers.values()) window.clearTimeout(timer);
   carEffectTimers.clear();
+  clearLeaderboardPositionChanges();
   window.removeEventListener('resize', updateDisplayClass);
 });
 

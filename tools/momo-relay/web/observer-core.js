@@ -1077,6 +1077,18 @@ export function standingsByConfiguredCar(configCars, raceState) {
     });
 }
 
+export function leaderboardPositionChange(previousPosition, nextPosition) {
+  if (!Number.isInteger(previousPosition) || previousPosition < 1
+      || !Number.isInteger(nextPosition) || nextPosition < 1
+      || previousPosition === nextPosition) return null;
+  return {
+    direction: nextPosition < previousPosition ? 'up' : 'down',
+    places: Math.abs(previousPosition - nextPosition),
+    previousPosition,
+    nextPosition,
+  };
+}
+
 export function raceParticipantCars(configCars, raceState) {
   const cars = Array.isArray(configCars) ? configCars : [];
   const rosterParticipants = Array.isArray(raceState?.roster?.participants)
