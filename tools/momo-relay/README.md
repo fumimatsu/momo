@@ -129,6 +129,30 @@ wire上の生データ量は約111MB/時間であり、NDJSONのメタデータ�
 `boost_regen_probe`は通過時／アクセルオフ区間の終了時だけなので、この見積もりへの影響は無視できる。Relayの強制終了時は
 終了レコードが無いことがあるが、1秒ごとにflushするため最後の完全なNDJSON行までは解析できる。
 
+### 衝撃ログのオフライン解析
+
+`Analyze-RelayImpactLog.py`はRelayを起動せずにNDJSONを解析し、現行classと上下主体の暫定Shadow判定を比較する。
+実車HP、Relay設定、イベント配信は変更しない。Python標準ライブラリだけを使用する。
+Relayの`telemetry-*.ndjson`に加え、Viewerの`momo-fpv-cpu-shadow-capture/v1` JSONLも入力できる。後者は
+Relay確定HPイベントを持たないため、confirmed列は未照合になる。
+
+```powershell
+Set-Location E:\src\momo
+$log = (Get-ChildItem 'E:\fpv-telemetry-logs\telemetry-*.ndjson' |
+  Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+python .\tools\Analyze-RelayImpactLog.py $log `
+  --output-dir 'E:\fpv-impact-analysis\latest'
+```
+
+出力は`report.html`、`summary.json`、`motion-samples.csv`、`impact-events.csv`、`event-windows.csv`である。
+既定のイベント窓は前後500 ms、Shadow条件は上下比率0.75以上かつ水平比率0.45以下である。この値は本番契約ではなく、
+`--minimum-vertical-share`と`--maximum-horizontal-share`を変えて比較するための初期値とする。`summary.json`の
+`queue_drops`、stream別`missing_sequences`、`regressions`、実効motion Hzを先に確認し、欠損の多いログから閾値を決めない。
+上下比率は満たすが水平比率が上限を超える候補は`observe_mixed_vertical_candidate`として記録し、Shadowでもダメージを
+抑止しない。前後100～250 msの時間波形と映像を確認する対象として分離する。
+グラフのjerkはRelayへ届いた30 Hz state間から再計算した参考値であり、M5が高周期サンプルからeventへ記録した`jerkMps3`とは
+時間分解能が異なる。本番classとの比較には`impact-events.csv`のevent値を使用する。
+
 ## Operations Dashboard
 
 Relay を再ビルドして起動すると、運営用の読み取り専用画面を配信する。
@@ -570,12 +594,15 @@ RAW診断とsynthetic testの互換用に残すが、V1 `impact`はHPを変更�
 `legacy_event_unsupported`としてログへ記録する。
 
 衝撃段階は`weak >= 10 m/s2`、`strong >= 12 m/s2 && jerk >= 250 m/s3`、
-`severe >= 18 m/s2 && jerk >= 250 m/s3`である。strongは12 HP、severeは20 HPを減算し、
-damage cooldownは600 msとする。同じ`carId:boot:sequence`の再送は重複として無視する。
+`severe >= 15 m/s2 && jerk >= 750 m/s3`である。strongは12 HP、severeは20 HPを減算する。
+M5の候補生成cooldownは600 msだが、Relayは同じ物理衝突の候補を1500 msのdamage episodeとして扱う。
+episode内の同一class以下は`impact_episode`としてHPを変更せず、classが上がった場合は上位classとの差分だけを減算する。
+同じ`carId:boot:sequence`の再送は重複として無視する。
 HPダメージはPracticeを含む有効なレースセッション中だけ適用する。Race Control接続中、
 raceRunIdあり、phaseが`green`の条件を満たさない衝撃は`race_inactive`としてイベントへ記録し、
 HPと回復待ち時間を変更しない。phaseが`green`以外へ変化した時、またはRace Control切断時は
 残っているダメージを即時回復する。Boost有効中の衝撃も`boost_active`としてHPを変更しない。
+ダメージ無効時は`damage_disabled`、weakは`below_damage_threshold`として確定イベントへ記録する。
 
 RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。
 各sourceはレース単位で直近32件を保持し、channel open時に`vehicle_event_snapshot`を送る。
