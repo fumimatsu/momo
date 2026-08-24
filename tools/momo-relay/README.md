@@ -57,9 +57,12 @@ gear、damage、fuel emptyの理由を保存する。`brake`は中立PWMより�
 接続有無に依存しないため、車体座標、重力除去、軸符号を走行後に比較するための正本ログとして使う。Race Control接続時は、同じファイルに
 `race_state`、`raceRunId`、phase、flag、sequenceに加え、Relayが確定した`vehicle_event`も記録する。
 `vehicle_event`には衝撃クラス、強度、jerk、軸、ダメージ適用結果、抑制理由、適用前後HPを含む。
-Race Controlの`lastMarkerIndex`が進んだ時は、周回、マーカー番号、レース経過時刻、sector情報を
-`course_marker`として1回だけ正規化する。同じ周回・同じマーカーのtiming correctionでは重複を作らず、
-`drive_input`には現在の`lap`と`lastMarkerIndex`だけを付けるため、マーカー増設後もミニセクター単位で結合できる。
+Race Controlの公開`lastMarkerIndex`、またはoptionalな`routeProgress`が進んだ時は、周回、公開境界、
+route gate、レース経過時刻、sector情報を`course_marker`として1回だけ正規化する。同じ周回・同じroute
+gateのtiming correctionでは重複を作らない。`lastMarkerIndex`は公開セクター境界の意味を維持し、
+ミニゲートは`routeGateIndex`、`routeRaceMs`、`courseProgress`で別に記録する。`drive_input`にも現在の
+`lap`、`lastMarkerIndex`、`routeGateIndex`、`routeRaceMs`を付け、公開セクターとミニセクターを混同せず
+走行入力と結合できる。`routeProgress`がない旧Timing Authorityでは従来の公開境界記録へフォールバックする。
 
 回生BOOSTは、直近600 msに30%以上のアクセルと
 1200 RPM以上の駆動があり、アクセルが直近ピークから20%以上戻り、RPMの二乗差が最大回転エネルギー比の2%以上

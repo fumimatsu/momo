@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260822-experience-course-v1';
+  const PILOT_BUILD_ID = '20260825-mini-sector-route-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -1548,6 +1548,26 @@
     return Number.isInteger(number) ? number : null;
   }
 
+  function normalizeRaceRouteProgress(value) {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+    const gateId = typeof value.gateId === 'string' ? value.gateId.trim() : '';
+    const gateIndex = Number(value.gateIndex);
+    const gateCount = Number(value.gateCount);
+    const courseProgress = Number(value.courseProgress);
+    const nextCourseProgress = Number(value.nextCourseProgress);
+    const raceTimeMs = Number(value.raceTimeMs);
+    if (!gateId || !Number.isInteger(gateIndex) || !Number.isInteger(gateCount)
+        || gateCount < 1 || gateCount > 50 || gateIndex < 0 || gateIndex >= gateCount
+        || !Number.isFinite(courseProgress) || courseProgress < 0 || courseProgress >= 1
+        || !Number.isFinite(nextCourseProgress) || nextCourseProgress <= courseProgress || nextCourseProgress > 1
+        || !Number.isSafeInteger(raceTimeMs) || raceTimeMs < 0) {
+      return null;
+    }
+    return { gateId, gateIndex, gateCount, courseProgress, nextCourseProgress, raceTimeMs };
+  }
+
   function normalizeRaceRivals(rivals, lapHistory = [], allTimeMode = 'elapsed') {
     if (!Array.isArray(rivals)) {
       return null;
@@ -1590,6 +1610,7 @@
           lappingGapMs: normalizeOptionalRaceNumber(entry.lappingGapMs),
           lastMarkerIndex: normalizeOptionalRaceNumber(entry.lastMarkerIndex),
           lastMarkerRaceMs: normalizeOptionalRaceNumber(entry.lastMarkerRaceMs),
+          routeProgress: normalizeRaceRouteProgress(entry.routeProgress),
         };
       })
       .filter((entry) => entry !== null)
@@ -1750,6 +1771,17 @@
     const lapDurationMs = raceMapLapDuration(rival);
     const currentLapMs = normalizeRaceNumber(rival.currentLapMs);
     const raceElapsedMs = normalizeRaceNumber(rival.raceElapsedMs);
+    const routeProgress = rival.routeProgress;
+    if (routeProgress && raceElapsedMs !== null) {
+      const elapsedSinceMarkerMs = Math.max(
+        0,
+        raceElapsedMs + localAdvanceMs - routeProgress.raceTimeMs,
+      );
+      return Math.min(
+        routeProgress.nextCourseProgress,
+        routeProgress.courseProgress + (elapsedSinceMarkerMs / lapDurationMs),
+      );
+    }
     const markerIndex = normalizeRaceNumber(rival.lastMarkerIndex);
     const markerRaceMs = normalizeRaceNumber(rival.lastMarkerRaceMs);
     if (markerIndex !== null && markerIndex < RACE_MAP_SECTOR_BOUNDARIES.length - 1

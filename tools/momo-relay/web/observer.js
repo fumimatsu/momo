@@ -33,7 +33,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260824-team-observer-v18';
+} from './observer-core.js?v=20260825-team-observer-v19';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -1612,8 +1612,14 @@ function markerRaceElapsedMs(carId, standing, now, currentLapElapsed) {
   if (raceState?.allTimeMode !== 'countdown' && Number.isFinite(standing?.allTimeMs)) {
     return standing.allTimeMs + localAdvance;
   }
-  if (!Number.isInteger(standing?.lastMarkerRaceMs)) return null;
-  const key = `${raceState?.raceRunId || ''}:${standing.lastMarkerIndex}:${standing.lastMarkerRaceMs}`;
+  const anchorRaceMs = Number.isInteger(standing?.routeProgress?.raceTimeMs)
+    ? standing.routeProgress.raceTimeMs
+    : standing?.lastMarkerRaceMs;
+  if (!Number.isInteger(anchorRaceMs)) return null;
+  const anchorKey = standing?.routeProgress
+    ? `${standing.routeProgress.gateIndex}:${standing.routeProgress.raceTimeMs}`
+    : `${standing.lastMarkerIndex}:${standing.lastMarkerRaceMs}`;
+  const key = `${raceState?.raceRunId || ''}:${anchorKey}`;
   let motion = markerMotionByCar.get(carId);
   if (!motion || motion.key !== key) {
     motion = { key, elapsedMs: 0, updatedAt: now };
@@ -1621,7 +1627,7 @@ function markerRaceElapsedMs(carId, standing, now, currentLapElapsed) {
   }
   if (running) motion.elapsedMs += Math.max(0, now - motion.updatedAt);
   motion.updatedAt = now;
-  return standing.lastMarkerRaceMs + motion.elapsedMs;
+  return anchorRaceMs + motion.elapsedMs;
 }
 
 function setTextIfChanged(node, value) {
@@ -1649,6 +1655,10 @@ function rebuildRaceViewCache() {
 }
 
 function markerKey(standing) {
+  if (Number.isInteger(standing?.routeProgress?.gateIndex)
+      && Number.isInteger(standing?.routeProgress?.raceTimeMs)) {
+    return `route:${standing.routeProgress.gateIndex}:${standing.routeProgress.raceTimeMs}`;
+  }
   return Number.isInteger(standing?.lastMarkerIndex) && Number.isInteger(standing?.lastMarkerRaceMs)
     ? `${standing.lastMarkerIndex}:${standing.lastMarkerRaceMs}`
     : '';

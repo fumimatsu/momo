@@ -546,11 +546,44 @@ export function estimateLapPacedProgress(
   const lapElapsed = finiteNumber(currentLapElapsedMs);
   if (!normalized || lapElapsed === null || lapElapsed < 0 || !positiveInteger(lapDurationMs)) return null;
 
-  const markerIndex = finiteNumber(standing?.lastMarkerIndex);
-  const markerRaceMs = finiteNumber(standing?.lastMarkerRaceMs);
   const raceElapsed = finiteNumber(raceElapsedMs);
   const clockToleranceValue = finiteNumber(options.clockToleranceMs);
   const clockToleranceMs = clamp(clockToleranceValue ?? 500, 0, 5000);
+  const route = standing?.routeProgress;
+  const routeGateIndex = finiteNumber(route?.gateIndex);
+  const routeGateCount = finiteNumber(route?.gateCount);
+  const routeAnchor = finiteNumber(route?.courseProgress);
+  const routeNext = finiteNumber(route?.nextCourseProgress);
+  const routeRaceMs = finiteNumber(route?.raceTimeMs);
+  const routeValid = Number.isInteger(routeGateIndex) && Number.isInteger(routeGateCount)
+    && routeGateCount > 0 && routeGateCount <= 50 && routeGateIndex >= 0 && routeGateIndex < routeGateCount
+    && routeAnchor !== null && routeAnchor >= 0 && routeAnchor < 1
+    && routeNext !== null && routeNext > routeAnchor && routeNext <= 1
+    && Number.isInteger(routeRaceMs) && routeRaceMs >= 0
+    && raceElapsed !== null && raceElapsed + clockToleranceMs >= routeRaceMs;
+  if (routeValid) {
+    const elapsedSinceAnchorMs = Math.max(0, raceElapsed - routeRaceMs);
+    const projection = projectCourseProgress(
+      routeAnchor,
+      routeNext,
+      elapsedSinceAnchorMs,
+      lapDurationMs,
+      options,
+    );
+    if (projection) {
+      return {
+        ...projection,
+        anchorIndex: routeGateIndex,
+        nextMarkerIndex: (routeGateIndex + 1) % routeGateCount,
+        elapsedSinceAnchorMs,
+        markerConfirmed: true,
+        routeConfirmed: true,
+      };
+    }
+  }
+
+  const markerIndex = finiteNumber(standing?.lastMarkerIndex);
+  const markerRaceMs = finiteNumber(standing?.lastMarkerRaceMs);
   const markerValid = Number.isInteger(markerIndex) && markerIndex >= 0 && markerIndex < sectorCount
     && Number.isInteger(markerRaceMs) && markerRaceMs >= 0
     && raceElapsed !== null && raceElapsed + clockToleranceMs >= markerRaceMs;

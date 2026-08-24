@@ -426,16 +426,26 @@ type raceStateEnvelope struct {
 }
 
 type raceStateStanding struct {
-	CarID             string `json:"carId"`
-	Position          int    `json:"position"`
-	Lap               int    `json:"lap"`
-	Status            string `json:"status"`
-	IntervalToAheadMS *int64 `json:"intervalToAheadMs"`
-	LapDeltaToAhead   *int   `json:"lapDeltaToAhead"`
-	CurrentSector     int    `json:"currentSector"`
-	SectorCount       int    `json:"sectorCount"`
-	LastMarkerIndex   *int   `json:"lastMarkerIndex"`
-	LastMarkerRaceMS  *int64 `json:"lastMarkerRaceMs"`
+	CarID             string                  `json:"carId"`
+	Position          int                     `json:"position"`
+	Lap               int                     `json:"lap"`
+	Status            string                  `json:"status"`
+	IntervalToAheadMS *int64                  `json:"intervalToAheadMs"`
+	LapDeltaToAhead   *int                    `json:"lapDeltaToAhead"`
+	CurrentSector     int                     `json:"currentSector"`
+	SectorCount       int                     `json:"sectorCount"`
+	LastMarkerIndex   *int                    `json:"lastMarkerIndex"`
+	LastMarkerRaceMS  *int64                  `json:"lastMarkerRaceMs"`
+	RouteProgress     *raceStateRouteProgress `json:"routeProgress"`
+}
+
+type raceStateRouteProgress struct {
+	GateID             string  `json:"gateId"`
+	GateIndex          int     `json:"gateIndex"`
+	GateCount          int     `json:"gateCount"`
+	CourseProgress     float64 `json:"courseProgress"`
+	NextCourseProgress float64 `json:"nextCourseProgress"`
+	RaceTimeMS         int64   `json:"raceTimeMs"`
 }
 
 type sourceFlag []string
@@ -2433,6 +2443,8 @@ func (r *relay) recordDriveInput(pilotID uint64, requested webrtc.DataChannelMes
 		OutputLimitReasons:  outputLimitReasons,
 		Lap:                 courseProgress.Lap,
 		LastMarkerIndex:     courseProgress.LastMarkerIndex,
+		RouteGateIndex:      routeGateIndex(courseProgress.RouteProgress),
+		RouteRaceMS:         routeRaceMS(courseProgress.RouteProgress),
 		FuelRatePerSecond:   health.FuelRatePerSec,
 		FuelRateMultiplier:  health.FuelRateMultiplier,
 		FuelPowerScale:      health.FuelPowerScale,

@@ -375,8 +375,9 @@ func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 		RaceRunID string `json:"raceRunId"`
 		Sequence  uint64 `json:"sequence"`
 		Standings []struct {
-			CarID       string `json:"carId"`
-			SectorTimes []struct {
+			CarID         string                  `json:"carId"`
+			RouteProgress *raceStateRouteProgress `json:"routeProgress"`
+			SectorTimes   []struct {
 				Sector int  `json:"sector"`
 				LastMS *int `json:"lastMs"`
 				BestMS *int `json:"bestMs"`
@@ -396,6 +397,9 @@ func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 	if sector := globalState.Standings[0].SectorTimes[1]; sector.Sector != 2 || sector.LastMS == nil || *sector.LastMS != 4700 || sector.BestMS != nil {
 		t.Fatalf("partial sector timing changed in Relay: %#v", sector)
 	}
+	if progress := globalState.Standings[0].RouteProgress; progress == nil || progress.GateID != "mini-07" || progress.GateIndex != 7 || progress.NextCourseProgress != 0.64 {
+		t.Fatalf("route progress changed in Relay: %#v", progress)
+	}
 
 	expectedMarkerByCar := map[string]int{"CP-1": 2, "CP-2": 1}
 	for _, source := range []*relay{first, second} {
@@ -413,6 +417,9 @@ func TestRaceControlWebSocketPublishesCanonicalStateAcrossRelay(t *testing.T) {
 		progress := source.courseProgress.snapshot()
 		if progress.RaceRunID != "rr_contract_fixture" || progress.Lap != 2 || progress.LastMarkerIndex == nil || *progress.LastMarkerIndex != expectedMarkerByCar[source.raceCarID] {
 			t.Fatalf("source %s course progress = %#v", source.name, progress)
+		}
+		if source.raceCarID == "CP-1" && (progress.RouteProgress == nil || progress.RouteProgress.GateID != "mini-07") {
+			t.Fatalf("source %s route progress = %#v", source.name, progress.RouteProgress)
 		}
 	}
 

@@ -73,6 +73,8 @@ type driveInputLogSample struct {
 	OutputLimitReasons  []string `json:"outputLimitReasons,omitempty"`
 	Lap                 int      `json:"lap,omitempty"`
 	LastMarkerIndex     *int     `json:"lastMarkerIndex,omitempty"`
+	RouteGateIndex      *int     `json:"routeGateIndex,omitempty"`
+	RouteRaceMS         *int64   `json:"routeRaceMs,omitempty"`
 	FuelRatePerSecond   float64  `json:"fuelRatePerSecond"`
 	FuelRateMultiplier  float64  `json:"fuelRateMultiplier"`
 	FuelPowerScale      float64  `json:"fuelPowerScale"`

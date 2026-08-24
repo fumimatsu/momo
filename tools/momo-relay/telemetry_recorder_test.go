@@ -28,12 +28,14 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		Present:   true,
 	})
 	recorder.RecordCourseMarker("11.3", "CP-1", courseMarkerLogSample{
-		EventID: "rr_123:CP-1:course_marker:2:1", Lap: 2, MarkerIndex: 1,
-		MarkerRaceMS: 30000, CurrentSector: 2, SectorCount: 3,
+		EventID: "rr_123:CP-1:course_marker:2:1", Lap: 2, MarkerIndex: intPointer(1),
+		MarkerRaceMS: int64Pointer(30000), CurrentSector: 2, SectorCount: 3,
 	}, telemetryRaceContext{RaceID: "race-test", RaceRunID: "rr_123", Phase: "countdown", Flag: "none", Sequence: 0, Present: true})
 	recorder.RecordTelemetry("11.3", "CP-1", 7, `TEL:{"v":1,"src":"imu0","seq":4}`)
 	gapToAheadMS := int64(3200)
 	lastMarkerIndex := 1
+	routeGateIndex := 4
+	routeRaceMS := int64(31200)
 	recorder.RecordDriveInput("11.3", "CP-1", 9, driveInputLogSample{
 		SteeringPWM: 1420, Steering: -0.16, RequestedPowerPWM: 1800, EffectivePowerPWM: 1700,
 		Throttle: 1, EffectiveThrottle: 2.0 / 3.0, Gear: 3, DriveEnabled: true,
@@ -41,6 +43,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 		BoostChargeEligible: true, BoostChargeMS: 24000, BoostPassiveScale: vehicleBoostPassiveChargeScale, Position: 2, FieldSize: 4,
 		RaceGapKnown: true, GapToAheadMS: &gapToAheadMS, OutputLimited: true,
 		OutputLimitReasons: []string{"damage_cap"}, Lap: 2, LastMarkerIndex: &lastMarkerIndex,
+		RouteGateIndex: &routeGateIndex, RouteRaceMS: &routeRaceMS,
 		FuelRatePerSecond: 0.5, FuelRateMultiplier: 1.3, FuelPowerScale: 0.8,
 		FuelRoughMultiplier: 1.2, FuelBoostMultiplier: 1, ThrottleVariation: 1.2,
 		SessionType: "race",
@@ -75,7 +78,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[1].Type != "race_state" || records[1].RaceRunID != "rr_123" || records[1].RaceSequence == nil || *records[1].RaceSequence != 0 {
 		t.Fatalf("race record = %#v, want race run rr_123 sequence 0", records[1])
 	}
-	if records[2].Type != "course_marker" || records[2].CourseMarker == nil || records[2].CourseMarker.EventID != "rr_123:CP-1:course_marker:2:1" || records[2].CourseMarker.MarkerRaceMS != 30000 {
+	if records[2].Type != "course_marker" || records[2].CourseMarker == nil || records[2].CourseMarker.EventID != "rr_123:CP-1:course_marker:2:1" || records[2].CourseMarker.MarkerRaceMS == nil || *records[2].CourseMarker.MarkerRaceMS != 30000 {
 		t.Fatalf("course marker = %#v", records[2])
 	}
 	if records[3].Type != "telemetry" || records[3].SourceID != "11.3" || records[3].TelemetrySource != "imu0" || records[3].CarID != "CP-1" || records[3].UpstreamGen != 7 {
@@ -87,7 +90,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	if records[3].RaceRunID != "rr_123" || records[3].RacePhase != "countdown" {
 		t.Fatalf("telemetry race context = %#v", records[3])
 	}
-	if records[4].Type != "drive_input" || records[4].DriveInput == nil || records[4].DriveInput.SteeringPWM != 1420 || records[4].DriveInput.EffectivePowerPWM != 1700 || records[4].DriveInput.FuelRateMultiplier != 1.3 || records[4].DriveInput.FuelPowerScale != 0.8 || records[4].DriveInput.FuelRoughMultiplier != 1.2 || records[4].DriveInput.FuelBoostMultiplier != 1 || records[4].DriveInput.ThrottleVariation != 1.2 || records[4].DriveInput.BoostState != "charging" || !records[4].DriveInput.BoostChargeEligible || records[4].DriveInput.BoostChargeMS != 24000 || records[4].DriveInput.BoostPassiveScale != vehicleBoostPassiveChargeScale || records[4].DriveInput.GapToAheadMS == nil || *records[4].DriveInput.GapToAheadMS != 3200 || !records[4].DriveInput.OutputLimited || len(records[4].DriveInput.OutputLimitReasons) != 1 || records[4].DriveInput.OutputLimitReasons[0] != "damage_cap" || records[4].DriveInput.Lap != 2 || records[4].DriveInput.LastMarkerIndex == nil || *records[4].DriveInput.LastMarkerIndex != 1 || records[4].PilotID != 9 {
+	if records[4].Type != "drive_input" || records[4].DriveInput == nil || records[4].DriveInput.SteeringPWM != 1420 || records[4].DriveInput.EffectivePowerPWM != 1700 || records[4].DriveInput.FuelRateMultiplier != 1.3 || records[4].DriveInput.FuelPowerScale != 0.8 || records[4].DriveInput.FuelRoughMultiplier != 1.2 || records[4].DriveInput.FuelBoostMultiplier != 1 || records[4].DriveInput.ThrottleVariation != 1.2 || records[4].DriveInput.BoostState != "charging" || !records[4].DriveInput.BoostChargeEligible || records[4].DriveInput.BoostChargeMS != 24000 || records[4].DriveInput.BoostPassiveScale != vehicleBoostPassiveChargeScale || records[4].DriveInput.GapToAheadMS == nil || *records[4].DriveInput.GapToAheadMS != 3200 || !records[4].DriveInput.OutputLimited || len(records[4].DriveInput.OutputLimitReasons) != 1 || records[4].DriveInput.OutputLimitReasons[0] != "damage_cap" || records[4].DriveInput.Lap != 2 || records[4].DriveInput.LastMarkerIndex == nil || *records[4].DriveInput.LastMarkerIndex != 1 || records[4].DriveInput.RouteGateIndex == nil || *records[4].DriveInput.RouteGateIndex != 4 || records[4].DriveInput.RouteRaceMS == nil || *records[4].DriveInput.RouteRaceMS != 31200 || records[4].PilotID != 9 {
 		t.Fatalf("drive input = %#v", records[4])
 	}
 	if records[5].Type != "vehicle_event" || records[5].VehicleEvent == nil || records[5].VehicleEvent.EventID != "impact-1" || records[5].VehicleEvent.SuppressionReason != "boost_active" {

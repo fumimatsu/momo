@@ -12,7 +12,7 @@ func TestCourseProgressTrackerRecordsUniqueAcceptedMarkers(t *testing.T) {
 	}
 
 	snapshot, event := tracker.observe("rr_123", "CP-1", 10, standing)
-	if event == nil || event.EventID != "rr_123:CP-1:course_marker:2:1" || event.MarkerRaceMS != 30000 {
+	if event == nil || event.EventID != "rr_123:CP-1:course_marker:2:1" || event.MarkerRaceMS == nil || *event.MarkerRaceMS != 30000 {
 		t.Fatalf("first marker event = %#v", event)
 	}
 	if snapshot.Lap != 2 || snapshot.LastMarkerIndex == nil || *snapshot.LastMarkerIndex != 1 {
@@ -42,7 +42,7 @@ func TestCourseProgressTrackerRecordsUniqueAcceptedMarkers(t *testing.T) {
 	standing.LastMarkerIndex = &markerTwo
 	standing.LastMarkerRaceMS = &markerTwoRaceMS
 	snapshot, event = tracker.observe("rr_123", "CP-1", 12, standing)
-	if event == nil || event.MarkerIndex != 2 || event.CurrentSector != 3 {
+	if event == nil || event.MarkerIndex == nil || *event.MarkerIndex != 2 || event.CurrentSector != 3 {
 		t.Fatalf("next marker event = %#v", event)
 	}
 
@@ -66,6 +66,40 @@ func TestCourseProgressTrackerRecordsUniqueAcceptedMarkers(t *testing.T) {
 	_, event = tracker.observe("rr_123", "CP-1", 14, standing)
 	if event == nil || event.EventID != "rr_123:CP-1:course_marker:3:0" {
 		t.Fatalf("next lap marker event = %#v", event)
+	}
+}
+
+func TestCourseProgressTrackerPrefersRouteProgressWithoutChangingPublicSector(t *testing.T) {
+	tracker := &courseProgressTracker{}
+	publicMarker := 0
+	publicRaceMS := int64(10000)
+	standing := &raceStateStanding{
+		CarID: "CP-1", Lap: 1, CurrentSector: 1, SectorCount: 3,
+		LastMarkerIndex: &publicMarker, LastMarkerRaceMS: &publicRaceMS,
+		RouteProgress: &raceStateRouteProgress{
+			GateID: "mini-02", GateIndex: 2, GateCount: 8,
+			CourseProgress: 0.2, NextCourseProgress: 0.3, RaceTimeMS: 12000,
+		},
+	}
+
+	snapshot, event := tracker.observe("rr_123", "CP-1", 1, standing)
+	if event == nil || event.EventID != "rr_123:CP-1:route_gate:1:2" || event.RouteGateIndex == nil || *event.RouteGateIndex != 2 {
+		t.Fatalf("route event = %#v", event)
+	}
+	if event.MarkerIndex == nil || *event.MarkerIndex != 0 || event.CourseProgress == nil || *event.CourseProgress != 0.2 {
+		t.Fatalf("route event did not preserve public and hidden progress = %#v", event)
+	}
+	if snapshot.LastMarkerIndex == nil || *snapshot.LastMarkerIndex != 0 || snapshot.RouteProgress == nil || snapshot.RouteProgress.GateID != "mini-02" {
+		t.Fatalf("route snapshot = %#v", snapshot)
+	}
+
+	standing.RouteProgress = &raceStateRouteProgress{
+		GateID: "mini-01", GateIndex: 1, GateCount: 8,
+		CourseProgress: 0.1, NextCourseProgress: 0.2, RaceTimeMS: 13000,
+	}
+	snapshot, event = tracker.observe("rr_123", "CP-1", 2, standing)
+	if event != nil || snapshot.RouteProgress == nil || snapshot.RouteProgress.GateIndex != 2 {
+		t.Fatalf("backward route progress was accepted: snapshot=%#v event=%#v", snapshot, event)
 	}
 }
 
