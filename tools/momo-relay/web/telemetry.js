@@ -16,6 +16,15 @@
   const STANDARD_GRAVITY_MPS2 = 9.80665;
   const VEHICLE_FLU_AXES_FLAG = 'flu_axes';
   const RELAY_EVENT_HISTORY_LIMIT = 32;
+  const RELAY_EVENT_SUPPRESSION_REASONS = Object.freeze([
+    '',
+    'below_damage_threshold',
+    'boost_active',
+    'cooldown',
+    'damage_disabled',
+    'impact_episode',
+    'race_inactive',
+  ]);
   const DEFAULT_MOTION_OPTIONS = Object.freeze({
     cornerLateralStartMps2: 1.5,
     cornerLateralFullMps2: 6.0,
@@ -385,7 +394,7 @@
     const suppressionReason = value.suppressionReason === undefined
       ? ''
       : String(value.suppressionReason);
-    if (!['', 'cooldown', 'below_damage_threshold'].includes(suppressionReason)
+    if (!RELAY_EVENT_SUPPRESSION_REASONS.includes(suppressionReason)
         || (value.damageApplied && suppressionReason)
         || (!value.damageApplied && value.damage !== 0)) {
       return null;
