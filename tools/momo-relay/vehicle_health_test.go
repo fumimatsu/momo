@@ -68,9 +68,10 @@ func TestVehicleHealthSpeedCapUsesGentleHealthyRange(t *testing.T) {
 	}
 }
 
-func TestVehicleHealthRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T) {
+func TestVehicleHealthLegacyRecoveryRequiresForwardDrivingAndQuietPeriod(t *testing.T) {
 	base := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealth(base)
+	health.setRecoveryMode(vehicleHealthRecoveryLegacy)
 	health.observeRaceState(true, "rr_123", "green", 1, 4, base)
 	health.ingestTelemetry(`TEL:{"v":2,"k":"e","boot":"boot-a","seq":1,"e":{"n":"impact_candidate","m":20.0,"a":[1,0,0],"j":800}}`, "CP-1", base)
 	if got := health.snapshot(base).HP; got != 80 {

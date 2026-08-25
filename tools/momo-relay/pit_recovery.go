@@ -26,7 +26,7 @@ const (
 	vehicleHealthRecoveryPitMarker vehicleHealthRecoveryMode = "pit-marker"
 	vehicleHealthRecoveryHybrid    vehicleHealthRecoveryMode = "hybrid"
 	vehicleHealthRecoveryDisabled  vehicleHealthRecoveryMode = "disabled"
-	vehicleHealthRecoveryDefault                             = vehicleHealthRecoveryHybrid
+	vehicleHealthRecoveryDefault                             = vehicleHealthRecoveryPitMarker
 )
 
 func parseVehicleHealthRecoveryMode(value string) (vehicleHealthRecoveryMode, error) {

@@ -192,8 +192,8 @@ foreach ($requiredToken in @('VIEWER_TOKEN', 'TIMING_INGEST_TOKEN', 'RACE_CONTRO
         throw "$requiredToken is required in $RaceControlRepository\.dev.vars"
     }
 }
-if ([string]$devVars['TIMING_AUTHORITY_LEASE_REQUIRED'] -ne '1') {
-    throw 'TIMING_AUTHORITY_LEASE_REQUIRED=1 is required for this authoritative E2E test.'
+if ([string]$devVars['RACE_CONTROL_RUNTIME_PROFILE'] -ne 'coordinator') {
+    throw 'RACE_CONTROL_RUNTIME_PROFILE=coordinator is required for this authoritative E2E test.'
 }
 
 $go = & (Join-Path $PSScriptRoot 'Resolve-GoExecutable.ps1') -RequestedPath $GoExecutable -RequiredVersionPattern 'go1\.26(?:\.|\s)'

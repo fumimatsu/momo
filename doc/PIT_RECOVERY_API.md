@@ -4,18 +4,18 @@
 
 - API version: 1
 - Relay: 実装済み
-- MADSYSTEM client: `codex/pit-recovery-publisher` の `281dea044` で実装済み
+- Timing Coordinator client: `momo-race-timing/internal/relaygameplay` で実装済み
 - Endpoint: `POST /api/v1/gameplay/pit-recovery-ticks`
 - PIT presence endpoint: `POST /api/v1/gameplay/pit-presence-events`
 
-MADSYSTEM が同一のピットマーカーを連続認識した時間を管理し、1 秒継続するたびに 1 tick を送る。
+Timing Coordinatorが同一のピットマーカーを連続認識した時間を管理し、1秒継続するたびに1 tickを送る。
 Relay は tick の正当性を検証し、受理した tick ごとに対象車両の HP と Fuel をそれぞれ 10 回復する。
 
-MADSYSTEM は回復量を指定しない。HP、Fuel、回復量、速度上限の正本は Relay に置く。
+Timing Coordinatorは回復量を指定しない。HP、Fuel、回復量、速度上限の正本はRelayに置く。
 
 ## Relay 設定
 
-ピット回復を有効にするには、Relay を `pit-marker` または `hybrid` で起動する。
+ピット回復の本番既定は`pit-marker`である。`hybrid`は明示rollback時だけ使用する。
 
 - `-health-recovery-mode=pit-marker` または `hybrid`
 - `-race-url` を設定する
@@ -27,7 +27,7 @@ MADSYSTEM は回復量を指定しない。HP、Fuel、回復量、速度上限�
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
 .\tools\start-mads-observer.ps1 `
-  -HealthRecoveryMode 'hybrid' `
+  -HealthRecoveryMode 'pit-marker' `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>'
 ```

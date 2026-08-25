@@ -1,10 +1,13 @@
 # PIT 回復機能 本番適用 Runbook
 
+> Status: MADSYSTEM publisherを使う明示rollback用の旧runbook。通常運用はTiming Coordinatorと
+> `pit-marker` modeを使用する。以下のMADSYSTEM手順は自動fallbackや本番既定として使わない。
+
 ## 目的
 
 MADSYSTEM が PIT marker ID `8` を認識している間、1 秒ごとに Relay へ回復 tick を送り、
 Relay が車体 HP と Fuel をそれぞれ 10 回復して Pilot Viewer と Observer へ反映する構成を別環境へ適用する。
-本番 mode は `hybrid` とし、安全走行中の低速な連続回復も維持する。
+当時の移行modeは`hybrid`だったが、現在の本番既定は`pit-marker`であり、安全走行中の連続回復は行わない。
 
 HP、回復量、速度上限の正本は Relay に置く。MADSYSTEM は marker presence と tick の順序だけを管理し、
 Viewer は Relay が配信する `VHS:1` を表示する。Viewer から PIT API を呼ばない。
@@ -113,26 +116,26 @@ PIT 回復だけなら Viewer の追加変更は不要である。
 
 ## 3. Relay の本番設定
 
-Relay と Race Control が同じ PC、MADSYSTEM が別 PC の例を示す。
+Relay、Race Control、Timing Coordinatorが同じ会場LANにある例を示す。
 
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<新しい GAMEPLAY_TOKEN>'
 
 Set-Location C:\src\momo
 .\tools\start-mads-observer.ps1 `
-  -HealthRecoveryMode 'hybrid' `
+  -HealthRecoveryMode 'pit-marker' `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>' `
-  -GameplayAllowCidr '<MADSYSTEM-PC-IP>/32'
+  -GameplayAllowCidr '<COORDINATOR-PC-IP>/32'
 ```
 
 独自の起動スクリプトを使う場合も、次の引数を欠かさない。
 
 ```text
--health-recovery-mode hybrid
+-health-recovery-mode pit-marker
 -race-url ws://<race-control-host>:8787/ws/races/<raceId>
 -race-viewer-token <VIEWER_TOKEN>
--gameplay-allow-cidr <MADSYSTEM-PC-IP>/32
+-gameplay-allow-cidr <COORDINATOR-PC-IP>/32
 -race-car <device>=CP-1
 -race-car <device>=CP-2
 -race-car <device>=CP-3
@@ -213,7 +216,7 @@ Observer の合成順、Relay の source 順、`-race-car` の 3 つが同じ車
 ## 5. 起動順
 
 1. Race Control を起動する。
-2. Relay を `hybrid` mode で起動する。
+2. rollbackの目的を記録したうえでRelayを`hybrid` modeで起動する。
 3. Relay の Operations API で source と `raceCarId` を確認する。
 4. Observer と Pilot Viewer を接続する。
 5. MADSYSTEM を起動する。
@@ -241,7 +244,7 @@ $status.sources | Select-Object id, raceCarId, state,
 合格条件:
 
 - 4 source の `id` と `raceCarId` が当日の枠割りと一致する。
-- `vehicleHealth.recoveryMode` が `hybrid` である。
+- rollback時は`vehicleHealth.recoveryMode`が`hybrid`、通常運用では`pit-marker`である。
 - 使用車両が `STREAMING` である。
 - Race Control log に WebSocket `101 Switching Protocols` がある。
 - Viewer に HP bar が表示される。

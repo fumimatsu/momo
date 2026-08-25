@@ -82,10 +82,16 @@ func TestVehicleHealthRecoveryModeCapabilities(t *testing.T) {
 	}
 }
 
-func TestVehicleHealthDefaultsToHybridRecovery(t *testing.T) {
+func TestVehicleHealthDefaultsToAuthoritativePitRecovery(t *testing.T) {
 	health := newVehicleHealth(time.Now())
 	if got := health.recoveryModeSnapshot(); got != vehicleHealthRecoveryDefault {
 		t.Fatalf("default recovery mode = %q, want %q", got, vehicleHealthRecoveryDefault)
+	}
+	if health.recoveryModeSnapshot().allowsDrivingRecovery() {
+		t.Fatal("default recovery mode must not allow legacy driving recovery")
+	}
+	if !health.recoveryModeSnapshot().allowsPitRecovery() {
+		t.Fatal("default recovery mode must allow authoritative PIT recovery")
 	}
 }
 

@@ -665,12 +665,13 @@ Codex toolchain、Scoop、標準installer、registry、`MOMO_TOOLCHAIN_ROOTS`の
 
 GitHub ActionsはWindowsで通常の全試験、Linuxで`go test -race ./...`を実行する。
 
-MADSYSTEMが同じピット用ArUco markerを連続認識し、1秒ごとにRelayへtickを送る。
+Timing Coordinatorがピット用ArUco markerの確定イベントから、1秒ごとにRelayへtickを送る。
 Relayは有効なtick 1回につき10 HPと10 Fuelを同じlock内で回復する。API契約は
 [Relay Pit Recovery Tick API](../../doc/PIT_RECOVERY_API.md)、責務分担は
 [ピットレーン・ダメージ回復 設計検討](../../doc/PIT_LANE_DAMAGE_RECOVERY_DESIGN.md) を参照する。
 
-回復モードは次の4種類である。既定は走行回復と PIT 回復を併用する `hybrid` とする。
+回復モードは次の4種類である。既定は確定したPIT tickだけを受理する`pit-marker`とする。
+`legacy`と`hybrid`は移行確認または明示rollback専用であり、本番既定には使用しない。
 
 | mode | 動作 |
 | --- | --- |
@@ -681,7 +682,7 @@ Relayは有効なtick 1回につき10 HPと10 Fuelを同じlock内で回復す�
 
 `pit-marker` と `hybrid` ではRace Control接続とgameplay tokenが必須である。tokenは引数へ入れず環境変数で渡す。
 
-MADSYSTEM は HP 回復を `/api/v1/gameplay/pit-recovery-ticks`、PIT IN / OUT を
+Timing CoordinatorはHP回復を`/api/v1/gameplay/pit-recovery-ticks`、PIT IN / OUTを
 `/api/v1/gameplay/pit-presence-events` へ送る。Relay は presence と回復状態を
 `PIT:1` として telemetry DataChannel へ配信する。presence 未対応の旧 client からの
 回復 tick も受理するが、tick だけから PIT IN / OUT は推測しない。`serviceState=complete` は
@@ -691,7 +692,7 @@ HPとFuelがともに100の時だけ表示する。途中でPIT OUTしても回�
 ```powershell
 $env:MOMO_RELAY_GAMEPLAY_TOKEN = '<GAMEPLAY_TOKEN>'
 .\tools\start-mads-observer.ps1 -RebuildRelay `
-  -HealthRecoveryMode 'hybrid' `
+  -HealthRecoveryMode 'pit-marker' `
   -FuelDriveDurationSeconds 120 `
   -RaceControlUrl 'ws://127.0.0.1:8787/ws/races/race-test' `
   -RaceControlViewerToken '<VIEWER_TOKEN>'
