@@ -721,6 +721,12 @@ M5StickS3 telemetryが現在のupstream接続世代で`fuel_command_v1` capabili
 PWM、failsafe、Fuel消費計算には使用しない。capabilityがない旧firmwareには`F`を送らず、受信した`F`も除去する。
 upstream再接続時はcapabilityを再確認する。Relayを経由しないDirect接続は従来どおり`S`と`T`だけで動作する。
 
+M5StickS3が同じ接続世代で`vehicle_color_command_v1`を通知した場合、RelayはRace Controlの
+locked rosterから対象`raceCarId`のpilot `color`を選び、色が変化した時だけ`COLOR:RRGGBB`を
+upstream serial DataChannelへ送る。この行はRC commandとは独立し、S3の300ms failsafeを更新しない。
+roster colorが空の現在のイベント運用では`CP-1`から`CP-4`を赤、青、緑、黄へ割り当てる。
+5台目以降でcolorが空の場合、および不正な`#RRGGBB`は消灯する。不正値をイベント色へ暗黙補完しない。
+
 APIは既定でloopbackだけを許可する。MADSYSTEMを別PCで動かす場合は `-GameplayAllowCidr` を明示できるが、
 Relay自身はHTTPのTLSを終端しない。平文tokenを信頼できないネットワークへ流してはならない。
 

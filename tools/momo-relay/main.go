@@ -40,22 +40,24 @@ const (
 	eventsLabel    = "momo-events"
 	upstreamLabel  = "serial"
 
-	defaultRTPStallTimeout       = 5 * time.Second
-	defaultUpstreamStartTimeout  = 20 * time.Second
-	defaultPilotCommandTimeout   = 250 * time.Millisecond
-	commandDropLogInterval       = time.Second
-	telemetryDeliveryLogInterval = 5 * time.Second
-	telemetryDataHighWatermark   = uint64(64 * 1024)
-	gameplayWebSocketQueueSize   = 128
-	observerTelemetryInterval    = time.Second / 15
-	maxTelemetryStateSources     = 16
-	fuelCommandCapability        = "fuel_command_v1"
-	raceStreamPingInterval       = 5 * time.Second
-	raceStreamPongWait           = 15 * time.Second
-	raceStreamWriteTimeout       = 5 * time.Second
-	keyframeRecoveryGrace        = 2 * time.Second
-	defaultVideoTimestampStep    = uint32(90000 / 50)
-	operationsPollWindow         = time.Second
+	defaultRTPStallTimeout        = 5 * time.Second
+	defaultUpstreamStartTimeout   = 20 * time.Second
+	defaultPilotCommandTimeout    = 250 * time.Millisecond
+	commandDropLogInterval        = time.Second
+	telemetryDeliveryLogInterval  = 5 * time.Second
+	telemetryDataHighWatermark    = uint64(64 * 1024)
+	gameplayWebSocketQueueSize    = 128
+	observerTelemetryInterval     = time.Second / 15
+	maxTelemetryStateSources      = 16
+	fuelCommandCapability         = "fuel_command_v1"
+	vehicleColorCommandCapability = "vehicle_color_command_v1"
+	vehicleColorRetryInterval     = time.Second
+	raceStreamPingInterval        = 5 * time.Second
+	raceStreamPongWait            = 15 * time.Second
+	raceStreamWriteTimeout        = 5 * time.Second
+	keyframeRecoveryGrace         = 2 * time.Second
+	defaultVideoTimestampStep     = uint32(90000 / 50)
+	operationsPollWindow          = time.Second
 )
 
 var h264Codec = webrtc.RTPCodecCapability{
@@ -320,39 +322,48 @@ type relay struct {
 	activeSessions atomic.Int32
 	pilotID        uint64
 
-	upstreamMu   sync.RWMutex
-	upstreamPC   *webrtc.PeerConnection
-	upstreamDC   *webrtc.DataChannel
-	upstreamSSRC atomic.Uint32
+	upstreamMu     sync.RWMutex
+	upstreamSendMu sync.Mutex
+	upstreamPC     *webrtc.PeerConnection
+	upstreamDC     *webrtc.DataChannel
+	upstreamSSRC   atomic.Uint32
 
-	rtpStallTimeout        time.Duration
-	upstreamStartTimeout   time.Duration
-	upstreamGeneration     atomic.Uint64
-	pilotCommandTimeout    time.Duration
-	lastVideoFrameUnixNano atomic.Int64
-	lastRTPTimestamp       atomic.Uint32
-	lifecycle              atomic.Int32
-	videoHealth            atomic.Int32
-	upstreamPeerState      atomic.Value
-	lastErrorCode          atomic.Value
-	connectionAttempts     atomic.Uint64
-	pliNewTrack            atomic.Uint64
-	pliViewerConnect       atomic.Uint64
-	pliViewerFeedback      atomic.Uint64
-	pliWatchdog            atomic.Uint64
-	nackViewerFeedback     atomic.Uint64
-	rtpStalls              atomic.Uint64
-	telemetryTextTEL       atomic.Uint64
-	telemetryBinaryTEL     atomic.Uint64
-	telemetryBinaryAudio   atomic.Uint64
-	telemetryOther         atomic.Uint64
-	fuelCommandGeneration  atomic.Uint64
-	frameRate              frameRateWindow
-	vehicleHealth          *vehicleHealth
-	pitPresence            *pitPresenceState
-	vehicleEvents          *vehicleEventStore
-	eventDispatch          chan string
-	raceAudio              *raceAudioSource
+	rtpStallTimeout               time.Duration
+	upstreamStartTimeout          time.Duration
+	upstreamGeneration            atomic.Uint64
+	pilotCommandTimeout           time.Duration
+	lastVideoFrameUnixNano        atomic.Int64
+	lastRTPTimestamp              atomic.Uint32
+	lifecycle                     atomic.Int32
+	videoHealth                   atomic.Int32
+	upstreamPeerState             atomic.Value
+	lastErrorCode                 atomic.Value
+	connectionAttempts            atomic.Uint64
+	pliNewTrack                   atomic.Uint64
+	pliViewerConnect              atomic.Uint64
+	pliViewerFeedback             atomic.Uint64
+	pliWatchdog                   atomic.Uint64
+	nackViewerFeedback            atomic.Uint64
+	rtpStalls                     atomic.Uint64
+	telemetryTextTEL              atomic.Uint64
+	telemetryBinaryTEL            atomic.Uint64
+	telemetryBinaryAudio          atomic.Uint64
+	telemetryOther                atomic.Uint64
+	fuelCommandGeneration         atomic.Uint64
+	vehicleColorCommandGeneration atomic.Uint64
+	vehicleColorMu                sync.Mutex
+	vehicleColorRGB               uint32
+	vehicleColorSet               bool
+	vehicleColorSentRGB           uint32
+	vehicleColorSentGeneration    uint64
+	vehicleColorAttemptGeneration uint64
+	vehicleColorAttemptAt         time.Time
+	frameRate                     frameRateWindow
+	vehicleHealth                 *vehicleHealth
+	pitPresence                   *pitPresenceState
+	vehicleEvents                 *vehicleEventStore
+	eventDispatch                 chan string
+	raceAudio                     *raceAudioSource
 
 	rtpRewriteMu          sync.Mutex
 	rtpRewriteInitialized bool
@@ -423,7 +434,15 @@ type raceStateEnvelope struct {
 	RaceInfo  struct {
 		SessionType string `json:"sessionType"`
 	} `json:"raceInfo"`
+	Roster struct {
+		Participants []raceStateParticipant `json:"participants"`
+	} `json:"roster"`
 	Standings []raceStateStanding `json:"standings"`
+}
+
+type raceStateParticipant struct {
+	CarID string `json:"carId"`
+	Color string `json:"color"`
 }
 
 type raceStateStanding struct {
@@ -1979,8 +1998,14 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 			r.recordImpactShadow(raw, now)
 		}
 		message = normalized
-		if r.upstreamGeneration.Load() == generation && telemetryHasCapability(raw, fuelCommandCapability) {
-			r.fuelCommandGeneration.Store(generation)
+		if r.upstreamGeneration.Load() == generation {
+			if telemetryHasCapability(raw, fuelCommandCapability) {
+				r.fuelCommandGeneration.Store(generation)
+			}
+			if telemetryHasCapability(raw, vehicleColorCommandCapability) {
+				r.vehicleColorCommandGeneration.Store(generation)
+				r.sendVehicleColorIfReady()
+			}
 		}
 		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, now)
 		var regenApplied bool
@@ -2336,6 +2361,82 @@ func (r *relay) supportsFuelCommand() bool {
 	return generation != 0 && r.fuelCommandGeneration.Load() == generation
 }
 
+func (r *relay) supportsVehicleColorCommand() bool {
+	generation := r.upstreamGeneration.Load()
+	return generation != 0 && r.vehicleColorCommandGeneration.Load() == generation
+}
+
+func (r *relay) sendUpstream(message webrtc.DataChannelMessage) error {
+	r.upstreamMu.RLock()
+	upstream := r.upstreamDC
+	r.upstreamMu.RUnlock()
+	if upstream == nil {
+		return errors.New("upstream DataChannel is unavailable")
+	}
+	r.upstreamSendMu.Lock()
+	defer r.upstreamSendMu.Unlock()
+	return sendDataChannel(upstream, message)
+}
+
+func (r *relay) setVehicleColor(rgb uint32, present bool) {
+	r.vehicleColorMu.Lock()
+	changed := r.vehicleColorRGB != rgb || r.vehicleColorSet != present
+	r.vehicleColorRGB = rgb
+	r.vehicleColorSet = present
+	if changed {
+		r.vehicleColorSentGeneration = 0
+		r.vehicleColorAttemptGeneration = 0
+		r.vehicleColorAttemptAt = time.Time{}
+	}
+	r.vehicleColorMu.Unlock()
+	if changed {
+		r.sendVehicleColorIfReady()
+	}
+}
+
+func vehicleColorCommand(rgb uint32) string {
+	return fmt.Sprintf("COLOR:%06X\n", rgb&0xFFFFFF)
+}
+
+func (r *relay) sendVehicleColorIfReady() {
+	generation := r.upstreamGeneration.Load()
+	if generation == 0 || !r.supportsVehicleColorCommand() {
+		return
+	}
+	now := time.Now()
+	r.vehicleColorMu.Lock()
+	if !r.vehicleColorSet ||
+		(r.vehicleColorSentGeneration == generation && r.vehicleColorSentRGB == r.vehicleColorRGB) {
+		r.vehicleColorMu.Unlock()
+		return
+	}
+	if r.vehicleColorAttemptGeneration == generation &&
+		!r.vehicleColorAttemptAt.IsZero() && now.Sub(r.vehicleColorAttemptAt) < vehicleColorRetryInterval {
+		r.vehicleColorMu.Unlock()
+		return
+	}
+	rgb := r.vehicleColorRGB
+	r.vehicleColorAttemptGeneration = generation
+	r.vehicleColorAttemptAt = now
+	r.vehicleColorMu.Unlock()
+
+	message := webrtc.DataChannelMessage{
+		Data:     []byte(vehicleColorCommand(rgb)),
+		IsString: true,
+	}
+	if err := r.sendUpstream(message); err != nil {
+		log.Printf("source %q: send vehicle color: %v", r.name, err)
+		return
+	}
+	r.vehicleColorMu.Lock()
+	if r.vehicleColorSet && r.vehicleColorRGB == rgb && r.upstreamGeneration.Load() == generation {
+		r.vehicleColorSentRGB = rgb
+		r.vehicleColorSentGeneration = generation
+	}
+	r.vehicleColorMu.Unlock()
+	log.Printf("source %q: vehicle color #%06X sent for generation %d", r.name, rgb, generation)
+}
+
 func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMessage) error {
 	if message.IsString {
 		return channel.SendText(string(message.Data))
@@ -2354,9 +2455,9 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 		return
 	}
 	r.upstreamMu.RLock()
-	upstream := r.upstreamDC
+	upstreamAvailable := r.upstreamDC != nil
 	r.upstreamMu.RUnlock()
-	if upstream == nil {
+	if !upstreamAvailable {
 		if shouldLogCommandDrop(client, time.Now()) {
 			log.Printf("drop command from viewer %d: upstream DataChannel is unavailable", client.id)
 		}
@@ -2375,7 +2476,7 @@ func (r *relay) handleCommand(client *viewer, message webrtc.DataChannelMessage)
 		}
 		forwarded.Data = []byte(limited)
 	}
-	if err := sendDataChannel(upstream, forwarded); err != nil {
+	if err := r.sendUpstream(forwarded); err != nil {
 		log.Printf("forward command from viewer %d to Momo: %v", client.id, err)
 		return
 	}
@@ -3362,6 +3463,47 @@ func raceMessageForCar(state []byte, carID string) (string, error) {
 	return messages[0], nil
 }
 
+var eventVehicleColorDefaults = map[string]uint32{
+	"CP-1": 0xFF0000,
+	"CP-2": 0x0000FF,
+	"CP-3": 0x00FF00,
+	"CP-4": 0xFFFF00,
+}
+
+func parseVehicleColor(value string) (uint32, bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false, nil
+	}
+	if len(value) != 7 || value[0] != '#' {
+		return 0, false, fmt.Errorf("vehicle color must use #RRGGBB: %q", value)
+	}
+	parsed, err := strconv.ParseUint(value[1:], 16, 24)
+	if err != nil {
+		return 0, false, fmt.Errorf("vehicle color must use #RRGGBB: %q", value)
+	}
+	return uint32(parsed), true, nil
+}
+
+func vehicleColorForCar(state raceStateEnvelope, carID string) (uint32, error) {
+	carID = strings.TrimSpace(carID)
+	for _, participant := range state.Roster.Participants {
+		if strings.TrimSpace(participant.CarID) != carID {
+			continue
+		}
+		if color, present, err := parseVehicleColor(participant.Color); err != nil {
+			return 0, err
+		} else if present {
+			return color, nil
+		}
+		break
+	}
+	if color, exists := eventVehicleColorDefaults[carID]; exists {
+		return color, nil
+	}
+	return 0, nil
+}
+
 func raceMessagesForCars(state []byte, carIDs []string) ([]string, error) {
 	if len(carIDs) == 0 {
 		return []string{}, nil
@@ -3499,6 +3641,12 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			continue
 		}
 		for index, source := range vehicleSources {
+			color, colorErr := vehicleColorForCar(envelope, source.raceCarID)
+			if colorErr != nil {
+				log.Printf("source %q: disable vehicle color: %v", source.name, colorErr)
+				color = 0
+			}
+			source.setVehicleColor(color, true)
 			source.publishRaceState(messages[index])
 		}
 	}

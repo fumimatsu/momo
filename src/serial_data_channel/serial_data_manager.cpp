@@ -31,6 +31,7 @@ constexpr uint8_t kTelemetryBinaryEvent = 2;
 constexpr uint8_t kTelemetryBinaryEscStateLegacy = 3;
 constexpr uint8_t kTelemetryBinaryEscState = 4;
 constexpr uint8_t kTelemetryCapabilityFuelCommandV1 = 1u << 0;
+constexpr uint8_t kTelemetryCapabilityVehicleColorCommandV1 = 1u << 1;
 constexpr size_t kTelemetryBinaryMaxEncodedBytes = 64;
 constexpr uint16_t kEscMotorRpm = 1u << 0;
 constexpr uint16_t kEscMaximumMotorRpm = 1u << 1;
@@ -106,14 +107,17 @@ bool DecodeBinaryTelemetry(const uint8_t* encoded, size_t encoded_length, std::s
     const float vertical = ReadI16(payload, 24) * 0.01f;
     const float yaw = ReadI16(payload, 26) * 0.01f;
     const uint32_t period_us = ReadU32(payload, 28);
-    const char* capability_flags =
-        (payload[3] & kTelemetryCapabilityFuelCommandV1) != 0
-            ? "\"flu_axes\",\"fuel_command_v1\""
-            : "\"flu_axes\"";
+    std::string capability_flags = "\"flu_axes\"";
+    if ((payload[3] & kTelemetryCapabilityFuelCommandV1) != 0) {
+      capability_flags += ",\"fuel_command_v1\"";
+    }
+    if ((payload[3] & kTelemetryCapabilityVehicleColorCommandV1) != 0) {
+      capability_flags += ",\"vehicle_color_command_v1\"";
+    }
     written = std::snprintf(text, sizeof(text),
         "TEL:{\"v\":2,\"k\":\"s\",\"src\":\"imu0\",\"boot\":\"%08x\",\"seq\":%u,\"t_us\":%llu,\"m\":{\"a\":[%.2f,%.2f,%.2f],\"y\":%.2f},\"q\":{\"p\":%u,\"f\":[%s]}}",
         boot, sequence, static_cast<unsigned long long>(timestamp_us), forward, lateral,
-        vertical, yaw, period_us, capability_flags);
+        vertical, yaw, period_us, capability_flags.c_str());
   } else if (type == kTelemetryBinaryEvent && payload.size() == 32 && payload[2] == 1) {
     const float magnitude = ReadU16(payload, 20) * 0.1f;
     const float forward = ReadI16(payload, 22) * 0.001f;

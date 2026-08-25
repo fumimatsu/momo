@@ -1188,6 +1188,68 @@ func TestTelemetryFuelCommandCapability(t *testing.T) {
 	}
 }
 
+func TestTelemetryVehicleColorCommandCapability(t *testing.T) {
+	for _, item := range []struct {
+		name    string
+		message string
+		want    bool
+	}{
+		{"compact", `TEL:{"v":2,"k":"s","src":"imu0","q":{"f":["flu_axes","vehicle_color_command_v1"]}}`, true},
+		{"legacy", `TEL:{"v":1,"k":"s","src":"imu0","qual":{"flags":["flu_axes","vehicle_color_command_v1"]}}`, true},
+		{"old-firmware", `TEL:{"v":2,"k":"s","src":"imu0","q":{"f":["flu_axes","fuel_command_v1"]}}`, false},
+		{"event", `TEL:{"v":2,"k":"e","src":"imu0","q":{"f":["vehicle_color_command_v1"]}}`, false},
+		{"wrong-source", `TEL:{"v":2,"k":"s","src":"esc0","q":{"f":["vehicle_color_command_v1"]}}`, false},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			if got := telemetryHasCapability(item.message, vehicleColorCommandCapability); got != item.want {
+				t.Fatalf("telemetryHasCapability() = %t, want %t", got, item.want)
+			}
+		})
+	}
+}
+
+func TestVehicleColorForCarUsesRosterThenEventDefaults(t *testing.T) {
+	state := raceStateEnvelope{}
+	state.Roster.Participants = []raceStateParticipant{
+		{CarID: "CP-2", Color: "#53dBeF"},
+		{CarID: "CP-5", Color: "#102030"},
+	}
+
+	for _, item := range []struct {
+		carID string
+		want  uint32
+	}{
+		{"CP-1", 0xFF0000},
+		{"CP-2", 0x53DBEF},
+		{"CP-3", 0x00FF00},
+		{"CP-4", 0xFFFF00},
+		{"CP-5", 0x102030},
+		{"CP-17", 0x000000},
+	} {
+		got, err := vehicleColorForCar(state, item.carID)
+		if err != nil {
+			t.Fatalf("vehicleColorForCar(%q): %v", item.carID, err)
+		}
+		if got != item.want {
+			t.Fatalf("vehicleColorForCar(%q) = #%06X, want #%06X", item.carID, got, item.want)
+		}
+	}
+}
+
+func TestVehicleColorForCarRejectsMalformedRosterColor(t *testing.T) {
+	state := raceStateEnvelope{}
+	state.Roster.Participants = []raceStateParticipant{{CarID: "CP-1", Color: "red"}}
+	if _, err := vehicleColorForCar(state, "CP-1"); err == nil {
+		t.Fatal("malformed roster color must fail closed instead of using the event fallback")
+	}
+}
+
+func TestVehicleColorCommandUsesOneStrictLine(t *testing.T) {
+	if got := vehicleColorCommand(0x53DBEF); got != "COLOR:53DBEF\n" {
+		t.Fatalf("vehicleColorCommand() = %q", got)
+	}
+}
+
 func TestFuelCommandCapabilityIsBoundToUpstreamGeneration(t *testing.T) {
 	source := newStatusTestRelay("11.5", "CP-3")
 	source.upstreamGeneration.Store(4)
@@ -1209,6 +1271,30 @@ func TestFuelCommandCapabilityIsBoundToUpstreamGeneration(t *testing.T) {
 	}, 4)
 	if source.supportsFuelCommand() {
 		t.Fatal("stale upstream telemetry enabled Fuel command support")
+	}
+}
+
+func TestVehicleColorCommandCapabilityIsBoundToUpstreamGeneration(t *testing.T) {
+	source := newStatusTestRelay("11.5", "CP-3")
+	source.upstreamGeneration.Store(4)
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(`TEL:{"v":2,"k":"s","src":"imu0","q":{"p":33333,"f":["flu_axes","vehicle_color_command_v1"]}}`),
+		IsString: true,
+	}, 4)
+	if !source.supportsVehicleColorCommand() {
+		t.Fatal("current upstream generation did not enable vehicle color command support")
+	}
+
+	source.upstreamGeneration.Store(5)
+	if source.supportsVehicleColorCommand() {
+		t.Fatal("vehicle color command support leaked into a new upstream generation")
+	}
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{
+		Data:     []byte(`TEL:{"v":2,"k":"s","src":"imu0","q":{"p":33333,"f":["flu_axes","vehicle_color_command_v1"]}}`),
+		IsString: true,
+	}, 4)
+	if source.supportsVehicleColorCommand() {
+		t.Fatal("stale upstream telemetry enabled vehicle color command support")
 	}
 }
 
