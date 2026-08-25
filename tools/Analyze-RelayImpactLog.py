@@ -2,13 +2,14 @@
 """Build an offline impact report from Relay telemetry NDJSON logs.
 
 This tool never changes Relay state or vehicle HP. The shadow result is an
-analysis aid for comparing the current magnitude/jerk classifier with a
-provisional vertical-dominance suppression rule.
+analysis aid for comparing the current magnitude/jerk classifier with the
+provisional time-window impact classifier.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import glob
 import html
@@ -19,6 +20,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable
 
 
@@ -28,6 +30,13 @@ CURRENT_STRONG_JERK = 250.0
 CURRENT_SEVERE_MAGNITUDE = 15.0
 CURRENT_SEVERE_JERK = 750.0
 CURRENT_DAMAGE = {"": 0.0, "weak": 0.0, "strong": 12.0, "severe": 20.0}
+WINDOW_SHADOW_ALGORITHM = "vertical-window-v2"
+WINDOW_MS = 300.0
+WINDOW_COVERAGE_TOLERANCE_MS = 50.0
+COLLISION_VERTICAL_SHARE_MAX = 0.20
+BASELINE_GUARD_MS = 100.0
+HORIZONTAL_ACTIVE_MPS2 = 3.0
+VERTICAL_REVERSAL_MPS2 = 1.0
 
 
 @dataclass(slots=True)
@@ -71,6 +80,22 @@ class ImpactCandidate:
     shadow_class: str
     shadow_damage: float
     shadow_action: str
+    window_shadow_algorithm: str = ""
+    window_shadow_axis_kind: str = ""
+    window_shadow_kind: str = ""
+    window_shadow_damage_allowed: bool | None = None
+    window_shadow_ffb_allowed: bool | None = None
+    window_shadow_complete: bool | None = None
+    window_shadow_before_ms: float | None = None
+    window_shadow_after_ms: float | None = None
+    window_shadow_samples: int | None = None
+    window_shadow_horizontal_active_ms: float | None = None
+    window_shadow_baseline_forward_mps2: float | None = None
+    window_shadow_baseline_lateral_mps2: float | None = None
+    window_shadow_peak_horizontal_delta_mps2: float | None = None
+    window_shadow_horizontal_delta_active_ms: float | None = None
+    window_shadow_vertical_reversals: int | None = None
+    window_shadow_reasons: str = ""
     confirmed_class: str = ""
     confirmed_damage_applied: bool | None = None
     confirmed_damage: float | None = None
@@ -81,9 +106,23 @@ class ImpactCandidate:
     runtime_shadow_axis_kind: str = ""
     runtime_shadow_kind: str = ""
     runtime_shadow_damage_allowed: bool | None = None
+    runtime_shadow_ffb_allowed: bool | None = None
     runtime_shadow_window_complete: bool | None = None
     runtime_shadow_samples: int | None = None
     runtime_shadow_reasons: str = ""
+
+
+@dataclass(slots=True)
+class WindowShadowFeatures:
+    complete: bool = False
+    before_ms: float = 0.0
+    after_ms: float = 0.0
+    horizontal_active_ms: float = 0.0
+    baseline_forward_mps2: float = 0.0
+    baseline_lateral_mps2: float = 0.0
+    peak_horizontal_delta_mps2: float = 0.0
+    horizontal_delta_active_ms: float = 0.0
+    vertical_reversals: int = 0
 
 
 def finite_number(value: Any) -> float | None:
@@ -166,6 +205,109 @@ def classify_shadow(
     if damage > 0:
         return current_class, 0.0, "suppress_vertical_surface_candidate"
     return current_class, 0.0, "observe_vertical_surface_candidate"
+
+
+def significant_vertical_sign(value: float) -> int:
+    if abs(value) < VERTICAL_REVERSAL_MPS2:
+        return 0
+    return 1 if value > 0 else -1
+
+
+def calculate_window_shadow_features(
+    samples: list[MotionSample],
+    event_time_ms: float,
+) -> WindowShadowFeatures:
+    features = WindowShadowFeatures()
+    if not samples:
+        return features
+
+    features.before_ms = max(0.0, event_time_ms - samples[0].time_ms)
+    features.after_ms = max(0.0, samples[-1].time_ms - event_time_ms)
+    minimum_coverage = WINDOW_MS - WINDOW_COVERAGE_TOLERANCE_MS
+    features.complete = (
+        features.before_ms >= minimum_coverage
+        and features.after_ms >= minimum_coverage
+    )
+
+    baseline_samples = [
+        sample for sample in samples
+        if sample.time_ms <= event_time_ms - BASELINE_GUARD_MS
+    ]
+    if baseline_samples:
+        features.baseline_forward_mps2 = median(
+            sample.forward_mps2 for sample in baseline_samples
+        )
+        features.baseline_lateral_mps2 = median(
+            sample.lateral_mps2 for sample in baseline_samples
+        )
+
+    previous_sign = 0
+    for index, sample in enumerate(samples):
+        horizontal = math.hypot(sample.forward_mps2, sample.lateral_mps2)
+        horizontal_delta = math.hypot(
+            sample.forward_mps2 - features.baseline_forward_mps2,
+            sample.lateral_mps2 - features.baseline_lateral_mps2,
+        )
+        features.peak_horizontal_delta_mps2 = max(
+            features.peak_horizontal_delta_mps2,
+            horizontal_delta,
+        )
+        vertical_sign = significant_vertical_sign(sample.vertical_mps2)
+        if vertical_sign:
+            if previous_sign and vertical_sign != previous_sign:
+                features.vertical_reversals += 1
+            previous_sign = vertical_sign
+
+        if index == 0:
+            continue
+        previous = samples[index - 1]
+        interval_ms = sample.time_ms - previous.time_ms
+        if interval_ms <= 0 or interval_ms > 100.0:
+            continue
+        previous_horizontal = math.hypot(previous.forward_mps2, previous.lateral_mps2)
+        if (horizontal + previous_horizontal) / 2 >= HORIZONTAL_ACTIVE_MPS2:
+            features.horizontal_active_ms += interval_ms
+        previous_delta = math.hypot(
+            previous.forward_mps2 - features.baseline_forward_mps2,
+            previous.lateral_mps2 - features.baseline_lateral_mps2,
+        )
+        if (horizontal_delta + previous_delta) / 2 >= HORIZONTAL_ACTIVE_MPS2:
+            features.horizontal_delta_active_ms += interval_ms
+    return features
+
+
+def classify_window_shadow(
+    current_class: str,
+    vertical_share: float,
+    horizontal_share: float,
+    features: WindowShadowFeatures,
+) -> tuple[str, str, bool, bool, list[str]]:
+    axis_kind = "ambiguous"
+    if vertical_share > COLLISION_VERTICAL_SHARE_MAX:
+        axis_kind = "road_impact"
+    elif horizontal_share > 0:
+        axis_kind = "collision"
+
+    kind = "ambiguous"
+    reasons: list[str] = []
+    if vertical_share > COLLISION_VERTICAL_SHARE_MAX and not features.complete:
+        reasons.extend(["window_incomplete", "vertical_axis_candidate"])
+    elif vertical_share > COLLISION_VERTICAL_SHARE_MAX and features.vertical_reversals > 0:
+        kind = "road_impact"
+        reasons.extend(["vertical_axis_candidate", "vertical_rebound"])
+        if features.horizontal_active_ms > 0:
+            reasons.append("horizontal_load_context_only")
+    elif vertical_share > COLLISION_VERTICAL_SHARE_MAX:
+        reasons.extend(["vertical_axis_candidate", "vertical_rebound_missing"])
+    elif current_class in {"strong", "severe"}:
+        kind = "collision"
+        reasons.extend(["horizontal_axis_candidate", "damage_threshold_met"])
+    else:
+        reasons.extend(["horizontal_axis_candidate", "below_damage_threshold"])
+
+    damage_allowed = kind == "collision" and current_class in {"strong", "severe"}
+    ffb_allowed = kind in {"road_impact", "collision"} or bool(current_class)
+    return axis_kind, kind, damage_allowed, ffb_allowed, reasons
 
 
 def expand_inputs(values: list[str]) -> list[Path]:
@@ -377,7 +519,45 @@ def analyze_logs(
     samples.sort(key=lambda item: (item.time_ms, item.source_id, item.sequence))
     candidates.sort(key=lambda item: (item.time_ms, item.source_id, item.sequence))
 
+    samples_by_stream: dict[tuple[str, str, str], list[MotionSample]] = defaultdict(list)
+    for sample in samples:
+        samples_by_stream[(sample.session_id, sample.car_id or sample.source_id, sample.boot)].append(sample)
+    times_by_stream = {
+        key: [sample.time_ms for sample in values]
+        for key, values in samples_by_stream.items()
+    }
+
     for candidate in candidates:
+        stream_key = (candidate.session_id, candidate.car_id or candidate.source_id, candidate.boot)
+        stream_samples = samples_by_stream.get(stream_key, [])
+        stream_times = times_by_stream.get(stream_key, [])
+        left = bisect.bisect_left(stream_times, candidate.time_ms - WINDOW_MS)
+        right = bisect.bisect_right(stream_times, candidate.time_ms + WINDOW_MS)
+        window_samples = stream_samples[left:right]
+        features = calculate_window_shadow_features(window_samples, candidate.time_ms)
+        axis_kind, kind, damage_allowed, ffb_allowed, reasons = classify_window_shadow(
+            candidate.current_class,
+            candidate.vertical_share,
+            candidate.horizontal_share,
+            features,
+        )
+        candidate.window_shadow_algorithm = WINDOW_SHADOW_ALGORITHM
+        candidate.window_shadow_axis_kind = axis_kind
+        candidate.window_shadow_kind = kind
+        candidate.window_shadow_damage_allowed = damage_allowed
+        candidate.window_shadow_ffb_allowed = ffb_allowed
+        candidate.window_shadow_complete = features.complete
+        candidate.window_shadow_before_ms = features.before_ms
+        candidate.window_shadow_after_ms = features.after_ms
+        candidate.window_shadow_samples = len(window_samples)
+        candidate.window_shadow_horizontal_active_ms = features.horizontal_active_ms
+        candidate.window_shadow_baseline_forward_mps2 = features.baseline_forward_mps2
+        candidate.window_shadow_baseline_lateral_mps2 = features.baseline_lateral_mps2
+        candidate.window_shadow_peak_horizontal_delta_mps2 = features.peak_horizontal_delta_mps2
+        candidate.window_shadow_horizontal_delta_active_ms = features.horizontal_delta_active_ms
+        candidate.window_shadow_vertical_reversals = features.vertical_reversals
+        candidate.window_shadow_reasons = ",".join(reasons)
+
         confirmed = confirmed_by_id.get(candidate.event_id)
         if confirmed:
             candidate.confirmed_class = str(confirmed.get("impactClass") or "")
@@ -395,6 +575,8 @@ def analyze_logs(
         candidate.runtime_shadow_kind = str(shadow.get("proposedKind") or "")
         damage_allowed = shadow.get("proposedDamageAllowed")
         candidate.runtime_shadow_damage_allowed = damage_allowed if isinstance(damage_allowed, bool) else None
+        ffb_allowed = shadow.get("proposedFfbAllowed")
+        candidate.runtime_shadow_ffb_allowed = ffb_allowed if isinstance(ffb_allowed, bool) else None
         window_complete = shadow.get("windowComplete")
         candidate.runtime_shadow_window_complete = window_complete if isinstance(window_complete, bool) else None
         motion_samples = shadow.get("motionSamples")
@@ -425,6 +607,7 @@ def analyze_logs(
             "effectiveMotionHz": (motion_intervals / duration_seconds) if duration_seconds > 0 else 0.0,
             "currentClasses": dict(Counter(item.current_class or "none" for item in vehicle_events)),
             "shadowActions": dict(Counter(item.shadow_action for item in vehicle_events)),
+            "windowShadowKinds": dict(Counter(item.window_shadow_kind or "missing" for item in vehicle_events)),
             "runtimeShadowKinds": dict(Counter(item.runtime_shadow_kind or "missing" for item in vehicle_events)),
         }
 
@@ -453,6 +636,10 @@ def analyze_logs(
         "shadowConfig": {
             "minimumVerticalShare": minimum_vertical_share,
             "maximumHorizontalShare": maximum_horizontal_share,
+            "windowAlgorithm": WINDOW_SHADOW_ALGORITHM,
+            "windowMs": WINDOW_MS,
+            "collisionVerticalShareMax": COLLISION_VERTICAL_SHARE_MAX,
+            "baselineGuardMs": BASELINE_GUARD_MS,
             "runtimeBehaviorChanged": False,
         },
         "counters": dict(counters),
@@ -513,20 +700,22 @@ def build_report_html(result: dict[str, Any]) -> str:
         f"<td>{values['effectiveMotionHz']:.1f}</td>"
         f"<td>{values['impactCandidates']}</td>"
         f"<td>{html.escape(json.dumps(values['shadowActions'], ensure_ascii=False))}</td>"
+        f"<td>{html.escape(json.dumps(values['windowShadowKinds'], ensure_ascii=False))}</td>"
         "</tr>"
         for vehicle, values in result["perVehicle"].items()
-    ) or '<tr><td colspan="5">No motion telemetry found</td></tr>'
+    ) or '<tr><td colspan="6">No motion telemetry found</td></tr>'
     event_rows = "".join(
         "<tr>"
         f"<td>{html.escape(item.received_at)}</td><td>{html.escape(item.car_id or item.source_id)}</td>"
         f"<td>{item.magnitude_mps2:.1f}</td><td>{item.jerk_mps3:.0f}</td>"
         f"<td>{item.vertical_share:.3f}</td><td>{item.horizontal_share:.3f}</td>"
         f"<td>{html.escape(item.current_class or 'none')}</td><td>{html.escape(item.shadow_action)}</td>"
+        f"<td>{html.escape(item.window_shadow_kind or 'missing')}</td>"
         f"<td>{html.escape(item.runtime_shadow_kind or 'missing')}</td>"
         f"<td>{html.escape(item.confirmed_suppression_reason or ('applied' if item.confirmed_damage_applied else 'unmatched'))}</td>"
         "</tr>"
         for item in result["candidates"]
-    ) or '<tr><td colspan="10">No impact candidates found</td></tr>'
+    ) or '<tr><td colspan="11">No impact candidates found</td></tr>'
     chart_blocks = "".join(
         f'<section class="panel"><h2>{html.escape(vehicle)}</h2><canvas data-vehicle="{html.escape(vehicle, quote=True)}"></canvas></section>'
         for vehicle in series
@@ -553,10 +742,10 @@ table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}} t
 <div class="metric"><span>Malformed lines</span><strong>{counters.get('malformed_lines', 0)}</strong></div>
 <div class="metric"><span>Queue drops</span><strong>{counters.get('queue_drops', 0)}</strong></div>
 </div>
-<section class="panel"><h2>Vehicle summary</h2><div class="table-wrap"><table><thead><tr><th>Vehicle</th><th>Samples</th><th>Effective Hz</th><th>Events</th><th>Shadow actions</th></tr></thead><tbody>{vehicle_rows}</tbody></table></div></section>
+<section class="panel"><h2>Vehicle summary</h2><div class="table-wrap"><table><thead><tr><th>Vehicle</th><th>Samples</th><th>Effective Hz</th><th>Events</th><th>Axis shadow</th><th>Window v2</th></tr></thead><tbody>{vehicle_rows}</tbody></table></div></section>
 <div class="legend"><b>Forward G</b><b>Lateral G</b><b>Vertical G</b><span>Derived jerk (lower band)</span></div>
 {chart_blocks}
-<section class="panel"><h2>Impact candidates</h2><div class="table-wrap"><table><thead><tr><th>Received</th><th>Vehicle</th><th>Magnitude</th><th>Jerk</th><th>Vertical</th><th>Horizontal</th><th>Current</th><th>Offline shadow</th><th>Runtime shadow</th><th>Confirmed</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
+<section class="panel"><h2>Impact candidates</h2><div class="table-wrap"><table><thead><tr><th>Received</th><th>Vehicle</th><th>Magnitude</th><th>Jerk</th><th>Vertical</th><th>Horizontal</th><th>Current</th><th>Axis shadow</th><th>Window v2</th><th>Runtime shadow</th><th>Confirmed</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
 <script>const series={payload};
 const colors=['#37c7e8','#ec6bb7','#f5d547'];
 function draw(canvas,data){{const dpr=devicePixelRatio||1,box=canvas.getBoundingClientRect();canvas.width=Math.max(1,Math.floor(box.width*dpr));canvas.height=Math.max(1,Math.floor(box.height*dpr));const c=canvas.getContext('2d');c.scale(dpr,dpr);const w=box.width,h=box.height,p=28,s=data.samples;if(!s.length){{c.fillStyle='#91a1aa';c.fillText('No samples',p,p);return}}const t0=s[0][0],t1=Math.max(t0+.001,s[s.length-1][0]),split=h*.72,zero=split/2;let peak=1,jerkPeak=1;for(const row of s){{for(let i=1;i<4;i++)peak=Math.max(peak,Math.abs(row[i]));if(Number.isFinite(row[4]))jerkPeak=Math.max(jerkPeak,row[4])}}const x=t=>p+(t-t0)/(t1-t0)*(w-p*1.5);c.strokeStyle='#2b3942';c.beginPath();c.moveTo(p,zero);c.lineTo(w-p/2,zero);c.moveTo(p,split);c.lineTo(w-p/2,split);c.stroke();for(const event of data.events){{c.strokeStyle=event[2].startsWith('suppress')?'#ff6b6b':'#64747d';c.beginPath();c.moveTo(x(event[0]),p);c.lineTo(x(event[0]),h-p);c.stroke()}}for(let axis=1;axis<4;axis++){{c.strokeStyle=colors[axis-1];c.lineWidth=1.4;c.beginPath();s.forEach((row,index)=>{{const xx=x(row[0]),v=row[axis],yy=zero-v/peak*(zero-p);if(index)c.lineTo(xx,yy);else c.moveTo(xx,yy)}});c.stroke()}}c.strokeStyle='#c8d1d6';c.lineWidth=1;c.beginPath();let started=false;for(const row of s){{if(!Number.isFinite(row[4]))continue;const yy=h-p-(row[4]/jerkPeak)*(h-split-p);if(started)c.lineTo(x(row[0]),yy);else{{c.moveTo(x(row[0]),yy);started=true}}}}c.stroke();c.fillStyle='#91a1aa';c.fillText(peak.toFixed(1)+' m/s2',3,p);c.fillText((-peak).toFixed(1),3,split-p);c.fillText(jerkPeak.toFixed(0)+' m/s3',3,split+13)}}

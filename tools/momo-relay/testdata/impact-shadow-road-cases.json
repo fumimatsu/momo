@@ -1,0 +1,78 @@
+{
+  "schema": "momo-impact-shadow-road-cases/v1",
+  "sourceRunId": "cpu-shadow-20260731T122739445Z-732b1f8f",
+  "cases": [
+    {
+      "name": "floor-depression",
+      "groundTruth": "road_impact",
+      "candidate": { "sequence": 271516, "magnitudeMps2": 6.2, "jerkMps3": 185, "axis": [0.253, 0.231, -0.94] },
+      "samples": [
+        { "offsetMs": -290.5, "axis": [-0.08, -0.53, -0.62], "yaw": -0.34 },
+        { "offsetMs": -255.6, "axis": [1.09, -0.96, 0.87], "yaw": -0.34 },
+        { "offsetMs": -209.8, "axis": [0.52, -1.54, -1.24], "yaw": -0.34 },
+        { "offsetMs": -179.4, "axis": [0.18, -0.68, -0.67], "yaw": -0.33 },
+        { "offsetMs": -147.7, "axis": [0.1, 0.55, 1.8], "yaw": -0.34 },
+        { "offsetMs": -95.9, "axis": [0.1, 0.24, -2.99], "yaw": -0.35 },
+        { "offsetMs": -56.2, "axis": [-0.17, -4.34, 1.86], "yaw": -0.41 },
+        { "offsetMs": -35.3, "axis": [0.6, -2.78, 0.88], "yaw": -0.36 },
+        { "offsetMs": -3.0, "axis": [1.23, 1.73, -4.15], "yaw": -0.39 },
+        { "offsetMs": 26.4, "axis": [0.66, 1.09, 2.34], "yaw": 0.04 },
+        { "offsetMs": 61.0, "axis": [1.13, -7.03, -0.21], "yaw": -0.64 },
+        { "offsetMs": 93.2, "axis": [-1.57, -0.37, -3.52], "yaw": -0.81 },
+        { "offsetMs": 154.7, "axis": [-0.68, 0.77, 2.82], "yaw": -0.58 },
+        { "offsetMs": 194.5, "axis": [0.39, -1.57, -2.94], "yaw": -0.63 },
+        { "offsetMs": 222.9, "axis": [0.71, -0.86, -3.24], "yaw": -0.63 },
+        { "offsetMs": 252.7, "axis": [0.7, -2.49, 0.89], "yaw": -0.66 },
+        { "offsetMs": 285.4, "axis": [-0.08, -0.62, -0.87], "yaw": -0.64 }
+      ]
+    },
+    {
+      "name": "led-rope-1",
+      "groundTruth": "road_impact",
+      "candidate": { "sequence": 272092, "magnitudeMps2": 6.5, "jerkMps3": 290, "axis": [0.378, -0.352, -0.856] },
+      "samples": [
+        { "offsetMs": -276.5, "axis": [0.63, -2.55, 0.15], "yaw": -0.94 },
+        { "offsetMs": -244.3, "axis": [-0.64, -2.99, -0.23], "yaw": -1.05 },
+        { "offsetMs": -215.7, "axis": [0.79, -3.46, -0.08], "yaw": -1.02 },
+        { "offsetMs": -155.5, "axis": [-0.06, -4.28, -0.26], "yaw": -0.95 },
+        { "offsetMs": -128.3, "axis": [1.13, -2.54, -1.03], "yaw": -0.78 },
+        { "offsetMs": -99.7, "axis": [-0.01, -2.16, -0.18], "yaw": -0.68 },
+        { "offsetMs": -65.3, "axis": [-0.14, -0.39, -0.88], "yaw": -0.35 },
+        { "offsetMs": -31.9, "axis": [-0.22, 1.06, 3.56], "yaw": -0.11 },
+        { "offsetMs": 2.9, "axis": [2.44, -2.27, -5.53], "yaw": 0.71 },
+        { "offsetMs": 44.1, "axis": [0.28, 1.69, -3.73], "yaw": 0.9 },
+        { "offsetMs": 95.9, "axis": [-0.47, -3.34, 2.11], "yaw": 0.73 },
+        { "offsetMs": 135.1, "axis": [1.68, 0.81, -5.36], "yaw": 0.71 },
+        { "offsetMs": 162.7, "axis": [-2.68, 3.57, 1.09], "yaw": 0.91 },
+        { "offsetMs": 188.1, "axis": [-0.88, 4.05, 2.18], "yaw": 1.37 },
+        { "offsetMs": 221.8, "axis": [0.06, 0.45, -2.83], "yaw": 2.09 },
+        { "offsetMs": 251.6, "axis": [-2.44, 5.02, 2.23], "yaw": 1.07 },
+        { "offsetMs": 285.1, "axis": [-1.0, 0.79, 0.99], "yaw": 0.69 }
+      ]
+    },
+    {
+      "name": "led-rope-2",
+      "groundTruth": "road_impact",
+      "candidate": { "sequence": 272240, "magnitudeMps2": 11.9, "jerkMps3": 847, "axis": [-0.443, 0.727, 0.524] },
+      "samples": [
+        { "offsetMs": -293.9, "axis": [0.23, -1.12, -0.04], "yaw": -0.22 },
+        { "offsetMs": -257.5, "axis": [0.11, 0.77, -1.69], "yaw": -0.12 },
+        { "offsetMs": -225.6, "axis": [0.29, -2.12, 0.83], "yaw": -0.03 },
+        { "offsetMs": -165.4, "axis": [0.83, -0.79, -0.46], "yaw": -0.09 },
+        { "offsetMs": -126.7, "axis": [-0.19, -0.74, -0.95], "yaw": -0.03 },
+        { "offsetMs": -109.7, "axis": [0.15, 0.48, 1.21], "yaw": -0.01 },
+        { "offsetMs": -77.5, "axis": [0.34, 0.06, -0.4], "yaw": 0.12 },
+        { "offsetMs": -32.0, "axis": [-2.51, 4.87, -1.17], "yaw": 0.71 },
+        { "offsetMs": 1.6, "axis": [-5.26, 8.63, 6.22], "yaw": 0.68 },
+        { "offsetMs": 23.4, "axis": [0.69, 0.51, -0.36], "yaw": 0.64 },
+        { "offsetMs": 84.4, "axis": [-2.94, 3.35, 0.35], "yaw": 1.31 },
+        { "offsetMs": 113.3, "axis": [-2.55, 11.12, 6.62], "yaw": 1.09 },
+        { "offsetMs": 142.9, "axis": [-2.95, 3.86, -1.99], "yaw": 1.92 },
+        { "offsetMs": 173.5, "axis": [-3.73, 2.29, -8.08], "yaw": 3.34 },
+        { "offsetMs": 207.7, "axis": [-0.15, 8.96, 1.63], "yaw": 3.93 },
+        { "offsetMs": 240.8, "axis": [-4.07, 5.34, 3.18], "yaw": 1.92 },
+        { "offsetMs": 275.5, "axis": [-7.31, 8.61, 6.16], "yaw": 1.32 }
+      ]
+    }
+  ]
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,41 +11,46 @@ import (
 )
 
 const (
-	impactShadowAlgorithmVersion          = "vertical-window-v1"
+	impactShadowAlgorithmVersion          = "vertical-window-v2"
 	impactShadowWindow                    = 300 * time.Millisecond
 	impactShadowCoverageTolerance         = 50 * time.Millisecond
 	impactShadowCollisionVerticalShareMax = 0.20
+	impactShadowBaselineGuard             = 100 * time.Millisecond
 	impactShadowHorizontalActiveMPS2      = 3.0
-	impactShadowHorizontalSustained       = 150 * time.Millisecond
 	impactShadowVerticalReversalMPS2      = 1.0
 	impactShadowDedupeWindow              = 5 * time.Second
 )
 
 type impactShadowLogSample struct {
-	EventID                string     `json:"eventId"`
-	AlgorithmVersion       string     `json:"algorithmVersion"`
-	CurrentImpactClass     string     `json:"currentImpactClass,omitempty"`
-	AxisProposalKind       string     `json:"axisProposalKind"`
-	ProposedKind           string     `json:"proposedKind"`
-	ProposedDamageAllowed  bool       `json:"proposedDamageAllowed"`
-	RuntimeBehaviorChanged bool       `json:"runtimeBehaviorChanged"`
-	WindowComplete         bool       `json:"windowComplete"`
-	WindowBeforeMS         int64      `json:"windowBeforeMs"`
-	WindowAfterMS          int64      `json:"windowAfterMs"`
-	MotionSamples          int        `json:"motionSamples"`
-	MagnitudeMPS2          float64    `json:"magnitudeMps2"`
-	JerkMPS3               float64    `json:"jerkMps3"`
-	Axis                   [3]float64 `json:"axis"`
-	VerticalShare          float64    `json:"verticalShare"`
-	HorizontalShare        float64    `json:"horizontalShare"`
-	PeakHorizontalMPS2     float64    `json:"peakHorizontalMps2"`
-	PeakVerticalMPS2       float64    `json:"peakVerticalMps2"`
-	RMSHorizontalMPS2      float64    `json:"rmsHorizontalMps2"`
-	RMSVerticalMPS2        float64    `json:"rmsVerticalMps2"`
-	HorizontalActiveMS     int64      `json:"horizontalActiveMs"`
-	VerticalReversals      int        `json:"verticalReversals"`
-	YawActivityRad         float64    `json:"yawActivityRad"`
-	Reasons                []string   `json:"reasons"`
+	EventID                 string     `json:"eventId"`
+	AlgorithmVersion        string     `json:"algorithmVersion"`
+	CurrentImpactClass      string     `json:"currentImpactClass,omitempty"`
+	AxisProposalKind        string     `json:"axisProposalKind"`
+	ProposedKind            string     `json:"proposedKind"`
+	ProposedDamageAllowed   bool       `json:"proposedDamageAllowed"`
+	ProposedFFBAllowed      bool       `json:"proposedFfbAllowed"`
+	RuntimeBehaviorChanged  bool       `json:"runtimeBehaviorChanged"`
+	WindowComplete          bool       `json:"windowComplete"`
+	WindowBeforeMS          int64      `json:"windowBeforeMs"`
+	WindowAfterMS           int64      `json:"windowAfterMs"`
+	MotionSamples           int        `json:"motionSamples"`
+	MagnitudeMPS2           float64    `json:"magnitudeMps2"`
+	JerkMPS3                float64    `json:"jerkMps3"`
+	Axis                    [3]float64 `json:"axis"`
+	VerticalShare           float64    `json:"verticalShare"`
+	HorizontalShare         float64    `json:"horizontalShare"`
+	PeakHorizontalMPS2      float64    `json:"peakHorizontalMps2"`
+	PeakVerticalMPS2        float64    `json:"peakVerticalMps2"`
+	RMSHorizontalMPS2       float64    `json:"rmsHorizontalMps2"`
+	RMSVerticalMPS2         float64    `json:"rmsVerticalMps2"`
+	HorizontalActiveMS      int64      `json:"horizontalActiveMs"`
+	BaselineForwardMPS2     float64    `json:"baselineForwardMps2"`
+	BaselineLateralMPS2     float64    `json:"baselineLateralMps2"`
+	PeakHorizontalDeltaMPS2 float64    `json:"peakHorizontalDeltaMps2"`
+	HorizontalDeltaActiveMS int64      `json:"horizontalDeltaActiveMs"`
+	VerticalReversals       int        `json:"verticalReversals"`
+	YawActivityRad          float64    `json:"yawActivityRad"`
+	Reasons                 []string   `json:"reasons"`
 }
 
 type impactShadowMotionSample struct {
@@ -201,77 +207,62 @@ func (tracker *impactShadowTracker) buildLogSampleLocked(pending impactShadowPen
 
 	verticalShare, horizontalShare := impactShadowAxisShares(pending.candidate.Axis)
 	currentClass := classifyRelayImpactCandidate(pending.candidate)
-	axisProposal := "ambiguous"
-	if currentClass == "strong" || currentClass == "severe" {
-		if verticalShare <= impactShadowCollisionVerticalShareMax {
-			axisProposal = "collision"
-		} else {
-			axisProposal = "road_impact"
-		}
-	}
-
 	features := calculateImpactShadowWindow(window, pending.observedAt)
-	proposedKind := "ambiguous"
-	reasons := make([]string, 0, 4)
-	switch {
-	case currentClass != "strong" && currentClass != "severe":
-		reasons = append(reasons, "below_damage_threshold")
-	case verticalShare <= impactShadowCollisionVerticalShareMax:
-		proposedKind = "collision"
-		reasons = append(reasons, "horizontal_axis_candidate")
-	case !features.complete:
-		reasons = append(reasons, "window_incomplete", "mixed_axis_candidate")
-	case features.verticalReversals > 0 && features.horizontalActive < impactShadowHorizontalSustained:
-		proposedKind = "road_impact"
-		reasons = append(reasons, "vertical_rebound", "horizontal_brief")
-	default:
-		reasons = append(reasons, "mixed_axis_candidate")
-		if features.horizontalActive >= impactShadowHorizontalSustained {
-			reasons = append(reasons, "horizontal_sustained")
-		} else {
-			reasons = append(reasons, "vertical_rebound_missing")
-		}
-	}
+	axisProposal, proposedKind, proposedDamageAllowed, proposedFFBAllowed, reasons := classifyImpactShadowWindow(
+		currentClass,
+		verticalShare,
+		horizontalShare,
+		features,
+	)
 
 	return impactShadowLogSample{
-		EventID:                pending.eventID,
-		AlgorithmVersion:       impactShadowAlgorithmVersion,
-		CurrentImpactClass:     currentClass,
-		AxisProposalKind:       axisProposal,
-		ProposedKind:           proposedKind,
-		ProposedDamageAllowed:  proposedKind == "collision",
-		RuntimeBehaviorChanged: false,
-		WindowComplete:         features.complete,
-		WindowBeforeMS:         features.before.Milliseconds(),
-		WindowAfterMS:          features.after.Milliseconds(),
-		MotionSamples:          len(window),
-		MagnitudeMPS2:          pending.candidate.Magnitude,
-		JerkMPS3:               pending.candidate.Jerk,
-		Axis:                   pending.candidate.Axis,
-		VerticalShare:          verticalShare,
-		HorizontalShare:        horizontalShare,
-		PeakHorizontalMPS2:     features.peakHorizontal,
-		PeakVerticalMPS2:       features.peakVertical,
-		RMSHorizontalMPS2:      features.rmsHorizontal,
-		RMSVerticalMPS2:        features.rmsVertical,
-		HorizontalActiveMS:     features.horizontalActive.Milliseconds(),
-		VerticalReversals:      features.verticalReversals,
-		YawActivityRad:         features.yawActivity,
-		Reasons:                reasons,
+		EventID:                 pending.eventID,
+		AlgorithmVersion:        impactShadowAlgorithmVersion,
+		CurrentImpactClass:      currentClass,
+		AxisProposalKind:        axisProposal,
+		ProposedKind:            proposedKind,
+		ProposedDamageAllowed:   proposedDamageAllowed,
+		ProposedFFBAllowed:      proposedFFBAllowed,
+		RuntimeBehaviorChanged:  false,
+		WindowComplete:          features.complete,
+		WindowBeforeMS:          features.before.Milliseconds(),
+		WindowAfterMS:           features.after.Milliseconds(),
+		MotionSamples:           len(window),
+		MagnitudeMPS2:           pending.candidate.Magnitude,
+		JerkMPS3:                pending.candidate.Jerk,
+		Axis:                    pending.candidate.Axis,
+		VerticalShare:           verticalShare,
+		HorizontalShare:         horizontalShare,
+		PeakHorizontalMPS2:      features.peakHorizontal,
+		PeakVerticalMPS2:        features.peakVertical,
+		RMSHorizontalMPS2:       features.rmsHorizontal,
+		RMSVerticalMPS2:         features.rmsVertical,
+		HorizontalActiveMS:      features.horizontalActive.Milliseconds(),
+		BaselineForwardMPS2:     features.baselineForward,
+		BaselineLateralMPS2:     features.baselineLateral,
+		PeakHorizontalDeltaMPS2: features.peakHorizontalDelta,
+		HorizontalDeltaActiveMS: features.horizontalDeltaActive.Milliseconds(),
+		VerticalReversals:       features.verticalReversals,
+		YawActivityRad:          features.yawActivity,
+		Reasons:                 reasons,
 	}
 }
 
 type impactShadowWindowFeatures struct {
-	complete          bool
-	before            time.Duration
-	after             time.Duration
-	peakHorizontal    float64
-	peakVertical      float64
-	rmsHorizontal     float64
-	rmsVertical       float64
-	horizontalActive  time.Duration
-	verticalReversals int
-	yawActivity       float64
+	complete              bool
+	before                time.Duration
+	after                 time.Duration
+	peakHorizontal        float64
+	peakVertical          float64
+	rmsHorizontal         float64
+	rmsVertical           float64
+	horizontalActive      time.Duration
+	baselineForward       float64
+	baselineLateral       float64
+	peakHorizontalDelta   float64
+	horizontalDeltaActive time.Duration
+	verticalReversals     int
+	yawActivity           float64
 }
 
 func calculateImpactShadowWindow(samples []impactShadowMotionSample, eventAt time.Time) impactShadowWindowFeatures {
@@ -290,14 +281,20 @@ func calculateImpactShadowWindow(samples []impactShadowMotionSample, eventAt tim
 	}
 	minimumCoverage := impactShadowWindow - impactShadowCoverageTolerance
 	features.complete = features.before >= minimumCoverage && features.after >= minimumCoverage
+	features.baselineForward, features.baselineLateral = impactShadowHorizontalBaseline(samples, eventAt)
 
 	var horizontalSquares float64
 	var verticalSquares float64
 	previousVerticalSign := 0
 	for index, sample := range samples {
 		horizontal := math.Hypot(sample.forward, sample.lateral)
+		horizontalDelta := math.Hypot(
+			sample.forward-features.baselineForward,
+			sample.lateral-features.baselineLateral,
+		)
 		vertical := math.Abs(sample.vertical)
 		features.peakHorizontal = math.Max(features.peakHorizontal, horizontal)
+		features.peakHorizontalDelta = math.Max(features.peakHorizontalDelta, horizontalDelta)
 		features.peakVertical = math.Max(features.peakVertical, vertical)
 		horizontalSquares += horizontal * horizontal
 		verticalSquares += sample.vertical * sample.vertical
@@ -322,11 +319,83 @@ func calculateImpactShadowWindow(samples []impactShadowMotionSample, eventAt tim
 		if (horizontal+previousHorizontal)/2 >= impactShadowHorizontalActiveMPS2 {
 			features.horizontalActive += interval
 		}
+		previousHorizontalDelta := math.Hypot(
+			previous.forward-features.baselineForward,
+			previous.lateral-features.baselineLateral,
+		)
+		if (horizontalDelta+previousHorizontalDelta)/2 >= impactShadowHorizontalActiveMPS2 {
+			features.horizontalDeltaActive += interval
+		}
 		features.yawActivity += math.Abs((sample.yaw+previous.yaw)/2) * interval.Seconds()
 	}
 	features.rmsHorizontal = math.Sqrt(horizontalSquares / float64(len(samples)))
 	features.rmsVertical = math.Sqrt(verticalSquares / float64(len(samples)))
 	return features
+}
+
+func classifyImpactShadowWindow(
+	currentClass string,
+	verticalShare float64,
+	horizontalShare float64,
+	features impactShadowWindowFeatures,
+) (string, string, bool, bool, []string) {
+	axisProposal := "ambiguous"
+	if verticalShare > impactShadowCollisionVerticalShareMax {
+		axisProposal = "road_impact"
+	} else if horizontalShare > 0 {
+		axisProposal = "collision"
+	}
+
+	proposedKind := "ambiguous"
+	reasons := make([]string, 0, 5)
+	switch {
+	case verticalShare > impactShadowCollisionVerticalShareMax && !features.complete:
+		reasons = append(reasons, "window_incomplete", "vertical_axis_candidate")
+	case verticalShare > impactShadowCollisionVerticalShareMax && features.verticalReversals > 0:
+		proposedKind = "road_impact"
+		reasons = append(reasons, "vertical_axis_candidate", "vertical_rebound")
+		if features.horizontalActive > 0 {
+			reasons = append(reasons, "horizontal_load_context_only")
+		}
+	case verticalShare > impactShadowCollisionVerticalShareMax:
+		reasons = append(reasons, "vertical_axis_candidate", "vertical_rebound_missing")
+	case currentClass == "strong" || currentClass == "severe":
+		proposedKind = "collision"
+		reasons = append(reasons, "horizontal_axis_candidate", "damage_threshold_met")
+	default:
+		reasons = append(reasons, "horizontal_axis_candidate", "below_damage_threshold")
+	}
+
+	damageAllowed := proposedKind == "collision" && (currentClass == "strong" || currentClass == "severe")
+	ffbAllowed := proposedKind == "road_impact" || proposedKind == "collision" || currentClass != ""
+	return axisProposal, proposedKind, damageAllowed, ffbAllowed, reasons
+}
+
+func impactShadowHorizontalBaseline(samples []impactShadowMotionSample, eventAt time.Time) (float64, float64) {
+	cutoff := eventAt.Add(-impactShadowBaselineGuard)
+	forward := make([]float64, 0, len(samples))
+	lateral := make([]float64, 0, len(samples))
+	for _, sample := range samples {
+		if sample.observedAt.After(cutoff) {
+			continue
+		}
+		forward = append(forward, sample.forward)
+		lateral = append(lateral, sample.lateral)
+	}
+	return impactShadowMedian(forward), impactShadowMedian(lateral)
+}
+
+func impactShadowMedian(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	middle := len(sorted) / 2
+	if len(sorted)%2 == 0 {
+		return (sorted[middle-1] + sorted[middle]) / 2
+	}
+	return sorted[middle]
 }
 
 func impactShadowAxisShares(axis [3]float64) (float64, float64) {

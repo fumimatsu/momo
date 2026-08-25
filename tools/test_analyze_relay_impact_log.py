@@ -51,20 +51,22 @@ class RelayImpactAnalysisTests(unittest.TestCase):
                 }),
                 record(421_000, "", "impact_shadow", impactShadow={
                     "eventId": "CAR-1:boot-a:3",
-                    "algorithmVersion": "vertical-window-v1",
+                    "algorithmVersion": "vertical-window-v2",
                     "axisProposalKind": "road_impact",
                     "proposedKind": "road_impact",
                     "proposedDamageAllowed": False,
+                    "proposedFfbAllowed": True,
                     "windowComplete": True,
                     "motionSamples": 19,
-                    "reasons": ["vertical_rebound", "horizontal_brief"],
+                    "reasons": ["vertical_axis_candidate", "vertical_rebound", "horizontal_load_context_only"],
                 }),
                 record(521_000, "", "impact_shadow", impactShadow={
                     "eventId": "CAR-1:boot-a:5",
-                    "algorithmVersion": "vertical-window-v1",
+                    "algorithmVersion": "vertical-window-v2",
                     "axisProposalKind": "collision",
                     "proposedKind": "collision",
                     "proposedDamageAllowed": True,
+                    "proposedFfbAllowed": True,
                     "windowComplete": True,
                     "motionSamples": 18,
                     "reasons": ["horizontal_axis_candidate"],
@@ -82,17 +84,22 @@ class RelayImpactAnalysisTests(unittest.TestCase):
             self.assertEqual(vertical.shadow_action, "suppress_vertical_surface_candidate")
             self.assertEqual(vertical.shadow_damage, 0)
             self.assertTrue(vertical.confirmed_damage_applied)
-            self.assertEqual(vertical.runtime_shadow_algorithm, "vertical-window-v1")
+            self.assertEqual(vertical.runtime_shadow_algorithm, "vertical-window-v2")
             self.assertEqual(vertical.runtime_shadow_axis_kind, "road_impact")
             self.assertEqual(vertical.runtime_shadow_kind, "road_impact")
             self.assertFalse(vertical.runtime_shadow_damage_allowed)
+            self.assertTrue(vertical.runtime_shadow_ffb_allowed)
             self.assertTrue(vertical.runtime_shadow_window_complete)
             self.assertEqual(vertical.runtime_shadow_samples, 19)
-            self.assertEqual(vertical.runtime_shadow_reasons, "vertical_rebound,horizontal_brief")
+            self.assertEqual(
+                vertical.runtime_shadow_reasons,
+                "vertical_axis_candidate,vertical_rebound,horizontal_load_context_only",
+            )
             self.assertEqual(horizontal.current_class, "strong")
             self.assertEqual(horizontal.shadow_action, "unchanged")
             self.assertEqual(horizontal.runtime_shadow_kind, "collision")
             self.assertTrue(horizontal.runtime_shadow_damage_allowed)
+            self.assertTrue(horizontal.runtime_shadow_ffb_allowed)
             self.assertEqual(result["counters"]["malformed_lines"], 1)
             self.assertEqual(result["counters"]["queue_drops"], 2)
 
@@ -144,6 +151,48 @@ class RelayImpactAnalysisTests(unittest.TestCase):
             self.assertEqual(result["samples"][0].car_id, "CP-3")
             self.assertEqual(result["samples"][0].session_id, "run-a")
             self.assertEqual(result["candidates"][0].event_id, "CP-3:boot-b:11")
+
+    def test_window_v2_classifies_recorded_road_cases(self):
+        fixture_path = Path(__file__).parent / "momo-relay" / "testdata" / "impact-shadow-road-cases.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        self.assertEqual(fixture["schema"], "momo-impact-shadow-road-cases/v1")
+        self.assertEqual(len(fixture["cases"]), 3)
+
+        for case in fixture["cases"]:
+            samples = [
+                MODULE.MotionSample(
+                    session_id="fixture",
+                    time_ms=sample["offsetMs"],
+                    received_at="",
+                    source_id="11.5",
+                    car_id="",
+                    boot="fixture-boot",
+                    sequence=index,
+                    device_time_us=max(0, int((sample["offsetMs"] + 300) * 1000)),
+                    forward_mps2=sample["axis"][0],
+                    lateral_mps2=sample["axis"][1],
+                    vertical_mps2=sample["axis"][2],
+                    derived_jerk_mps3=None,
+                    yaw_rate_rad_s=sample["yaw"],
+                )
+                for index, sample in enumerate(case["samples"])
+            ]
+            candidate = case["candidate"]
+            vertical_share, horizontal_share = MODULE.axis_shares(candidate["axis"])
+            features = MODULE.calculate_window_shadow_features(samples, 0.0)
+            _, kind, damage_allowed, ffb_allowed, reasons = MODULE.classify_window_shadow(
+                MODULE.classify_current(candidate["magnitudeMps2"], candidate["jerkMps3"]),
+                vertical_share,
+                horizontal_share,
+                features,
+            )
+            with self.subTest(case=case["name"]):
+                self.assertEqual(kind, case["groundTruth"])
+                self.assertFalse(damage_allowed)
+                self.assertTrue(ffb_allowed)
+                self.assertTrue(features.complete)
+                self.assertGreater(features.vertical_reversals, 0)
+                self.assertIn("vertical_rebound", reasons)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 )
@@ -18,7 +20,7 @@ func TestImpactShadowClassifiesHorizontalDamageCandidate(t *testing.T) {
 		t.Fatalf("result count = %d, want 1", len(results))
 	}
 	result := results[0]
-	if result.ProposedKind != "collision" || result.AxisProposalKind != "collision" || !result.ProposedDamageAllowed {
+	if result.ProposedKind != "collision" || result.AxisProposalKind != "collision" || !result.ProposedDamageAllowed || !result.ProposedFFBAllowed {
 		t.Fatalf("collision result = %#v", result)
 	}
 	if !result.WindowComplete || result.WindowBeforeMS != 300 || result.WindowAfterMS != 300 {
@@ -39,15 +41,15 @@ func TestImpactShadowClassifiesVerticalReboundAsRoadImpact(t *testing.T) {
 		t.Fatalf("result count = %d, want 1", len(results))
 	}
 	result := results[0]
-	if result.AxisProposalKind != "road_impact" || result.ProposedKind != "road_impact" || result.ProposedDamageAllowed {
+	if result.AxisProposalKind != "road_impact" || result.ProposedKind != "road_impact" || result.ProposedDamageAllowed || !result.ProposedFFBAllowed {
 		t.Fatalf("road impact result = %#v", result)
 	}
-	if result.VerticalReversals < 1 || result.HorizontalActiveMS >= impactShadowHorizontalSustained.Milliseconds() {
+	if result.VerticalReversals < 1 {
 		t.Fatalf("road impact features = %#v", result)
 	}
 }
 
-func TestImpactShadowKeepsMixedSustainedInputAmbiguous(t *testing.T) {
+func TestImpactShadowClassifiesRoadImpactDespiteCorneringLoad(t *testing.T) {
 	tracker := newImpactShadowTracker()
 	base := time.Date(2026, 8, 25, 3, 2, 0, 0, time.UTC)
 	feedImpactShadowMotion(t, tracker, base, -300, 0, 50, [3]float64{4, 1, 3})
@@ -57,8 +59,74 @@ func TestImpactShadowKeepsMixedSustainedInputAmbiguous(t *testing.T) {
 		t.Fatalf("result count = %d, want 1", len(results))
 	}
 	result := results[0]
-	if result.AxisProposalKind != "road_impact" || result.ProposedKind != "ambiguous" || result.HorizontalActiveMS < impactShadowHorizontalSustained.Milliseconds() {
-		t.Fatalf("mixed result = %#v", result)
+	if result.AxisProposalKind != "road_impact" || result.ProposedKind != "road_impact" || result.ProposedDamageAllowed || !result.ProposedFFBAllowed || result.HorizontalActiveMS == 0 {
+		t.Fatalf("cornering road impact result = %#v", result)
+	}
+}
+
+func TestImpactShadowRoadCasesFixture(t *testing.T) {
+	type fixtureSample struct {
+		OffsetMS float64    `json:"offsetMs"`
+		Axis     [3]float64 `json:"axis"`
+		Yaw      float64    `json:"yaw"`
+	}
+	type fixtureCase struct {
+		Name        string `json:"name"`
+		GroundTruth string `json:"groundTruth"`
+		Candidate   struct {
+			Sequence      uint64     `json:"sequence"`
+			MagnitudeMPS2 float64    `json:"magnitudeMps2"`
+			JerkMPS3      float64    `json:"jerkMps3"`
+			Axis          [3]float64 `json:"axis"`
+		} `json:"candidate"`
+		Samples []fixtureSample `json:"samples"`
+	}
+	var fixture struct {
+		Schema string        `json:"schema"`
+		Cases  []fixtureCase `json:"cases"`
+	}
+	raw, err := os.ReadFile("testdata/impact-shadow-road-cases.json")
+	if err != nil {
+		t.Fatalf("read road impact fixture: %v", err)
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("parse road impact fixture: %v", err)
+	}
+	if fixture.Schema != "momo-impact-shadow-road-cases/v1" || len(fixture.Cases) != 3 {
+		t.Fatalf("fixture header = schema %q cases %d", fixture.Schema, len(fixture.Cases))
+	}
+
+	eventAt := time.Date(2026, 8, 25, 4, 0, 0, 0, time.UTC)
+	for _, testCase := range fixture.Cases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			window := make([]impactShadowMotionSample, 0, len(testCase.Samples))
+			for _, sample := range testCase.Samples {
+				window = append(window, impactShadowMotionSample{
+					observedAt: eventAt.Add(time.Duration(sample.OffsetMS * float64(time.Millisecond))),
+					forward:    sample.Axis[0],
+					lateral:    sample.Axis[1],
+					vertical:   sample.Axis[2],
+					yaw:        sample.Yaw,
+				})
+			}
+			candidate := relayImpactCandidate{
+				Sequence:  testCase.Candidate.Sequence,
+				Magnitude: testCase.Candidate.MagnitudeMPS2,
+				Jerk:      testCase.Candidate.JerkMPS3,
+				Axis:      testCase.Candidate.Axis,
+			}
+			verticalShare, horizontalShare := impactShadowAxisShares(candidate.Axis)
+			features := calculateImpactShadowWindow(window, eventAt)
+			_, kind, damageAllowed, ffbAllowed, reasons := classifyImpactShadowWindow(
+				classifyRelayImpactCandidate(candidate),
+				verticalShare,
+				horizontalShare,
+				features,
+			)
+			if kind != testCase.GroundTruth || damageAllowed || !ffbAllowed || !features.complete || features.verticalReversals == 0 {
+				t.Fatalf("kind=%q damage=%t ffb=%t complete=%t reversals=%d reasons=%v", kind, damageAllowed, ffbAllowed, features.complete, features.verticalReversals, reasons)
+			}
+		})
 	}
 }
 

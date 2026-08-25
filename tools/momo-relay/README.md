@@ -162,17 +162,32 @@ Drive ON中のRelayは、各`impact_candidate`について前後300 msの`imu0` 
 
 `impactShadow`には次を記録する。
 
-- `algorithmVersion: vertical-window-v1`
+- `algorithmVersion: vertical-window-v2`
 - 現行magnitude/jerk判定の`currentImpactClass`
-- 上下比率0.20以下だけを衝突候補とする比較用の`axisProposalKind`
+- 上下比率0.20以下を衝突候補、それより大きい入力を路面候補とする比較用の`axisProposalKind`
 - 300 ms窓を含めた保守的な`proposedKind`: `road_impact | collision | ambiguous`
-- 窓の前後coverage、sample数、水平／上下peakとRMS、水平継続時間、上下反転回数、yaw積算量
-- `proposedDamageAllowed`と判定理由。`runtimeBehaviorChanged`は常に`false`
+- 窓の前後coverage、sample数、水平／上下peakとRMS、絶対水平継続時間、上下反転回数、yaw積算量
+- イベント100 ms前までの前後／左右中央値を旋回baselineとした、水平変化peakと継続時間
+- `proposedDamageAllowed`、`proposedFfbAllowed`と判定理由。`runtimeBehaviorChanged`は常に`false`
 
-`proposedKind`は、現行でHP対象となるstrong/severeのうち、上下比率0.20以下を`collision`、完全な窓で
-上下反転があり水平入力が150 ms未満の候補を`road_impact`、それ以外を`ambiguous`とする。
-これは本番閾値ではない。`Analyze-RelayImpactLog.py`はraw候補、Relay確定イベント、runtime Shadowを
-`eventId`で結合し、`impact-events.csv`とHTMLへ並記する。
+`proposedKind`は、完全な窓、上下比率0.20超、上下反転ありを`road_impact`とする。旋回中の絶対横Gは
+road判定を拒否せず、baselineとの差を診断値として残す。現行でHP対象となるstrong/severeのうち、
+上下比率0.20以下だけを高確信度の`collision`とし、それ以外を`ambiguous`とする。
+`road_impact`はダメージなし／FFB候補、明確な`collision`だけをダメージ候補とするゲーム方針のShadowであり、
+`ambiguous`でも現行classがあるイベントのFFB候補は維持する。本番閾値ではない。
+`Analyze-RelayImpactLog.py`は履歴ログにも同じ`vertical-window-v2`を計算し、raw候補、
+Relay確定イベント、runtime Shadowを`eventId`で結合して`impact-events.csv`とHTMLへ並記する。
+
+別環境に残るRelay NDJSONまたはViewer CPU Shadow captureも同じコマンドで解析できる。
+
+```powershell
+python .\tools\Analyze-RelayImpactLog.py `
+  "C:\path\to\telemetry-*.ndjson" `
+  --output-dir "C:\fpv-impact-analysis\collision-review"
+```
+
+本番HPへ適用する前に、壁への正面／側面／スライド接触と車体同士の接触を正例として映像ラベルし、
+`road_impact`への誤分類がないことを確認する。正例が揃うまでは`runtimeBehaviorChanged: false`を維持する。
 
 ## Operations Dashboard
 
