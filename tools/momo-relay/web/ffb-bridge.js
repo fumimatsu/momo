@@ -161,6 +161,23 @@
       return this.send({ ...state, type: 'setVehicleDynamics', schemaVersion: 1 });
     }
 
+    sendDashboardTelemetry(state) {
+      if (!this.connected || !this.acquired || !this.supportsFeature('dashboardTelemetryV1')) return false;
+      return this.send({ ...state, type: 'setDashboardTelemetry', schemaVersion: 1 });
+    }
+
+    clearDashboard() {
+      return this.sendDashboardTelemetry({
+        enabled: false,
+        speedFresh: false,
+        speedKph: 0,
+        rpmFresh: false,
+        rpmRatio: 0,
+        sourceAgeMs: 0,
+        sourceMaxAgeMs: 500,
+      });
+    }
+
     triggerVehicleImpact(event) {
       if (!this.connected || !this.acquired || !this.supportsFeature('vehicleImpactV1')) return false;
       return this.send({ ...event, type: 'vehicleImpact', schemaVersion: 1 });

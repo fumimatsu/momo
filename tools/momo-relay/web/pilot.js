@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260825-mini-sector-route-v1';
+  const PILOT_BUILD_ID = '20260825-cammus-c5-dashboard-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -313,6 +313,16 @@
     1,
     getNumberParam('ffbSpeedFullKph', VEHICLE_SPEED_DEFAULT_PROFILE?.ffbSpeedFullKph || 30),
   );
+  const VEHICLE_DASHBOARD_RPM_FULL = Math.max(
+    0,
+    getNumberParamAllowZero('dashboardRpmFull', VEHICLE_RPM_TO_KPH > 0
+      ? VEHICLE_FFB_SPEED_FULL_KPH / VEHICLE_RPM_TO_KPH
+      : (VEHICLE_SPEED_PROFILE_READY
+        ? (VEHICLE_FFB_SPEED_FULL_KPH * 1000 / 60)
+          / (VEHICLE_TIRE_ROLLOUT_MM / 1000)
+          * VEHICLE_OVERALL_GEAR_RATIO
+        : 0)),
+  );
   const VEHICLE_SPEED_CONFIDENCE = Math.max(
     0,
     Math.min(1, getNumberParam('speedConfidence', VEHICLE_SPEED_DEFAULT_PROFILE?.speedConfidence || 0.5)),
@@ -504,6 +514,8 @@
   let ffbReconnectTimer = 0;
   let ffbShuttingDown = false;
   let ffbNativeProtocolWarningShown = false;
+  let ffbDashboardActive = false;
+  let ffbDashboardLastSentAt = Number.NEGATIVE_INFINITY;
   let lastMotionEventHudId = '';
   let gameplayNotificationSequence = 0;
   let cursorHideTimer = 0;
@@ -4346,7 +4358,20 @@
   function sendFfbState() {
     if (!ffbClient) return;
     const snapshot = ffbClient.snapshot();
-    if (!ffbOutputEnabled || !rcDriveEnabled || !snapshot.acquired) {
+    if (!snapshot.acquired) {
+      if (ffbForceActive) {
+        ffbClient.stopAll();
+        ffbForceActive = false;
+      }
+      ffbDashboardActive = false;
+      return;
+    }
+    const nowMs = performance.now();
+    const dashboardSupported = snapshot.deviceProfile?.id === 'cammus-c5'
+      && ffbClient.supportsFeature?.('dashboardTelemetryV1');
+    const dashboardSpeed = dashboardSupported ? getFfbVehicleSpeedState(nowMs) : null;
+    sendCammusC5DashboardState(dashboardSupported, dashboardSpeed, nowMs);
+    if (!ffbOutputEnabled || !rcDriveEnabled) {
       if (ffbForceActive) {
         ffbClient.stopAll();
         ffbForceActive = false;
@@ -4368,7 +4393,7 @@
     ffbNativeProtocolWarningShown = false;
     const motion = getMotionSnapshot();
     const motionFresh = Boolean(motion && !motion.stale);
-    const speed = getFfbVehicleSpeedState();
+    const speed = dashboardSpeed || getFfbVehicleSpeedState(nowMs);
     const control = getFfbControlIntent();
     const throttle = Math.max(-1, Math.min(1, (Number(throttleInput?.value || 1500) - 1500) / 500));
     const sent = ffbClient.sendVehicleDynamics({
@@ -4403,9 +4428,34 @@
     ffbForceActive = sent;
   }
 
+  function sendCammusC5DashboardState(supported, speed, nowMs) {
+    if (!supported) {
+      ffbDashboardActive = false;
+      return;
+    }
+    if (!rcDriveEnabled) {
+      if (ffbDashboardActive) ffbClient.clearDashboard();
+      ffbDashboardActive = false;
+      ffbDashboardLastSentAt = nowMs;
+      return;
+    }
+    if (nowMs - ffbDashboardLastSentAt < (1000 / 30)) return;
+    ffbDashboardLastSentAt = nowMs;
+    ffbDashboardActive = ffbClient.sendDashboardTelemetry({
+      enabled: true,
+      speedFresh: speed?.fresh === true,
+      speedKph: Number(speed?.kph) || 0,
+      rpmFresh: speed?.rpmFresh === true,
+      rpmRatio: Number(speed?.rpmRatio) || 0,
+      sourceAgeMs: Number(speed?.ageMs),
+      sourceMaxAgeMs: Number(speed?.maxAgeMs) || 500,
+    });
+  }
+
   function stopFfbOutput() {
     ffbOutputEnabled = false;
     ffbForceActive = false;
+    ffbDashboardActive = false;
     ffbClient?.stopAll();
   }
 
@@ -4601,6 +4651,7 @@
   function getFfbVehicleSpeedState(nowMs = performance.now()) {
     const snapshot = getCurrentEscSnapshot(nowMs);
     const rpm = Number(snapshot?.state?.esc?.rpm);
+    const mechanicalRpm = normalizeMotorMechanicalRpm(rpm);
     const kph = estimateVehicleSpeedKph(rpm);
     const transportAgeMs = Number.isFinite(snapshot?.lastStateAt)
       ? Math.max(0, nowMs - snapshot.lastStateAt)
@@ -4619,11 +4670,14 @@
       && ageMs <= maxAgeMs
       && Number.isFinite(kph),
     );
+    const rpmFresh = Boolean(fresh && Number.isFinite(mechanicalRpm) && VEHICLE_DASHBOARD_RPM_FULL > 0);
     return {
       fresh,
       kph: fresh ? Math.max(0, kph) : 0,
       confidence: fresh ? VEHICLE_SPEED_CONFIDENCE : 0,
       source: fresh ? 'esc-rpm' : 'unavailable',
+      rpmFresh,
+      rpmRatio: rpmFresh ? Math.max(0, Math.min(1, mechanicalRpm / VEHICLE_DASHBOARD_RPM_FULL)) : 0,
       bootId: typeof snapshot?.boot === 'string' ? snapshot.boot : '',
       sequence: Number.isInteger(snapshot?.seq) ? snapshot.seq : -1,
       sampleTimeUs: Number.isSafeInteger(snapshot?.t_us) ? snapshot.t_us : -1,
