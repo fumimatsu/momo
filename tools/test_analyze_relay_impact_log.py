@@ -49,6 +49,26 @@ class RelayImpactAnalysisTests(unittest.TestCase):
                     "impactClass": "severe", "damageApplied": True, "damage": 20,
                     "hpBefore": 100, "hpAfter": 80,
                 }),
+                record(421_000, "", "impact_shadow", impactShadow={
+                    "eventId": "CAR-1:boot-a:3",
+                    "algorithmVersion": "vertical-window-v1",
+                    "axisProposalKind": "road_impact",
+                    "proposedKind": "road_impact",
+                    "proposedDamageAllowed": False,
+                    "windowComplete": True,
+                    "motionSamples": 19,
+                    "reasons": ["vertical_rebound", "horizontal_brief"],
+                }),
+                record(521_000, "", "impact_shadow", impactShadow={
+                    "eventId": "CAR-1:boot-a:5",
+                    "algorithmVersion": "vertical-window-v1",
+                    "axisProposalKind": "collision",
+                    "proposedKind": "collision",
+                    "proposedDamageAllowed": True,
+                    "windowComplete": True,
+                    "motionSamples": 18,
+                    "reasons": ["horizontal_axis_candidate"],
+                }),
                 {"type": "relay_session_end", "stats": {"queueDrops": 2, "writeErrors": 0}},
             ]
             log.write_text("\n".join(json.dumps(item) for item in records) + "\n{broken\n", encoding="utf-8")
@@ -62,8 +82,17 @@ class RelayImpactAnalysisTests(unittest.TestCase):
             self.assertEqual(vertical.shadow_action, "suppress_vertical_surface_candidate")
             self.assertEqual(vertical.shadow_damage, 0)
             self.assertTrue(vertical.confirmed_damage_applied)
+            self.assertEqual(vertical.runtime_shadow_algorithm, "vertical-window-v1")
+            self.assertEqual(vertical.runtime_shadow_axis_kind, "road_impact")
+            self.assertEqual(vertical.runtime_shadow_kind, "road_impact")
+            self.assertFalse(vertical.runtime_shadow_damage_allowed)
+            self.assertTrue(vertical.runtime_shadow_window_complete)
+            self.assertEqual(vertical.runtime_shadow_samples, 19)
+            self.assertEqual(vertical.runtime_shadow_reasons, "vertical_rebound,horizontal_brief")
             self.assertEqual(horizontal.current_class, "strong")
             self.assertEqual(horizontal.shadow_action, "unchanged")
+            self.assertEqual(horizontal.runtime_shadow_kind, "collision")
+            self.assertTrue(horizontal.runtime_shadow_damage_allowed)
             self.assertEqual(result["counters"]["malformed_lines"], 1)
             self.assertEqual(result["counters"]["queue_drops"], 2)
 

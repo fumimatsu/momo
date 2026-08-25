@@ -309,6 +309,7 @@ type relay struct {
 	raceCarID            string
 	allowObserverCommand bool
 	recorder             *telemetryRecorder
+	impactShadow         *impactShadowTracker
 
 	videoTrack *webrtc.TrackLocalStaticRTP
 	api        *webrtc.API
@@ -720,6 +721,7 @@ func newRelay(name string, upstreamURL string, raceCarID string, allowObserverCo
 		pilotCommandTimeout:  defaultPilotCommandTimeout,
 		vehicleHealth:        newVehicleHealthWithFuelDuration(time.Now(), fuelDriveDuration),
 		vehicleEvents:        newVehicleEventStore(),
+		impactShadow:         newImpactShadowTracker(),
 		eventDispatch:        make(chan string, vehicleEventQueueLimit),
 	}
 	relay.pitPresence = newPitPresenceState(raceCarID, vehicleHealthMaximum)
@@ -1974,6 +1976,7 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 		}
 		if r.recorder != nil && r.driveLoggingEnabled.Load() {
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
+			r.recordImpactShadow(raw, now)
 		}
 		message = normalized
 		if r.upstreamGeneration.Load() == generation && telemetryHasCapability(raw, fuelCommandCapability) {
@@ -2607,6 +2610,9 @@ func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
 			r.driveStateMu.Unlock()
 			return
 		}
+		if r.impactShadow != nil {
+			r.impactShadow.Reset()
+		}
 		r.driveLoggingEnabled.Store(true)
 	} else {
 		ownerID := r.driveOwnerID.Load()
@@ -2636,6 +2642,9 @@ func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
 	r.driveChangedAt = now.UTC()
 	r.driveReason = reason
 	r.driveStateMu.Unlock()
+	if !enabled {
+		r.flushImpactShadow(now)
+	}
 	r.boostRegen.reset()
 	if r.recorder != nil {
 		r.recorder.RecordDriveState(r.name, r.raceCarID, pilotID, enabled, reason)

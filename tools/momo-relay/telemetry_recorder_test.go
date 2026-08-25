@@ -175,6 +175,50 @@ func TestTelemetryRecorderWritesBoostRegenProbe(t *testing.T) {
 	}
 }
 
+func TestTelemetryRecorderWritesImpactShadow(t *testing.T) {
+	recorder, err := newTelemetryRecorderWithQueue(t.TempDir(), 8)
+	if err != nil {
+		t.Fatalf("newTelemetryRecorderWithQueue() error = %v", err)
+	}
+	recorder.RecordRaceState(`{"type":"race_state","raceRunId":"rr_shadow","phase":"green"}`, telemetryRaceContext{
+		RaceRunID: "rr_shadow",
+		Phase:     "green",
+		Present:   true,
+	})
+	recorder.RecordImpactShadow("11.5", "CP-3", impactShadowLogSample{
+		EventID:                "CP-3:boot-shadow:7",
+		AlgorithmVersion:       impactShadowAlgorithmVersion,
+		CurrentImpactClass:     "strong",
+		AxisProposalKind:       "road_impact",
+		ProposedKind:           "ambiguous",
+		RuntimeBehaviorChanged: false,
+		WindowComplete:         true,
+		WindowBeforeMS:         300,
+		WindowAfterMS:          300,
+		MotionSamples:          19,
+		Reasons:                []string{"mixed_axis_candidate"},
+	})
+	if err := recorder.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	records := readTelemetryLogRecords(t, recorder.Path())
+	if len(records) != 4 {
+		t.Fatalf("record count = %d, want 4", len(records))
+	}
+	record := records[2]
+	if record.Type != "impact_shadow" || record.SourceID != "11.5" || record.CarID != "CP-3" || record.RaceRunID != "rr_shadow" || record.ImpactShadow == nil {
+		t.Fatalf("impact shadow record = %#v", record)
+	}
+	if record.ImpactShadow.EventID != "CP-3:boot-shadow:7" || record.ImpactShadow.AlgorithmVersion != impactShadowAlgorithmVersion || record.ImpactShadow.ProposedKind != "ambiguous" || record.ImpactShadow.RuntimeBehaviorChanged {
+		t.Fatalf("impact shadow payload = %#v", record.ImpactShadow)
+	}
+	footer := records[3]
+	if footer.Stats == nil || footer.Stats.ImpactShadowRecords != 1 {
+		t.Fatalf("footer stats = %#v", footer.Stats)
+	}
+}
+
 func TestParseAndNormalizeDriveCommand(t *testing.T) {
 	steering, power, ok := parseDriveCommand("S:1250,T:1800\n")
 	if !ok || steering != 1250 || power != 1800 {

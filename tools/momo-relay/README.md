@@ -156,6 +156,24 @@ python .\tools\Analyze-RelayImpactLog.py $log `
 グラフのjerkはRelayへ届いた30 Hz state間から再計算した参考値であり、M5が高周期サンプルからeventへ記録した`jerkMps3`とは
 時間分解能が異なる。本番classとの比較には`impact-events.csv`のevent値を使用する。
 
+Drive ON中のRelayは、各`impact_candidate`について前後300 msの`imu0` stateを小さなsource別バッファで集計し、
+約300 ms後に`impact_shadow`レコードを同じNDJSONへ追加する。Drive OFF時は未完了候補も
+`windowComplete: false`としてflushする。この処理はログ専用で、HP、`vehicle_event`、Viewer通知、FFBを変更しない。
+
+`impactShadow`には次を記録する。
+
+- `algorithmVersion: vertical-window-v1`
+- 現行magnitude/jerk判定の`currentImpactClass`
+- 上下比率0.20以下だけを衝突候補とする比較用の`axisProposalKind`
+- 300 ms窓を含めた保守的な`proposedKind`: `road_impact | collision | ambiguous`
+- 窓の前後coverage、sample数、水平／上下peakとRMS、水平継続時間、上下反転回数、yaw積算量
+- `proposedDamageAllowed`と判定理由。`runtimeBehaviorChanged`は常に`false`
+
+`proposedKind`は、現行でHP対象となるstrong/severeのうち、上下比率0.20以下を`collision`、完全な窓で
+上下反転があり水平入力が150 ms未満の候補を`road_impact`、それ以外を`ambiguous`とする。
+これは本番閾値ではない。`Analyze-RelayImpactLog.py`はraw候補、Relay確定イベント、runtime Shadowを
+`eventId`で結合し、`impact-events.csv`とHTMLへ並記する。
+
 ## Operations Dashboard
 
 Relay を再ビルドして起動すると、運営用の読み取り専用画面を配信する。

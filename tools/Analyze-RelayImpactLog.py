@@ -77,6 +77,13 @@ class ImpactCandidate:
     confirmed_suppression_reason: str = ""
     confirmed_hp_before: float | None = None
     confirmed_hp_after: float | None = None
+    runtime_shadow_algorithm: str = ""
+    runtime_shadow_axis_kind: str = ""
+    runtime_shadow_kind: str = ""
+    runtime_shadow_damage_allowed: bool | None = None
+    runtime_shadow_window_complete: bool | None = None
+    runtime_shadow_samples: int | None = None
+    runtime_shadow_reasons: str = ""
 
 
 def finite_number(value: Any) -> float | None:
@@ -184,6 +191,7 @@ def analyze_logs(
     samples: list[MotionSample] = []
     candidates: list[ImpactCandidate] = []
     confirmed_by_id: dict[str, dict[str, Any]] = {}
+    runtime_shadow_by_id: dict[str, dict[str, Any]] = {}
     counters: Counter[str] = Counter()
     sequence_state: dict[tuple[str, str, str, str], int] = {}
     stream_integrity: dict[tuple[str, str, str, str], Counter[str]] = defaultdict(Counter)
@@ -233,6 +241,11 @@ def analyze_logs(
                     event = record.get("vehicleEvent")
                     if isinstance(event, dict) and isinstance(event.get("eventId"), str):
                         confirmed_by_id[event["eventId"]] = event
+                    continue
+                if record_type == "impact_shadow":
+                    shadow = record.get("impactShadow")
+                    if isinstance(shadow, dict) and isinstance(shadow.get("eventId"), str):
+                        runtime_shadow_by_id[shadow["eventId"]] = shadow
                     continue
                 if record_type != "telemetry":
                     continue
@@ -366,15 +379,29 @@ def analyze_logs(
 
     for candidate in candidates:
         confirmed = confirmed_by_id.get(candidate.event_id)
-        if not confirmed:
+        if confirmed:
+            candidate.confirmed_class = str(confirmed.get("impactClass") or "")
+            applied = confirmed.get("damageApplied")
+            candidate.confirmed_damage_applied = applied if isinstance(applied, bool) else None
+            candidate.confirmed_damage = finite_number(confirmed.get("damage"))
+            candidate.confirmed_suppression_reason = str(confirmed.get("suppressionReason") or "")
+            candidate.confirmed_hp_before = finite_number(confirmed.get("hpBefore"))
+            candidate.confirmed_hp_after = finite_number(confirmed.get("hpAfter"))
+        shadow = runtime_shadow_by_id.get(candidate.event_id)
+        if not shadow:
             continue
-        candidate.confirmed_class = str(confirmed.get("impactClass") or "")
-        applied = confirmed.get("damageApplied")
-        candidate.confirmed_damage_applied = applied if isinstance(applied, bool) else None
-        candidate.confirmed_damage = finite_number(confirmed.get("damage"))
-        candidate.confirmed_suppression_reason = str(confirmed.get("suppressionReason") or "")
-        candidate.confirmed_hp_before = finite_number(confirmed.get("hpBefore"))
-        candidate.confirmed_hp_after = finite_number(confirmed.get("hpAfter"))
+        candidate.runtime_shadow_algorithm = str(shadow.get("algorithmVersion") or "")
+        candidate.runtime_shadow_axis_kind = str(shadow.get("axisProposalKind") or "")
+        candidate.runtime_shadow_kind = str(shadow.get("proposedKind") or "")
+        damage_allowed = shadow.get("proposedDamageAllowed")
+        candidate.runtime_shadow_damage_allowed = damage_allowed if isinstance(damage_allowed, bool) else None
+        window_complete = shadow.get("windowComplete")
+        candidate.runtime_shadow_window_complete = window_complete if isinstance(window_complete, bool) else None
+        motion_samples = shadow.get("motionSamples")
+        candidate.runtime_shadow_samples = motion_samples if isinstance(motion_samples, int) and motion_samples >= 0 else None
+        reasons = shadow.get("reasons")
+        if isinstance(reasons, list):
+            candidate.runtime_shadow_reasons = ",".join(str(item) for item in reasons)
 
     per_vehicle: dict[str, dict[str, Any]] = {}
     vehicle_keys = sorted({sample.car_id or sample.source_id for sample in samples}
@@ -398,6 +425,7 @@ def analyze_logs(
             "effectiveMotionHz": (motion_intervals / duration_seconds) if duration_seconds > 0 else 0.0,
             "currentClasses": dict(Counter(item.current_class or "none" for item in vehicle_events)),
             "shadowActions": dict(Counter(item.shadow_action for item in vehicle_events)),
+            "runtimeShadowKinds": dict(Counter(item.runtime_shadow_kind or "missing" for item in vehicle_events)),
         }
 
     integrity_rows = []
@@ -433,6 +461,7 @@ def analyze_logs(
         "samples": samples,
         "candidates": candidates,
         "unmatchedConfirmedEvents": max(0, len(confirmed_by_id) - sum(1 for item in candidates if item.event_id in confirmed_by_id)),
+        "unmatchedRuntimeShadows": max(0, len(runtime_shadow_by_id) - sum(1 for item in candidates if item.event_id in runtime_shadow_by_id)),
     }
 
 
@@ -493,10 +522,11 @@ def build_report_html(result: dict[str, Any]) -> str:
         f"<td>{item.magnitude_mps2:.1f}</td><td>{item.jerk_mps3:.0f}</td>"
         f"<td>{item.vertical_share:.3f}</td><td>{item.horizontal_share:.3f}</td>"
         f"<td>{html.escape(item.current_class or 'none')}</td><td>{html.escape(item.shadow_action)}</td>"
+        f"<td>{html.escape(item.runtime_shadow_kind or 'missing')}</td>"
         f"<td>{html.escape(item.confirmed_suppression_reason or ('applied' if item.confirmed_damage_applied else 'unmatched'))}</td>"
         "</tr>"
         for item in result["candidates"]
-    ) or '<tr><td colspan="9">No impact candidates found</td></tr>'
+    ) or '<tr><td colspan="10">No impact candidates found</td></tr>'
     chart_blocks = "".join(
         f'<section class="panel"><h2>{html.escape(vehicle)}</h2><canvas data-vehicle="{html.escape(vehicle, quote=True)}"></canvas></section>'
         for vehicle in series
@@ -526,7 +556,7 @@ table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}} t
 <section class="panel"><h2>Vehicle summary</h2><div class="table-wrap"><table><thead><tr><th>Vehicle</th><th>Samples</th><th>Effective Hz</th><th>Events</th><th>Shadow actions</th></tr></thead><tbody>{vehicle_rows}</tbody></table></div></section>
 <div class="legend"><b>Forward G</b><b>Lateral G</b><b>Vertical G</b><span>Derived jerk (lower band)</span></div>
 {chart_blocks}
-<section class="panel"><h2>Impact candidates</h2><div class="table-wrap"><table><thead><tr><th>Received</th><th>Vehicle</th><th>Magnitude</th><th>Jerk</th><th>Vertical</th><th>Horizontal</th><th>Current</th><th>Shadow</th><th>Confirmed</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
+<section class="panel"><h2>Impact candidates</h2><div class="table-wrap"><table><thead><tr><th>Received</th><th>Vehicle</th><th>Magnitude</th><th>Jerk</th><th>Vertical</th><th>Horizontal</th><th>Current</th><th>Offline shadow</th><th>Runtime shadow</th><th>Confirmed</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
 <script>const series={payload};
 const colors=['#37c7e8','#ec6bb7','#f5d547'];
 function draw(canvas,data){{const dpr=devicePixelRatio||1,box=canvas.getBoundingClientRect();canvas.width=Math.max(1,Math.floor(box.width*dpr));canvas.height=Math.max(1,Math.floor(box.height*dpr));const c=canvas.getContext('2d');c.scale(dpr,dpr);const w=box.width,h=box.height,p=28,s=data.samples;if(!s.length){{c.fillStyle='#91a1aa';c.fillText('No samples',p,p);return}}const t0=s[0][0],t1=Math.max(t0+.001,s[s.length-1][0]),split=h*.72,zero=split/2;let peak=1,jerkPeak=1;for(const row of s){{for(let i=1;i<4;i++)peak=Math.max(peak,Math.abs(row[i]));if(Number.isFinite(row[4]))jerkPeak=Math.max(jerkPeak,row[4])}}const x=t=>p+(t-t0)/(t1-t0)*(w-p*1.5);c.strokeStyle='#2b3942';c.beginPath();c.moveTo(p,zero);c.lineTo(w-p/2,zero);c.moveTo(p,split);c.lineTo(w-p/2,split);c.stroke();for(const event of data.events){{c.strokeStyle=event[2].startsWith('suppress')?'#ff6b6b':'#64747d';c.beginPath();c.moveTo(x(event[0]),p);c.lineTo(x(event[0]),h-p);c.stroke()}}for(let axis=1;axis<4;axis++){{c.strokeStyle=colors[axis-1];c.lineWidth=1.4;c.beginPath();s.forEach((row,index)=>{{const xx=x(row[0]),v=row[axis],yy=zero-v/peak*(zero-p);if(index)c.lineTo(xx,yy);else c.moveTo(xx,yy)}});c.stroke()}}c.strokeStyle='#c8d1d6';c.lineWidth=1;c.beginPath();let started=false;for(const row of s){{if(!Number.isFinite(row[4]))continue;const yy=h-p-(row[4]/jerkPeak)*(h-split-p);if(started)c.lineTo(x(row[0]),yy);else{{c.moveTo(x(row[0]),yy);started=true}}}}c.stroke();c.fillStyle='#91a1aa';c.fillText(peak.toFixed(1)+' m/s2',3,p);c.fillText((-peak).toFixed(1),3,split-p);c.fillText(jerkPeak.toFixed(0)+' m/s3',3,split+13)}}

@@ -40,6 +40,7 @@ type telemetryRecorderStats struct {
 	CourseMarkerRecords    uint64 `json:"courseMarkerRecords"`
 	BoostRegenProbeRecords uint64 `json:"boostRegenProbeRecords"`
 	VehicleEventRecords    uint64 `json:"vehicleEventRecords"`
+	ImpactShadowRecords    uint64 `json:"impactShadowRecords"`
 	QueueDrops             uint64 `json:"queueDrops"`
 	WriteErrors            uint64 `json:"writeErrors"`
 }
@@ -108,6 +109,7 @@ type telemetryLogRecord struct {
 	CourseMarker    *courseMarkerLogSample  `json:"courseMarker,omitempty"`
 	BoostRegenProbe *boostRegenLogSample    `json:"boostRegenProbe,omitempty"`
 	VehicleEvent    *vehicleImpactEvent     `json:"vehicleEvent,omitempty"`
+	ImpactShadow    *impactShadowLogSample  `json:"impactShadow,omitempty"`
 	Stats           *telemetryRecorderStats `json:"stats,omitempty"`
 }
 
@@ -135,6 +137,7 @@ type telemetryRecorder struct {
 	courseMarkerRecords    atomic.Uint64
 	boostRegenProbeRecords atomic.Uint64
 	vehicleEventRecords    atomic.Uint64
+	impactShadowRecords    atomic.Uint64
 	queueDrops             atomic.Uint64
 	writeErrors            atomic.Uint64
 
@@ -438,6 +441,30 @@ func (r *telemetryRecorder) RecordVehicleEvent(sourceID string, carID string, ev
 	}
 }
 
+func (r *telemetryRecorder) RecordImpactShadow(sourceID string, carID string, sample impactShadowLogSample) {
+	if r == nil {
+		return
+	}
+	now := time.Now()
+	nowUTC := now.UTC()
+	elapsedUs := time.Since(r.startedAt).Microseconds()
+	sampleCopy := sample
+	record := telemetryLogRecord{
+		Type:            "impact_shadow",
+		SchemaVersion:   telemetryLogSchemaVersion,
+		RelaySessionID:  r.sessionID,
+		RelayReceivedAt: &nowUTC,
+		RelayElapsedUs:  &elapsedUs,
+		SourceID:        sourceID,
+		CarID:           carID,
+		ImpactShadow:    &sampleCopy,
+	}
+	r.appendRaceContext(&record, r.currentRaceContext())
+	if r.enqueue(record) {
+		r.impactShadowRecords.Add(1)
+	}
+}
+
 func (r *telemetryRecorder) currentRaceContext() telemetryRaceContext {
 	return r.raceContext.Load().(telemetryRaceContext)
 }
@@ -478,6 +505,7 @@ func (r *telemetryRecorder) Stats() telemetryRecorderStats {
 		CourseMarkerRecords:    r.courseMarkerRecords.Load(),
 		BoostRegenProbeRecords: r.boostRegenProbeRecords.Load(),
 		VehicleEventRecords:    r.vehicleEventRecords.Load(),
+		ImpactShadowRecords:    r.impactShadowRecords.Load(),
 		QueueDrops:             r.queueDrops.Load(),
 		WriteErrors:            r.writeErrors.Load(),
 	}
