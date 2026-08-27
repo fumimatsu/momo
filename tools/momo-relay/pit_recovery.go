@@ -146,6 +146,9 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 	}
 
 	for _, source := range server.sourceSnapshot() {
+		if source.impactShadow != nil && (previous.RaceRunID != currentRunID || previous.Phase != currentPhase) {
+			source.impactShadow.Reset()
+		}
 		if currentPhase == "finished" && (previous.RaceRunID != currentRunID || previous.Phase != currentPhase) {
 			source.boostRegen.reset()
 		}
@@ -222,6 +225,9 @@ func (server *relayServer) markRaceControlDisconnected() {
 	server.raceMu.Unlock()
 	now := time.Now()
 	for _, source := range server.sourceSnapshot() {
+		if source.impactShadow != nil {
+			source.impactShadow.Reset()
+		}
 		health, changed := source.vehicleHealth.markRaceDisconnected(now)
 		if changed {
 			source.driveGear.Store(int32(health.Gear))

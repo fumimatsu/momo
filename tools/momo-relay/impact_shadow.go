@@ -51,6 +51,14 @@ type impactShadowLogSample struct {
 	VerticalReversals       int        `json:"verticalReversals"`
 	YawActivityRad          float64    `json:"yawActivityRad"`
 	Reasons                 []string   `json:"reasons"`
+	observedAt              time.Time
+	context                 impactDecisionContext
+}
+
+type impactDecisionContext struct {
+	raceRunID   string
+	raceActive  bool
+	boostActive bool
 }
 
 type impactShadowMotionSample struct {
@@ -65,6 +73,7 @@ type impactShadowPending struct {
 	eventID    string
 	observedAt time.Time
 	candidate  relayImpactCandidate
+	context    impactDecisionContext
 }
 
 type impactShadowTracker struct {
@@ -91,7 +100,7 @@ func (tracker *impactShadowTracker) Reset() {
 	tracker.mu.Unlock()
 }
 
-func (tracker *impactShadowTracker) Observe(raw string, carID string, now time.Time) []impactShadowLogSample {
+func (tracker *impactShadowTracker) Observe(raw string, carID string, now time.Time, contextProvider func() impactDecisionContext) []impactShadowLogSample {
 	if tracker == nil {
 		return nil
 	}
@@ -103,6 +112,10 @@ func (tracker *impactShadowTracker) Observe(raw string, carID string, now time.T
 		results = append(results, tracker.switchBootLocked(boot, now)...)
 		tracker.samples = append(tracker.samples, sample)
 	} else if candidate, ok := parseRelayImpactCandidate(raw); ok {
+		context := impactDecisionContext{}
+		if contextProvider != nil {
+			context = contextProvider()
+		}
 		results = append(results, tracker.switchBootLocked(candidate.Boot, now)...)
 		eventID := carID + ":" + candidate.Boot + ":" + strconv.FormatUint(candidate.Sequence, 10)
 		if _, duplicate := tracker.seen[eventID]; !duplicate {
@@ -111,6 +124,7 @@ func (tracker *impactShadowTracker) Observe(raw string, carID string, now time.T
 				eventID:    eventID,
 				observedAt: now,
 				candidate:  candidate,
+				context:    context,
 			})
 		}
 	}
@@ -223,7 +237,7 @@ func (tracker *impactShadowTracker) buildLogSampleLocked(pending impactShadowPen
 		ProposedKind:            proposedKind,
 		ProposedDamageAllowed:   proposedDamageAllowed,
 		ProposedFFBAllowed:      proposedFFBAllowed,
-		RuntimeBehaviorChanged:  false,
+		RuntimeBehaviorChanged:  true,
 		WindowComplete:          features.complete,
 		WindowBeforeMS:          features.before.Milliseconds(),
 		WindowAfterMS:           features.after.Milliseconds(),
@@ -245,6 +259,8 @@ func (tracker *impactShadowTracker) buildLogSampleLocked(pending impactShadowPen
 		VerticalReversals:       features.verticalReversals,
 		YawActivityRad:          features.yawActivity,
 		Reasons:                 reasons,
+		observedAt:              pending.observedAt,
+		context:                 pending.context,
 	}
 }
 
@@ -349,8 +365,13 @@ func classifyImpactShadowWindow(
 	proposedKind := "ambiguous"
 	reasons := make([]string, 0, 5)
 	switch {
-	case verticalShare > impactShadowCollisionVerticalShareMax && !features.complete:
-		reasons = append(reasons, "window_incomplete", "vertical_axis_candidate")
+	case !features.complete:
+		reasons = append(reasons, "window_incomplete")
+		if verticalShare > impactShadowCollisionVerticalShareMax {
+			reasons = append(reasons, "vertical_axis_candidate")
+		} else {
+			reasons = append(reasons, "horizontal_axis_candidate")
+		}
 	case verticalShare > impactShadowCollisionVerticalShareMax && features.verticalReversals > 0:
 		proposedKind = "road_impact"
 		reasons = append(reasons, "vertical_axis_candidate", "vertical_rebound")
@@ -367,7 +388,7 @@ func classifyImpactShadowWindow(
 	}
 
 	damageAllowed := proposedKind == "collision" && (currentClass == "strong" || currentClass == "severe")
-	ffbAllowed := proposedKind == "road_impact" || proposedKind == "collision" || currentClass != ""
+	ffbAllowed := proposedKind == "road_impact" || proposedKind == "collision"
 	return axisProposal, proposedKind, damageAllowed, ffbAllowed, reasons
 }
 
@@ -450,20 +471,56 @@ func parseImpactShadowMotion(raw string, now time.Time) (string, impactShadowMot
 	}, true
 }
 
-func (r *relay) recordImpactShadow(raw string, now time.Time) {
-	if r == nil || r.recorder == nil || r.impactShadow == nil {
+func (r *relay) observeImpactClassification(raw string, now time.Time) []impactShadowLogSample {
+	if r == nil || r.impactShadow == nil {
+		return nil
+	}
+	context := r.vehicleHealth.impactDecisionContext(now)
+	if !context.raceActive && !r.driveLoggingEnabled.Load() {
+		return nil
+	}
+	results := r.impactShadow.Observe(raw, r.raceCarID, now, func() impactDecisionContext { return context })
+	r.recordImpactClassifications(results)
+	return results
+}
+
+func (r *relay) flushImpactClassification(now time.Time) []impactShadowLogSample {
+	if r == nil || r.impactShadow == nil {
+		return nil
+	}
+	results := r.impactShadow.Flush(now)
+	if r.recorder != nil {
+		for _, sample := range results {
+			r.recorder.RecordImpactShadow(r.name, r.raceCarID, sample)
+		}
+	}
+	return results
+}
+
+func (r *relay) recordImpactClassifications(results []impactShadowLogSample) {
+	if r == nil || r.recorder == nil || !r.driveLoggingEnabled.Load() {
 		return
 	}
-	for _, sample := range r.impactShadow.Observe(raw, r.raceCarID, now) {
+	for _, sample := range results {
 		r.recorder.RecordImpactShadow(r.name, r.raceCarID, sample)
 	}
 }
 
-func (r *relay) flushImpactShadow(now time.Time) {
-	if r == nil || r.recorder == nil || r.impactShadow == nil {
-		return
+func (r *relay) applyImpactClassifications(results []impactShadowLogSample, now time.Time) bool {
+	if r == nil || r.vehicleHealth == nil {
+		return false
 	}
-	for _, sample := range r.impactShadow.Flush(now) {
-		r.recorder.RecordImpactShadow(r.name, r.raceCarID, sample)
+	changed := false
+	for _, result := range results {
+		health, healthChanged, event := r.vehicleHealth.applyImpactDecision(result, r.raceCarID, now)
+		changed = changed || healthChanged
+		if event == nil {
+			continue
+		}
+		if result.ProposedKind == "collision" {
+			r.observeBoostRegenTelemetry("", health, event, now)
+		}
+		r.publishVehicleEvent(*event)
 	}
+	return changed
 }

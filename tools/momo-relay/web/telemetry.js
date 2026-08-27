@@ -18,13 +18,21 @@
   const RELAY_EVENT_HISTORY_LIMIT = 32;
   const RELAY_EVENT_SUPPRESSION_REASONS = Object.freeze([
     '',
+    'ambiguous_impact',
     'below_damage_threshold',
     'boost_active',
-    'cooldown',
     'damage_disabled',
+    'impact_window_incomplete',
     'impact_episode',
     'race_inactive',
+    'road_impact',
   ]);
+  const RELAY_EVENT_IMPACT_KINDS = Object.freeze([
+    'ambiguous',
+    'collision',
+    'road_impact',
+  ]);
+  const RELAY_EVENT_CLASSIFICATION_ALGORITHM = 'vertical-window-v2';
   const DEFAULT_MOTION_OPTIONS = Object.freeze({
     cornerLateralStartMps2: 1.5,
     cornerLateralFullMps2: 6.0,
@@ -376,11 +384,14 @@
   function parseVehicleImpactEvent(value) {
     if (!isPlainObject(value)
         || value.type !== 'vehicle_event'
-        || value.version !== 1
+        || value.version !== 2
         || typeof value.eventId !== 'string' || !value.eventId
         || typeof value.raceRunId !== 'string'
         || typeof value.carId !== 'string' || !value.carId
         || !['weak', 'strong', 'severe'].includes(value.impactClass)
+        || !RELAY_EVENT_IMPACT_KINDS.includes(value.impactKind)
+        || value.classificationAlgorithm !== RELAY_EVENT_CLASSIFICATION_ALGORITHM
+        || typeof value.windowComplete !== 'boolean'
         || !isNumberInRange(value.magnitudeMps2, 0, 1000)
         || !isNumberInRange(value.jerkMps3, 0, 1000000)
         || !isVector(value.axis, 3, -2, 2)
@@ -396,16 +407,29 @@
       : String(value.suppressionReason);
     if (!RELAY_EVENT_SUPPRESSION_REASONS.includes(suppressionReason)
         || (value.damageApplied && suppressionReason)
-        || (!value.damageApplied && value.damage !== 0)) {
+        || (!value.damageApplied && value.damage !== 0)
+        || (!value.damageApplied && !suppressionReason)
+        || (value.damageApplied && (value.impactKind !== 'collision'
+          || !value.windowComplete
+          || !['strong', 'severe'].includes(value.impactClass)))
+        || (!value.windowComplete && (value.impactKind !== 'ambiguous'
+          || suppressionReason !== 'impact_window_incomplete'))
+        || (value.impactKind === 'road_impact'
+          && (value.damageApplied || suppressionReason !== 'road_impact'))
+        || (value.impactKind === 'ambiguous' && value.windowComplete
+          && suppressionReason !== 'ambiguous_impact')) {
       return null;
     }
     return Object.freeze({
       type: 'vehicle_event',
-      version: 1,
+      version: 2,
       eventId: value.eventId,
       raceRunId: value.raceRunId,
       carId: value.carId,
       impactClass: value.impactClass,
+      impactKind: value.impactKind,
+      classificationAlgorithm: value.classificationAlgorithm,
+      windowComplete: value.windowComplete,
       magnitudeMps2: value.magnitudeMps2,
       jerkMps3: value.jerkMps3,
       axis: Object.freeze(value.axis.slice()),
@@ -432,7 +456,7 @@
     }
     if (!isPlainObject(payload)
         || payload.type !== 'vehicle_event_snapshot'
-        || payload.version !== 1
+        || payload.version !== 2
         || typeof payload.raceRunId !== 'string'
         || !Array.isArray(payload.events)
         || payload.events.length > RELAY_EVENT_HISTORY_LIMIT) {

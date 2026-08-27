@@ -11,7 +11,7 @@ func TestVehicleEventStoreBoundsHistoryAndResetsPerRace(t *testing.T) {
 	for index := 0; index < vehicleEventHistoryLimit+3; index++ {
 		event := vehicleImpactEvent{
 			Type:      "vehicle_event",
-			Version:   1,
+			Version:   vehicleEventSchemaVersion,
 			EventID:   "event-" + string(rune('A'+index)),
 			RaceRunID: "rr_1",
 			CarID:     "CP-1",
@@ -41,7 +41,7 @@ func TestVehicleEventStoreBoundsHistoryAndResetsPerRace(t *testing.T) {
 func TestVehicleEventMessagesUseVersionedLiveAndSnapshotShapes(t *testing.T) {
 	event := vehicleImpactEvent{
 		Type:          "vehicle_event",
-		Version:       1,
+		Version:       vehicleEventSchemaVersion,
 		EventID:       "CP-1:boot-a:7",
 		RaceRunID:     "rr_1",
 		CarID:         "CP-1",
@@ -59,7 +59,7 @@ func TestVehicleEventMessagesUseVersionedLiveAndSnapshotShapes(t *testing.T) {
 	if err := json.Unmarshal([]byte(message), &live); err != nil {
 		t.Fatalf("decode live event: %v", err)
 	}
-	if live["type"] != "vehicle_event" || live["version"] != float64(1) {
+	if live["type"] != "vehicle_event" || live["version"] != float64(vehicleEventSchemaVersion) {
 		t.Fatalf("live event envelope = %#v", live)
 	}
 
@@ -74,7 +74,7 @@ func TestVehicleEventMessagesUseVersionedLiveAndSnapshotShapes(t *testing.T) {
 	if err := json.Unmarshal([]byte(snapshotMessage), &snapshot); err != nil {
 		t.Fatalf("decode snapshot: %v", err)
 	}
-	if snapshot.Type != "vehicle_event_snapshot" || len(snapshot.Events) != 1 {
+	if snapshot.Type != "vehicle_event_snapshot" || snapshot.Version != vehicleEventSchemaVersion || len(snapshot.Events) != 1 {
 		t.Fatalf("snapshot envelope = %#v", snapshot)
 	}
 }

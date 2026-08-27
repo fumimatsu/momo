@@ -2005,8 +2005,8 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 		}
 		if r.recorder != nil && r.driveLoggingEnabled.Load() {
 			r.recorder.RecordTelemetry(r.name, r.raceCarID, generation, raw)
-			r.recordImpactShadow(raw, now)
 		}
+		impactChanged := r.applyImpactClassifications(r.observeImpactClassification(raw, now), now)
 		message = normalized
 		if r.upstreamGeneration.Load() == generation {
 			if telemetryHasCapability(raw, fuelCommandCapability) {
@@ -2017,12 +2017,11 @@ func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, gener
 				r.sendVehicleColorIfReady()
 			}
 		}
-		health, publish, event := r.vehicleHealth.ingestTelemetry(raw, r.raceCarID, now)
+		health, publish := r.vehicleHealth.observeTelemetry(now)
+		publish = publish || impactChanged
 		var regenApplied bool
-		health, regenApplied = r.observeBoostRegenTelemetry(raw, health, event, now)
-		if event != nil {
-			r.publishVehicleEvent(*event)
-		} else if isLegacyImpactEvent(raw) {
+		health, regenApplied = r.observeBoostRegenTelemetry(raw, health, nil, now)
+		if isLegacyImpactEvent(raw) {
 			log.Printf("source %q: ignore diagnostic V1 impact event: legacy_event_unsupported", r.name)
 		}
 		if publish || regenApplied {
@@ -2721,9 +2720,6 @@ func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
 			r.driveStateMu.Unlock()
 			return
 		}
-		if r.impactShadow != nil {
-			r.impactShadow.Reset()
-		}
 		r.driveLoggingEnabled.Store(true)
 	} else {
 		ownerID := r.driveOwnerID.Load()
@@ -2754,7 +2750,7 @@ func (r *relay) setDriveLogging(pilotID uint64, enabled bool, reason string) {
 	r.driveReason = reason
 	r.driveStateMu.Unlock()
 	if !enabled {
-		r.flushImpactShadow(now)
+		r.applyImpactClassifications(r.flushImpactClassification(now), now)
 	}
 	r.boostRegen.reset()
 	if r.recorder != nil {

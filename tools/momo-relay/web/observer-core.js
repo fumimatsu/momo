@@ -1262,20 +1262,25 @@ export function deriveSituations(
         priority: 30,
       });
     }
-    if (vehicleEvent) {
+    if (vehicleEvent && vehicleEvent.impactKind !== 'ambiguous') {
       const event = vehicleEvent;
+      const impactKind = String(event.impactKind || '').toLowerCase();
       const detail = event.damageApplied
         ? `DAMAGE -${Math.round(event.damage)} · HP ${Math.round(event.hpAfter)}`
-        : event.suppressionReason === 'cooldown'
-          ? `DAMAGE COOLDOWN · HP ${Math.round(event.hpAfter)}`
-          : `NO DAMAGE · JERK ${Math.round(event.jerkMps3)}`;
+        : `NO DAMAGE · JERK ${Math.round(event.jerkMps3)}`;
       situations.push({
         type: 'impact',
-        label: event.impactClass === 'severe' ? 'HEAVY IMPACT' : event.impactClass === 'strong' ? 'IMPACT' : 'GRAVEL',
+        label: impactKind === 'road_impact'
+          ? 'ROAD IMPACT'
+          : event.impactClass === 'severe'
+            ? 'HEAVY IMPACT'
+            : event.impactClass === 'strong' ? 'IMPACT' : 'LIGHT HIT',
         primary: `CAR ${car.displayNumber} · ${event.magnitudeMps2.toFixed(1)} m/s²`,
         detail,
-        tone: event.impactClass === 'weak' ? 'watch' : 'limited',
-        priority: event.impactClass === 'severe' ? 180 : event.impactClass === 'strong' ? 150 : 80,
+        tone: impactKind === 'road_impact' || event.impactClass === 'weak' ? 'watch' : 'limited',
+        priority: impactKind === 'road_impact'
+          ? 70
+          : event.impactClass === 'severe' ? 180 : event.impactClass === 'strong' ? 150 : 80,
       });
     }
   }

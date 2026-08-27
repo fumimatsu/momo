@@ -6,26 +6,30 @@ import (
 )
 
 const (
-	vehicleEventHistoryLimit = 32
-	vehicleEventQueueLimit   = 64
+	vehicleEventSchemaVersion = 2
+	vehicleEventHistoryLimit  = 32
+	vehicleEventQueueLimit    = 64
 )
 
 type vehicleImpactEvent struct {
-	Type              string     `json:"type"`
-	Version           int        `json:"version"`
-	EventID           string     `json:"eventId"`
-	RaceRunID         string     `json:"raceRunId"`
-	CarID             string     `json:"carId"`
-	ImpactClass       string     `json:"impactClass"`
-	MagnitudeMPS2     float64    `json:"magnitudeMps2"`
-	JerkMPS3          float64    `json:"jerkMps3"`
-	Axis              [3]float64 `json:"axis"`
-	DamageApplied     bool       `json:"damageApplied"`
-	Damage            float64    `json:"damage"`
-	SuppressionReason string     `json:"suppressionReason,omitempty"`
-	HPBefore          float64    `json:"hpBefore"`
-	HPAfter           float64    `json:"hpAfter"`
-	ServerTimeMS      int64      `json:"serverTimeMs"`
+	Type                    string     `json:"type"`
+	Version                 int        `json:"version"`
+	EventID                 string     `json:"eventId"`
+	RaceRunID               string     `json:"raceRunId"`
+	CarID                   string     `json:"carId"`
+	ImpactClass             string     `json:"impactClass"`
+	ImpactKind              string     `json:"impactKind"`
+	ClassificationAlgorithm string     `json:"classificationAlgorithm"`
+	WindowComplete          bool       `json:"windowComplete"`
+	MagnitudeMPS2           float64    `json:"magnitudeMps2"`
+	JerkMPS3                float64    `json:"jerkMps3"`
+	Axis                    [3]float64 `json:"axis"`
+	DamageApplied           bool       `json:"damageApplied"`
+	Damage                  float64    `json:"damage"`
+	SuppressionReason       string     `json:"suppressionReason,omitempty"`
+	HPBefore                float64    `json:"hpBefore"`
+	HPAfter                 float64    `json:"hpAfter"`
+	ServerTimeMS            int64      `json:"serverTimeMs"`
 }
 
 type vehicleEventSnapshot struct {
@@ -85,14 +89,14 @@ func (store *vehicleEventStore) add(event vehicleImpactEvent) bool {
 
 func (store *vehicleEventStore) snapshot() vehicleEventSnapshot {
 	if store == nil {
-		return vehicleEventSnapshot{Type: "vehicle_event_snapshot", Version: 1, Events: []vehicleImpactEvent{}}
+		return vehicleEventSnapshot{Type: "vehicle_event_snapshot", Version: vehicleEventSchemaVersion, Events: []vehicleImpactEvent{}}
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	events := append([]vehicleImpactEvent(nil), store.events...)
 	return vehicleEventSnapshot{
 		Type:      "vehicle_event_snapshot",
-		Version:   1,
+		Version:   vehicleEventSchemaVersion,
 		RaceRunID: store.raceRunID,
 		Events:    events,
 	}

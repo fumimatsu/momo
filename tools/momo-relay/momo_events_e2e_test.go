@@ -33,15 +33,19 @@ func TestMomoEventsDataChannelEndToEnd(t *testing.T) {
 	source.vehicleHealth.observeRaceState(true, "rr_events_e2e", "green", 1, 2, now)
 	source.resetVehicleEvents("rr_events_e2e")
 	if !source.vehicleEvents.add(vehicleImpactEvent{
-		Type:          "vehicle_event",
-		Version:       1,
-		EventID:       "CP-1:boot-before-connect:9",
-		RaceRunID:     "rr_events_e2e",
-		CarID:         "CP-1",
-		ImpactClass:   "weak",
-		DamageApplied: false,
-		HPBefore:      100,
-		HPAfter:       100,
+		Type:                    "vehicle_event",
+		Version:                 vehicleEventSchemaVersion,
+		EventID:                 "CP-1:boot-before-connect:9",
+		RaceRunID:               "rr_events_e2e",
+		CarID:                   "CP-1",
+		ImpactClass:             "weak",
+		ImpactKind:              "collision",
+		ClassificationAlgorithm: impactShadowAlgorithmVersion,
+		WindowComplete:          true,
+		DamageApplied:           false,
+		SuppressionReason:       "below_damage_threshold",
+		HPBefore:                100,
+		HPAfter:                 100,
 	}) {
 		t.Fatal("seed snapshot event was not stored")
 	}
@@ -157,13 +161,23 @@ func TestMomoEventsDataChannelEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(snapshotMessage), &snapshot); err != nil {
 		t.Fatalf("decode initial snapshot: %v", err)
 	}
-	if snapshot.Type != "vehicle_event_snapshot" || snapshot.Version != 1 || snapshot.RaceRunID != "rr_events_e2e" ||
+	if snapshot.Type != "vehicle_event_snapshot" || snapshot.Version != vehicleEventSchemaVersion || snapshot.RaceRunID != "rr_events_e2e" ||
 		len(snapshot.Events) != 1 || snapshot.Events[0].EventID != "CP-1:boot-before-connect:9" {
 		t.Fatalf("initial snapshot = %#v", snapshot)
 	}
 
-	impact := `TEL:{"v":2,"k":"e","boot":"boot-e2e","seq":1,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
+	for sequence := 1; sequence <= 7; sequence++ {
+		motion := fmt.Sprintf(`TEL:{"v":2,"k":"s","src":"imu0","boot":"boot-e2e","seq":%d,"m":{"a":[4,0.2,0.1],"y":0.1}}`, sequence)
+		source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(motion), IsString: true}, 1)
+		time.Sleep(55 * time.Millisecond)
+	}
+	impact := `TEL:{"v":2,"k":"e","boot":"boot-e2e","seq":8,"e":{"n":"impact_candidate","m":13.0,"a":[1,0,0],"j":300}}`
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(impact), IsString: true}, 1)
+	for sequence := 9; sequence <= 15; sequence++ {
+		motion := fmt.Sprintf(`TEL:{"v":2,"k":"s","src":"imu0","boot":"boot-e2e","seq":%d,"m":{"a":[4,0.2,0.1],"y":0.1}}`, sequence)
+		time.Sleep(55 * time.Millisecond)
+		source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(motion), IsString: true}, 1)
+	}
 
 	liveMessage := waitForE2EMessage(t, "live vehicle event", eventMessages, signalingErrors, func(message string) bool {
 		return strings.Contains(message, `"type":"vehicle_event"`)
@@ -172,8 +186,9 @@ func TestMomoEventsDataChannelEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(liveMessage), &event); err != nil {
 		t.Fatalf("decode live event: %v", err)
 	}
-	if event.EventID != "CP-1:boot-e2e:1" || event.RaceRunID != "rr_events_e2e" || event.CarID != "CP-1" ||
-		event.ImpactClass != "strong" || !event.DamageApplied || event.Damage != 12 || event.HPBefore != 100 || event.HPAfter != 88 {
+	if event.Version != vehicleEventSchemaVersion || event.EventID != "CP-1:boot-e2e:8" || event.RaceRunID != "rr_events_e2e" || event.CarID != "CP-1" ||
+		event.ImpactClass != "strong" || event.ImpactKind != "collision" || event.ClassificationAlgorithm != impactShadowAlgorithmVersion || !event.WindowComplete ||
+		!event.DamageApplied || event.Damage != 12 || event.HPBefore != 100 || event.HPAfter != 88 {
 		t.Fatalf("live event = %#v", event)
 	}
 

@@ -50,7 +50,7 @@ func TestTelemetryRecorderWritesInterleavedRelayTimeline(t *testing.T) {
 	})
 	recorder.RecordVehicleEvent("11.3", "CP-1", vehicleImpactEvent{
 		Type:              "vehicle_event",
-		Version:           1,
+		Version:           vehicleEventSchemaVersion,
 		EventID:           "impact-1",
 		RaceRunID:         "rr_123",
 		CarID:             "CP-1",
@@ -191,7 +191,7 @@ func TestTelemetryRecorderWritesImpactShadow(t *testing.T) {
 		CurrentImpactClass:     "strong",
 		AxisProposalKind:       "road_impact",
 		ProposedKind:           "ambiguous",
-		RuntimeBehaviorChanged: false,
+		RuntimeBehaviorChanged: true,
 		WindowComplete:         true,
 		WindowBeforeMS:         300,
 		WindowAfterMS:          300,
@@ -210,7 +210,7 @@ func TestTelemetryRecorderWritesImpactShadow(t *testing.T) {
 	if record.Type != "impact_shadow" || record.SourceID != "11.5" || record.CarID != "CP-3" || record.RaceRunID != "rr_shadow" || record.ImpactShadow == nil {
 		t.Fatalf("impact shadow record = %#v", record)
 	}
-	if record.ImpactShadow.EventID != "CP-3:boot-shadow:7" || record.ImpactShadow.AlgorithmVersion != impactShadowAlgorithmVersion || record.ImpactShadow.ProposedKind != "ambiguous" || record.ImpactShadow.RuntimeBehaviorChanged {
+	if record.ImpactShadow.EventID != "CP-3:boot-shadow:7" || record.ImpactShadow.AlgorithmVersion != impactShadowAlgorithmVersion || record.ImpactShadow.ProposedKind != "ambiguous" || !record.ImpactShadow.RuntimeBehaviorChanged {
 		t.Fatalf("impact shadow payload = %#v", record.ImpactShadow)
 	}
 	footer := records[3]
@@ -267,7 +267,7 @@ func TestRelayRecordsAcceptedVehicleEventOnce(t *testing.T) {
 	source := newStatusTestRelay("11.4", "CP-2")
 	source.recorder = recorder
 	source.vehicleEvents = newVehicleEventStore()
-	event := vehicleImpactEvent{Type: "vehicle_event", Version: 1, EventID: "impact-2", RaceRunID: "rr_456", CarID: "CP-2"}
+	event := vehicleImpactEvent{Type: "vehicle_event", Version: vehicleEventSchemaVersion, EventID: "impact-2", RaceRunID: "rr_456", CarID: "CP-2"}
 
 	source.publishVehicleEvent(event)
 	source.publishVehicleEvent(event)

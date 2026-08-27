@@ -509,82 +509,122 @@ func (health *vehicleHealth) rememberImpactLocked(eventID string) bool {
 	return true
 }
 
-// ingestTelemetry returns a new state only when it should be sent to Viewer
-// and Observer. Raw state frames clock recovery; impact events change HP.
-func (health *vehicleHealth) ingestTelemetry(raw string, carID string, now time.Time) (vehicleHealthSnapshot, bool, *vehicleImpactEvent) {
+func (health *vehicleHealth) impactDecisionContext(now time.Time) impactDecisionContext {
 	if health == nil {
-		return defaultVehicleHealthSnapshot(now), false, nil
+		return impactDecisionContext{}
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	return impactDecisionContext{
+		raceRunID:   health.activeRaceRunID,
+		raceActive:  health.raceGameplayActiveLocked(),
+		boostActive: health.boostStateLocked(now) == "active",
+	}
+}
+
+// observeTelemetry advances time-based gameplay state. Impact candidates are
+// intentionally not accepted here; only a completed vertical-window-v2
+// decision may change HP.
+func (health *vehicleHealth) observeTelemetry(now time.Time) (vehicleHealthSnapshot, bool) {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(now), false
 	}
 	health.mu.Lock()
 	defer health.mu.Unlock()
 
 	changed := health.advanceRecoveryLocked(now)
-	var confirmed *vehicleImpactEvent
-	if candidate, ok := parseRelayImpactCandidate(raw); ok {
-		impactClass := classifyRelayImpactCandidate(candidate)
-		eventID := fmt.Sprintf("%s:%s:%d", carID, candidate.Boot, candidate.Sequence)
-		if impactClass != "" && health.rememberImpactLocked(eventID) {
-			hpBefore := health.hp
-			damage := relayImpactDamage(impactClass)
-			damageApplied := false
-			suppressionReason := ""
-			if damage > 0 && !health.damageEnabled {
-				damage = 0
-				suppressionReason = "damage_disabled"
-			} else if damage > 0 && !health.raceGameplayActiveLocked() {
-				damage = 0
-				suppressionReason = "race_inactive"
-			} else if damage > 0 && health.boostStateLocked(now) == "active" {
-				damage = 0
-				suppressionReason = "boost_active"
-			} else if damage > 0 {
-				health.lastUnsafeAt = now
-				if health.damageEpisodeStartedAt.IsZero() || now.Before(health.damageEpisodeStartedAt) ||
-					now.Sub(health.damageEpisodeStartedAt) >= vehicleHealthDamageEpisodeWindow {
-					health.damageEpisodeStartedAt = now
-					health.damageEpisodeDamage = 0
-				}
-				if damage > health.damageEpisodeDamage {
-					// 同じ衝突の追撃候補は合計ダメージを最上位クラスまでだけ引き上げる。
-					damage -= health.damageEpisodeDamage
-					health.damageEpisodeDamage += damage
-					health.hp = math.Max(0, health.hp-damage)
-					health.lastUpdatedAt = now
-					changed = true
-					damageApplied = true
-				} else {
-					damage = 0
-					suppressionReason = "impact_episode"
-				}
-			} else {
-				suppressionReason = "below_damage_threshold"
-			}
-			confirmed = &vehicleImpactEvent{
-				Type:              "vehicle_event",
-				Version:           1,
-				EventID:           eventID,
-				RaceRunID:         health.activeRaceRunID,
-				CarID:             carID,
-				ImpactClass:       impactClass,
-				MagnitudeMPS2:     candidate.Magnitude,
-				JerkMPS3:          candidate.Jerk,
-				Axis:              candidate.Axis,
-				DamageApplied:     damageApplied,
-				Damage:            damage,
-				SuppressionReason: suppressionReason,
-				HPBefore:          hpBefore,
-				HPAfter:           health.hp,
-				ServerTimeMS:      now.UnixMilli(),
-			}
-		}
-	}
-
 	snapshot := health.snapshotLocked(now)
 	if changed || health.lastPublishedAt.IsZero() || now.Sub(health.lastPublishedAt) >= vehicleHealthPublishInterval {
 		health.lastPublishedAt = now
-		return snapshot, true, confirmed
+		return snapshot, true
 	}
-	return snapshot, false, confirmed
+	return snapshot, false
+}
+
+func (health *vehicleHealth) applyImpactDecision(decision impactShadowLogSample, carID string, finalizedAt time.Time) (vehicleHealthSnapshot, bool, *vehicleImpactEvent) {
+	if health == nil {
+		return defaultVehicleHealthSnapshot(finalizedAt), false, nil
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+
+	changed := health.advanceRecoveryLocked(finalizedAt)
+	impactClass := decision.CurrentImpactClass
+	if impactClass == "" || decision.EventID == "" || decision.observedAt.IsZero() || !health.rememberImpactLocked(decision.EventID) {
+		return health.snapshotLocked(finalizedAt), changed, nil
+	}
+	if decision.context.raceRunID != health.activeRaceRunID {
+		return health.snapshotLocked(finalizedAt), changed, nil
+	}
+
+	hpBefore := health.hp
+	damage := relayImpactDamage(impactClass)
+	damageApplied := false
+	suppressionReason := ""
+	switch {
+	case !decision.WindowComplete:
+		damage = 0
+		suppressionReason = "impact_window_incomplete"
+	case decision.ProposedKind == "road_impact":
+		damage = 0
+		suppressionReason = "road_impact"
+	case decision.ProposedKind != "collision":
+		damage = 0
+		suppressionReason = "ambiguous_impact"
+	case damage == 0 || !decision.ProposedDamageAllowed:
+		damage = 0
+		suppressionReason = "below_damage_threshold"
+	case !health.damageEnabled:
+		damage = 0
+		suppressionReason = "damage_disabled"
+	case !decision.context.raceActive || !health.raceGameplayActiveLocked():
+		damage = 0
+		suppressionReason = "race_inactive"
+	case decision.context.boostActive:
+		damage = 0
+		suppressionReason = "boost_active"
+	default:
+		impactAt := decision.observedAt
+		health.lastUnsafeAt = impactAt
+		if health.damageEpisodeStartedAt.IsZero() || impactAt.Before(health.damageEpisodeStartedAt) ||
+			impactAt.Sub(health.damageEpisodeStartedAt) >= vehicleHealthDamageEpisodeWindow {
+			health.damageEpisodeStartedAt = impactAt
+			health.damageEpisodeDamage = 0
+		}
+		if damage > health.damageEpisodeDamage {
+			damage -= health.damageEpisodeDamage
+			health.damageEpisodeDamage += damage
+			health.hp = math.Max(0, health.hp-damage)
+			health.lastUpdatedAt = finalizedAt
+			changed = true
+			damageApplied = true
+		} else {
+			damage = 0
+			suppressionReason = "impact_episode"
+		}
+	}
+
+	event := &vehicleImpactEvent{
+		Type:                    "vehicle_event",
+		Version:                 vehicleEventSchemaVersion,
+		EventID:                 decision.EventID,
+		RaceRunID:               health.activeRaceRunID,
+		CarID:                   carID,
+		ImpactClass:             impactClass,
+		ImpactKind:              decision.ProposedKind,
+		ClassificationAlgorithm: decision.AlgorithmVersion,
+		WindowComplete:          decision.WindowComplete,
+		MagnitudeMPS2:           decision.MagnitudeMPS2,
+		JerkMPS3:                decision.JerkMPS3,
+		Axis:                    decision.Axis,
+		DamageApplied:           damageApplied,
+		Damage:                  damage,
+		SuppressionReason:       suppressionReason,
+		HPBefore:                hpBefore,
+		HPAfter:                 health.hp,
+		ServerTimeMS:            decision.observedAt.UnixMilli(),
+	}
+	return health.snapshotLocked(finalizedAt), changed, event
 }
 
 func (health *vehicleHealth) limitCommand(message string, now time.Time) string {

@@ -290,8 +290,12 @@ def classify_window_shadow(
 
     kind = "ambiguous"
     reasons: list[str] = []
-    if vertical_share > COLLISION_VERTICAL_SHARE_MAX and not features.complete:
-        reasons.extend(["window_incomplete", "vertical_axis_candidate"])
+    if not features.complete:
+        reasons.append("window_incomplete")
+        if vertical_share > COLLISION_VERTICAL_SHARE_MAX:
+            reasons.append("vertical_axis_candidate")
+        else:
+            reasons.append("horizontal_axis_candidate")
     elif vertical_share > COLLISION_VERTICAL_SHARE_MAX and features.vertical_reversals > 0:
         kind = "road_impact"
         reasons.extend(["vertical_axis_candidate", "vertical_rebound"])
@@ -640,7 +644,7 @@ def analyze_logs(
             "windowMs": WINDOW_MS,
             "collisionVerticalShareMax": COLLISION_VERTICAL_SHARE_MAX,
             "baselineGuardMs": BASELINE_GUARD_MS,
-            "runtimeBehaviorChanged": False,
+            "runtimeBehaviorChanged": True,
         },
         "counters": dict(counters),
         "streamIntegrity": integrity_rows,

@@ -5009,7 +5009,11 @@
 
   function applyConfirmedVehicleEvent(event) {
     sendFfbState();
-    updateMotionEventHud(event);
+    const impactKind = String(event?.impactKind || '').toLowerCase();
+    if (impactKind === 'collision' || impactKind === 'road_impact') {
+      updateMotionEventHud(event);
+    }
+    if (!['collision', 'road_impact'].includes(impactKind)) return;
     if (!ffbClient || !ffbOutputEnabled || !rcDriveEnabled) return;
     const motion = getMotionSnapshot();
     const eventLateralAxis = Number(event.axis?.[1]);
@@ -5083,7 +5087,9 @@
   }
 
   function renderDamageNotification(payload) {
-    vehicleResourceHp?.classList.add('is-impacting');
+    if (payload?.impactKind === 'collision') {
+      vehicleResourceHp?.classList.add('is-impacting');
+    }
     if (!motionEventHud) return;
     const impactClass = String(payload?.impactClass || '').toLowerCase();
     if (!impactClass) return;
@@ -5092,6 +5098,9 @@
       strong: 'Impact',
       severe: 'Crash',
     };
+    if (payload?.impactKind === 'road_impact') {
+      labels[impactClass] = 'Road impact';
+    }
     const activeIndicator = motionEventIndicators.find((indicator) => (
       indicator.dataset.impactClass === impactClass
     ));
@@ -5108,7 +5117,7 @@
     }
   }
 
-  function publishDamageNotification(impactClass, flashMs, sourceId = '') {
+  function publishDamageNotification(impactClass, flashMs, sourceId = '', impactKind = 'collision') {
     const normalizedClass = ['weak', 'strong', 'severe'].includes(impactClass)
       ? impactClass
       : 'strong';
@@ -5119,7 +5128,9 @@
       priority: NOTIFICATION_PRIORITIES.GAMEPLAY,
       durationMs,
       replaceGroup: true,
-      payload: { kind: 'damage', impactClass: normalizedClass, flashMs: durationMs },
+      payload: {
+        kind: 'damage', impactClass: normalizedClass, impactKind, flashMs: durationMs,
+      },
     });
   }
 
@@ -5150,8 +5161,10 @@
     }
     lastMotionEventHudId = eventId;
     const flashDurations = { weak: 220, strong: 360, severe: 560 };
-    const flashMs = flashDurations[impactClass] || flashDurations.strong;
-    publishDamageNotification(impactClass, flashMs, eventId);
+    const impactKind = String(event?.impactKind || '').toLowerCase();
+    const hudImpactClass = impactKind === 'road_impact' ? 'weak' : impactClass;
+    const flashMs = flashDurations[hudImpactClass] || flashDurations.strong;
+    publishDamageNotification(hudImpactClass, flashMs, eventId, impactKind);
   }
 
   function applyVehicleHealth(message) {

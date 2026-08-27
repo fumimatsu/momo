@@ -156,9 +156,10 @@ python .\tools\Analyze-RelayImpactLog.py $log `
 グラフのjerkはRelayへ届いた30 Hz state間から再計算した参考値であり、M5が高周期サンプルからeventへ記録した`jerkMps3`とは
 時間分解能が異なる。本番classとの比較には`impact-events.csv`のevent値を使用する。
 
-Drive ON中のRelayは、各`impact_candidate`について前後300 msの`imu0` stateを小さなsource別バッファで集計し、
-約300 ms後に`impact_shadow`レコードを同じNDJSONへ追加する。Drive OFF時は未完了候補も
-`windowComplete: false`としてflushする。この処理はログ専用で、HP、`vehicle_event`、Viewer通知、FFBを変更しない。
+有効なレース中、またはDRIVE ON中のRelayは、各`impact_candidate`について前後300 msの`imu0` stateを小さなsource別バッファで集計し、
+約300 ms後に`vertical-window-v2`の確定判定を行う。Drive ON中のログには同じ結果を`impact_shadow`レコードとして残し、
+Drive OFF時は未完了候補も`windowComplete: false`としてflushする。記録名は既存解析器との履歴互換のため維持するが、
+判定自体はHPと`vehicle_event`の正本である。
 
 `impactShadow`には次を記録する。
 
@@ -168,13 +169,14 @@ Drive ON中のRelayは、各`impact_candidate`について前後300 msの`imu0` 
 - 300 ms窓を含めた保守的な`proposedKind`: `road_impact | collision | ambiguous`
 - 窓の前後coverage、sample数、水平／上下peakとRMS、絶対水平継続時間、上下反転回数、yaw積算量
 - イベント100 ms前までの前後／左右中央値を旋回baselineとした、水平変化peakと継続時間
-- `proposedDamageAllowed`、`proposedFfbAllowed`と判定理由。`runtimeBehaviorChanged`は常に`false`
+- `proposedDamageAllowed`、`proposedFfbAllowed`と判定理由。正式判定では`runtimeBehaviorChanged: true`
 
 `proposedKind`は、完全な窓、上下比率0.20超、上下反転ありを`road_impact`とする。旋回中の絶対横Gは
 road判定を拒否せず、baselineとの差を診断値として残す。現行でHP対象となるstrong/severeのうち、
 上下比率0.20以下だけを高確信度の`collision`とし、それ以外を`ambiguous`とする。
-`road_impact`はダメージなし／FFB候補、明確な`collision`だけをダメージ候補とするゲーム方針のShadowであり、
-`ambiguous`でも現行classがあるイベントのFFB候補は維持する。本番閾値ではない。
+`road_impact`はダメージなし／FFB候補、完全な窓を持つ明確な`collision`だけをダメージ候補とする。
+`ambiguous`と`windowComplete: false`はfail-closeでHPを変更しない。Raw stateはViewerへ従来どおり転送して連続的な
+路面roughnessへ使い、確定した`road_impact`だけを無ダメージのFFB pulseとして扱う。
 `Analyze-RelayImpactLog.py`は履歴ログにも同じ`vertical-window-v2`を計算し、raw候補、
 Relay確定イベント、runtime Shadowを`eventId`で結合して`impact-events.csv`とHTMLへ並記する。
 
@@ -186,8 +188,10 @@ python .\tools\Analyze-RelayImpactLog.py `
   --output-dir "C:\fpv-impact-analysis\collision-review"
 ```
 
-本番HPへ適用する前に、壁への正面／側面／スライド接触と車体同士の接触を正例として映像ラベルし、
-`road_impact`への誤分類がないことを確認する。正例が揃うまでは`runtimeBehaviorChanged: false`を維持する。
+2026-08-28に実走ログ231,013 motion sample／41候補で再検証し、31件を`road_impact`、4件を`collision`、
+6件を`ambiguous`へ分類した。旧magnitude/jerk単独判定でレース中なら124 HPとなる候補を72 HPへ抑制できたため、
+同日から`vertical-window-v2`を正式HP判定へ昇格した。映像ラベル付き衝突ログは引き続き閾値調整へ使用するが、
+旧即時ダメージ経路へ自動fallbackしない。
 
 ## Operations Dashboard
 
@@ -630,17 +634,23 @@ RAW診断とsynthetic testの互換用に残すが、V1 `impact`はHPを変更�
 `legacy_event_unsupported`としてログへ記録する。
 
 衝撃段階は`weak >= 10 m/s2`、`strong >= 12 m/s2 && jerk >= 250 m/s3`、
-`severe >= 15 m/s2 && jerk >= 750 m/s3`である。strongは12 HP、severeは20 HPを減算する。
+`severe >= 15 m/s2 && jerk >= 750 m/s3`である。Relayは生候補で即時減算せず、前後300 msの
+`vertical-window-v2`が完全な`collision`と確定したstrongだけ12 HP、severeだけ20 HPを減算する。
+`road_impact`は`road_impact`、判定不能は`ambiguous_impact`、窓不足は`impact_window_incomplete`として
+`vehicle_event`へ記録し、HPを変更しない。
 M5の候補生成cooldownは600 msだが、Relayは同じ物理衝突の候補を1500 msのdamage episodeとして扱う。
 episode内の同一class以下は`impact_episode`としてHPを変更せず、classが上がった場合は上位classとの差分だけを減算する。
 同じ`carId:boot:sequence`の再送は重複として無視する。
-HPダメージはPracticeを含む有効なレースセッション中だけ適用する。Race Control接続中、
-raceRunIdあり、phaseが`green`の条件を満たさない衝撃は`race_inactive`としてイベントへ記録し、
-HPと回復待ち時間を変更しない。phaseが`green`以外へ変化した時、またはRace Control切断時は
-残っているダメージを即時回復する。Boost有効中の衝撃も`boost_active`としてHPを変更しない。
+HPダメージはPracticeを含む有効なレースセッション中だけ適用する。Race Control接続中、raceRunIdあり、phaseが`green`の
+条件を満たさない候補はHPを変更しない。DRIVE ON中はレース外でも分類し、`race_inactive` eventによるFFBだけを許可する。
+DRIVE OFFかつレース外では分類負荷を止める。候補受信後にraceRunまたはphaseが変わった場合はpending窓を破棄し、
+確定処理との競合で状態が変わった場合も`race_inactive`としてHPを変更しない。phaseが`green`以外へ変化した時、または
+Race Control切断時は残っているダメージを即時回復する。Boost有効中の衝撃も`boost_active`としてHPを変更しない。
 ダメージ無効時は`damage_disabled`、weakは`below_damage_threshold`として確定イベントへ記録する。
 
-RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。
+RelayはHP更新と同じ判定結果をReliable/Orderedな`momo-events` DataChannelへ配信する。live eventとsnapshotは
+必須分類メタデータを持つversion 2だけを送信し、旧version 1へのfallbackは持たない。live eventには
+`impactKind`、`classificationAlgorithm: vertical-window-v2`、`windowComplete`も含める。
 各sourceはレース単位で直近32件を保持し、channel open時に`vehicle_event_snapshot`を送る。
 snapshotは履歴復元専用で、ViewerはFFB、点滅、音声、HP計算を再実行しない。live eventの
 配信は64件の有界専用queueへ分離し、詰まりがTelemetry受信や操縦転送を待たせない。
