@@ -18,6 +18,9 @@ param(
     [int]$SpreadStartMaxPercent = 0,
     [string]$RaceControlWsUrl = '',
     [string]$RaceControlViewerToken = '',
+    [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
+    [string]$HealthRecoveryMode = 'disabled',
+    [string]$GameplayToken = '',
     [string]$ReplayProfileManifestPath = '',
     [switch]$ForceTranscode,
     [switch]$NoOpen
@@ -46,6 +49,9 @@ foreach ($port in @($VirtualSourcePort, $RelayPort)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($RaceControlWsUrl) -and [string]::IsNullOrWhiteSpace($RaceControlViewerToken)) {
     throw 'RaceControlViewerToken is required when RaceControlWsUrl is configured'
+}
+if ($HealthRecoveryMode -in @('pit-marker', 'hybrid') -and [string]::IsNullOrWhiteSpace($GameplayToken)) {
+    throw "GameplayToken is required when HealthRecoveryMode is $HealthRecoveryMode"
 }
 $inputItem = $null
 $h264Path = $null
@@ -177,9 +183,12 @@ try {
             [Environment]::SetEnvironmentVariable('MOMO_RACE_CONTROL_WS_URL', $RaceControlWsUrl.Trim(), 'Process')
             [Environment]::SetEnvironmentVariable('MOMO_RACE_CONTROL_VIEWER_TOKEN', $RaceControlViewerToken, 'Process')
         }
+        if (-not [string]::IsNullOrWhiteSpace($GameplayToken)) {
+            [Environment]::SetEnvironmentVariable('MOMO_RELAY_GAMEPLAY_TOKEN', $GameplayToken, 'Process')
+        }
         $relay = Start-Process -FilePath $relayExe -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $relayLog -RedirectStandardError $relayErrorLog `
-            -ArgumentList (@('-listen', "${ListenHost}:$RelayPort", '-health-recovery-mode', 'disabled', '-operations-allow-cidr', '127.0.0.0/8', '-garage-allow-cidr', '127.0.0.0/8') + $sourceArguments)
+            -ArgumentList (@('-listen', "${ListenHost}:$RelayPort", '-health-recovery-mode', $HealthRecoveryMode, '-operations-allow-cidr', '127.0.0.0/8', '-garage-allow-cidr', '127.0.0.0/8', '-gameplay-allow-cidr', '127.0.0.0/8') + $sourceArguments)
     }
     finally {
         foreach ($name in $relayEnvironmentNames) {
@@ -203,6 +212,7 @@ try {
         spreadStartPositions = [bool]$SpreadStartPositions
         spreadStartMaxPercent = $SpreadStartMaxPercent
         raceControlConnected = -not [string]::IsNullOrWhiteSpace($RaceControlWsUrl)
+        healthRecoveryMode = $HealthRecoveryMode
     } | ConvertTo-Json | Set-Content -LiteralPath $runtimePath -Encoding utf8
 
     $deadline = (Get-Date).AddSeconds(30)

@@ -13,10 +13,14 @@ param(
     [int]$CarCount = 5,
     [ValidateSet(25, 33, 40, 50)]
     [int]$DetectionHz = 50,
+    [bool]$AdaptiveDetection = $true,
+    [ValidateRange(1, 16)]
+    [int]$MarkerConnectParallelism = 1,
     [ValidateRange(1, 100)]
     [int]$SpreadStartMaxPercent = 80,
     [ValidateRange(0, 600)]
     [double]$ReplayClipDurationSeconds = 30,
+    [bool]$InputAlreadyUpright = $true,
     [ValidateRange(30, 600)]
     [int]$EvidenceTimeoutSeconds = 210,
     [string]$ListenHost = '127.0.0.1',
@@ -290,8 +294,7 @@ Write-JsonAtomic -Path $coursePath -Value ([ordered]@{
         })
     }
     qualification = [ordered]@{
-        mode = 'elapsed_time'; minDetections = 1; exitFrames = 4
-        minimumPresenceMs = 40; exitDurationMs = 80; maximumObservationGapMs = 120; candidateCapacity = 10
+        minDetections = 1; exitFrames = 4; candidateCapacity = 10
         maxDetectionsPerFrame = 5; resetOnDifferentMarker = $false; resetOnDroppedBatches = $false
     }
     excludedMarkerIds = @(17, 34, 37)
@@ -299,6 +302,7 @@ Write-JsonAtomic -Path $coursePath -Value ([ordered]@{
         [ordered]@{ gateId = 'checkpoint-1'; kind = 'checkpoint'; markerIds = @(2) }
         [ordered]@{ gateId = 'checkpoint-2'; kind = 'checkpoint'; markerIds = @(3) }
         [ordered]@{ gateId = 'lap-gate'; kind = 'lap'; markerIds = @(1) }
+        [ordered]@{ gateId = 'pit'; kind = 'pit_presence'; markerIds = @(8) }
     )
 })
 
@@ -314,6 +318,7 @@ Write-JsonAtomic -Path $coordinatorConfigPath -Value ([ordered]@{
     event = 'virtual-fleet'
     assignments = $assignmentsPath
     relayStatusUrl = "$relayBaseUrl/api/v1/status"
+    relayGameplayBaseUrl = $relayBaseUrl
     courseTemplate = $coursePath
     stateRoot = (Join-Path $runRoot 'coordinator-state')
     raceControlBaseUrl = $raceControlBaseUrl
@@ -325,7 +330,6 @@ Write-JsonAtomic -Path $coordinatorConfigPath -Value ([ordered]@{
     totalLaps = 999
     sectorCount = 3
     countdownMs = 1000
-    formationHoldMs = 500
     leaseTtlMs = 30000
     renewIntervalMs = 10000
     minimumGatePasses = 3
@@ -350,6 +354,7 @@ $pilotLoad = $null
 $coordinator = $null
 $virtualStackStarted = $false
 $operatorToken = New-RandomToken
+$gameplayToken = New-RandomToken
 try {
     $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
     $raceControl = Start-Process -FilePath $npm -WindowStyle Hidden -PassThru `
@@ -368,11 +373,13 @@ try {
         CarCount = $CarCount
         FrameRate = 50
         ClipDurationSeconds = $ReplayClipDurationSeconds
-        InputAlreadyUpright = $true
+        InputAlreadyUpright = $InputAlreadyUpright
         SpreadStartPositions = $true
         SpreadStartMaxPercent = $SpreadStartMaxPercent
         RaceControlWsUrl = "ws://${ListenHost}:$RaceControlPort/ws/races/$raceID"
         RaceControlViewerToken = [string]$devVars['VIEWER_TOKEN']
+        HealthRecoveryMode = 'pit-marker'
+        GameplayToken = $gameplayToken
         NoOpen = $true
     }
     if ([string]::IsNullOrWhiteSpace($ReplayProfileManifestPath)) {
@@ -389,15 +396,23 @@ try {
     $markerReceiver = Start-Process -FilePath $MomoExecutable -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $runRoot 'marker-receiver.stdout.log') `
         -RedirectStandardError (Join-Path $runRoot 'marker-receiver.stderr.log') `
-        -ArgumentList @('--no-google-stun', 'p2p-marker-recv', '--manifest-url', $manifestUrl, '--connect-parallelism', '4', '--connect-timeout-ms', '20000')
+        -ArgumentList @('--no-google-stun', 'p2p-marker-recv', '--manifest-url', $manifestUrl, '--connect-parallelism', "$MarkerConnectParallelism", '--connect-timeout-ms', '20000')
+    $markerReadyTimeoutSeconds = [Math]::Max(
+        90,
+        [Math]::Ceiling(30.0 * $CarCount / $MarkerConnectParallelism)
+    )
     & $PythonExecutable (Join-Path $PSScriptRoot 'Wait-MarkerLumaV2Ready.py') `
-        --required-source-count $CarCount --timeout-seconds 90 --stable-seconds 2
+        --required-source-count $CarCount --timeout-seconds $markerReadyTimeoutSeconds --stable-seconds 2
     if ($LASTEXITCODE -ne 0) { throw 'Marker Receiver did not publish all requested MLY2 sources.' }
 
+    $gpuObserverArguments = @((Join-Path $PSScriptRoot 'Run-GpuMarkerObserverLumaV2.py'), '--required-source-count', "$CarCount", '--duration-seconds', '0', '--initial-detection-hz', "$DetectionHz")
+    if (-not $AdaptiveDetection) {
+        $gpuObserverArguments += '--no-adaptive'
+    }
     $gpuObserver = Start-Process -FilePath $PythonExecutable -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $runRoot 'gpu-marker-observer.stdout.log') `
         -RedirectStandardError (Join-Path $runRoot 'gpu-marker-observer.stderr.log') `
-        -ArgumentList @((Join-Path $PSScriptRoot 'Run-GpuMarkerObserverLumaV2.py'), '--required-source-count', "$CarCount", '--duration-seconds', '0', '--initial-detection-hz', "$DetectionHz")
+        -ArgumentList $gpuObserverArguments
 
     $pilotLoadArguments = @('-relay-url', $relayBaseUrl, '-source-count', "$CarCount", '-observers-per-source', '0', '-pilot-sources', ($sourceIDs -join ','), '-listen', "${ListenHost}:$PilotLoadPort")
     if (-not [string]::IsNullOrWhiteSpace($CommandReplayJsonl)) {
@@ -436,6 +451,7 @@ try {
         TIMING_INGEST_TOKEN = [string]$devVars['TIMING_INGEST_TOKEN']
         TIMING_AUTHORITY_TOKEN = [string]$devVars['TIMING_AUTHORITY_TOKEN']
         COORDINATOR_OPERATOR_TOKEN = $operatorToken
+        MOMO_RELAY_GAMEPLAY_TOKEN = $gameplayToken
     }
     $savedEnvironment = @{}
     try {
@@ -466,6 +482,8 @@ try {
         sourceVideoOffsetsEnabled = $true
         spreadStartMaxPercent = $SpreadStartMaxPercent
         replayClipDurationSeconds = $ReplayClipDurationSeconds
+        adaptiveDetection = $AdaptiveDetection
+        healthRecoveryMode = 'pit-marker'
         replayProfileManifestPath = if ([string]::IsNullOrWhiteSpace($ReplayProfileManifestPath)) { $null } else { [IO.Path]::GetFullPath($ReplayProfileManifestPath) }
         commandReplayJsonl = if ([string]::IsNullOrWhiteSpace($CommandReplayJsonl)) { $null } else { [IO.Path]::GetFullPath($CommandReplayJsonl) }
         raceControlPid = $raceControl.Id
@@ -487,11 +505,16 @@ try {
 
     $headers = @{ Authorization = "Bearer $operatorToken"; 'Content-Type' = 'application/json' }
     $prepareID = "virtual-prepare-$($runStamp.ToLowerInvariant())"
+    $countdownID = "virtual-countdown-$($runStamp.ToLowerInvariant())"
     $startID = "virtual-start-$($runStamp.ToLowerInvariant())"
     $prepare = Invoke-RestMethod -Method Post -Uri "$coordinatorBaseUrl/api/v1/prepare" -Headers $headers `
         -Body (@{ commandId = $prepareID; legacyPublisherStopped = $true } | ConvertTo-Json -Compress) -TimeoutSec 30
     if (-not $prepare.ok) { throw "Coordinator Prepare failed: $($prepare.error)" }
-    $start = Invoke-RestMethod -Method Post -Uri "$coordinatorBaseUrl/api/v1/start-sequence" -Headers $headers `
+    $countdown = Invoke-RestMethod -Method Post -Uri "$coordinatorBaseUrl/api/v1/countdown" -Headers $headers `
+        -Body (@{ commandId = $countdownID } | ConvertTo-Json -Compress) -TimeoutSec 30
+    if (-not $countdown.ok) { throw "Coordinator Countdown failed: $($countdown.error)" }
+    Start-Sleep -Milliseconds 1100
+    $start = Invoke-RestMethod -Method Post -Uri "$coordinatorBaseUrl/api/v1/start" -Headers $headers `
         -Body (@{ commandId = $startID } | ConvertTo-Json -Compress) -TimeoutSec 30
     if (-not $start.ok) { throw "Coordinator Start failed: $($start.error)" }
 
@@ -604,4 +627,5 @@ catch {
 }
 finally {
     $operatorToken = $null
+    $gameplayToken = $null
 }

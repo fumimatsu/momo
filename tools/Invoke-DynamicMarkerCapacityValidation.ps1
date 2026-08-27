@@ -18,6 +18,7 @@ param(
     [int]$RuntimeSampleIntervalMs = 1000,
     [string]$MomoExecutable = '',
     [string]$Python = '',
+    [string]$FFmpegPath = '',
     [string]$OutputDirectory = '',
     [switch]$NoAdaptive,
     [switch]$NoRuntimeMetrics,
@@ -233,8 +234,16 @@ try {
         -ArgumentList $receiverArguments
 
     foreach ($count in $SourceCounts) {
-        & (Join-Path $PSScriptRoot 'Start-VirtualFiveCarDemo.ps1') `
-            -InputPath $InputPath -CarCount $count -FrameRate $FrameRate -NoOpen
+        $virtualArguments = @{
+            InputPath = $InputPath
+            CarCount = $count
+            FrameRate = $FrameRate
+            NoOpen = $true
+        }
+        if (-not [string]::IsNullOrWhiteSpace($FFmpegPath)) {
+            $virtualArguments.FFmpegPath = $FFmpegPath
+        }
+        & (Join-Path $PSScriptRoot 'Start-VirtualFiveCarDemo.ps1') @virtualArguments
         if ($LASTEXITCODE -ne 0) {
             throw "Virtual source startup failed for $count sources"
         }

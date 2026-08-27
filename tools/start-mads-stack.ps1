@@ -2,7 +2,7 @@ param(
     [string]$RaceControlRepository = 'D:\src\momo-race-control',
     [string]$RaceId = 'race-test',
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
-    [string]$HealthRecoveryMode = 'hybrid',
+    [string]$HealthRecoveryMode = 'pit-marker',
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [string]$AyameSignalingUrl = $env:MOMO_AYAME_SIGNALING_URL,
     [string]$AyamePilotRoom113 = $env:MOMO_AYAME_PILOT_ROOM_113,

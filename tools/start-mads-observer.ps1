@@ -34,7 +34,7 @@ param(
     [string]$RaceDirectoryRefreshScript = $env:MOMO_RACE_DIRECTORY_REFRESH_SCRIPT,
     [string[]]$GameplayAllowCidr = @('127.0.0.1/32'),
     [ValidateSet('legacy', 'pit-marker', 'hybrid', 'disabled')]
-    [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'hybrid' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
+    [string]$HealthRecoveryMode = $(if ([string]::IsNullOrWhiteSpace($env:MOMO_RELAY_HEALTH_RECOVERY_MODE)) { 'pit-marker' } else { $env:MOMO_RELAY_HEALTH_RECOVERY_MODE }),
     [bool]$VehicleDamageEnabled = $true,
     [ValidateRange(1, 86400)]
     [int]$FuelDriveDurationSeconds = 120,

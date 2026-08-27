@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
             now = time.monotonic()
             topology = reader.read_topology()
             active = 0
+            active_source_ids: list[str] = []
             if topology is not None:
                 sample_qpc = reader.query_performance_counter()
                 for snapshot in reader.read_sources(topology):
@@ -51,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if 0 <= age_ms <= args.maximum_frame_age_ms:
                         active += 1
+                        active_source_ids.append(snapshot.source_id)
                 ready = (
                     len(topology.source_ids) == args.required_source_count
                     and active == args.required_source_count
@@ -75,7 +77,8 @@ def main(argv: list[str] | None = None) -> int:
                 configured = len(topology.source_ids) if topology else 0
                 print(
                     f"Waiting for MLY2: configured={configured} "
-                    f"active={active} required={args.required_source_count}",
+                    f"active={active} required={args.required_source_count} "
+                    f"activeSources={','.join(active_source_ids)}",
                     flush=True,
                 )
                 last_status_at = now
