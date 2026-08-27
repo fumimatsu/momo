@@ -81,7 +81,7 @@ class P2PReceiverClient : public std::enable_shared_from_this<P2PReceiverClient>
   boost::asio::io_context& ioc_;
   RTCManager* manager_;
   P2PReceiverClientConfig config_;
-  std::unique_ptr<Websocket> ws_;
+  std::shared_ptr<Websocket> ws_;
   std::shared_ptr<RTCConnection> connection_;
   std::vector<IceCandidate> pending_candidates_;
 

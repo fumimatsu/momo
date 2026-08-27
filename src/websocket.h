@@ -21,7 +21,7 @@
 //
 // 任意のスレッドから WriteText を呼ぶことで書き込みができ、
 // 書き込み完了のコールバックを待たずに次の WriteText を呼ぶことができる。
-class Websocket {
+class Websocket : public std::enable_shared_from_this<Websocket> {
  public:
   typedef boost::beast::websocket::stream<boost::asio::ip::tcp::socket>
       websocket_t;

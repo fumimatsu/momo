@@ -99,7 +99,7 @@ class AyameClient : public std::enable_shared_from_this<AyameClient>,
 
  private:
   boost::asio::io_context& ioc_;
-  std::unique_ptr<Websocket> ws_;
+  std::shared_ptr<Websocket> ws_;
 
   std::atomic_bool destructed_ = {false};
   std::atomic_bool shutting_down_ = {false};

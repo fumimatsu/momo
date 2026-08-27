@@ -25,7 +25,7 @@ P2PWebsocketSession::P2PWebsocketSession(boost::asio::io_context& ioc,
                                          boost::asio::ip::tcp::socket socket,
                                          RTCManager* rtc_manager,
                                          P2PWebsocketSessionConfig config)
-    : ws_(new Websocket(std::move(socket))),
+    : ws_(std::make_shared<Websocket>(std::move(socket))),
       rtc_manager_(rtc_manager),
       config_(std::move(config)),
       watchdog_(ioc, std::bind(&P2PWebsocketSession::OnWatchdogExpired, this)) {

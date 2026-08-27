@@ -160,7 +160,7 @@ void Websocket::Connect(const std::string& url, connect_callback_t on_connect) {
   // DNS ルックアップ
   resolver_->async_resolve(
       parts_.host, parts_.GetPort(),
-      std::bind(&Websocket::OnResolve, this, std::placeholders::_1,
+      std::bind(&Websocket::OnResolve, shared_from_this(), std::placeholders::_1,
                 std::placeholders::_2));
 }
 
@@ -177,11 +177,13 @@ void Websocket::OnResolve(
   if (IsSSL()) {
     boost::asio::async_connect(
         wss_->next_layer().next_layer(), results.begin(), results.end(),
-        std::bind(&Websocket::OnSSLConnect, this, std::placeholders::_1));
+        std::bind(&Websocket::OnSSLConnect, shared_from_this(),
+                  std::placeholders::_1));
   } else {
     boost::asio::async_connect(
         ws_->next_layer(), results.begin(), results.end(),
-        std::bind(&Websocket::OnConnect, this, std::placeholders::_1));
+        std::bind(&Websocket::OnConnect, shared_from_this(),
+                  std::placeholders::_1));
   }
 }
 
@@ -195,7 +197,8 @@ void Websocket::OnSSLConnect(boost::system::error_code ec) {
   // SSL のハンドシェイク
   wss_->next_layer().async_handshake(
       boost::asio::ssl::stream_base::client,
-      std::bind(&Websocket::OnSSLHandshake, this, std::placeholders::_1));
+      std::bind(&Websocket::OnSSLHandshake, shared_from_this(),
+                std::placeholders::_1));
 }
 
 void Websocket::OnSSLHandshake(boost::system::error_code ec) {
@@ -209,7 +212,8 @@ void Websocket::OnSSLHandshake(boost::system::error_code ec) {
   // Websocket のハンドシェイク
   wss_->async_handshake(
       parts_.host, parts_.path_query_fragment,
-      std::bind(&Websocket::OnHandshake, this, std::placeholders::_1));
+      std::bind(&Websocket::OnHandshake, shared_from_this(),
+                std::placeholders::_1));
 }
 
 void Websocket::OnConnect(boost::system::error_code ec) {
@@ -222,7 +226,8 @@ void Websocket::OnConnect(boost::system::error_code ec) {
   // Websocket のハンドシェイク
   ws_->async_handshake(
       parts_.host, parts_.path_query_fragment,
-      std::bind(&Websocket::OnHandshake, this, std::placeholders::_1));
+      std::bind(&Websocket::OnHandshake, shared_from_this(),
+                std::placeholders::_1));
 }
 
 void Websocket::OnHandshake(boost::system::error_code ec) {
@@ -235,7 +240,8 @@ void Websocket::Accept(
     connect_callback_t on_connect) {
   on_connect_ = std::move(on_connect);
   ws_->async_accept(
-      req, std::bind(&Websocket::OnAccept, this, std::placeholders::_1));
+      req, std::bind(&Websocket::OnAccept, shared_from_this(),
+                     std::placeholders::_1));
 }
 
 void Websocket::OnAccept(boost::system::error_code ec) {
@@ -244,18 +250,21 @@ void Websocket::OnAccept(boost::system::error_code ec) {
 }
 
 void Websocket::Read(read_callback_t on_read) {
-  boost::asio::post(strand_,
-                    std::bind(&Websocket::DoRead, this, std::move(on_read)));
+  boost::asio::post(
+      strand_, std::bind(&Websocket::DoRead, shared_from_this(),
+                         std::move(on_read)));
 }
 
 void Websocket::DoRead(read_callback_t on_read) {
   if (IsSSL()) {
     wss_->async_read(read_buffer_,
-                     std::bind(&Websocket::OnRead, this, std::move(on_read),
+                     std::bind(&Websocket::OnRead, shared_from_this(),
+                               std::move(on_read),
                                std::placeholders::_1, std::placeholders::_2));
   } else {
     ws_->async_read(read_buffer_,
-                    std::bind(&Websocket::OnRead, this, std::move(on_read),
+                    std::bind(&Websocket::OnRead, shared_from_this(),
+                              std::move(on_read),
                               std::placeholders::_1, std::placeholders::_2));
   }
 }
@@ -298,7 +307,8 @@ void Websocket::ConnectProxy(const std::string& url,
   // proxy サーバーの DNS 解決を行う
   resolver_->async_resolve(
       proxy_parts_.host, proxy_parts_.GetPort(),
-      std::bind(&Websocket::OnResolveProxy, this, std::placeholders::_1,
+      std::bind(&Websocket::OnResolveProxy, shared_from_this(),
+                std::placeholders::_1,
                 std::placeholders::_2));
 }
 
@@ -313,7 +323,8 @@ void Websocket::OnResolveProxy(
 
   boost::asio::async_connect(
       *proxy_socket_, results.begin(), results.end(),
-      std::bind(&Websocket::OnConnectProxy, this, std::placeholders::_1));
+      std::bind(&Websocket::OnConnectProxy, shared_from_this(),
+                std::placeholders::_1));
 }
 
 void Websocket::OnConnectProxy(boost::system::error_code ec) {
@@ -334,7 +345,8 @@ void Websocket::OnConnectProxy(boost::system::error_code ec) {
       "Basic " + webrtc::Base64Encode(proxy_username_ + ":" + proxy_password_));
   boost::beast::http::async_write(
       *proxy_socket_, proxy_req_,
-      std::bind(&Websocket::OnWriteProxy, this, std::placeholders::_1,
+      std::bind(&Websocket::OnWriteProxy, shared_from_this(),
+                std::placeholders::_1,
                 std::placeholders::_2));
 }
 
@@ -354,7 +366,8 @@ void Websocket::OnWriteProxy(boost::system::error_code ec,
   proxy_resp_parser_->skip(true);
   boost::beast::http::async_read(
       *proxy_socket_, proxy_buffer_, *proxy_resp_parser_,
-      std::bind(&Websocket::OnReadProxy, this, std::placeholders::_1,
+      std::bind(&Websocket::OnReadProxy, shared_from_this(),
+                std::placeholders::_1,
                 std::placeholders::_2));
 }
 
@@ -382,7 +395,8 @@ void Websocket::OnReadProxy(boost::system::error_code ec,
 
   wss_->next_layer().async_handshake(
       boost::asio::ssl::stream_base::client,
-      std::bind(&Websocket::OnSSLHandshake, this, std::placeholders::_1));
+      std::bind(&Websocket::OnSSLHandshake, shared_from_this(),
+                std::placeholders::_1));
 }
 
 void Websocket::OnRead(read_callback_t on_read,
@@ -405,7 +419,8 @@ void Websocket::OnRead(read_callback_t on_read,
 }
 
 void Websocket::WriteText(std::string text, write_callback_t on_write) {
-  boost::asio::post(strand_, std::bind(&Websocket::DoWriteText, this,
+  boost::asio::post(strand_, std::bind(&Websocket::DoWriteText,
+                                       shared_from_this(),
                                        std::move(text), std::move(on_write)));
 }
 
@@ -433,12 +448,13 @@ void Websocket::DoWrite() {
   if (IsSSL()) {
     wss_->text(data->text);
     wss_->async_write(data->buffer.data(),
-                      std::bind(&Websocket::OnWrite, this,
+                      std::bind(&Websocket::OnWrite, shared_from_this(),
                                 std::placeholders::_1, std::placeholders::_2));
   } else {
     ws_->text(data->text);
     ws_->async_write(data->buffer.data(),
-                     std::bind(&Websocket::OnWrite, this, std::placeholders::_1,
+                     std::bind(&Websocket::OnWrite, shared_from_this(),
+                               std::placeholders::_1,
                                std::placeholders::_2));
   }
 }
@@ -465,18 +481,21 @@ void Websocket::OnWrite(boost::system::error_code ec,
 }
 
 void Websocket::Close(close_callback_t on_close) {
-  boost::asio::post(strand_,
-                    std::bind(&Websocket::DoClose, this, std::move(on_close)));
+  boost::asio::post(
+      strand_, std::bind(&Websocket::DoClose, shared_from_this(),
+                         std::move(on_close)));
 }
 
 void Websocket::DoClose(close_callback_t on_close) {
   if (IsSSL()) {
     wss_->async_close(boost::beast::websocket::close_code::normal,
-                      std::bind(&Websocket::OnClose, this, std::move(on_close),
+                      std::bind(&Websocket::OnClose, shared_from_this(),
+                                std::move(on_close),
                                 std::placeholders::_1));
   } else {
     ws_->async_close(boost::beast::websocket::close_code::normal,
-                     std::bind(&Websocket::OnClose, this, std::move(on_close),
+                     std::bind(&Websocket::OnClose, shared_from_this(),
+                               std::move(on_close),
                                std::placeholders::_1));
   }
 }

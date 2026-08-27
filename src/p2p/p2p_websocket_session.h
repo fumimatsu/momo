@@ -68,7 +68,7 @@ class P2PWebsocketSession
                       const std::string sdp) override;
 
  private:
-  std::unique_ptr<Websocket> ws_;
+  std::shared_ptr<Websocket> ws_;
 
   WatchDog watchdog_;
 

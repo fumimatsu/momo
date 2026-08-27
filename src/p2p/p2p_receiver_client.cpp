@@ -30,10 +30,10 @@ P2PReceiverClient::P2PReceiverClient(boost::asio::io_context& ioc,
   }
 
   if (parts.scheme == "wss") {
-    ws_ = std::make_unique<Websocket>(Websocket::ssl_tag(), ioc_, false, "",
+    ws_ = std::make_shared<Websocket>(Websocket::ssl_tag(), ioc_, false, "",
                                       "");
   } else if (parts.scheme == "ws") {
-    ws_ = std::make_unique<Websocket>(ioc_);
+    ws_ = std::make_shared<Websocket>(ioc_);
   } else {
     RTC_LOG(LS_ERROR) << "P2P receiver endpoint must use ws or wss: "
                       << config_.endpoint;

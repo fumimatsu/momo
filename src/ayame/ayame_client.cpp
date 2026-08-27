@@ -107,10 +107,11 @@ void AyameClient::Reset() {
 
   URLParts parts;
   if (ParseURL(parts)) {
-    ws_.reset(new Websocket(Websocket::ssl_tag(), ioc_, config_.insecure,
-                            config_.client_cert, config_.client_key));
+    ws_ = std::make_shared<Websocket>(Websocket::ssl_tag(), ioc_,
+                                      config_.insecure, config_.client_cert,
+                                      config_.client_key);
   } else {
-    ws_.reset(new Websocket(ioc_));
+    ws_ = std::make_shared<Websocket>(ioc_);
   }
 }
 
