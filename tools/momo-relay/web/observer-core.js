@@ -606,15 +606,21 @@ export function estimateLapPacedProgress(
   };
 }
 
-export function normalizeLapHistory(state, maximumEntries = 64) {
+export const OBSERVER_LAP_HISTORY_PER_CAR = 5;
+
+export function normalizeLapHistory(state, maximumPerCar = OBSERVER_LAP_HISTORY_PER_CAR) {
   if (!Array.isArray(state?.lapHistory)) return [];
-  const limit = Math.max(0, Math.min(64, Math.floor(finiteNumber(maximumEntries) ?? 64)));
+  const perCarLimit = Math.max(0, Math.min(
+    20,
+    Math.floor(finiteNumber(maximumPerCar) ?? OBSERVER_LAP_HISTORY_PER_CAR),
+  ));
   const sectorCountByCar = new Map((Array.isArray(state?.standings) ? state.standings : [])
     .map((standing) => [
       typeof standing?.carId === 'string' ? standing.carId.trim() : '',
       finiteNumber(standing?.sectorCount),
     ])
     .filter(([carId, sectorCount]) => carId && Number.isInteger(sectorCount) && sectorCount > 0));
+  const countByCar = new Map();
   return state.lapHistory
     .map((entry) => {
       const carId = typeof entry?.carId === 'string' ? entry.carId.trim() : '';
@@ -649,7 +655,12 @@ export function normalizeLapHistory(state, maximumEntries = 64) {
     .sort((left, right) => right.completedAtRaceMs - left.completedAtRaceMs
       || left.carId.localeCompare(right.carId)
       || right.lap - left.lap)
-    .slice(0, limit);
+    .filter((entry) => {
+      const count = countByCar.get(entry.carId) || 0;
+      if (count >= perCarLimit) return false;
+      countByCar.set(entry.carId, count + 1);
+      return true;
+    });
 }
 
 export function formatGap(milliseconds) {

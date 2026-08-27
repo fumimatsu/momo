@@ -52,9 +52,10 @@ func BenchmarkRaceStateSourceFanout(b *testing.B) {
 			for index := range carIDs {
 				carIDs[index] = fmt.Sprintf("CAR-%d", index+1)
 			}
-			b.SetBytes(int64(len(state) * sourceCount))
+			b.SetBytes(int64(len(state)))
 			b.ReportAllocs()
 			b.ResetTimer()
+			projectedBytes := 0
 			for iteration := 0; iteration < b.N; iteration++ {
 				messages, err := raceMessagesForCars(state, carIDs)
 				if err != nil {
@@ -63,7 +64,12 @@ func BenchmarkRaceStateSourceFanout(b *testing.B) {
 				if len(messages) > 0 {
 					benchmarkRaceStateMessageSink = messages[len(messages)-1]
 				}
+				projectedBytes = 0
+				for _, message := range messages {
+					projectedBytes += len(message)
+				}
 			}
+			b.ReportMetric(float64(projectedBytes), "projected_B/op")
 		})
 	}
 }
@@ -99,9 +105,9 @@ func benchmarkRaceStatePayload(tb testing.TB, carCount int) []byte {
 		standings = append(standings, standing)
 	}
 
-	lapHistory := make([]map[string]any, 0, 64)
-	for lap := 20; lap >= 1 && len(lapHistory) < 64; lap-- {
-		for index := 0; index < carCount && len(lapHistory) < 64; index++ {
+	lapHistory := make([]map[string]any, 0, carCount*maximumLiveLapHistoryPerCar)
+	for lap := maximumLiveLapHistoryPerCar; lap >= 1; lap-- {
+		for index := 0; index < carCount; index++ {
 			lapHistory = append(lapHistory, map[string]any{
 				"carId":             fmt.Sprintf("CAR-%d", index+1),
 				"lap":               lap,

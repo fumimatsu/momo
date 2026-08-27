@@ -62,7 +62,7 @@ func TestH264CodecAdvertisesPacketLossFeedback(t *testing.T) {
 }
 
 func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
-	message, err := raceMessageForCar([]byte(`{"type":"race_state","version":2,"standings":[]}`), "CP-2")
+	message, err := raceMessageForCar([]byte(`{"type":"race_state","version":2,"standings":[],"lapHistory":[]}`), "CP-2")
 	if err != nil {
 		t.Fatalf("raceMessageForCar returned an error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestRaceMessageForCarAddsViewerCarID(t *testing.T) {
 
 func TestRaceMessagesForCarsAddDistinctViewerCarIDs(t *testing.T) {
 	messages, err := raceMessagesForCars(
-		[]byte(`{"type":"race_state","version":2,"standings":[]}`),
+		[]byte(`{"type":"race_state","version":2,"standings":[],"lapHistory":[]}`),
 		[]string{"CP-1", "CP-2"},
 	)
 	if err != nil {
@@ -100,6 +100,79 @@ func TestRaceMessagesForCarsAddDistinctViewerCarIDs(t *testing.T) {
 		if payload.ViewerCarID != want {
 			t.Fatalf("messages[%d].viewerCarId = %q, want %q", index, payload.ViewerCarID, want)
 		}
+	}
+}
+
+func TestRaceStateLapHistoryIsProjectedByAudience(t *testing.T) {
+	history := make([]map[string]any, 0, 14)
+	for lap := 7; lap >= 1; lap-- {
+		for _, carID := range []string{"CP-1", "CP-2"} {
+			history = append(history, map[string]any{
+				"carId": carID, "lap": lap, "completedAtRaceMs": lap * 1000, "lapTimeMs": 1000,
+			})
+		}
+	}
+	state, err := json.Marshal(map[string]any{
+		"type": "race_state", "version": 2, "standings": []any{}, "lapHistory": history,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pilotMessage, err := raceMessageForCar(state, "CP-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pilot struct {
+		ViewerCarID string `json:"viewerCarId"`
+		LapHistory  []struct {
+			CarID string `json:"carId"`
+			Lap   int    `json:"lap"`
+		} `json:"lapHistory"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(pilotMessage, "RACE:")), &pilot); err != nil {
+		t.Fatal(err)
+	}
+	if pilot.ViewerCarID != "CP-2" || len(pilot.LapHistory) != 7 {
+		t.Fatalf("pilot projection = %+v", pilot)
+	}
+	for _, entry := range pilot.LapHistory {
+		if entry.CarID != "CP-2" {
+			t.Fatalf("pilot received another car history: %+v", entry)
+		}
+	}
+
+	observerMessage, err := raceObserverMessage(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observer struct {
+		LapHistory []struct {
+			CarID string `json:"carId"`
+			Lap   int    `json:"lap"`
+		} `json:"lapHistory"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(observerMessage, "RACE:")), &observer); err != nil {
+		t.Fatal(err)
+	}
+	if len(observer.LapHistory) != 10 {
+		t.Fatalf("observer history = %d, want 10", len(observer.LapHistory))
+	}
+	counts := map[string]int{}
+	for _, entry := range observer.LapHistory {
+		counts[entry.CarID]++
+	}
+	if counts["CP-1"] != 5 || counts["CP-2"] != 5 {
+		t.Fatalf("observer per-car history = %+v", counts)
+	}
+}
+
+func TestRaceStateProjectionFailsClosedWithoutLapHistory(t *testing.T) {
+	if _, err := raceMessageForCar([]byte(`{"type":"race_state","version":2,"standings":[]}`), "CP-1"); err == nil {
+		t.Fatal("race state without lapHistory was accepted")
+	}
+	if _, err := raceMessageForCar([]byte(`{"type":"race_state","version":2,"standings":[],"lapHistory":null}`), "CP-1"); err == nil {
+		t.Fatal("race state with null lapHistory was accepted")
 	}
 }
 
@@ -168,7 +241,7 @@ func TestConnectAyamePilotClassifiesPeerBye(t *testing.T) {
 }
 
 func TestRaceMessageForCarPreservesTimingStateV2(t *testing.T) {
-	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"startSignalMode":"lights_out","roster":{"schemaVersion":1,"revision":7,"participants":[{"vehicleId":"vehicle-02","sourceId":"11.4","carId":"CP-2","carName":"GR Supra","displayNumber":"7","pilotId":"pilot-aya","pilotNo":"07","pilotName":"AYA","teamName":"SDK RACING","photoUrl":"https://assets.example.test/pilots/aya.webp","comment":"Keep pushing.","color":"#53DBEF","driveSessionId":"ds_aya_1"}],"updatedAtUnixMs":1787000000000,"locked":true,"raceRunId":"rr_123"},"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200,"directionStatus":"wrong_way"}]}`)
+	state := []byte(`{"type":"race_state","version":2,"raceRunId":"rr_123","sequence":17,"startSignalMode":"lights_out","roster":{"schemaVersion":1,"revision":7,"participants":[{"vehicleId":"vehicle-02","sourceId":"11.4","carId":"CP-2","carName":"GR Supra","displayNumber":"7","pilotId":"pilot-aya","pilotNo":"07","pilotName":"AYA","teamName":"SDK RACING","photoUrl":"https://assets.example.test/pilots/aya.webp","comment":"Keep pushing.","color":"#53DBEF","driveSessionId":"ds_aya_1"}],"updatedAtUnixMs":1787000000000,"locked":true,"raceRunId":"rr_123"},"standings":[{"carId":"CP-1","position":1,"lap":4,"status":"racing"},{"carId":"CP-2","position":2,"lap":3,"status":"racing","lapDeltaToAhead":1,"lappingCarBehindId":"CP-1","lappingGapMs":1200,"directionStatus":"wrong_way"}],"lapHistory":[]}`)
 	message, err := raceMessageForCar(state, "CP-2")
 	if err != nil {
 		t.Fatalf("raceMessageForCar returned an error: %v", err)

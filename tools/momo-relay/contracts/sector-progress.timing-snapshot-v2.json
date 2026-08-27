@@ -17,6 +17,14 @@
       "sectorCount": 3,
       "lastMarkerIndex": 2,
       "lastMarkerRaceMs": 29600,
+      "routeProgress": {
+        "gateId": "mini-07",
+        "gateIndex": 7,
+        "gateCount": 12,
+        "courseProgress": 0.58,
+        "nextCourseProgress": 0.64,
+        "raceTimeMs": 29800
+      },
       "sectorTimes": [
         { "sector": 1, "lastMs": 4500, "bestMs": 4400 },
         { "sector": 2, "lastMs": 4700 },

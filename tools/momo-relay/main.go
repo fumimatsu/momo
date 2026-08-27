@@ -440,6 +440,16 @@ type raceStateEnvelope struct {
 	Standings []raceStateStanding `json:"standings"`
 }
 
+const (
+	maximumLiveLapHistoryPerCar     = 20
+	maximumObserverLapHistoryPerCar = 5
+)
+
+type raceLapHistoryProjectionEntry struct {
+	carID string
+	raw   json.RawMessage
+}
+
 type raceStateParticipant struct {
 	CarID string `json:"carId"`
 	Color string `json:"color"`
@@ -3508,13 +3518,14 @@ func raceMessagesForCars(state []byte, carIDs []string) ([]string, error) {
 	if len(carIDs) == 0 {
 		return []string{}, nil
 	}
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(state, &payload); err != nil {
-		return nil, fmt.Errorf("decode race state: %w", err)
+	payload, history, err := decodeRaceStateProjection(state)
+	if err != nil {
+		return nil, err
 	}
 	messages := make([]string, 0, len(carIDs))
 	for _, carID := range carIDs {
-		if strings.TrimSpace(carID) == "" {
+		carID = strings.TrimSpace(carID)
+		if carID == "" {
 			return nil, errors.New("race car ID is empty")
 		}
 		carIDJSON, err := json.Marshal(carID)
@@ -3522,6 +3533,11 @@ func raceMessagesForCars(state []byte, carIDs []string) ([]string, error) {
 			return nil, fmt.Errorf("encode race car ID: %w", err)
 		}
 		payload["viewerCarId"] = carIDJSON
+		projectedHistory, err := marshalProjectedLapHistory(history, carID, maximumLiveLapHistoryPerCar)
+		if err != nil {
+			return nil, err
+		}
+		payload["lapHistory"] = projectedHistory
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return nil, fmt.Errorf("encode race state: %w", err)
@@ -3529,6 +3545,93 @@ func raceMessagesForCars(state []byte, carIDs []string) ([]string, error) {
 		messages = append(messages, "RACE:"+string(encoded))
 	}
 	return messages, nil
+}
+
+func raceObserverMessage(state []byte) (string, error) {
+	payload, history, err := decodeRaceStateProjection(state)
+	if err != nil {
+		return "", err
+	}
+	projectedHistory, err := marshalProjectedLapHistory(history, "", maximumObserverLapHistoryPerCar)
+	if err != nil {
+		return "", err
+	}
+	payload["lapHistory"] = projectedHistory
+	delete(payload, "viewerCarId")
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode observer race state: %w", err)
+	}
+	return "RACE:" + string(encoded), nil
+}
+
+func decodeRaceStateProjection(state []byte) (map[string]json.RawMessage, []raceLapHistoryProjectionEntry, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(state, &payload); err != nil {
+		return nil, nil, fmt.Errorf("decode race state: %w", err)
+	}
+	rawHistory, exists := payload["lapHistory"]
+	if !exists {
+		return nil, nil, errors.New("decode race state: lapHistory is required")
+	}
+	if strings.TrimSpace(string(rawHistory)) == "null" {
+		return nil, nil, errors.New("decode race state: lapHistory must be an array")
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(rawHistory, &entries); err != nil {
+		return nil, nil, fmt.Errorf("decode race state lapHistory: %w", err)
+	}
+	history := make([]raceLapHistoryProjectionEntry, 0, len(entries))
+	countByCar := make(map[string]int)
+	for index, raw := range entries {
+		var reference struct {
+			CarID string `json:"carId"`
+		}
+		if err := json.Unmarshal(raw, &reference); err != nil {
+			return nil, nil, fmt.Errorf("decode race state lapHistory[%d]: %w", index, err)
+		}
+		reference.CarID = strings.TrimSpace(reference.CarID)
+		if reference.CarID == "" {
+			return nil, nil, fmt.Errorf("decode race state lapHistory[%d]: carId is required", index)
+		}
+		countByCar[reference.CarID]++
+		if countByCar[reference.CarID] > maximumLiveLapHistoryPerCar {
+			return nil, nil, fmt.Errorf(
+				"decode race state lapHistory: car %q exceeds %d live entries",
+				reference.CarID,
+				maximumLiveLapHistoryPerCar,
+			)
+		}
+		history = append(history, raceLapHistoryProjectionEntry{carID: reference.CarID, raw: raw})
+	}
+	return payload, history, nil
+}
+
+func marshalProjectedLapHistory(
+	history []raceLapHistoryProjectionEntry,
+	carID string,
+	maximumPerCar int,
+) (json.RawMessage, error) {
+	if maximumPerCar <= 0 {
+		return nil, errors.New("lap history projection limit must be positive")
+	}
+	projected := make([]json.RawMessage, 0, len(history))
+	countByCar := make(map[string]int)
+	for _, entry := range history {
+		if carID != "" && entry.carID != carID {
+			continue
+		}
+		if countByCar[entry.carID] >= maximumPerCar {
+			continue
+		}
+		countByCar[entry.carID]++
+		projected = append(projected, entry.raw)
+	}
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		return nil, fmt.Errorf("encode projected lapHistory: %w", err)
+	}
+	return encoded, nil
 }
 
 func (server *relayServer) startRaceControl(ctx context.Context, raceURL string, viewerToken string) {
@@ -3610,7 +3713,12 @@ func (server *relayServer) connectRaceControl(ctx context.Context, raceURL strin
 			log.Printf("ignore unsupported Race Control message: type=%q version=%d", envelope.Type, envelope.Version)
 			continue
 		}
-		server.publishGlobalRaceState("RACE:" + string(payload))
+		observerMessage, err := raceObserverMessage(payload)
+		if err != nil {
+			log.Printf("ignore Race Control observer projection: %v", err)
+			continue
+		}
+		server.publishGlobalRaceState(observerMessage)
 		if server.recorder != nil {
 			server.recorder.RecordRaceState(string(payload), telemetryRaceContext{
 				RaceID:    envelope.RaceID,

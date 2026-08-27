@@ -11,7 +11,7 @@
     "sequence": { "type": "integer", "minimum": 1 },
     "allTimeMode": { "enum": ["elapsed", "countdown"] },
     "standings": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/standing" } },
-    "lapHistory": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/lapHistory" } }
+    "lapHistory": { "type": "array", "maxItems": 1280, "items": { "$ref": "#/$defs/lapHistory" } }
   },
   "$defs": {
     "sectorTime": {
@@ -24,6 +24,19 @@
         "bestMs": { "type": "integer", "minimum": 1 }
       },
       "anyOf": [{ "required": ["lastMs"] }, { "required": ["bestMs"] }]
+    },
+    "routeProgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gateId", "gateIndex", "gateCount", "courseProgress", "nextCourseProgress", "raceTimeMs"],
+      "properties": {
+        "gateId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "gateIndex": { "type": "integer", "minimum": 0, "maximum": 49 },
+        "gateCount": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "courseProgress": { "type": "number", "minimum": 0, "exclusiveMaximum": 1 },
+        "nextCourseProgress": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "raceTimeMs": { "type": "integer", "minimum": 0 }
+      }
     },
     "standing": {
       "type": "object",
@@ -56,6 +69,7 @@
         "sectorCount": { "type": "integer", "minimum": 1, "maximum": 6 },
         "lastMarkerIndex": { "type": "integer", "minimum": 0, "maximum": 5 },
         "lastMarkerRaceMs": { "type": "integer", "minimum": 0 },
+        "routeProgress": { "$ref": "#/$defs/routeProgress" },
         "sectorTimes": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/sectorTime" } }
       },
       "allOf": [

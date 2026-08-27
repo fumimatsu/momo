@@ -3081,24 +3081,22 @@
   }
 
   function adaptRaceStateV2(state) {
-    if (state?.type !== 'race_state' || state?.version !== 2 || !Array.isArray(state.standings)) {
+    if (state?.type !== 'race_state' || state?.version !== 2
+        || !Array.isArray(state.standings) || !Array.isArray(state.lapHistory)) {
       return null;
     }
     const carId = String(state.viewerCarId || RACE_CAR_ID || '').trim();
     const standing = carId ? state.standings.find((item) => item?.carId === carId) : null;
     const runId = typeof state.raceRunId === 'string' ? state.raceRunId : '';
-    const isNewRun = Boolean(runId && runId !== activeRaceRunId);
-    if (isNewRun) {
-      receivedRaceLapHistory.clear();
-    }
     if (runId) {
       activeRaceRunId = runId;
     }
     const lap = normalizeRaceNumber(standing?.lap);
     const lastLapMs = normalizeRaceNumber(standing?.lapTimeMs);
-    const completedLaps = Array.isArray(state.lapHistory)
-      ? state.lapHistory.filter((entry) => entry?.carId === carId)
-      : [];
+    const completedLaps = state.lapHistory
+      .filter((entry) => entry?.carId === carId)
+      .slice(0, RACE_LAP_HISTORY_LIMIT);
+    receivedRaceLapHistory.clear();
     for (const entry of completedLaps) {
       const completedLap = normalizeRaceNumber(entry?.lap);
       const timeMs = normalizeRaceNumber(entry?.lapTimeMs);
@@ -3109,19 +3107,11 @@
         receivedRaceLapHistory.set(completedLap, { timeMs, achievement });
       }
     }
-    if (completedLaps.length === 0) {
-      // 旧形式では、走行中の lapTimeMs は lap のひとつ前の確定タイムを表す。
-      const completedLap = lap === null ? null : Math.max(1,
-        state.phase === 'finished' ? lap : lap - 1);
-      if (completedLap !== null && lastLapMs !== null && lastLapMs > 0) {
-        receivedRaceLapHistory.set(completedLap, { timeMs: lastLapMs, achievement: '' });
-      }
-    }
     const laps = Array.from(receivedRaceLapHistory, ([completedLap, entry]) => ({
       lap: completedLap,
       timeMs: entry.timeMs,
       achievement: entry.achievement,
-    })).sort((left, right) => right.lap - left.lap);
+    })).sort((left, right) => right.lap - left.lap).slice(0, RACE_LAP_HISTORY_LIMIT);
     const overallBestLapCandidates = state.standings
       .map((entry) => normalizeRaceNumber(entry?.bestLapMs))
       .filter((value) => value !== null && value > 0);
