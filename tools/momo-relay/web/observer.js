@@ -33,7 +33,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260825-team-observer-v19';
+} from './observer-core.js?v=20260828-team-observer-v20';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -129,6 +129,7 @@ const seenSectorAchievements = new Set();
 const cameraTitleNodesByCar = new Map();
 const cameraTileNodesByCar = new Map();
 const cameraEffectNodesByCar = new Map();
+const cameraZoomButtonsByCar = new Map();
 const leaderboardNodesByCar = new Map();
 const leaderboardContentByCar = new Map();
 const telemetryNodesByCar = new Map();
@@ -171,6 +172,7 @@ let situationsSignature = '';
 let teamSelectionSignature = '';
 let selectedTeamVehicleIds = [];
 let pendingTeamVehicleId = '';
+let zoomedTeamVehicleId = '';
 let activeRelayHost = '';
 let teamPeersEnabled = false;
 let pilotDevicesPollTimer = 0;
@@ -299,11 +301,60 @@ function closeTeamSelector() {
 function focusTeamCar(car) {
   const tile = cameraTileNodesByCar.get(car?.carId);
   if (!tile || !tile.isConnected) return;
+  if (zoomedTeamVehicleId) {
+    setCameraZoom(car.vehicleId);
+    return;
+  }
   tile.classList.remove('is-focused');
   void tile.offsetWidth;
   tile.classList.add('is-focused');
   tile.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
   window.setTimeout(() => tile.classList.remove('is-focused'), 900);
+}
+
+function syncCameraZoomMode() {
+  const root = document.getElementById('cameraGrid');
+  if (!root) return;
+  const zoomedCar = selectedTeamCars().find((car) => car.vehicleId === zoomedTeamVehicleId);
+  if (!zoomedCar) zoomedTeamVehicleId = '';
+  const activeVehicleId = zoomedCar?.vehicleId || '';
+  root.classList.toggle('is-zoomed', Boolean(activeVehicleId));
+  if (activeVehicleId) root.dataset.zoomedVehicleId = activeVehicleId;
+  else delete root.dataset.zoomedVehicleId;
+
+  for (const tile of root.children) {
+    const isZoomed = Boolean(activeVehicleId) && tile.dataset.vehicleId === activeVehicleId;
+    const hiddenByZoom = Boolean(activeVehicleId) && !isZoomed;
+    tile.classList.toggle('is-zoomed', isZoomed);
+    tile.classList.toggle('is-zoom-hidden', hiddenByZoom);
+    tile.inert = hiddenByZoom;
+    if (hiddenByZoom) tile.setAttribute('aria-hidden', 'true');
+    else tile.removeAttribute('aria-hidden');
+  }
+
+  for (const car of selectedTeamCars()) {
+    const button = cameraZoomButtonsByCar.get(car.carId);
+    if (!button) continue;
+    const isZoomed = car.vehicleId === activeVehicleId;
+    button.setAttribute('aria-pressed', isZoomed ? 'true' : 'false');
+    button.setAttribute(
+      'aria-label',
+      isZoomed
+        ? `Restore four-camera view from CAR ${car.displayNumber}`
+        : `Enlarge CAR ${car.displayNumber} onboard video`,
+    );
+    button.title = isZoomed ? 'Restore four-camera view' : 'Enlarge camera';
+  }
+}
+
+function setCameraZoom(vehicleId = '') {
+  zoomedTeamVehicleId = selectedTeamVehicleIds.includes(vehicleId) ? vehicleId : '';
+  syncCameraZoomMode();
+}
+
+function toggleCameraZoom(car) {
+  if (!isTeamCarSelected(car)) return;
+  setCameraZoom(zoomedTeamVehicleId === car.vehicleId ? '' : car.vehicleId);
 }
 
 function syncTeamSelectionDecorations() {
@@ -2099,6 +2150,7 @@ function createCameraTile(car) {
     if (cached) return cached;
     const tile = applyCarAccent(element('article', 'camera-tile'), car);
     tile.dataset.carId = car.carId;
+    tile.dataset.vehicleId = car.vehicleId;
     const head = element('div', 'camera-head');
     const title = element('strong', '', `CAR ${car.displayNumber} `);
 		const driver = element('span', '', car.driver || car.vehicleName || car.device || 'SOURCE UNBOUND');
@@ -2109,8 +2161,17 @@ function createCameraTile(car) {
     status.append(element('i'), document.createTextNode('WAITING'));
     const fps = element('em', '', '-- FPS');
     fps.id = `camera-fps-${car.carId}`;
-    head.append(title, status, fps);
+    const zoomButton = element('button', 'camera-zoom-toggle');
+    zoomButton.type = 'button';
+    zoomButton.setAttribute('aria-pressed', 'false');
+    zoomButton.setAttribute('aria-label', `Enlarge CAR ${car.displayNumber} onboard video`);
+    zoomButton.title = 'Enlarge camera';
+    zoomButton.append(element('span', 'camera-zoom-icon'));
+    zoomButton.addEventListener('click', () => toggleCameraZoom(car));
+    cameraZoomButtonsByCar.set(car.carId, zoomButton);
+    head.append(title, status, fps, zoomButton);
     const feed = element('div', 'camera-feed');
+    feed.addEventListener('dblclick', () => toggleCameraZoom(car));
     const video = document.createElement('video');
     video.id = `video-${car.carId}`;
     video.autoplay = true;
@@ -2240,6 +2301,7 @@ function createCameraTiles() {
   root.replaceChildren(...Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => (
     cars[index] ? createCameraTile(cars[index]) : createEmptyCameraTile(index)
   )));
+  syncCameraZoomMode();
 }
 
 function updateCameraState(car, state) {
@@ -2600,7 +2662,7 @@ function fleetTopologySignature(cars) {
 function clearCameraNodeMaps() {
 	for (const map of [
 		cameraTitleNodesByCar, cameraTileNodesByCar, cameraEffectNodesByCar,
-		telemetryNodesByCar, healthNodesByCar, controlNodesByCar,
+		cameraZoomButtonsByCar, telemetryNodesByCar, healthNodesByCar, controlNodesByCar,
 	]) map.clear();
 }
 
@@ -2899,7 +2961,12 @@ async function initialize() {
 			if (event.target === event.currentTarget) closeTeamSelector();
 		});
 		window.addEventListener('keydown', (event) => {
-			if (event.key === 'Escape' && !document.getElementById('teamSelectorBackdrop')?.hidden) closeTeamSelector();
+			if (event.key !== 'Escape') return;
+			if (!document.getElementById('teamSelectorBackdrop')?.hidden) {
+				closeTeamSelector();
+				return;
+			}
+			if (zoomedTeamVehicleId) setCameraZoom('');
 		});
 		if (UI_TEST_MODE) {
 			seedObserverUiTest();
