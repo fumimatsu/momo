@@ -1541,6 +1541,39 @@
       color: #71879a;
     }
 
+    .drive-mode-cluster {
+      display: grid;
+      align-content: center;
+      justify-items: start;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .drive-imu-state {
+      color: #7f95a0;
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    .drive-imu-state[data-state="calibrating"],
+    .drive-imu-state[data-state="waiting"] {
+      color: #ffd15d;
+    }
+
+    .drive-imu-state[data-state="ready"] {
+      color: #61ff9d;
+      text-shadow: 0 0 7px rgba(76, 255, 147, 0.56);
+    }
+
+    .drive-imu-state[data-state="degraded"] {
+      color: #ff9c5a;
+      text-shadow: 0 0 7px rgba(255, 116, 57, 0.5);
+    }
+
     .drive-header-right {
       text-align: right;
     }
@@ -4829,7 +4862,10 @@
 
       <section id="driveHud" class="drive-hud" hidden aria-label="Driving input display">
         <div class="drive-header">
-          <button id="driveHudMode" class="drive-hud-title" type="button" aria-pressed="false">DRIVE OFF</button>
+          <div class="drive-mode-cluster">
+            <button id="driveHudMode" class="drive-hud-title" type="button" aria-pressed="false">DRIVE OFF</button>
+            <span id="driveImuState" class="drive-imu-state" data-state="idle">IMU IDLE</span>
+          </div>
           <div class="drive-header-center">
             <span id="driveHudGear" class="drive-gear-value" aria-label="Throttle gear">
               <span class="drive-gear-step" data-gear="1">1</span>
@@ -4931,21 +4967,25 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="../../m5-audio.js?v=20260825-cammus-c5-dashboard-v1"></script>
+    <script src="../../telemetry.js?v=20260828-imu-drive-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260825-cammus-c5-dashboard-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260825-cammus-c5-dashboard-v1'"
+      src="./imu-drive-calibration.js?v=20260828-imu-drive-v1"
+      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260828-imu-drive-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="./race-battle.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="./notification-controller.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="../../race-announcer.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="../../race-ui-performance.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="../../course-layout.js?v=20260825-cammus-c5-dashboard-v1"></script>
-    <script src="./pilot.js?v=20260825-cammus-c5-dashboard-v1"></script>
+    <script src="../../m5-audio.js?v=20260828-imu-drive-v1"></script>
+    <script
+      src="./gamepad-profile.js?v=20260828-imu-drive-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260828-imu-drive-v1'"
+    ></script>
+    <script src="./ffb-bridge.js?v=20260828-imu-drive-v1"></script>
+    <script src="./race-battle.js?v=20260828-imu-drive-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260828-imu-drive-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260828-imu-drive-v1"></script>
+    <script src="./notification-controller.js?v=20260828-imu-drive-v1"></script>
+    <script src="../../race-announcer.js?v=20260828-imu-drive-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260828-imu-drive-v1"></script>
+    <script src="../../course-layout.js?v=20260828-imu-drive-v1"></script>
+    <script src="./pilot.js?v=20260828-imu-drive-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

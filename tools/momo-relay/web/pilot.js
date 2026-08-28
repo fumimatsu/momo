@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260825-cammus-c5-dashboard-v1';
+  const PILOT_BUILD_ID = '20260828-imu-drive-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -17,6 +17,10 @@
     throw new Error('MomoNotificationController is required.');
   }
   const NOTIFICATION_PRIORITIES = notificationModule.PRIORITIES;
+  const imuDriveModule = window.MomoImuDriveCalibration;
+  if (!imuDriveModule?.createController || !imuDriveModule?.STATES) {
+    throw new Error('MomoImuDriveCalibration is required.');
+  }
   const browserKokoro = window.MomoBrowserKokoro;
   const pilotCalloutModule = window.MomoPilotCalloutPlanner;
   if (!pilotCalloutModule?.createPlanner) {
@@ -522,6 +526,7 @@
   let activeFfbPreset = FFB_INITIAL_PRESET;
   const driveHud = document.getElementById('driveHud');
   const driveHudMode = document.getElementById('driveHudMode');
+  const driveImuState = document.getElementById('driveImuState');
   const driveHudSteeringControl = document.getElementById('driveHudSteeringControl');
   const driveHudSteeringTrack = document.getElementById('driveHudSteeringTrack');
   const driveHudSteeringMarker = document.getElementById('driveHudSteeringMarker');
@@ -621,6 +626,7 @@
   let lastFramesDecoded = 0;
   let lastWebRtcStatsSnapshot = null;
   let decodedFrameHistory = [];
+  let driveRequested = false;
   let rcDriveEnabled = false;
   let currentGear = RC_INITIAL_GEAR;
   let rcTxTimer = null;
@@ -633,6 +639,11 @@
   const motionExtractor = window.FpvTelemetry?.MotionFeatureExtractor
     ? new window.FpvTelemetry.MotionFeatureExtractor()
     : null;
+  const imuDriveCalibration = imuDriveModule.createController({
+    now: () => performance.now(),
+    sendCommand: (command) => sendCommand(command, { trackRc: false }),
+    onChange: handleImuDriveCalibrationChange,
+  });
   const relayEventInbox = window.FpvTelemetry?.RelayEventInbox
     ? new window.FpvTelemetry.RelayEventInbox()
     : null;
@@ -3950,7 +3961,7 @@
   }
 
   function updateDriveToggleUi(canSend = dataChannel && dataChannel.readyState === 'open') {
-    const disabled = !canSend && !rcDriveEnabled && !DRIVE_UI_TEST_MODE;
+    const disabled = !canSend && !driveRequested && !DRIVE_UI_TEST_MODE;
     btnDrive.disabled = disabled;
     if (driveHudMode) {
       driveHudMode.disabled = disabled;
@@ -4382,7 +4393,8 @@
     }
     ffbNativeProtocolWarningShown = false;
     const motion = getMotionSnapshot();
-    const motionFresh = Boolean(motion && !motion.stale);
+    const imuEffectsEnabled = imuDriveCalibration.snapshot().imuEffectsEnabled;
+    const motionFresh = Boolean(imuEffectsEnabled && motion && !motion.stale);
     const speed = dashboardSpeed || getFfbVehicleSpeedState(nowMs);
     const control = getFfbControlIntent();
     const throttle = Math.max(-1, Math.min(1, (Number(throttleInput?.value || 1500) - 1500) / 500));
@@ -4516,7 +4528,8 @@
     syncCommandFromSliders();
   }
 
-  function sendCommand(command) {
+  function sendCommand(command, options = {}) {
+    const trackRc = options.trackRc !== false;
     const captureRunning = window.fpvCpuShadowCapture?.running === true;
     const sentAtMs = captureRunning ? performance.now() : null;
     if (!dataChannel || dataChannel.readyState !== 'open') {
@@ -4537,7 +4550,7 @@
     }
     try {
       dataChannel.send(`${command}\n`);
-      lastRcCommand = command;
+      if (trackRc) lastRcCommand = command;
       if (captureRunning) {
         dispatchShadowCaptureEvent('command', {
           command,
@@ -4953,6 +4966,7 @@
     const arrivalMs = performance.now();
     const telemetryResult = telemetryTracker?.ingest(message, arrivalMs);
     if (telemetryResult?.accepted) {
+      imuDriveCalibration.ingest(telemetryResult.payload, arrivalMs);
       latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
       latestEsc = telemetryTracker.getSnapshot(arrivalMs).primaryEsc || latestEsc;
     }
@@ -5616,8 +5630,12 @@
     const brakePercent = Math.round(brake * 100);
     const displayedGear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
     const connected = dataChannel && dataChannel.readyState === 'open';
+    const imuDrive = imuDriveCalibration.snapshot();
     const renderKey = [
+      driveRequested,
       rcDriveEnabled,
+      imuDrive.state,
+      imuDrive.reason,
       steeringMarker,
       steeringDirection,
       steeringPercent,
@@ -5634,8 +5652,13 @@
     }
     driveHudLastRenderKey = renderKey;
     if (driveHudMode) {
-      setText(driveHudMode, rcDriveEnabled ? 'DRIVE ON' : 'DRIVE OFF');
-      setAttributeIfChanged(driveHudMode, 'aria-pressed', rcDriveEnabled ? 'true' : 'false');
+      setText(driveHudMode, getDriveModeLabel(imuDrive));
+      setAttributeIfChanged(driveHudMode, 'aria-pressed', driveRequested ? 'true' : 'false');
+    }
+    if (driveImuState) {
+      setText(driveImuState, getImuStateLabel(imuDrive));
+      setDatasetIfChanged(driveImuState, 'state', imuDrive.state);
+      setAttributeIfChanged(driveImuState, 'title', imuDrive.reason || imuDrive.state);
     }
     if (driveHudSteeringMarker) {
       setStylePropertyIfChanged(driveHudSteeringMarker, 'left', steeringMarker);
@@ -5834,7 +5857,7 @@
   }
 
   function sendCurrentRcCommand() {
-    sendCommand(buildCommand());
+    sendCommand(rcDriveEnabled ? buildCommand() : 'S:1500,T:1500');
   }
 
   function cleanupDcPings(now) {
@@ -5891,42 +5914,82 @@
     return gamepad && gamepad.connected ? gamepad : null;
   }
 
-  function setDriveEnabled(enabled) {
-    const previous = rcDriveEnabled;
-    const canSend = isDataChannelOpen();
-    rcDriveEnabled = enabled;
-    btnDrive.textContent = enabled ? 'Drive On' : 'Drive Off';
-    btnDrive.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-    pressedControlKeys.clear();
-    sendDriveState();
+  function getFreshImuState(nowMs = performance.now()) {
+    const stream = telemetryTracker?.getSnapshot(nowMs).streams
+      .find((candidate) => candidate.src === imuDriveModule.IMU_SOURCE);
+    if (!stream?.state || stream.stale) return null;
+    return { payload: stream.state, arrivalMs: stream.lastStateAt };
+  }
 
-    if (enabled) {
-      ffbOutputEnabled = FFB_ENABLED && canSend;
+  function getDriveModeLabel(snapshot = imuDriveCalibration.snapshot()) {
+    if (!snapshot.driveRequested) return 'DRIVE OFF';
+    if (!snapshot.driveAllowed) return 'DRIVE PREPARING';
+    return 'DRIVE ON';
+  }
+
+  function getImuStateLabel(snapshot = imuDriveCalibration.snapshot()) {
+    switch (snapshot.state) {
+      case imuDriveModule.STATES.WAITING:
+        return 'IMU WAITING';
+      case imuDriveModule.STATES.CALIBRATING:
+        return 'IMU CALIBRATING';
+      case imuDriveModule.STATES.READY:
+        return 'IMU READY';
+      case imuDriveModule.STATES.DEGRADED:
+        return 'IMU DEGRADED';
+      default:
+        return 'IMU IDLE';
+    }
+  }
+
+  function handleImuDriveCalibrationChange(next, previous) {
+    const previousEnabled = rcDriveEnabled;
+    driveRequested = next.driveRequested;
+    pressedControlKeys.clear();
+
+    if (!next.driveAllowed) {
+      rcDriveEnabled = false;
+      stopFfbOutput();
+      cancelThrottleBrake();
       setNeutralCommand();
-      captureGamepadPedalIdle(getActiveGamepad());
-      if (canSend) {
+      if (next.driveRequested && isDataChannelOpen()) {
         startRcTx();
       } else {
         stopRcTx();
+        if (isDataChannelOpen()) sendCurrentRcCommand();
       }
     } else {
-      stopFfbOutput();
-      cancelThrottleBrake();
-      stopRcTx();
-      setNeutralCommand();
-      sendCurrentRcCommand();
+      if (!previousEnabled) {
+        setNeutralCommand();
+        captureGamepadPedalIdle(getActiveGamepad());
+      }
+      rcDriveEnabled = true;
+      ffbOutputEnabled = FFB_ENABLED && isDataChannelOpen();
+      if (isDataChannelOpen()) startRcTx();
     }
-    if (roomLease) {
-      heartbeatRoomLease();
-    }
+
+    btnDrive.textContent = next.driveAllowed
+      ? 'Drive On'
+      : next.driveRequested ? 'Drive Preparing' : 'Drive Off';
+    btnDrive.setAttribute('aria-pressed', next.driveRequested ? 'true' : 'false');
+    sendDriveState();
+    if (roomLease) heartbeatRoomLease();
     updateRcUi();
     updateControlUiMode();
+    driveHudLastRenderKey = '';
+    updateDriveHud();
     sendFfbState();
+    if (next.state !== previous?.state || next.reason !== previous?.reason) {
+      recordEvent('imu drive', `${next.state}${next.reason ? ` ${next.reason}` : ''}`);
+    }
     if (window.fpvCpuShadowCapture?.running === true) {
       dispatchShadowCaptureEvent('drive', {
         event: 'local_state_changed',
-        previous_enabled: previous,
+        previous_enabled: previousEnabled,
         enabled: rcDriveEnabled,
+        requested: driveRequested,
+        imu_state: next.state,
+        imu_reason: next.reason || null,
         changed_at_ms: performance.now(),
         command: lastRcCommand,
         transport_generation: transportGeneration,
@@ -5936,8 +5999,19 @@
     }
   }
 
+  function setDriveEnabled(enabled) {
+    if (!enabled) {
+      imuDriveCalibration.stop();
+      return;
+    }
+    const latest = getFreshImuState();
+    imuDriveCalibration.start(latest?.payload || null, latest?.arrivalMs, {
+      bypass: DRIVE_UI_TEST_MODE,
+    });
+  }
+
   function toggleDrive() {
-    setDriveEnabled(!rcDriveEnabled);
+    setDriveEnabled(!driveRequested);
   }
 
   function sendDriveState() {
@@ -7278,6 +7352,7 @@
         dcRttMs = null;
         lastDcPongAt = 0;
         recordEvent('dc open');
+        imuDriveCalibration.retryNow();
         sendDcPing();
         updateUiState();
       };
@@ -7295,6 +7370,7 @@
         dcRttMs = null;
         lastDcPongAt = 0;
         recordEvent('dc open');
+        imuDriveCalibration.retryNow();
         sendDcPing();
       }
       updateUiState();
@@ -7839,6 +7915,7 @@
       updateTimerUi();
       updateTelemetryUi();
       updateMotionUi();
+      imuDriveCalibration.tick();
     }, OSD_UPDATE_INTERVAL_MS);
   }
 
@@ -8472,6 +8549,8 @@
       build_id: PILOT_BUILD_ID,
       variant: 'relay-pilot',
       drive_enabled: rcDriveEnabled,
+      drive_requested: driveRequested,
+      imu_drive: imuDriveCalibration.snapshot(),
       last_command: lastRcCommand,
       command_line: `${lastRcCommand}\n`,
       data_channel_state: dataChannel?.readyState || 'closed',
