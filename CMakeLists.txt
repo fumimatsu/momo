@@ -143,6 +143,7 @@ target_sources(momo
     src/rtc/rtc_manager.cpp
     src/rtc/rtc_ssl_verifier.cpp
     src/serial_data_channel/serial_data_channel.cpp
+    src/serial_data_channel/imu_fusion_telemetry_decoder.cpp
     src/serial_data_channel/serial_data_manager.cpp
     src/sora-cpp-sdk/src/open_h264_video_encoder.cpp
     src/sora-cpp-sdk/src/scalable_track_source.cpp

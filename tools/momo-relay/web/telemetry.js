@@ -9,7 +9,11 @@
   'use strict';
 
   const TELEMETRY_PREFIX = 'TEL:';
-  const MAX_WIRE_BYTES = 256;
+  // M5 textual UART telemetry remains capped at 256 bytes. Momo-normalized
+  // binary motion state may include the temporary IMU fusion shadow tuple.
+  const LEGACY_MAX_WIRE_BYTES = 256;
+  const MAX_WIRE_BYTES = 384;
+  const UINT32_MAX_VALUE = 0xffffffff;
   const UINT32_HALF = 0x80000000;
   const UNIT_NORM_MIN = 0.98;
   const UNIT_NORM_MAX = 1.02;
@@ -202,11 +206,43 @@
       if (hasOwn(payload.q, 'ok') || hasOwn(payload.q, 'age')) {
         return 'compact_motion_quality';
       }
+      const motionFields = Object.keys(payload.m);
+      const qualityFields = Object.keys(payload.q);
+      if (motionFields.some((field) => !['a', 'l', 'y'].includes(field))
+          || qualityFields.some((field) => !['p', 'c', 'f'].includes(field))) {
+        return 'compact_motion_fields';
+      }
       if (!isVector(payload.m.a, 3, -1000, 1000)) {
         return 'compact_acceleration';
       }
       if (!isNumberInRange(payload.m.y, -100, 100)) {
         return 'compact_yaw_rate';
+      }
+      const hasFusionCapability = payload.q.f.includes('imu_fusion_v1');
+      const hasFusedAcceleration = hasOwn(payload.m, 'l');
+      const hasCalibration = hasOwn(payload.q, 'c');
+      if (!hasFusionCapability) {
+        return hasFusedAcceleration || hasCalibration
+          ? 'compact_fusion_capability'
+          : '';
+      }
+      if (!hasCalibration
+          || !Array.isArray(payload.q.c)
+          || payload.q.c.length !== 3
+          || !isIntegerInRange(payload.q.c[0], 0, 3)
+          || !isIntegerInRange(payload.q.c[1], 0, UINT32_MAX_VALUE)
+          || !isIntegerInRange(payload.q.c[2], 0, 4)) {
+        return 'compact_calibration_state';
+      }
+      const [calibrationState, calibrationId, calibrationFailure] = payload.q.c;
+      if ((calibrationState === 0) !== (calibrationId === 0)
+          || (calibrationState === 3) !== (calibrationFailure !== 0)) {
+        return 'compact_calibration_consistency';
+      }
+      if (hasFusedAcceleration
+          && (calibrationState !== 2
+              || !isVector(payload.m.l, 3, -1000, 1000))) {
+        return 'compact_fused_acceleration';
       }
       return '';
     }
@@ -247,6 +283,14 @@
     return '';
   }
 
+  function isExtendedFusionState(payload) {
+    return payload?.v === 2
+      && payload.k === 's'
+      && isPlainObject(payload.q)
+      && Array.isArray(payload.q.f)
+      && payload.q.f.includes('imu_fusion_v1');
+  }
+
   function parseTelemetryMessage(message) {
     if (typeof message !== 'string' || !message.startsWith(TELEMETRY_PREFIX)) {
       return { status: 'not_telemetry' };
@@ -282,6 +326,10 @@
       : (payload.k === 's' ? validateStateV2(payload) : validateEventV2(payload));
     if (bodyError) {
       return { status: 'invalid', reason: bodyError };
+    }
+    if (getUtf8ByteLength(message) > LEGACY_MAX_WIRE_BYTES
+        && !isExtendedFusionState(payload)) {
+      return { status: 'invalid', reason: 'size' };
     }
     return { status: 'valid', payload };
   }
@@ -874,8 +922,11 @@
 
   function encodeTelemetry(payload) {
     const message = `${TELEMETRY_PREFIX}${JSON.stringify(payload)}`;
-    if (getUtf8ByteLength(message) > MAX_WIRE_BYTES) {
-      throw new RangeError('telemetry message exceeds 256 bytes');
+    const byteLength = getUtf8ByteLength(message);
+    if (byteLength > MAX_WIRE_BYTES
+        || (byteLength > LEGACY_MAX_WIRE_BYTES
+            && !isExtendedFusionState(payload))) {
+      throw new RangeError('telemetry message exceeds its permitted wire size');
     }
     return message;
   }
