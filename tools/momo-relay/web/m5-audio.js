@@ -5,14 +5,15 @@
   const SAMPLE_RATE = 8000;
   const PACKET_BYTES = 84;
   const FRAME_DURATION_SECONDS = FRAME_SAMPLES / SAMPLE_RATE;
-  // DataChannel とブラウザのイベントループが数十 ms 遅れても再生予定時刻を
-  // 追い越さないよう、Pilot は 200 ms を先読みする。低遅延より連続性を優先する。
-  const START_BUFFER_FRAMES = 10;
+  // クロック補正を維持したまま Pilot の操作音遅延を減らすため、140 ms を先読みする。
+  // 実機では underrun、到着周期の p95/p99、映像との同期を200 ms基準と比較する。
+  const START_BUFFER_FRAMES = 7;
   const TARGET_BUFFER_SECONDS = START_BUFFER_FRAMES * FRAME_DURATION_SECONDS;
   const RESTART_SAFETY_SECONDS = 0.03;
   const MAX_GAP_FRAMES = 12;
   const MAX_SCHEDULE_AHEAD_SECONDS = 0.6;
   const STATE_NOTIFY_INTERVAL_MS = 250;
+  const ARRIVAL_WINDOW_SAMPLES = 256;
   // M5 のサンプリングクロックと AudioContext のクロックは完全には一致しない。
   // 到着周期とバッファ残量から再生速度を小さく補正し、長時間走行時の周期的な
   // underrun を防ぐ。補正幅は音程差が目立たない ±1.5% に制限する。
@@ -105,10 +106,16 @@
       this.gaps = 0;
       this.resets = 0;
       this.underruns = 0;
+      this.overruns = 0;
       this.scheduled = 0;
+      this.cancelledSources = 0;
+      this.scheduledSources = new Map();
       this.lastFrameAt = 0;
       this.lastInterArrivalMs = 0;
       this.maxInterArrivalMs = 0;
+      this.interArrivalWindow = new Float64Array(ARRIVAL_WINDOW_SAMPLES);
+      this.interArrivalWindowCount = 0;
+      this.interArrivalWindowIndex = 0;
       this.lastNotifyAt = Number.NEGATIVE_INFINITY;
       this.arrivalPlaybackRate = 1;
       this.playbackRate = 1;
@@ -126,12 +133,18 @@
         gaps: this.gaps,
         resets: this.resets,
         underruns: this.underruns,
+        overruns: this.overruns,
         scheduled: this.scheduled,
+        cancelledSources: this.cancelledSources,
+        activeScheduledSources: this.scheduledSources.size,
         pending: this.pending.length,
         lastInterArrivalMs: this.lastInterArrivalMs,
         maxInterArrivalMs: this.maxInterArrivalMs,
+        interArrivalP95Ms: this.getInterArrivalPercentile(0.95),
+        interArrivalP99Ms: this.getInterArrivalPercentile(0.99),
         arrivalPlaybackRate: this.arrivalPlaybackRate,
         playbackRate: this.playbackRate,
+        targetBufferMs: TARGET_BUFFER_SECONDS * 1000,
         bufferLeadMs: this.bufferLeadSeconds * 1000,
       };
     }
@@ -150,6 +163,7 @@
     async setEnabled(enabled) {
       if (!enabled) {
         this.enabled = false;
+        this.cancelScheduledAudio();
         this.pending = [];
         this.nextPlaybackTime = 0;
         this.bufferLeadSeconds = 0;
@@ -171,6 +185,7 @@
         return false;
       }
       this.enabled = this.context.state === 'running';
+      this.cancelScheduledAudio();
       this.pending = [];
       this.nextPlaybackTime = 0;
       this.bufferLeadSeconds = 0;
@@ -197,8 +212,31 @@
     resetArrivalClock(receivedAt) {
       this.lastFrameAt = receivedAt;
       this.lastInterArrivalMs = 0;
+      this.interArrivalWindowCount = 0;
+      this.interArrivalWindowIndex = 0;
       this.arrivalPlaybackRate = 1;
       this.playbackRate = 1;
+    }
+
+    recordInterArrival(perFrameMs) {
+      this.interArrivalWindow[this.interArrivalWindowIndex] = perFrameMs;
+      this.interArrivalWindowIndex = (this.interArrivalWindowIndex + 1) % ARRIVAL_WINDOW_SAMPLES;
+      this.interArrivalWindowCount = Math.min(
+        ARRIVAL_WINDOW_SAMPLES,
+        this.interArrivalWindowCount + 1,
+      );
+    }
+
+    getInterArrivalPercentile(percentile) {
+      if (this.interArrivalWindowCount === 0) return 0;
+      const samples = Array.from(
+        this.interArrivalWindow.subarray(0, this.interArrivalWindowCount),
+      ).sort((left, right) => left - right);
+      const index = Math.min(
+        samples.length - 1,
+        Math.max(0, Math.ceil(samples.length * percentile) - 1),
+      );
+      return samples[index];
     }
 
     updateArrivalClock(receivedAt, sequenceDelta) {
@@ -211,6 +249,7 @@
       this.lastInterArrivalMs = interArrivalMs;
       this.maxInterArrivalMs = Math.max(this.maxInterArrivalMs, interArrivalMs);
       const perFrameMs = interArrivalMs / sequenceDelta;
+      this.recordInterArrival(perFrameMs);
       // 長い停止と、その直後のバースト到着はクロック推定へ混ぜない。
       if (perFrameMs < MIN_RATE_SAMPLE_MS || perFrameMs > MAX_RATE_SAMPLE_MS) return;
       const observedRate = clamp(
@@ -241,6 +280,23 @@
       return this.playbackRate;
     }
 
+    cancelScheduledAudio() {
+      for (const source of this.scheduledSources.keys()) {
+        try {
+          source.stop();
+        } catch (_) {
+          // ended source or a browser that already released the node
+        }
+        try {
+          source.disconnect();
+        } catch (_) {
+          // disconnect is best-effort during reset
+        }
+        this.scheduledSources.delete(source);
+        this.cancelledSources += 1;
+      }
+    }
+
     handle(message) {
       const frame = parseFrame(message);
       if (!frame) return false;
@@ -257,6 +313,7 @@
       if (resetClock) {
         this.bootId = frame.bootId;
         this.lastSequence = null;
+        this.cancelScheduledAudio();
         this.pending = [];
         this.nextPlaybackTime = 0;
         this.bufferLeadSeconds = 0;
@@ -284,6 +341,7 @@
       if (this.nextPlaybackTime && this.nextPlaybackTime <= this.context.currentTime) {
         // 音声途切れ後に過去の AudioContext 時刻へ source を積まない。
         // 次の数フレームをためてから再開する。
+        this.cancelScheduledAudio();
         this.nextPlaybackTime = 0;
         this.bufferLeadSeconds = 0;
         this.resets += 1;
@@ -291,14 +349,16 @@
       }
       if (!this.nextPlaybackTime && this.pending.length < START_BUFFER_FRAMES) return;
       if (this.nextPlaybackTime && this.nextPlaybackTime - this.context.currentTime > MAX_SCHEDULE_AHEAD_SECONDS) {
+        this.cancelScheduledAudio();
         this.pending = [];
         this.nextPlaybackTime = 0;
         this.bufferLeadSeconds = 0;
         this.resets += 1;
+        this.overruns += 1;
         return;
       }
       // START_BUFFER_FRAMES はすでに pending に貯まっているため、復帰時にさらに
-      // 200 ms 待たせない。AudioContext の安全余裕だけ先から再生を再開する。
+      // 140 ms 待たせない。AudioContext の安全余裕だけ先から再生を再開する。
       let startAt = this.nextPlaybackTime || this.context.currentTime + RESTART_SAFETY_SECONDS;
       while (this.pending.length > 0) {
         const samples = this.pending.shift();
@@ -312,6 +372,8 @@
         const playbackRate = this.getAdaptivePlaybackRate();
         source.playbackRate.value = playbackRate;
         source.connect(this.outputGain || this.context.destination);
+        this.scheduledSources.set(source, startAt);
+        source.onended = () => this.scheduledSources.delete(source);
         source.start(startAt);
         startAt += FRAME_DURATION_SECONDS / playbackRate;
         this.nextPlaybackTime = startAt;
