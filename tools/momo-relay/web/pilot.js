@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260828-imu-drive-v1';
+  const PILOT_BUILD_ID = '20260829-race-state-v2-fix1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -3102,6 +3102,7 @@
     const carId = String(state.viewerCarId || RACE_CAR_ID || '').trim();
     const standing = carId ? state.standings.find((item) => item?.carId === carId) : null;
     const runId = typeof state.raceRunId === 'string' ? state.raceRunId : '';
+    const isNewRun = Boolean(runId && runId !== activeRaceRunId);
     if (runId) {
       activeRaceRunId = runId;
     }
