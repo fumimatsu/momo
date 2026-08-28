@@ -33,7 +33,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260828-team-observer-v20';
+} from './observer-core.js?v=20260828-team-observer-v21';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -312,9 +312,24 @@ function focusTeamCar(car) {
   window.setTimeout(() => tile.classList.remove('is-focused'), 900);
 }
 
+function createFocusedCameraPlaceholder(car) {
+  const tile = applyCarAccent(element('article', 'camera-tile camera-focus-placeholder'), car);
+  tile.dataset.carId = car.carId;
+  tile.dataset.vehicleId = car.vehicleId;
+  const button = element('button', 'camera-focus-placeholder-button');
+  button.type = 'button';
+  button.setAttribute('aria-label', `Restore CAR ${car.displayNumber} onboard video to the four-camera grid`);
+  button.append(element('strong', '', `CAR ${car.displayNumber}`), element('span', '', 'FOCUSED'));
+  button.addEventListener('click', () => setCameraZoom(''));
+  tile.append(button);
+  return tile;
+}
+
 function syncCameraZoomMode() {
   const root = document.getElementById('cameraGrid');
-  if (!root) return;
+  const focusStage = document.getElementById('cameraFocusStage');
+  const trackPanel = focusStage?.parentElement;
+  if (!root || !focusStage || !trackPanel) return;
   const zoomedCar = selectedTeamCars().find((car) => car.vehicleId === zoomedTeamVehicleId);
   if (!zoomedCar) zoomedTeamVehicleId = '';
   const activeVehicleId = zoomedCar?.vehicleId || '';
@@ -323,13 +338,32 @@ function syncCameraZoomMode() {
   else delete root.dataset.zoomedVehicleId;
 
   for (const tile of root.children) {
-    const isZoomed = Boolean(activeVehicleId) && tile.dataset.vehicleId === activeVehicleId;
-    const hiddenByZoom = Boolean(activeVehicleId) && !isZoomed;
-    tile.classList.toggle('is-zoomed', isZoomed);
-    tile.classList.toggle('is-zoom-hidden', hiddenByZoom);
-    tile.inert = hiddenByZoom;
-    if (hiddenByZoom) tile.setAttribute('aria-hidden', 'true');
-    else tile.removeAttribute('aria-hidden');
+    tile.classList.remove('is-zoomed');
+    tile.inert = false;
+    tile.removeAttribute('aria-hidden');
+  }
+
+  for (const child of trackPanel.children) {
+    if (child === focusStage) continue;
+    child.inert = Boolean(activeVehicleId);
+    if (activeVehicleId) child.setAttribute('aria-hidden', 'true');
+    else child.removeAttribute('aria-hidden');
+  }
+
+  if (zoomedCar) {
+    const tile = cameraTileNodesByCar.get(zoomedCar.carId);
+    if (tile) {
+      const slotTile = Array.from(root.children).find((child) => child === tile);
+      if (slotTile) root.replaceChild(createFocusedCameraPlaceholder(zoomedCar), tile);
+      tile.classList.add('is-zoomed');
+      focusStage.replaceChildren(tile);
+      focusStage.hidden = false;
+      focusStage.setAttribute('aria-label', `Focused CAR ${zoomedCar.displayNumber} onboard video`);
+    }
+  } else {
+    focusStage.replaceChildren();
+    focusStage.hidden = true;
+    focusStage.setAttribute('aria-label', 'Focused onboard camera');
   }
 
   for (const car of selectedTeamCars()) {
@@ -349,7 +383,7 @@ function syncCameraZoomMode() {
 
 function setCameraZoom(vehicleId = '') {
   zoomedTeamVehicleId = selectedTeamVehicleIds.includes(vehicleId) ? vehicleId : '';
-  syncCameraZoomMode();
+  createCameraTiles();
 }
 
 function toggleCameraZoom(car) {
