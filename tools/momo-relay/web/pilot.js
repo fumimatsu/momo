@@ -380,6 +380,8 @@
   const throttleInput = document.getElementById('throttle');
   const steeringValue = document.getElementById('steeringValue');
   const throttleValue = document.getElementById('throttleValue');
+  const rcJoystick = document.getElementById('rcJoystick');
+  const rcJoystickThumb = document.getElementById('rcJoystickThumb');
   const wsState = document.getElementById('wsState');
   const iceState = document.getElementById('iceState');
   const dcState = document.getElementById('dcState');
@@ -666,7 +668,8 @@
   let lastTelemetryHostHint = '';
   const pendingDcPings = new Map();
   const pressedControlKeys = new Set();
-  const activeRcPointers = new Map();
+  let activeRcJoystickPointerId = null;
+  let virtualJoystickVisualKey = '';
   const gamepadButtonState = new Map();
   const calibrationButtonState = new Map();
   let gamepadSeen = false;
@@ -4321,6 +4324,7 @@
       dataTextInput.value = lastRcCommand;
     }
     updateRcUi();
+    syncVirtualJoystickFromRcInputs();
     sendFfbState();
   }
 
@@ -4520,12 +4524,6 @@
     });
     ffbSendTimer = window.setInterval(sendFfbState, FFB_SEND_INTERVAL_MS);
     ffbClient.connect();
-  }
-
-  function syncCommandFromThrottleSlider() {
-    cancelThrottleBrake();
-    throttleInput.value = String(clampRcAxisValue('throttle', Number(throttleInput.value)));
-    syncCommandFromSliders();
   }
 
   function sendCommand(command, options = {}) {
@@ -5573,13 +5571,18 @@
 
   function updateControlUiMode() {
     const driveUiVisible = isDriveUiVisible();
+    const gamepadControlsActive = CONTROL_UI_MODE !== 'manual' && isGamepadDriveActive();
     const snapshot = getCurrentEscSnapshot();
-    const nextModeKey = `${driveUiVisible}:${Boolean(snapshot?.state?.esc)}`;
+    const nextModeKey = `${driveUiVisible}:${gamepadControlsActive}:${Boolean(snapshot?.state?.esc)}`;
     if (controlUiModeKey === nextModeKey) {
       return;
     }
     controlUiModeKey = nextModeKey;
     document.body.classList.toggle('drive-ui', driveUiVisible);
+    document.body.classList.toggle('gamepad-controls-active', gamepadControlsActive);
+    if (!driveUiVisible && !gamepadControlsActive) {
+      syncVirtualJoystickFromRcInputs();
+    }
     if (driveHud) {
       driveHud.hidden = !driveUiVisible;
     }
@@ -5803,52 +5806,134 @@
     }, RC_BRAKE_DURATION_MS);
   }
 
-  function resetRcAxis(axis) {
-    if (axis === 'throttle') {
-      if (Number(throttleInput.value) > RC_BRAKE_THRESHOLD) {
-        startThrottleBrake();
-      } else {
-        setThrottleNeutral();
-      }
+  function normalizeVirtualJoystickAxis(value) {
+    const deadzone = 0.055;
+    const magnitude = Math.abs(value);
+    if (magnitude <= deadzone) {
+      return 0;
+    }
+    return Math.sign(value) * Math.min(1, (magnitude - deadzone) / (1 - deadzone));
+  }
+
+  function normalizeVirtualJoystickVector(x, y) {
+    return {
+      x: normalizeVirtualJoystickAxis(x),
+      y: normalizeVirtualJoystickAxis(y),
+    };
+  }
+
+  function setVirtualJoystickVisual(x, y) {
+    if (!rcJoystick || !rcJoystickThumb) {
       return;
     }
-    setRcAxis(axis, 1500);
+    const visualX = Math.max(-1, Math.min(1, x));
+    const visualY = Math.max(-1, Math.min(1, y));
+    const thumbLeft = `${(50 + visualX * 34).toFixed(2)}%`;
+    const thumbTop = `${(50 + visualY * 34).toFixed(2)}%`;
+    const steeringPercent = Math.round(Math.abs(visualX) * 100);
+    const throttlePercent = Math.round(Math.abs(visualY) * 100);
+    const steeringLabel = visualX < -0.01
+      ? `${steeringPercent} percent left`
+      : visualX > 0.01
+        ? `${steeringPercent} percent right`
+        : 'center';
+    const throttleLabel = visualY < -0.01
+      ? `${throttlePercent} percent throttle`
+      : visualY > 0.01
+        ? `${throttlePercent} percent brake`
+        : 'throttle neutral';
+    const ariaLabel = `Steering ${steeringLabel}, ${throttleLabel}`;
+    const visualKey = `${thumbLeft}:${thumbTop}:${ariaLabel}`;
+    if (virtualJoystickVisualKey === visualKey) {
+      return;
+    }
+    virtualJoystickVisualKey = visualKey;
+    rcJoystickThumb.style.left = thumbLeft;
+    rcJoystickThumb.style.top = thumbTop;
+    rcJoystick.setAttribute('aria-label', ariaLabel);
+  }
+
+  function syncVirtualJoystickFromRcInputs() {
+    if (
+      activeRcJoystickPointerId !== null
+      || document.body.classList.contains('drive-ui')
+      || document.body.classList.contains('gamepad-controls-active')
+    ) {
+      return;
+    }
+    const steeringRange = Math.max(1, Math.abs(RC_STEERING_THROW));
+    const steering = (Number(steeringInput.value) - 1500) / steeringRange;
+    const throttleValueUs = Number(throttleInput.value);
+    const throttle = throttleValueUs >= 1500
+      ? -(throttleValueUs - 1500) / Math.max(1, getThrottleGearMax() - 1500)
+      : (1500 - throttleValueUs) / Math.max(1, 1500 - getThrottleGearMin());
+    setVirtualJoystickVisual(steering, throttle);
+  }
+
+  function applyVirtualJoystickPointer(event) {
+    if (!rcJoystick) {
+      return;
+    }
+    const bounds = rcJoystick.getBoundingClientRect();
+    const radius = Math.max(1, Math.min(bounds.width, bounds.height) * 0.42);
+    const rawX = (event.clientX - (bounds.left + bounds.width / 2)) / radius;
+    const rawY = (event.clientY - (bounds.top + bounds.height / 2)) / radius;
+    const vector = normalizeVirtualJoystickVector(rawX, rawY);
+    const steering = 1500 + vector.x * RC_STEERING_THROW;
+    const throttle = vector.y <= 0
+      ? 1500 + (-vector.y) * (getThrottleGearMax() - 1500)
+      : 1500 - vector.y * (1500 - getThrottleGearMin());
+    setRcInputs(steering, throttle);
+    setVirtualJoystickVisual(vector.x, vector.y);
+  }
+
+  function onVirtualJoystickPointerDown(event) {
+    if (!rcJoystick || activeRcJoystickPointerId !== null) {
+      return;
+    }
+    event.preventDefault();
+    cancelThrottleBrake();
+    activeRcJoystickPointerId = event.pointerId;
+    rcJoystick.dataset.active = 'true';
+    rcJoystick.setPointerCapture?.(event.pointerId);
+    applyVirtualJoystickPointer(event);
+  }
+
+  function onVirtualJoystickPointerMove(event) {
+    if (event.pointerId !== activeRcJoystickPointerId) {
+      return;
+    }
+    event.preventDefault();
+    applyVirtualJoystickPointer(event);
+  }
+
+  function onVirtualJoystickPointerEnd(event) {
+    if (event.pointerId !== activeRcJoystickPointerId) {
+      return;
+    }
+    event.preventDefault();
+    const shouldBrake = Number(throttleInput.value) > RC_BRAKE_THRESHOLD;
+    activeRcJoystickPointerId = null;
+    if (rcJoystick) {
+      delete rcJoystick.dataset.active;
+      if (event.type !== 'lostpointercapture') {
+        try {
+          rcJoystick.releasePointerCapture?.(event.pointerId);
+        } catch (error) {
+          console.debug('releasePointerCapture failed:', error);
+        }
+      }
+    }
+    steeringInput.value = '1500';
+    if (shouldBrake) {
+      startThrottleBrake();
+      return;
+    }
+    throttleInput.value = '1500';
+    syncCommandFromSliders();
     if (rcDriveEnabled) {
       sendCurrentRcCommand();
     }
-  }
-
-  function onRcPointerDown(axis, event) {
-    if (axis === 'throttle') {
-      cancelThrottleBrake();
-    }
-    activeRcPointers.set(event.pointerId, axis);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-  }
-
-  function onRcPointerEnd(event) {
-    const axis = activeRcPointers.get(event.pointerId);
-    if (!axis) {
-      return;
-    }
-    activeRcPointers.delete(event.pointerId);
-    if (event.type !== 'lostpointercapture') {
-      try {
-        event.currentTarget.releasePointerCapture?.(event.pointerId);
-      } catch (error) {
-        console.debug('releasePointerCapture failed:', error);
-      }
-    }
-    resetRcAxis(axis);
-  }
-
-  function onRcControlBlur(axis) {
-    for (const [pointerId, activeAxis] of activeRcPointers) {
-      if (activeAxis === axis) {
-        activeRcPointers.delete(pointerId);
-      }
-    }
-    resetRcAxis(axis);
   }
 
   function setNeutralCommand() {
@@ -8428,17 +8513,16 @@
   initializeFfb();
 
   steeringInput.addEventListener('input', syncCommandFromSliders);
-  throttleInput.addEventListener('input', syncCommandFromThrottleSlider);
-  steeringInput.addEventListener('pointerdown', (event) => onRcPointerDown('steering', event));
-  throttleInput.addEventListener('pointerdown', (event) => onRcPointerDown('throttle', event));
-  steeringInput.addEventListener('pointerup', onRcPointerEnd);
-  throttleInput.addEventListener('pointerup', onRcPointerEnd);
-  steeringInput.addEventListener('pointercancel', onRcPointerEnd);
-  throttleInput.addEventListener('pointercancel', onRcPointerEnd);
-  steeringInput.addEventListener('lostpointercapture', onRcPointerEnd);
-  throttleInput.addEventListener('lostpointercapture', onRcPointerEnd);
-  steeringInput.addEventListener('blur', () => onRcControlBlur('steering'));
-  throttleInput.addEventListener('blur', () => onRcControlBlur('throttle'));
+  throttleInput.addEventListener('input', syncCommandFromSliders);
+  if (rcJoystick) {
+    rcJoystick.addEventListener('pointerdown', onVirtualJoystickPointerDown);
+    rcJoystick.addEventListener('pointermove', onVirtualJoystickPointerMove);
+    rcJoystick.addEventListener('pointerup', onVirtualJoystickPointerEnd);
+    rcJoystick.addEventListener('pointercancel', onVirtualJoystickPointerEnd);
+    rcJoystick.addEventListener('lostpointercapture', onVirtualJoystickPointerEnd);
+    window.addEventListener('pointerup', onVirtualJoystickPointerEnd);
+    window.addEventListener('pointercancel', onVirtualJoystickPointerEnd);
+  }
   btnDrive.addEventListener('click', toggleDrive);
   if (driveHudMode) {
     driveHudMode.addEventListener('click', toggleDrive);

@@ -1302,11 +1302,10 @@
     }
 
     .panel {
+      --joystick-size: clamp(116px, 11vw, 138px);
       display: grid;
-      grid-template-columns: minmax(230px, 34vw) auto minmax(110px, 15vw);
-      grid-template-areas:
-        "steering actions throttle"
-        "steering actions throttle";
+      grid-template-columns: var(--joystick-size) minmax(0, 1fr) var(--joystick-size);
+      grid-template-areas: "joystick actions .";
       gap: 12px;
       align-items: end;
       width: 100%;
@@ -1372,78 +1371,125 @@
     }
 
     .control {
-      display: contents;
-      font-size: 18px;
-      text-shadow:
-        0 0 2px #000000,
-        1px 1px 2px #000000;
+      grid-area: joystick;
+      display: grid;
+      place-items: end start;
+      width: var(--joystick-size);
+      height: var(--joystick-size);
+      opacity: 0.78;
+      transition: opacity 140ms ease;
     }
 
-    .rc-axis {
-      display: grid;
-      gap: 8px;
-      align-items: center;
-      color: #ffffff;
-      opacity: 0.64;
+    body.gamepad-controls-active .control {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .rc-joystick {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid rgba(159, 220, 238, 0.58);
+      border-radius: 4px;
+      background:
+        linear-gradient(90deg, transparent 49.5%, rgba(159, 220, 238, 0.12) 50%, transparent 50.5%),
+        linear-gradient(0deg, transparent 49.5%, rgba(159, 220, 238, 0.12) 50%, transparent 50.5%),
+        rgba(1, 10, 14, 0.28);
+      box-shadow:
+        inset 0 0 22px rgba(0, 0, 0, 0.5),
+        0 0 14px rgba(0, 0, 0, 0.28);
+      color: rgba(216, 244, 250, 0.9);
+      cursor: grab;
+      outline: none;
       touch-action: none;
       user-select: none;
     }
 
-    .rc-axis label {
+    .rc-joystick::before,
+    .rc-joystick::after {
+      position: absolute;
+      z-index: 0;
+      background: rgba(159, 220, 238, 0.24);
+      content: "";
+      pointer-events: none;
+    }
+
+    .rc-joystick::before {
+      top: 50%;
+      right: 12%;
+      left: 12%;
+      height: 1px;
+    }
+
+    .rc-joystick::after {
+      top: 12%;
+      bottom: 12%;
+      left: 50%;
+      width: 1px;
+    }
+
+    .rc-joystick:focus-visible {
+      border-color: #78efff;
+      box-shadow: 0 0 0 2px rgba(64, 223, 246, 0.34), inset 0 0 22px rgba(0, 0, 0, 0.5);
+    }
+
+    .rc-joystick[data-active="true"] {
+      cursor: grabbing;
+      opacity: 1;
+    }
+
+    .rc-joystick-ring {
+      position: absolute;
+      inset: 15%;
+      z-index: 0;
+      border: 1px solid rgba(159, 220, 238, 0.22);
+      border-radius: 3px;
+      pointer-events: none;
+    }
+
+    .rc-joystick-thumb {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      z-index: 2;
+      width: 30%;
+      aspect-ratio: 1;
+      border: 1px solid rgba(225, 250, 255, 0.88);
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.74), transparent 22%),
+        rgba(66, 190, 211, 0.76);
+      box-shadow: 0 3px 12px rgba(0, 0, 0, 0.58), 0 0 10px rgba(56, 218, 241, 0.34);
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      transition: top 70ms linear, left 70ms linear;
+    }
+
+    .rc-joystick[data-active="true"] .rc-joystick-thumb {
+      transition: none;
+    }
+
+    .rc-joystick-label {
+      position: absolute;
+      z-index: 1;
+      color: rgba(201, 235, 243, 0.72);
+      font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+      font-size: 8px;
       font-weight: 700;
+      letter-spacing: 0;
       line-height: 1;
+      pointer-events: none;
+      text-shadow: 0 1px 3px #000000;
     }
 
-    .rc-axis output {
-      min-width: 60px;
-      font-weight: 700;
-      text-align: right;
-    }
+    .rc-joystick-label.acc { top: 7px; left: 50%; transform: translateX(-50%); }
+    .rc-joystick-label.brk { bottom: 7px; left: 50%; transform: translateX(-50%); }
+    .rc-joystick-label.left { top: 50%; left: 8px; transform: translateY(-50%); }
+    .rc-joystick-label.right { top: 50%; right: 8px; transform: translateY(-50%); }
 
-    .rc-axis-steering {
-      grid-area: steering;
-      grid-template-columns: 1fr auto;
-      grid-template-areas:
-        "label value"
-        "range range";
-      align-self: end;
-      max-width: 460px;
-    }
-
-    .rc-axis-throttle {
-      grid-area: throttle;
-      grid-template-rows: auto minmax(230px, 36vh) auto;
-      justify-items: center;
-      align-self: end;
-    }
-
-    .rc-axis input[type="range"] {
-      width: 100%;
-      min-height: 56px;
-      accent-color: #ffffff;
-      cursor: pointer;
-    }
-
-    .rc-axis-steering label {
-      grid-area: label;
-    }
-
-    .rc-axis-steering output {
-      grid-area: value;
-    }
-
-    .rc-axis-steering input[type="range"] {
-      grid-area: range;
-    }
-
-    .rc-axis-throttle input[type="range"] {
-      appearance: slider-vertical;
-      -webkit-appearance: slider-vertical;
-      width: 56px;
-      height: 260px;
-      min-height: 0;
-      writing-mode: vertical-lr;
-      direction: rtl;
+    .rc-joystick-channel {
+      display: none;
     }
 
     .rc-actions {
@@ -3204,7 +3250,7 @@
     }
 
     .top-controls:hover,
-    .panel:hover .rc-axis,
+    .panel:hover .control,
     .panel:hover input,
     .panel:hover button {
       opacity: 1;
@@ -3599,29 +3645,15 @@
       }
 
       .panel {
-        grid-template-columns: minmax(180px, 1fr) minmax(88px, 22vw);
-        grid-template-areas:
-          "steering throttle"
-          "actions actions";
+        --joystick-size: clamp(110px, 31vw, 132px);
+        grid-template-columns: var(--joystick-size) minmax(0, 1fr);
+        grid-template-areas: "joystick actions";
         max-width: none;
       }
 
       .control {
-        width: 100%;
-        min-width: 0;
-      }
-
-      .rc-axis-steering {
-        max-width: none;
-      }
-
-      .rc-axis-throttle {
-        grid-template-rows: auto minmax(190px, 30vh) auto;
-      }
-
-      .rc-axis-throttle input[type="range"] {
-        width: 56px;
-        height: 220px;
+        width: var(--joystick-size);
+        height: var(--joystick-size);
       }
 
       .drive-hud {
@@ -3694,7 +3726,7 @@
     }
 
     body:not(.drive-ui) .race-tactical-map {
-      bottom: calc(110px + env(safe-area-inset-bottom));
+      bottom: calc(166px + env(safe-area-inset-bottom));
     }
 
     .race-tactical-map .race-battle-head {
@@ -3973,6 +4005,10 @@
       pointer-events: none;
       transform: translateX(-50%) scale(var(--osd-scale));
       transform-origin: bottom center;
+    }
+
+    body:not(.drive-ui) .cockpit-cluster {
+      bottom: calc(104px + env(safe-area-inset-bottom));
     }
 
     .cockpit-cluster .vehicle-resource-hud {
@@ -4489,6 +4525,33 @@
         width: min(420px, calc(100vw - 20px));
       }
 
+      .rc-actions {
+        gap: 6px;
+      }
+
+      .rc-gear {
+        gap: 4px;
+      }
+
+      .rc-gear-label {
+        display: none;
+      }
+
+      .rc-gear button {
+        width: 28px;
+        min-width: 28px;
+      }
+
+      #btnReconnect,
+      #btnDrive {
+        padding-right: 8px;
+        padding-left: 8px;
+      }
+
+      #btnDrive {
+        min-width: 84px;
+      }
+
       .cockpit-cluster .drive-header {
         width: min(520px, calc(100vw - 20px));
       }
@@ -4823,17 +4886,18 @@
   <div class="hud">
     <div class="panel">
       <div class="control" aria-label="RC controls">
-        <div class="rc-axis rc-axis-steering">
-          <label for="steering">Steering</label>
-          <input id="steering" type="range" min="1000" max="2000" step="1" value="1500">
-          <output id="steeringValue" for="steering">1500</output>
+        <div id="rcJoystick" class="rc-joystick" role="group" tabindex="0" aria-label="Steering center, throttle neutral">
+          <span class="rc-joystick-ring" aria-hidden="true"></span>
+          <span class="rc-joystick-label acc" aria-hidden="true">ACC</span>
+          <span class="rc-joystick-label brk" aria-hidden="true">BRK</span>
+          <span class="rc-joystick-label left" aria-hidden="true">L</span>
+          <span class="rc-joystick-label right" aria-hidden="true">R</span>
+          <span id="rcJoystickThumb" class="rc-joystick-thumb" aria-hidden="true"></span>
         </div>
-
-        <div class="rc-axis rc-axis-throttle">
-          <label for="throttle">Throttle</label>
-          <input id="throttle" type="range" min="1300" max="2000" step="1" value="1500">
-          <output id="throttleValue" for="throttle">1500</output>
-        </div>
+        <input id="steering" class="rc-joystick-channel" type="range" min="1000" max="2000" step="1" value="1500" tabindex="-1" aria-hidden="true">
+        <output id="steeringValue" class="visually-hidden" for="steering">1500</output>
+        <input id="throttle" class="rc-joystick-channel" type="range" min="1300" max="2000" step="1" value="1500" tabindex="-1" aria-hidden="true">
+        <output id="throttleValue" class="visually-hidden" for="throttle">1500</output>
       </div>
 
       <section class="cockpit-cluster" aria-label="Vehicle and driving status">
