@@ -90,12 +90,19 @@ MADSYSTEMはVOICEVOX GUI側のカスタム`preset_id=2`を参照するが、pres
 Race Audio Serviceはspeaker IDと速度を明示し、VOICEVOXの既定pitch `0.0`、intonation `1.0`、
 volume `1.0`を使う。完全一致が必要になった場合は、MADSYSTEM実機のpreset内容を別途採取する。
 
-Race Operations Consoleの`FORMATION + START`は、CoordinatorからRelayの
+Race Operations Consoleの`FORMATION ANNOUNCEMENT`は、CoordinatorからRelayの
 `POST /api/v1/race-audio/announcements`を呼ぶ。Relayは固定の
-`pre_race_formation`だけを受け付け、ロスター全車分のPilot audio trackを確認してからVOICEVOXで1回だけ
-生成し、同じOpus packet列を全員へ配る。任意文言、話者ID、URLはAPIから指定できない。
+`pre_race_formation`と、Prepareでロックされた順序付きの`carId`、`displayNumber`、`pilotName`だけを受け付ける。
+ロスター全車分のPilot audio trackを確認してから、スターティンググリッド紹介をVOICEVOXで1回だけ生成し、
+同じOpus packet列を全員へ配る。任意文言、話者ID、URLはAPIから指定できない。紹介が完了してもrunは
+Preparedのままであり、レッドシグナルは運営が別途`START SEQUENCE`を押した時だけ始まる。
 この内部APIは`MOMO_RELAY_GAMEPLAY_TOKEN`と`-gameplay-allow-cidr`で保護する。Coordinatorにも同じtokenと
 `relayGameplayBaseUrl`が必要である。
+
+現在の紹介順はロック済みロスター順であり、予選順位を表す`gridPosition`契約はまだない。実際のグリッド順を
+導入する場合は、D1/Coordinatorのロスターへ明示的な`gridPosition`を追加してからRelayへ渡す。Relay側で順位を
+推測しない。単一音声は512文字かつ45秒までとし、超えるロスターは明示的に失敗する。長いグリッドを黙って
+省略するfallbackは設けない。
 
 起動後、同じ PC で確認する。
 

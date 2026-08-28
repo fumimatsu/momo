@@ -14,6 +14,11 @@ import (
 )
 
 func TestRaceAudioAnnouncementSynthesizesOnceAndQueuesEveryPilot(t *testing.T) {
+	grid := []raceAudioAnnouncementGridEntry{
+		{CarID: "CP-3", DisplayNumber: "03", PilotName: "Pilot Three"},
+		{CarID: "CP-1", DisplayNumber: "01", PilotName: "Pilot One"},
+		{CarID: "CP-2", DisplayNumber: "02", PilotName: "Pilot Two"},
+	}
 	var synthesisCalls atomic.Int32
 	synthesisService := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		synthesisCalls.Add(1)
@@ -22,7 +27,9 @@ func TestRaceAudioAnnouncementSynthesizesOnceAndQueuesEveryPilot(t *testing.T) {
 			t.Fatal(err)
 		}
 		if payload.Language != "ja-JP" || !strings.HasSuffix(payload.EventKey, ":global:pre_race_formation") ||
-			payload.Text != preRaceFormationAnnouncement("rr-formation").JapaneseText {
+			payload.Text != preRaceFormationAnnouncement("rr-formation", grid).JapaneseText ||
+			!strings.Contains(payload.Text, "カーナンバー03、Pilot Three") ||
+			!strings.HasSuffix(payload.Text, "オフィシャルのスタートシグナルを待て。") {
 			t.Fatalf("unexpected synthesis request: %+v", payload)
 		}
 		_ = json.NewEncoder(writer).Encode(raceAudioSynthesisResponse{
@@ -43,7 +50,7 @@ func TestRaceAudioAnnouncementSynthesizesOnceAndQueuesEveryPilot(t *testing.T) {
 		server.sources[source.name] = source
 	}
 
-	body := []byte(`{"schemaVersion":1,"command":"pre_race_formation","commandId":"formation-1","raceRunId":"rr-formation","carIds":["CP-3","CP-1","CP-2"]}`)
+	body := []byte(`{"schemaVersion":1,"command":"pre_race_formation","commandId":"formation-1","raceRunId":"rr-formation","grid":[{"carId":"CP-3","displayNumber":"03","pilotName":"Pilot Three"},{"carId":"CP-1","displayNumber":"01","pilotName":"Pilot One"},{"carId":"CP-2","displayNumber":"02","pilotName":"Pilot Two"}]}`)
 	first := callRaceAudioAnnouncement(t, server, body)
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
@@ -54,6 +61,9 @@ func TestRaceAudioAnnouncementSynthesizesOnceAndQueuesEveryPilot(t *testing.T) {
 	}
 	if response.Status != "queued" || response.TargetCount != 3 || response.DurationMS != 20 {
 		t.Fatalf("unexpected response: %+v", response)
+	}
+	if strings.Join(response.CarIDs, ",") != "CP-3,CP-1,CP-2" {
+		t.Fatalf("response car order=%v", response.CarIDs)
 	}
 	for _, source := range server.sources {
 		client := source.activeRaceAudioPilot()
@@ -111,10 +121,23 @@ func TestRaceAudioAnnouncementRequiresEveryRequestedPilot(t *testing.T) {
 	server := &relayServer{
 		sources: map[string]*relay{source.name: source}, sourceRuntime: relaySourceRuntime{raceAudioService: service},
 	}
-	body := []byte(`{"schemaVersion":1,"command":"pre_race_formation","commandId":"formation-1","raceRunId":"rr-formation","carIds":["CP-1","CP-2"]}`)
+	body := []byte(`{"schemaVersion":1,"command":"pre_race_formation","commandId":"formation-1","raceRunId":"rr-formation","grid":[{"carId":"CP-1","displayNumber":"01","pilotName":"Pilot One"},{"carId":"CP-2","displayNumber":"02","pilotName":"Pilot Two"}]}`)
 	response := callRaceAudioAnnouncement(t, server, body)
 	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte("pilot_audio_not_ready")) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestRaceAudioAnnouncementRejectsIncompleteOrConflictingGrid(t *testing.T) {
+	server := &relayServer{}
+	for _, body := range [][]byte{
+		[]byte(`{"schemaVersion":1,"command":"pre_race_formation","commandId":"formation-1","raceRunId":"rr-formation","grid":[{"carId":"CP-1","pilotName":""}]}`),
+		[]byte(`{"schemaVersion":1,"command":"pre_race_formation","commandId":"formation-1","raceRunId":"rr-formation","grid":[{"carId":"CP-1","pilotName":"Pilot One"},{"carId":"CP-1","pilotName":"Pilot Two"}]}`),
+	} {
+		response := callRaceAudioAnnouncement(t, server, body)
+		if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte("invalid_request")) {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
 	}
 }
 

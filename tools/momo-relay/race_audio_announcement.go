@@ -6,24 +6,32 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
-	raceAudioAnnouncementSchemaVersion = 1
-	raceAudioAnnouncementReceiptLimit  = 128
+	raceAudioAnnouncementSchemaVersion     = 1
+	raceAudioAnnouncementReceiptLimit      = 128
+	raceAudioAnnouncementMaximumDurationMS = 45_000
 )
 
 var raceAudioAnnouncementKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 type raceAudioAnnouncementRequest struct {
-	SchemaVersion int      `json:"schemaVersion"`
-	Command       string   `json:"command"`
-	CommandID     string   `json:"commandId"`
-	RaceRunID     string   `json:"raceRunId"`
-	CarIDs        []string `json:"carIds"`
+	SchemaVersion int                              `json:"schemaVersion"`
+	Command       string                           `json:"command"`
+	CommandID     string                           `json:"commandId"`
+	RaceRunID     string                           `json:"raceRunId"`
+	Grid          []raceAudioAnnouncementGridEntry `json:"grid"`
+}
+
+type raceAudioAnnouncementGridEntry struct {
+	CarID         string `json:"carId"`
+	DisplayNumber string `json:"displayNumber,omitempty"`
+	PilotName     string `json:"pilotName"`
 }
 
 type raceAudioAnnouncementResponse struct {
@@ -67,20 +75,34 @@ func (server *relayServer) serveRaceAudioAnnouncement(writer http.ResponseWriter
 		writeRaceAudioAnnouncementError(writer, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	carIDs, err := validateRaceAudioAnnouncementRequest(command)
+	grid, err := validateRaceAudioAnnouncementRequest(command)
 	if err != nil {
 		writeRaceAudioAnnouncementError(writer, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	command.CarIDs = carIDs
-	event := preRaceFormationAnnouncement(command.RaceRunID)
-	fingerprint := command.RaceRunID + "\n" + strings.Join(carIDs, "\n")
+	command.Grid = grid
+	event := preRaceFormationAnnouncement(command.RaceRunID, grid)
+	if utf8.RuneCountInString(event.JapaneseText) > raceAudioCalloutMaximumMessage ||
+		utf8.RuneCountInString(event.EnglishText) > raceAudioCalloutMaximumMessage {
+		writeRaceAudioAnnouncementError(writer, http.StatusBadRequest, "announcement_too_long", "the locked grid exceeds the single announcement text limit")
+		return
+	}
+	gridJSON, err := json.Marshal(grid)
+	if err != nil {
+		writeRaceAudioAnnouncementError(writer, http.StatusInternalServerError, "grid_encoding_failed", "the locked grid could not be encoded")
+		return
+	}
+	fingerprint := command.RaceRunID + "\n" + string(gridJSON)
+	carIDs := make([]string, 0, len(grid))
+	for _, participant := range grid {
+		carIDs = append(carIDs, participant.CarID)
+	}
 
 	server.raceAudioAnnouncementMu.Lock()
 	defer server.raceAudioAnnouncementMu.Unlock()
 	if receipt, exists := server.raceAudioAnnouncements[event.EventID]; exists {
 		if receipt.fingerprint != fingerprint {
-			writeRaceAudioAnnouncementError(writer, http.StatusConflict, "announcement_conflict", "the race announcement was already queued for a different car set")
+			writeRaceAudioAnnouncementError(writer, http.StatusConflict, "announcement_conflict", "the race announcement was already queued for a different locked grid")
 			return
 		}
 		response := receipt.response
@@ -102,6 +124,10 @@ func (server *relayServer) serveRaceAudioAnnouncement(writer http.ResponseWriter
 	clip, durationMS, err := server.sourceRuntime.raceAudioService.synthesize(request.Context(), event, "ja-JP")
 	if err != nil {
 		writeRaceAudioAnnouncementError(writer, http.StatusBadGateway, "synthesis_failed", err.Error())
+		return
+	}
+	if durationMS <= 0 || durationMS > raceAudioAnnouncementMaximumDurationMS {
+		writeRaceAudioAnnouncementError(writer, http.StatusBadGateway, "invalid_synthesis_duration", "the synthesized formation announcement duration is invalid")
 		return
 	}
 	clip.event = event
@@ -159,39 +185,77 @@ func (server *relayServer) serveRaceAudioAnnouncement(writer http.ResponseWriter
 	writeRaceAudioAnnouncementJSON(writer, http.StatusOK, response)
 }
 
-func validateRaceAudioAnnouncementRequest(request raceAudioAnnouncementRequest) ([]string, error) {
+func validateRaceAudioAnnouncementRequest(request raceAudioAnnouncementRequest) ([]raceAudioAnnouncementGridEntry, error) {
 	if request.SchemaVersion != raceAudioAnnouncementSchemaVersion || request.Command != "pre_race_formation" ||
 		!raceAudioAnnouncementKeyPattern.MatchString(strings.TrimSpace(request.CommandID)) ||
 		!raceAudioAnnouncementKeyPattern.MatchString(strings.TrimSpace(request.RaceRunID)) {
 		return nil, fmt.Errorf("schemaVersion=1, command=pre_race_formation, commandId, and raceRunId are required")
 	}
-	if len(request.CarIDs) < 1 || len(request.CarIDs) > maximumConfiguredSources {
-		return nil, fmt.Errorf("carIds must contain 1..%d cars", maximumConfiguredSources)
+	if len(request.Grid) < 1 || len(request.Grid) > maximumConfiguredSources {
+		return nil, fmt.Errorf("grid must contain 1..%d participants", maximumConfiguredSources)
 	}
-	carIDs := make([]string, 0, len(request.CarIDs))
-	seen := make(map[string]struct{}, len(request.CarIDs))
-	for _, value := range request.CarIDs {
-		carID := strings.TrimSpace(value)
-		if !raceAudioAnnouncementKeyPattern.MatchString(carID) {
-			return nil, fmt.Errorf("carIds contains an invalid car ID")
+	grid := make([]raceAudioAnnouncementGridEntry, 0, len(request.Grid))
+	seen := make(map[string]struct{}, len(request.Grid))
+	for _, value := range request.Grid {
+		participant := raceAudioAnnouncementGridEntry{
+			CarID:         strings.TrimSpace(value.CarID),
+			DisplayNumber: strings.TrimSpace(value.DisplayNumber),
+			PilotName:     strings.TrimSpace(value.PilotName),
 		}
-		if _, duplicate := seen[carID]; duplicate {
-			return nil, fmt.Errorf("carIds contains duplicate car ID %q", carID)
+		if !raceAudioAnnouncementKeyPattern.MatchString(participant.CarID) {
+			return nil, fmt.Errorf("grid contains an invalid carId")
 		}
-		seen[carID] = struct{}{}
-		carIDs = append(carIDs, carID)
+		if _, duplicate := seen[participant.CarID]; duplicate {
+			return nil, fmt.Errorf("grid contains duplicate carId %q", participant.CarID)
+		}
+		if !validRaceAudioAnnouncementText(participant.PilotName, 64, false) {
+			return nil, fmt.Errorf("grid contains an invalid pilotName for carId %q", participant.CarID)
+		}
+		if !validRaceAudioAnnouncementText(participant.DisplayNumber, 16, true) {
+			return nil, fmt.Errorf("grid contains an invalid displayNumber for carId %q", participant.CarID)
+		}
+		seen[participant.CarID] = struct{}{}
+		grid = append(grid, participant)
 	}
-	sort.Strings(carIDs)
-	return carIDs, nil
+	return grid, nil
 }
 
-func preRaceFormationAnnouncement(raceRunID string) raceAudioEvent {
+func validRaceAudioAnnouncementText(value string, maximumRunes int, optional bool) bool {
+	if value == "" {
+		return optional
+	}
+	if utf8.RuneCountInString(value) > maximumRunes {
+		return false
+	}
+	for _, valueRune := range value {
+		if unicode.IsControl(valueRune) {
+			return false
+		}
+	}
+	return true
+}
+
+func preRaceFormationAnnouncement(raceRunID string, grid []raceAudioAnnouncementGridEntry) raceAudioEvent {
+	var english strings.Builder
+	var japanese strings.Builder
+	english.WriteString("Tsukuraji RC Park. D and D Night FPV RC Race. The formation lap is about to begin. Here is the starting grid. ")
+	japanese.WriteString("つくラジRCパーク、DアンドDナイト。FPVRCレース。まもなくフォーメーションラップ。本日のスターティンググリッドを紹介する。")
+	for _, participant := range grid {
+		number := participant.DisplayNumber
+		if number == "" {
+			number = participant.CarID
+		}
+		fmt.Fprintf(&english, "Car number %s, %s. ", number, participant.PilotName)
+		fmt.Fprintf(&japanese, "カーナンバー%s、%s。", number, participant.PilotName)
+	}
+	english.WriteString("Drivers, begin the formation lap, take your grid positions, and wait for the official start signal.")
+	japanese.WriteString("ドライバーはフォーメーションラップへ。マシンをグリッドへ導き、オフィシャルのスタートシグナルを待て。")
 	return raceAudioEvent{
 		EventID:      raceRunID + ":global:pre_race_formation",
 		Kind:         "pre_race_formation",
 		Priority:     70,
-		EnglishText:  "Tsukuraji RC Park. D and D Night FPV RC Race. Drivers, begin the formation lap and take your grid positions. Red lights will follow. Get ready to race.",
-		JapaneseText: "つくラジRCパーク、DアンドDナイト。FPVRCレース、まもなくスタート。ドライバーはフォーメーションラップへ。マシンをグリッドへ導け。全車がそろえば、レッドシグナル点灯。静寂のあと、勝負が始まる。さあ、準備はいいか。",
+		EnglishText:  english.String(),
+		JapaneseText: japanese.String(),
 	}
 }
 

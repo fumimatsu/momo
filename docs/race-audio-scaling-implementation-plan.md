@@ -91,12 +91,14 @@ finish and safety announcements. Countdown light sounds remain local and
 clock-based so audio generation cannot affect the start signal.
 
 The first implemented slice is `pre_race_formation`. Race Operations sends a
-fixed command for the locked `raceRunId` and complete car set. Relay accepts no
-arbitrary text, synthesizes the Japanese phrase once, queues the same Opus clip
-to every active Pilot track, and returns its duration. Coordinator waits for
-that duration plus the configured formation hold before invoking the existing
-Countdown-to-Green state machine. A missing Pilot audio track, Race Voice Off,
-or synthesis failure leaves the run Prepared.
+fixed command for the locked `raceRunId` and ordered grid identity
+(`carId`, `displayNumber`, and `pilotName`). Relay accepts no arbitrary text,
+builds the fixed grid-introduction grammar, synthesizes the Japanese phrase
+once, queues the same Opus clip to every active Pilot track, and returns its
+duration. Coordinator leaves the run Prepared. Countdown-to-Green starts only
+when the operator later presses Start Sequence. A missing Pilot audio track,
+Race Voice Off, synthesis failure, or an announcement beyond the single-clip
+limit fails visibly without guessing or silently omitting a Pilot.
 
 ## Phase 3: remove central prepare work for fixed phrases
 
