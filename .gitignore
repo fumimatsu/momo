@@ -68,4 +68,5 @@ CLAUDE.local.md
 /tools/momo-relay/observer-unity.launch.log
 /tools/momo-relay/crash_dumps/
 /tools/momo-relay/*.exe~
+/artifacts/
 /tools/.artifacts/

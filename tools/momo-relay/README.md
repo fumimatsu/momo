@@ -1,5 +1,17 @@
 # Local Relay Web UI 運用
 
+## Race Recorder
+
+Race Operations Consoleから録画方針を一体操作し、メディア保存を独立プロセスへ隔離する。
+`full_archive`ではRecorderがRelayへ読み取り専用Observerとして接続し、車両別H.264とM5音声を
+`raceRunId`単位で保存する。起動方法、保存形式、未完了のmux／実機試験は
+[Race Recorder Server](../../docs/race-recorder-server.md)を参照する。
+
+```powershell
+Set-Location E:\src\momo
+.\tools\Start-RaceRecorder.ps1 -Rebuild
+```
+
 ## Race Control / Relay / Observer の一括起動
 
 同一PCの3サービスは、次のスクリプトで依存順に起動できる。Race Control の

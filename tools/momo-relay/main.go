@@ -3144,7 +3144,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	clientKind := req.URL.Query().Get("client")
-	if clientKind != "web-observer" && clientKind != "web-pilot" {
+	if clientKind != "web-observer" && clientKind != "web-pilot" && clientKind != "recorder" {
 		clientKind = ""
 	}
 	client := &viewer{id: r.nextID.Add(1), role: role, clientKind: clientKind, remoteAddr: req.RemoteAddr}
