@@ -4400,6 +4400,14 @@
     const motion = getMotionSnapshot();
     const imuEffectsEnabled = imuDriveCalibration.snapshot().imuEffectsEnabled;
     const motionFresh = Boolean(imuEffectsEnabled && motion && !motion.stale);
+    const motionPlatform = motion?.motionPlatformMotion || null;
+    const motionPlatformFresh = Boolean(
+      ffbClient.supportsFeature?.('virtualMotionPlatformV1')
+        && imuEffectsEnabled
+        && motion
+        && !motion.stale
+        && motionPlatform,
+    );
     const speed = dashboardSpeed || getFfbVehicleSpeedState(nowMs);
     const control = getFfbControlIntent();
     const throttle = Math.max(-1, Math.min(1, (Number(throttleInput?.value || 1500) - 1500) / 500));
@@ -4429,6 +4437,11 @@
       lateralMps2: motionFresh ? Number(motion.motion?.lateralMps2) || 0 : 0,
       cornerLoad: motionFresh ? Number(motion.cornerLoad) || 0 : 0,
       surfaceRoughness: motionFresh ? Number(motion.surfaceRoughness) || 0 : 0,
+      motionProfile: 'balanced',
+      motionPlatformFresh,
+      motionForwardMps2: motionPlatformFresh ? Number(motionPlatform.forwardMps2) || 0 : 0,
+      motionLateralMps2: motionPlatformFresh ? Number(motionPlatform.lateralMps2) || 0 : 0,
+      motionVerticalMps2: motionPlatformFresh ? Number(motionPlatform.verticalMps2) || 0 : 0,
       hp: Number.isFinite(Number(vehicleHealth?.hp)) ? Number(vehicleHealth.hp) : 100,
       cornerDirectionSign: FFB_CORNER_DIRECTION_SIGN,
     });

@@ -19,6 +19,7 @@
   const UNIT_NORM_MAX = 1.02;
   const STANDARD_GRAVITY_MPS2 = 9.80665;
   const VEHICLE_FLU_AXES_FLAG = 'flu_axes';
+  const IMU_FUSION_FLAG = 'imu_fusion_v1';
   const RELAY_EVENT_HISTORY_LIMIT = 32;
   const RELAY_EVENT_SUPPRESSION_REASONS = Object.freeze([
     '',
@@ -429,6 +430,25 @@
     };
   }
 
+  // Motion platform authority is intentionally stricter than the existing
+  // Viewer motion path. Never fall back to the fixed-1G legacy vector when
+  // attitude-following gravity removal is unavailable.
+  function deriveMotionPlatformMotion(payload) {
+    if (!payload
+        || payload.v !== 2
+        || payload.k !== 's'
+        || !hasVehicleFluAxes(payload)
+        || !Array.isArray(payload?.q?.f)
+        || !payload.q.f.includes(IMU_FUSION_FLAG)
+        || !Array.isArray(payload?.q?.c)
+        || payload.q.c[0] !== 2
+        || !isVector(payload?.m?.l, 3, -1000, 1000)) {
+      return null;
+    }
+    const [forwardMps2, lateralMps2, verticalMps2] = payload.m.l;
+    return { forwardMps2, lateralMps2, verticalMps2 };
+  }
+
   function parseVehicleImpactEvent(value) {
     if (!isPlainObject(value)
         || value.type !== 'vehicle_event'
@@ -699,6 +719,7 @@
         lastArrivalMs: arrivalMs,
         staleThresholdMs: getStaleThresholdMs(getStatePeriodUs(payload)),
         motion,
+        motionPlatformMotion: deriveMotionPlatformMotion(payload),
         jerkMps3,
         cornerLoad,
         surfaceForwardBaselineMps2,
@@ -952,6 +973,7 @@
     classifyLowTelemetryValue,
     classifySequence,
     deriveVehicleMotion,
+    deriveMotionPlatformMotion,
     encodeTelemetry,
     getStaleThresholdMs,
     parseTelemetryMessage,
