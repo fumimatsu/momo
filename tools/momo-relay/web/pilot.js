@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260829-race-state-v2-fix1';
+  const PILOT_BUILD_ID = '20260830-dashboard-gear-rpm1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -279,6 +279,8 @@
       motorPolePairs: 1,
       ffbSpeedFullKph: 30,
       speedConfidence: 0.65,
+      dashboardRpmReferenceGear: 3,
+      dashboardRpmScaleFromThrottleLimit: true,
     }),
   });
   const VEHICLE_SPEED_PROFILE_BY_DEVICE = Object.freeze({
@@ -326,6 +328,21 @@
           / (VEHICLE_TIRE_ROLLOUT_MM / 1000)
           * VEHICLE_OVERALL_GEAR_RATIO
         : 0)),
+  );
+  const VEHICLE_DASHBOARD_RPM_REFERENCE_GEAR = Math.max(
+    1,
+    Math.min(
+      RC_THROTTLE_GEAR_MAX_VALUES.length,
+      getIntegerParam(
+        'dashboardRpmReferenceGear',
+        VEHICLE_SPEED_DEFAULT_PROFILE?.dashboardRpmReferenceGear || RC_GEAR_COUNT,
+      ),
+    ),
+  );
+  const VEHICLE_DASHBOARD_RPM_SCALE_FROM_THROTTLE_LIMIT = getBooleanParam(
+    'dashboardRpmScaleFromThrottleLimit',
+    !getUrlParams().has('dashboardRpmFull')
+      && VEHICLE_SPEED_DEFAULT_PROFILE?.dashboardRpmScaleFromThrottleLimit === true,
   );
   const VEHICLE_SPEED_CONFIDENCE = Math.max(
     0,
@@ -4652,6 +4669,23 @@
     return wheelRpm * (VEHICLE_TIRE_ROLLOUT_MM / 1000) * 60 / 1000;
   }
 
+  function getDashboardRpmFull() {
+    if (!VEHICLE_DASHBOARD_RPM_SCALE_FROM_THROTTLE_LIMIT) {
+      return VEHICLE_DASHBOARD_RPM_FULL;
+    }
+    const activeGear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
+    const activeThrottleMax = RC_THROTTLE_GEAR_MAX_VALUES[activeGear - 1];
+    const referenceThrottleMax = RC_THROTTLE_GEAR_MAX_VALUES[
+      VEHICLE_DASHBOARD_RPM_REFERENCE_GEAR - 1
+    ];
+    const activeSpan = Number(activeThrottleMax) - 1500;
+    const referenceSpan = Number(referenceThrottleMax) - 1500;
+    if (!(activeSpan > 0) || !(referenceSpan > 0)) {
+      return VEHICLE_DASHBOARD_RPM_FULL;
+    }
+    return VEHICLE_DASHBOARD_RPM_FULL * activeSpan / referenceSpan;
+  }
+
   function getFfbControlIntent() {
     const pulse = Number(throttleInput?.value || 1500);
     if (!Number.isFinite(pulse)) return { propulsion: 0, brake: 0 };
@@ -4668,6 +4702,7 @@
     const rpm = Number(snapshot?.state?.esc?.rpm);
     const mechanicalRpm = normalizeMotorMechanicalRpm(rpm);
     const kph = estimateVehicleSpeedKph(rpm);
+    const dashboardRpmFull = getDashboardRpmFull();
     const transportAgeMs = Number.isFinite(snapshot?.lastStateAt)
       ? Math.max(0, nowMs - snapshot.lastStateAt)
       : Number.POSITIVE_INFINITY;
@@ -4685,14 +4720,15 @@
       && ageMs <= maxAgeMs
       && Number.isFinite(kph),
     );
-    const rpmFresh = Boolean(fresh && Number.isFinite(mechanicalRpm) && VEHICLE_DASHBOARD_RPM_FULL > 0);
+    const rpmFresh = Boolean(fresh && Number.isFinite(mechanicalRpm) && dashboardRpmFull > 0);
     return {
       fresh,
       kph: fresh ? Math.max(0, kph) : 0,
       confidence: fresh ? VEHICLE_SPEED_CONFIDENCE : 0,
       source: fresh ? 'esc-rpm' : 'unavailable',
       rpmFresh,
-      rpmRatio: rpmFresh ? Math.max(0, Math.min(1, mechanicalRpm / VEHICLE_DASHBOARD_RPM_FULL)) : 0,
+      rpmRatio: rpmFresh ? Math.max(0, Math.min(1, mechanicalRpm / dashboardRpmFull)) : 0,
+      dashboardRpmFull: rpmFresh ? dashboardRpmFull : 0,
       bootId: typeof snapshot?.boot === 'string' ? snapshot.boot : '',
       sequence: Number.isInteger(snapshot?.seq) ? snapshot.seq : -1,
       sampleTimeUs: Number.isSafeInteger(snapshot?.t_us) ? snapshot.t_us : -1,
