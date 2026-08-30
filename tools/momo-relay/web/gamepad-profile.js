@@ -109,21 +109,55 @@
     return profile ? { profile: { ...profile }, identity, gamepad } : null;
   }
 
-  function getCalibrationButtonAction({
-    buttonIndex,
-    confirmButton,
-    stepKind,
+  function findCalibrationChange(base, current, {
+    excludedAxes = [],
+    excludedButtons = [],
+    allowAxes = true,
+    allowButtons = true,
+    minDelta = 0.15,
   } = {}) {
-    if (!Number.isInteger(buttonIndex)) {
-      return 'ignore';
+    if (!current || typeof current !== 'object') {
+      return null;
     }
-    if (stepKind === 'confirm') {
-      return 'select-confirm';
+    const excludedAxisSet = new Set(excludedAxes);
+    const excludedButtonSet = new Set(excludedButtons);
+    let candidate = null;
+
+    if (allowAxes) {
+      for (let index = 0; index < (current.axes?.length || 0); index += 1) {
+        if (excludedAxisSet.has(index)) continue;
+        const value = Number(current.axes[index]);
+        const baseValue = Number(base?.axes?.[index]);
+        const delta = Math.abs(value - (Number.isFinite(baseValue) ? baseValue : value));
+        if (!candidate || delta > candidate.delta) {
+          candidate = { type: 'axis', index, delta };
+        }
+      }
     }
-    if (Number.isInteger(confirmButton) && buttonIndex === confirmButton) {
-      return stepKind === 'mapping' ? 'reserved-confirm' : 'confirm';
+
+    if (allowButtons) {
+      for (let index = 0; index < (current.buttons?.length || 0); index += 1) {
+        if (excludedButtonSet.has(index)) continue;
+        const value = Number(current.buttons[index]);
+        const baseValue = Number(base?.buttons?.[index]);
+        const delta = Math.abs(value - (Number.isFinite(baseValue) ? baseValue : value));
+        if (!candidate || delta > candidate.delta) {
+          candidate = { type: 'button', index, delta };
+        }
+      }
     }
-    return stepKind === 'mapping' ? 'assign' : 'ignore';
+
+    const threshold = Number.isFinite(Number(minDelta)) ? Math.max(0, Number(minDelta)) : 0.15;
+    return candidate && candidate.delta >= threshold ? candidate : null;
+  }
+
+  function haveOppositeCalibrationDirections(firstIdle, firstPressed, secondIdle, secondPressed) {
+    const firstDelta = Number(firstPressed) - Number(firstIdle);
+    const secondDelta = Number(secondPressed) - Number(secondIdle);
+    if (!Number.isFinite(firstDelta) || !Number.isFinite(secondDelta)) return false;
+    const firstDirection = Math.sign(firstDelta);
+    const secondDirection = Math.sign(secondDelta);
+    return firstDirection !== 0 && secondDirection !== 0 && firstDirection !== secondDirection;
   }
 
   window.FpvGamepadProfiles = {
@@ -137,6 +171,7 @@
     removeProfile,
     parseGamepadIdentity,
     profileForGamepad,
-    getCalibrationButtonAction,
+    findCalibrationChange,
+    haveOppositeCalibrationDirections,
   };
 })();

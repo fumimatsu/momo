@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260830-c5-gear-hold1';
+  const PILOT_BUILD_ID = '20260831-calibration-optional1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -133,19 +133,18 @@
     strong: Object.freeze({ label: 'Strong' }),
   });
   const CALIBRATION_STEPS = Object.freeze([
-    Object.freeze({ id: 'confirmButton', title: 'CONFIRM BUTTON', instruction: '以降の記録と保存に使う決定ボタンを一度押してください。このボタンは走行操作には割り当てません。', button: true, confirm: true, visual: 'button', visualKey: 'OK', visualHint: 'PRESS ONCE' }),
+    Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルまたはスティックを中央へ戻し、現在値を記録します。', visual: 'steering-center', visualHint: 'RETURN TO CENTER' }),
     Object.freeze({ id: 'steeringLeft', title: 'STEERING / FULL LEFT', instruction: 'ハンドルを左端まで回し、その位置を保ったまま現在値を記録します。', visual: 'steering-left', visualHint: 'TURN LEFT & HOLD' }),
     Object.freeze({ id: 'steeringRight', title: 'STEERING / FULL RIGHT', instruction: 'ハンドルを右端まで回し、その位置を保ったまま現在値を記録します。', visual: 'steering-right', visualHint: 'TURN RIGHT & HOLD' }),
-    Object.freeze({ id: 'steeringCenter', title: 'STEERING / CENTER', instruction: 'ハンドルから手を離して中央へ戻し、現在値を記録します。', visual: 'steering-center', visualHint: 'RETURN TO CENTER' }),
     Object.freeze({ id: 'throttleIdle', title: 'THROTTLE / RELEASED', instruction: 'アクセルを踏まず、完全に戻した状態を記録します。', visual: 'pedal-throttle-release', visualHint: 'RELEASE ACCEL' }),
     Object.freeze({ id: 'throttlePressed', title: 'THROTTLE / FULL', instruction: 'アクセルを奥まで踏み込み、その位置を保ったまま現在値を記録します。', visual: 'pedal-throttle-press', visualHint: 'PRESS ACCEL' }),
     Object.freeze({ id: 'brakeIdle', title: 'BRAKE / RELEASED', instruction: 'ブレーキを踏まず、完全に戻した状態を記録します。', visual: 'pedal-brake-release', visualHint: 'RELEASE BRAKE' }),
     Object.freeze({ id: 'brakePressed', title: 'BRAKE / FULL', instruction: 'ブレーキを奥まで踏み込み、その位置を保ったまま現在値を記録します。', visual: 'pedal-brake-press', visualHint: 'PRESS BRAKE' }),
-    Object.freeze({ id: 'paddleLeft', title: 'LEFT PADDLE', instruction: '左パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true, visual: 'paddle-left', visualHint: 'PRESS LEFT PADDLE' }),
-    Object.freeze({ id: 'paddleRight', title: 'RIGHT PADDLE', instruction: '右パドルを一度押します。入力を検出すると自動的に次へ進みます。', button: true, visual: 'paddle-right', visualHint: 'PRESS RIGHT PADDLE' }),
-    Object.freeze({ id: 'driveButton', title: 'DRIVE BUTTON', instruction: '運転開始に使うボタンを一度押します。', button: true, visual: 'button', visualKey: 'DRIVE', visualHint: 'PRESS DRIVE BUTTON' }),
-    Object.freeze({ id: 'ffbPresetButton', title: 'FFB BUTTON', instruction: 'FFB強度の切り替えに使うボタンを一度押します。', button: true, visual: 'button', visualKey: 'FFB', visualHint: 'PRESS FFB BUTTON' }),
-    Object.freeze({ id: 'menuButton', title: 'MENU BUTTON', instruction: '走行画面でMENUを開くボタンを一度押します。', button: true, visual: 'button', visualKey: 'MENU', visualHint: 'PRESS MENU BUTTON' }),
+    Object.freeze({ id: 'paddleLeft', title: 'LEFT PADDLE', instruction: '左パドルを一度押します。入力を検出すると自動的に次へ進みます。なくても走行できます。', button: true, optional: true, visual: 'paddle-left', visualHint: 'PRESS OR SKIP' }),
+    Object.freeze({ id: 'paddleRight', title: 'RIGHT PADDLE', instruction: '右パドルを一度押します。入力を検出すると自動的に次へ進みます。なくても走行できます。', button: true, optional: true, visual: 'paddle-right', visualHint: 'PRESS OR SKIP' }),
+    Object.freeze({ id: 'driveButton', title: 'DRIVE BUTTON', instruction: '運転開始に使うボタンを一度押します。画面のDRIVEボタンを使う場合はスキップできます。', button: true, optional: true, visual: 'button', visualKey: 'DRIVE', visualHint: 'PRESS OR SKIP' }),
+    Object.freeze({ id: 'ffbPresetButton', title: 'FFB BUTTON', instruction: 'FFB強度の切り替えに使うボタンを一度押します。画面で切り替える場合はスキップできます。', button: true, optional: true, visual: 'button', visualKey: 'FFB', visualHint: 'PRESS OR SKIP' }),
+    Object.freeze({ id: 'menuButton', title: 'MENU BUTTON', instruction: '走行画面でMENUを開くボタンを一度押します。画面またはMキーを使う場合はスキップできます。', button: true, optional: true, visual: 'button', visualKey: 'MENU', visualHint: 'PRESS OR SKIP' }),
   ]);
   const FFB_INITIAL_PRESET = normalizeFfbPreset(getStringParam('ffbPreset', GAMEPAD_PROFILE?.ffbPreset || 'medium'));
   const FFB_SEND_INTERVAL_MS = Math.max(20, Math.min(100, getNumberParam('ffbSendMs', 20)));
@@ -519,6 +518,7 @@
   const calibrationLive = document.getElementById('calibrationLive');
   const calibrationError = document.getElementById('calibrationError');
   const btnCalibrationCapture = document.getElementById('btnCalibrationCapture');
+  const btnCalibrationSkip = document.getElementById('btnCalibrationSkip');
   const btnCalibrationBack = document.getElementById('btnCalibrationBack');
   const btnCalibrationRestart = document.getElementById('btnCalibrationRestart');
   const btnCalibrationCancel = document.getElementById('btnCalibrationCancel');
@@ -6521,6 +6521,24 @@
     if (isTextEditingTarget(event.target) || event.repeat) {
       return;
     }
+    if (calibrationState) {
+      const step = CALIBRATION_STEPS[calibrationState.stepIndex];
+      if (event.code === 'Enter' || event.code === 'NumpadEnter') {
+        event.preventDefault();
+        captureCalibrationStep();
+      } else if (event.code === 'KeyS') {
+        event.preventDefault();
+        if (step?.optional) skipCalibrationStep();
+        else calibrationError.textContent = 'この工程は走行に必要なためスキップできません。';
+      } else if (event.code === 'Backspace') {
+        event.preventDefault();
+        backCalibrationStep();
+      } else if (event.code === 'Escape') {
+        event.preventDefault();
+        closeCalibrationWizard();
+      }
+      return;
+    }
     if (event.code === 'KeyM') {
       event.preventDefault();
       toggleMenu();
@@ -8181,27 +8199,23 @@
     return `${axes || 'NO AXES'} / ${pressed || 'NO BUTTON'}`;
   }
 
-  function findCalibrationChange(base, current, excludedAxes = new Set(), excludedButtons = new Set()) {
+  function findCalibrationChange(base, current, options = {}) {
+    return window.FpvGamepadProfiles?.findCalibrationChange?.(base, current, options) || null;
+  }
+
+  function describeCalibrationAxisDelta(base, current) {
     let candidate = null;
-    for (let index = 0; index < current.axes.length; index += 1) {
-      if (excludedAxes.has(index)) {
-        continue;
-      }
-      const delta = Math.abs(current.axes[index] - (base?.axes[index] ?? current.axes[index]));
+    for (let index = 0; index < (current?.axes.length || 0); index += 1) {
+      const currentValue = current.axes[index];
+      const baseValue = base?.axes[index] ?? currentValue;
+      const delta = Math.abs(currentValue - baseValue);
       if (!candidate || delta > candidate.delta) {
-        candidate = { type: 'axis', index, delta };
+        candidate = { index, baseValue, currentValue, delta };
       }
     }
-    for (let index = 0; index < current.buttons.length; index += 1) {
-      if (excludedButtons.has(index)) {
-        continue;
-      }
-      const delta = Math.abs(current.buttons[index] - (base?.buttons[index] ?? current.buttons[index]));
-      if (!candidate || delta > candidate.delta) {
-        candidate = { type: 'button', index, delta };
-      }
-    }
-    return candidate && candidate.delta >= 0.15 ? candidate : null;
+    return candidate
+      ? `A${candidate.index} center=${candidate.baseValue.toFixed(3)} current=${candidate.currentValue.toFixed(3)} delta=${candidate.delta.toFixed(3)}`
+      : 'NO AXIS';
   }
 
   function createCalibrationMapping(gamepad) {
@@ -8245,11 +8259,11 @@
       brakeButton: null,
       brakeIdle: 1,
       brakePressed: -1,
-      paddleLeftButton: null,
-      paddleRightButton: null,
-      driveButton: null,
-      ffbPresetButton: null,
-      menuButton: null,
+      paddleLeftButton: -1,
+      paddleRightButton: -1,
+      driveButton: -1,
+      ffbPresetButton: -1,
+      menuButton: -1,
     };
   }
 
@@ -8270,6 +8284,7 @@
       const li = document.createElement('li');
       li.dataset.index = String(index + 1).padStart(2, '0');
       li.textContent = item.title;
+      li.classList.toggle('optional', Boolean(item.optional));
       li.classList.toggle('done', index < calibrationState.stepIndex);
       li.classList.toggle('active', index === calibrationState.stepIndex);
       return li;
@@ -8280,24 +8295,22 @@
     calibrationTitle.textContent = complete ? 'CALIBRATION READY' : step.title;
     if (calibrationVisual) {
       calibrationVisual.dataset.action = complete ? 'complete' : step.visual;
-      calibrationVisual.dataset.hint = complete ? 'PRESS OK TO SAVE' : step.visualHint;
+      calibrationVisual.dataset.hint = complete ? 'SAVE & RELOAD' : step.visualHint;
     }
-    setText(calibrationVisualKey, complete ? 'OK' : step.visualKey || '');
-    const confirmLabel = Number.isInteger(calibrationState.confirmButton)
-      ? `BUTTON ${calibrationState.confirmButton}`
-      : '';
+    setText(calibrationVisualKey, complete ? 'SAVE' : step.visualKey || '');
     calibrationInstruction.textContent = complete
-      ? `${confirmLabel}を押すと記録内容を保存してViewerを再読み込みします。Driveは再読み込み後もOFFです。`
-      : step.confirm
-        ? step.instruction
-        : step.button
-          ? `${step.instruction} 決定ボタン（${confirmLabel}）は使用できません。`
-          : `${step.instruction} ${confirmLabel}を押すか、Record Currentを選択してください。`;
+      ? 'Save & ReloadまたはEnterで保存し、Viewerを再読み込みします。Driveは再読み込み後もOFFです。'
+      : step.button
+        ? `${step.instruction} Sキーでもスキップできます。`
+        : `${step.instruction} Record CurrentまたはEnterで記録します。`;
     btnCalibrationCapture.disabled = Boolean(step?.button);
     btnCalibrationCapture.textContent = complete
       ? 'Save & Reload'
-      : step?.confirm ? 'Waiting for Confirm Button'
-        : step?.button ? 'Waiting for Button' : 'Record Current';
+      : step?.button ? 'Waiting for Button' : 'Record Current';
+    if (btnCalibrationSkip) {
+      btnCalibrationSkip.hidden = !step?.optional;
+      btnCalibrationSkip.disabled = !step?.optional;
+    }
     btnCalibrationBack.disabled = calibrationState.stepIndex <= 0 || complete;
     calibrationError.textContent = '';
   }
@@ -8310,7 +8323,7 @@
       calibrationState = null;
       calibrationStepLabel.textContent = 'Input required';
       calibrationTitle.textContent = 'CONNECT WHEEL';
-      calibrationInstruction.textContent = 'ハンコンをUSB接続し、いずれかのボタンを押してからRestartを選択してください。';
+      calibrationInstruction.textContent = '入力機器をUSB接続し、ハンドル、スティック、またはボタンを操作してからRestartを選択してください。';
       if (calibrationVisual) {
         calibrationVisual.dataset.action = 'connect';
         calibrationVisual.dataset.hint = 'CONNECT USB';
@@ -8319,6 +8332,7 @@
       calibrationLive.textContent = 'No gamepad reported by browser';
       calibrationError.textContent = '';
       btnCalibrationCapture.disabled = true;
+      if (btnCalibrationSkip) btnCalibrationSkip.hidden = true;
       btnCalibrationBack.disabled = true;
       return;
     }
@@ -8326,8 +8340,7 @@
     calibrationState = {
       stepIndex: 0,
       gamepadIndex: gamepad.index,
-      startSnapshot: snapshot,
-      confirmButton: null,
+      steeringCenterSnapshot: null,
       throttleIdleSnapshot: null,
       brakeIdleSnapshot: null,
       mapping: createCalibrationMapping(gamepad),
@@ -8351,6 +8364,16 @@
   function advanceCalibration(gamepad) {
     calibrationState.stepIndex += 1;
     initializeCalibrationButtonState(gamepad);
+    renderCalibrationWizard();
+  }
+
+  function backCalibrationStep() {
+    if (!calibrationState || calibrationState.stepIndex <= 0
+      || calibrationState.stepIndex >= CALIBRATION_STEPS.length) {
+      return;
+    }
+    calibrationState.stepIndex -= 1;
+    initializeCalibrationButtonState(getCalibrationGamepad());
     renderCalibrationWizard();
   }
 
@@ -8388,27 +8411,37 @@
     const mapping = calibrationState.mapping;
     let change = null;
 
+    if (step.button) {
+      calibrationError.textContent = 'この工程では入力機器のボタンを押すか、Skipを選択してください。';
+      return;
+    }
+
     switch (step.id) {
+      case 'steeringCenter':
+        calibrationState.steeringCenterSnapshot = current;
+        break;
       case 'steeringLeft':
-        change = findCalibrationChange(calibrationState.startSnapshot, current);
-        if (!change || change.type !== 'axis') {
-          calibrationError.textContent = '操舵軸を検出できません。中央へ戻してRestart後、左端まで大きく動かしてください。';
+        change = findCalibrationChange(calibrationState.steeringCenterSnapshot, current, {
+          allowButtons: false,
+        });
+        if (!change) {
+          calibrationError.textContent = `操舵軸を検出できません。左端まで動かしてください。${describeCalibrationAxisDelta(calibrationState.steeringCenterSnapshot, current)}`;
           return;
         }
         mapping.steeringAxis = change.index;
+        mapping.steeringCenter = calibrationState.steeringCenterSnapshot.axes[change.index];
         mapping.steeringLeft = current.axes[change.index];
+        mapping.steeringInvert = mapping.steeringLeft > mapping.steeringCenter;
+        calibrationLive.textContent = `STEERING A${change.index} center=${mapping.steeringCenter.toFixed(3)} left=${mapping.steeringLeft.toFixed(3)} delta=${change.delta.toFixed(3)}`;
         break;
       case 'steeringRight':
         if (mapping.steeringAxis === null
           || Math.abs(current.axes[mapping.steeringAxis] - mapping.steeringLeft) < 0.3) {
-          calibrationError.textContent = '左端との差が不足しています。右端まで回してください。';
+          calibrationError.textContent = `左端との差が不足しています。右端まで回してください。${describeCalibrationAxisDelta(calibrationState.steeringCenterSnapshot, current)}`;
           return;
         }
         mapping.steeringRight = current.axes[mapping.steeringAxis];
-        break;
-      case 'steeringCenter':
-        mapping.steeringCenter = current.axes[mapping.steeringAxis];
-        mapping.steeringInvert = mapping.steeringLeft > mapping.steeringCenter;
+        calibrationLive.textContent = `STEERING A${mapping.steeringAxis} center=${mapping.steeringCenter.toFixed(3)} right=${mapping.steeringRight.toFixed(3)} span=${Math.abs(mapping.steeringRight - mapping.steeringLeft).toFixed(3)}`;
         break;
       case 'throttleIdle':
         calibrationState.throttleIdleSnapshot = current;
@@ -8417,8 +8450,7 @@
         change = findCalibrationChange(
           calibrationState.throttleIdleSnapshot,
           current,
-          new Set([mapping.steeringAxis]),
-          new Set([calibrationState.confirmButton]),
+          { excludedAxes: [mapping.steeringAxis] },
         );
         if (!change) {
           calibrationError.textContent = 'アクセル入力の変化を検出できません。奥まで踏み込んでください。';
@@ -8430,14 +8462,26 @@
         calibrationState.brakeIdleSnapshot = current;
         break;
       case 'brakePressed': {
-        const excludedAxes = new Set([mapping.steeringAxis]);
-        const excludedButtons = new Set([calibrationState.confirmButton]);
-        if (mapping.throttleAxis !== null) excludedAxes.add(mapping.throttleAxis);
-        if (mapping.throttleButton !== null) excludedButtons.add(mapping.throttleButton);
-        change = findCalibrationChange(calibrationState.brakeIdleSnapshot, current, excludedAxes, excludedButtons);
+        const excludedButtons = mapping.throttleButton >= 0 ? [mapping.throttleButton] : [];
+        change = findCalibrationChange(calibrationState.brakeIdleSnapshot, current, {
+          excludedAxes: [mapping.steeringAxis],
+          excludedButtons,
+        });
         if (!change) {
           calibrationError.textContent = 'ブレーキ入力の変化を検出できません。奥まで踏み込んでください。';
           return;
+        }
+        if (change.type === 'axis' && change.index === mapping.throttleAxis) {
+          const opposite = window.FpvGamepadProfiles?.haveOppositeCalibrationDirections?.(
+            mapping.throttleIdle,
+            mapping.throttlePressed,
+            calibrationState.brakeIdleSnapshot.axes[change.index],
+            current.axes[change.index],
+          );
+          if (!opposite) {
+            calibrationError.textContent = '同じ軸を使う場合、ブレーキはアクセルと反対方向へ入力してください。';
+            return;
+          }
         }
         setCalibrationPedal(mapping, 'brake', change, calibrationState.brakeIdleSnapshot, current);
         break;
@@ -8445,8 +8489,20 @@
       default:
         return;
     }
-    calibrationLive.textContent = describeCalibrationInput(current);
+    if (!calibrationLive.textContent.startsWith('STEERING ')) {
+      calibrationLive.textContent = describeCalibrationInput(current);
+    }
     advanceCalibration(gamepad);
+  }
+
+  function getCalibrationButtonMappingKey(stepId) {
+    return {
+      paddleLeft: 'paddleLeftButton',
+      paddleRight: 'paddleRightButton',
+      driveButton: 'driveButton',
+      ffbPresetButton: 'ffbPresetButton',
+      menuButton: 'menuButton',
+    }[stepId] || '';
   }
 
   function captureCalibrationButton(gamepad, buttonIndex) {
@@ -8457,20 +8513,14 @@
     if (!step?.button) {
       return;
     }
-    const mappingKey = {
-      paddleLeft: 'paddleLeftButton',
-      paddleRight: 'paddleRightButton',
-      driveButton: 'driveButton',
-      ffbPresetButton: 'ffbPresetButton',
-      menuButton: 'menuButton',
-    }[step.id];
+    const mappingKey = getCalibrationButtonMappingKey(step.id);
     const assigned = [
       mappingKey !== 'paddleLeftButton' && calibrationState.mapping.paddleLeftButton,
       mappingKey !== 'paddleRightButton' && calibrationState.mapping.paddleRightButton,
       mappingKey !== 'driveButton' && calibrationState.mapping.driveButton,
       mappingKey !== 'ffbPresetButton' && calibrationState.mapping.ffbPresetButton,
       mappingKey !== 'menuButton' && calibrationState.mapping.menuButton,
-    ].filter((value) => Number.isInteger(value));
+    ].filter((value) => Number.isInteger(value) && value >= 0);
     if (assigned.includes(buttonIndex)) {
       calibrationError.textContent = `Button ${buttonIndex} は別の操作に割り当て済みです。`;
       return;
@@ -8478,6 +8528,19 @@
     calibrationState.mapping[mappingKey] = buttonIndex;
     calibrationLive.textContent = `BUTTON ${buttonIndex} / ${gamepad.id || 'Unknown gamepad'}`;
     advanceCalibration(gamepad);
+  }
+
+  function skipCalibrationStep() {
+    if (!calibrationState) return;
+    const step = CALIBRATION_STEPS[calibrationState.stepIndex];
+    if (!step?.optional) {
+      calibrationError.textContent = 'この工程は走行に必要なためスキップできません。';
+      return;
+    }
+    const mappingKey = getCalibrationButtonMappingKey(step.id);
+    if (mappingKey) calibrationState.mapping[mappingKey] = -1;
+    calibrationLive.textContent = `${step.title} / NOT ASSIGNED`;
+    advanceCalibration(getCalibrationGamepad());
   }
 
   function pollCalibrationGamepad(gamepad) {
@@ -8491,34 +8554,55 @@
       const pressed = getGamepadButtonValue(gamepad, index) >= 0.5;
       const previous = calibrationButtonState.get(index) === true;
       calibrationButtonState.set(index, pressed);
-      if (pressed && !previous) {
-        const stepKind = step?.confirm
-          ? 'confirm'
-          : step?.button ? 'mapping' : 'capture';
-        const action = window.FpvGamepadProfiles?.getCalibrationButtonAction?.({
-          buttonIndex: index,
-          confirmButton: calibrationState.confirmButton,
-          stepKind,
-        }) || 'ignore';
-        if (action === 'select-confirm') {
-          calibrationState.confirmButton = index;
-          calibrationLive.textContent = `CONFIRM: BUTTON ${index} / ${gamepad.id || 'Unknown gamepad'}`;
-          advanceCalibration(gamepad);
-        } else if (action === 'confirm') {
-          captureCalibrationStep();
-        } else if (action === 'assign') {
-          captureCalibrationButton(gamepad, index);
-        } else if (action === 'reserved-confirm') {
-          calibrationError.textContent = `BUTTON ${index} は決定ボタンとして予約されています。別のボタンを押してください。`;
-        }
+      if (pressed && !previous && step?.button) {
+        captureCalibrationButton(gamepad, index);
         break;
       }
     }
   }
 
+  function validateCalibrationMapping(mapping) {
+    if (!Number.isInteger(mapping?.steeringAxis) || mapping.steeringAxis < 0) {
+      return '操舵軸が記録されていません。';
+    }
+    if (![mapping.steeringCenter, mapping.steeringLeft, mapping.steeringRight].every(Number.isFinite)
+      || Math.abs(mapping.steeringLeft - mapping.steeringCenter) < 0.15
+      || Math.abs(mapping.steeringRight - mapping.steeringCenter) < 0.15
+      || Math.abs(mapping.steeringRight - mapping.steeringLeft) < 0.3) {
+      return '操舵の中央・左右端の範囲が不足しています。';
+    }
+    const hasThrottle = (Number.isInteger(mapping.throttleAxis) && mapping.throttleAxis >= 0)
+      || (Number.isInteger(mapping.throttleButton) && mapping.throttleButton >= 0);
+    const hasBrake = (Number.isInteger(mapping.brakeAxis) && mapping.brakeAxis >= 0)
+      || (Number.isInteger(mapping.brakeButton) && mapping.brakeButton >= 0);
+    if (!hasThrottle || Math.abs(mapping.throttlePressed - mapping.throttleIdle) < 0.15) {
+      return 'アクセル入力が記録されていません。';
+    }
+    if (!hasBrake || Math.abs(mapping.brakePressed - mapping.brakeIdle) < 0.15) {
+      return 'ブレーキ入力が記録されていません。';
+    }
+    if (mapping.throttleAxis >= 0 && mapping.throttleAxis === mapping.brakeAxis) {
+      const opposite = window.FpvGamepadProfiles?.haveOppositeCalibrationDirections?.(
+        mapping.throttleIdle,
+        mapping.throttlePressed,
+        mapping.brakeIdle,
+        mapping.brakePressed,
+      );
+      if (!opposite) {
+        return '同一軸のアクセルとブレーキは反対方向へ記録してください。';
+      }
+    }
+    return '';
+  }
+
   function saveCalibrationMapping() {
     const mapping = calibrationState?.mapping;
     if (!mapping) {
+      return;
+    }
+    const validationError = validateCalibrationMapping(mapping);
+    if (validationError) {
+      calibrationError.textContent = validationError;
       return;
     }
     try {
@@ -8651,14 +8735,8 @@
   btnCarSelect?.addEventListener('click', openGarage);
   btnStartCalibration?.addEventListener('click', startCalibrationWizard);
   btnCalibrationCapture?.addEventListener('click', captureCalibrationStep);
-  btnCalibrationBack?.addEventListener('click', () => {
-    if (!calibrationState || calibrationState.stepIndex <= 0) {
-      return;
-    }
-    calibrationState.stepIndex -= 1;
-    initializeCalibrationButtonState(getCalibrationGamepad());
-    renderCalibrationWizard();
-  });
+  btnCalibrationSkip?.addEventListener('click', skipCalibrationStep);
+  btnCalibrationBack?.addEventListener('click', backCalibrationStep);
   btnCalibrationRestart?.addEventListener('click', startCalibrationWizard);
   btnCalibrationCancel?.addEventListener('click', closeCalibrationWizard);
   menuOverlay?.addEventListener('click', (event) => {

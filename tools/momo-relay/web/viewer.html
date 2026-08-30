@@ -2924,7 +2924,7 @@
 
     .calibration-progress li {
       display: grid;
-      grid-template-columns: 24px minmax(0, 1fr);
+      grid-template-columns: 24px minmax(0, 1fr) auto;
       gap: 8px;
       color: rgba(232, 245, 248, 0.48);
       font-size: 12px;
@@ -2942,6 +2942,16 @@
 
     .calibration-progress li.done {
       color: #64e99d;
+    }
+
+    .calibration-progress li.optional::after {
+      justify-self: start;
+      padding: 1px 4px;
+      border: 1px solid rgba(122, 219, 237, 0.35);
+      color: rgba(180, 230, 239, 0.7);
+      content: "OPTIONAL";
+      font-size: 9px;
+      font-weight: 700;
     }
 
     .calibration-stage {
@@ -4865,6 +4875,7 @@
             <div id="calibrationLive" class="calibration-live">Waiting for gamepad...</div>
             <div class="calibration-controls">
               <button id="btnCalibrationCapture" class="primary" type="button">Record Current</button>
+              <button id="btnCalibrationSkip" type="button" hidden>Skip</button>
               <button id="btnCalibrationBack" type="button">Back</button>
               <button id="btnCalibrationRestart" type="button">Restart</button>
               <button id="btnCalibrationCancel" type="button">Cancel</button>
@@ -5031,25 +5042,25 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260830-c5-gear-hold1"></script>
+    <script src="../../telemetry.js?v=20260831-calibration-optional1"></script>
     <script
-      src="./imu-drive-calibration.js?v=20260830-c5-gear-hold1"
-      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260830-c5-gear-hold1'"
+      src="./imu-drive-calibration.js?v=20260831-calibration-optional1"
+      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260831-calibration-optional1'"
     ></script>
-    <script src="../../m5-audio.js?v=20260830-c5-gear-hold1"></script>
+    <script src="../../m5-audio.js?v=20260831-calibration-optional1"></script>
     <script
-      src="./gamepad-profile.js?v=20260830-c5-gear-hold1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260830-c5-gear-hold1'"
+      src="./gamepad-profile.js?v=20260831-calibration-optional1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260831-calibration-optional1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260830-c5-gear-hold1"></script>
-    <script src="./race-battle.js?v=20260830-c5-gear-hold1"></script>
-    <script src="./pilot-callout-planner.js?v=20260830-c5-gear-hold1"></script>
-    <script src="./browser-kokoro-client.js?v=20260830-c5-gear-hold1"></script>
-    <script src="./notification-controller.js?v=20260830-c5-gear-hold1"></script>
-    <script src="../../race-announcer.js?v=20260830-c5-gear-hold1"></script>
-    <script src="../../race-ui-performance.js?v=20260830-c5-gear-hold1"></script>
-    <script src="../../course-layout.js?v=20260830-c5-gear-hold1"></script>
-    <script src="./pilot.js?v=20260830-c5-gear-hold1"></script>
+    <script src="./ffb-bridge.js?v=20260831-calibration-optional1"></script>
+    <script src="./race-battle.js?v=20260831-calibration-optional1"></script>
+    <script src="./pilot-callout-planner.js?v=20260831-calibration-optional1"></script>
+    <script src="./browser-kokoro-client.js?v=20260831-calibration-optional1"></script>
+    <script src="./notification-controller.js?v=20260831-calibration-optional1"></script>
+    <script src="../../race-announcer.js?v=20260831-calibration-optional1"></script>
+    <script src="../../race-ui-performance.js?v=20260831-calibration-optional1"></script>
+    <script src="../../course-layout.js?v=20260831-calibration-optional1"></script>
+    <script src="./pilot.js?v=20260831-calibration-optional1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>
