@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260830-dashboard-gear-rpm1';
+  const PILOT_BUILD_ID = '20260830-c5-gear-cue1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -344,6 +344,9 @@
     !getUrlParams().has('dashboardRpmFull')
       && VEHICLE_SPEED_DEFAULT_PROFILE?.dashboardRpmScaleFromThrottleLimit === true,
   );
+  const C5_DASHBOARD_GEAR_CUE_ON_MS = 140;
+  const C5_DASHBOARD_GEAR_CUE_OFF_MS = 90;
+  const C5_DASHBOARD_GEAR_CUE_PULSES = 2;
   const VEHICLE_SPEED_CONFIDENCE = Math.max(
     0,
     Math.min(1, getNumberParam('speedConfidence', VEHICLE_SPEED_DEFAULT_PROFILE?.speedConfidence || 0.5)),
@@ -539,6 +542,7 @@
   let ffbNativeProtocolWarningShown = false;
   let ffbDashboardActive = false;
   let ffbDashboardLastSentAt = Number.NEGATIVE_INFINITY;
+  let ffbDashboardGearCue = null;
   let lastMotionEventHudId = '';
   let gameplayNotificationSequence = 0;
   let cursorHideTimer = 0;
@@ -4473,20 +4477,44 @@
     if (!rcDriveEnabled) {
       if (ffbDashboardActive) ffbClient.clearDashboard();
       ffbDashboardActive = false;
+      ffbDashboardGearCue = null;
       ffbDashboardLastSentAt = nowMs;
       return;
     }
     if (nowMs - ffbDashboardLastSentAt < (1000 / 30)) return;
     ffbDashboardLastSentAt = nowMs;
+    const gearCue = getCammusC5DashboardGearCue(nowMs);
+    const boostActive = vehicleGameplay?.boostState === 'active';
     ffbDashboardActive = ffbClient.sendDashboardTelemetry({
       enabled: true,
-      speedFresh: speed?.fresh === true,
-      speedKph: Number(speed?.kph) || 0,
-      rpmFresh: speed?.rpmFresh === true,
-      rpmRatio: Number(speed?.rpmRatio) || 0,
-      sourceAgeMs: Number(speed?.ageMs),
+      speedFresh: gearCue ? gearCue.visible : speed?.fresh === true,
+      speedKph: gearCue?.visible ? gearCue.displayKph : Number(speed?.kph) || 0,
+      rpmFresh: boostActive || speed?.rpmFresh === true,
+      rpmRatio: boostActive ? 1 : Number(speed?.rpmRatio) || 0,
+      sourceAgeMs: gearCue || boostActive ? 0 : Number(speed?.ageMs),
       sourceMaxAgeMs: Number(speed?.maxAgeMs) || 500,
     });
+  }
+
+  function startCammusC5DashboardGearCue(gear, nowMs = performance.now()) {
+    const nextGear = Number(gear);
+    if (!rcDriveEnabled || !Number.isInteger(nextGear) || nextGear < 1 || nextGear > 4) return;
+    ffbDashboardGearCue = { gear: nextGear, startedAt: nowMs };
+    ffbDashboardLastSentAt = Number.NEGATIVE_INFINITY;
+  }
+
+  function getCammusC5DashboardGearCue(nowMs) {
+    if (!ffbDashboardGearCue) return null;
+    const pulseMs = C5_DASHBOARD_GEAR_CUE_ON_MS + C5_DASHBOARD_GEAR_CUE_OFF_MS;
+    const elapsedMs = Math.max(0, nowMs - ffbDashboardGearCue.startedAt);
+    if (elapsedMs >= pulseMs * C5_DASHBOARD_GEAR_CUE_PULSES) {
+      ffbDashboardGearCue = null;
+      return null;
+    }
+    return {
+      visible: elapsedMs % pulseMs < C5_DASHBOARD_GEAR_CUE_ON_MS,
+      displayKph: ffbDashboardGearCue.gear * 11.1,
+    };
   }
 
   function stopFfbOutput() {
@@ -5272,6 +5300,8 @@
 			return;
 		}
 		const previousHp = vehicleHealth?.hp;
+		const hadGameplay = vehicleGameplay !== null;
+		const previousDisplayedGear = vehicleGameplay?.boostState === 'active' ? 4 : currentGear;
 		const previousBoostState = vehicleGameplay?.boostState;
 		vehicleGameplay = {
 			...payload,
@@ -5286,6 +5316,10 @@
 		vehicleHealth = { hp, speedCap, mode: payload.mode };
 		if (gear <= RC_GEAR_COUNT && gear !== currentGear) {
 			currentGear = gear;
+		}
+		const nextDisplayedGear = vehicleGameplay.boostState === 'active' ? 4 : currentGear;
+		if (hadGameplay && nextDisplayedGear !== previousDisplayedGear) {
+			startCammusC5DashboardGearCue(nextDisplayedGear);
 		}
 		updateGearUi();
 		updateVehicleHealthUi(Number.isFinite(previousHp) && hp < previousHp);
@@ -5765,6 +5799,7 @@
       return;
     }
     currentGear = nextGear;
+    startCammusC5DashboardGearCue(currentGear);
     updateGearUi();
     sendGearState();
     const throttle = Number(throttleInput.value);
