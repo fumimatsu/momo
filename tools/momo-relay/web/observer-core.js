@@ -1110,6 +1110,38 @@ export function normalizeTeamVehicleSelection(cars, value, limit = 4) {
 	return selected;
 }
 
+export function reconcileTeamVehicleSelection(previousCars, nextCars, selectedIds, limit = 4) {
+  const previousById = new Map(previousCars.map((car) => [car.vehicleId, car]));
+  const nextById = new Map(nextCars.map((car) => [car.vehicleId, car]));
+  const selected = [];
+  for (const vehicleId of selectedIds) {
+    let car = nextById.get(vehicleId);
+    const previous = previousById.get(vehicleId);
+    // Only a source-only identity from the initial legacy view can migrate.
+    if (!car && previous?.sourceId && vehicleId === `source:${previous.sourceId}`) {
+      const matches = nextCars.filter((candidate) => candidate.sourceId === previous.sourceId);
+      if (matches.length === 1) car = matches[0];
+    }
+    if (!car || selected.includes(car.vehicleId)) continue;
+    selected.push(car.vehicleId);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
+export function observerConnectionKey(car) {
+  return JSON.stringify([car.vehicleId, car.sourceId, car.carId, car.flip, car.speedProfileId]);
+}
+
+export function fleetEndpointStatusText(label, endpoint, now) {
+  const age = endpoint.lastSuccessAt === null ? null : Math.max(0, now - endpoint.lastSuccessAt);
+  const state = endpoint.state === 'live' && age !== null && age > endpoint.maxAgeMs
+    ? 'stale' : endpoint.state;
+  const detail = state === 'live' ? '' : endpoint.error;
+  const lastSuccess = age === null ? 'NO SUCCESSFUL UPDATE' : `LAST SUCCESS ${Math.floor(age / 1000)}s AGO`;
+  return `${label}: ${state.toUpperCase()} · ${lastSuccess}${detail ? ` · ${detail}` : ''}`;
+}
+
 export function standingsByConfiguredCar(configCars, raceState) {
   const byCarId = new Map((raceState?.standings || []).map((standing) => [standing.carId, standing]));
   return configCars

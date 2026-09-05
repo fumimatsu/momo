@@ -22,6 +22,9 @@ import {
 	normalizePilotDevicesSnapshot,
 	normalizeTeamObserverDirectoryProjection,
 	normalizeTeamVehicleSelection,
+  reconcileTeamVehicleSelection,
+  observerConnectionKey,
+  fleetEndpointStatusText,
   parseControlCommand,
   parsePitPresence,
   parseRaceState,
@@ -33,7 +36,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260828-team-observer-v21';
+} from './observer-core.js?v=20260905-team-observer-v22';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -77,6 +80,7 @@ const TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverVehiclesV2';
 const LEGACY_TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverCarsV1';
 const PILOT_DEVICES_POLL_MS = 5000;
 const DIRECTORY_POLL_MS = 30000;
+const FLEET_REQUEST_TIMEOUT_MS = 5000;
 const CAMERA_MOTION_SCALE_G = 1.5;
 const CAMERA_RPM_SCALE = 50_000;
 const CAMERA_SPEED_SCALE_KPH = 120;
@@ -177,7 +181,11 @@ let activeRelayHost = '';
 let teamPeersEnabled = false;
 let pilotDevicesPollTimer = 0;
 let directoryPollTimer = 0;
-let fleetPollInFlight = false;
+const fleetEndpointState = {
+  directory: { state: 'waiting', lastSuccessAt: null, error: '', inFlight: false, maxAgeMs: DIRECTORY_POLL_MS + FLEET_REQUEST_TIMEOUT_MS },
+  devices: { state: 'waiting', lastSuccessAt: null, error: '', inFlight: false, maxAgeMs: PILOT_DEVICES_POLL_MS + FLEET_REQUEST_TIMEOUT_MS },
+};
+let fleetStatusRenderedAt = 0;
 let uiTestSnapshotTimer = 0;
 let uiTestSnapshotTick = 0;
 let uiTestMetricsWarmupTimer = 0;
@@ -234,11 +242,8 @@ function loadLegacyStoredTeamSelection() {
 
 function initialTeamSelection(params) {
 	if (params.has('teamVehicles')) {
-		return normalizeTeamVehicleSelection(
-			observerConfig.cars,
-			params.get('teamVehicles') || 'none',
-			TEAM_SELECTION_LIMIT,
-		);
+    return reconcileTeamVehicleSelection([], observerConfig.cars,
+      (params.get('teamVehicles') || '').split(','), TEAM_SELECTION_LIMIT);
 	}
   if (params.has('teamCars')) {
 		return normalizeTeamVehicleSelection(
@@ -255,7 +260,7 @@ function initialTeamSelection(params) {
     );
   }
   const stored = loadStoredTeamSelection();
-	if (stored !== null) return normalizeTeamVehicleSelection(observerConfig.cars, stored, TEAM_SELECTION_LIMIT);
+	if (stored !== null) return reconcileTeamVehicleSelection([], observerConfig.cars, stored, TEAM_SELECTION_LIMIT);
 	const legacy = loadLegacyStoredTeamSelection();
 	return legacy === null
 		? normalizeTeamVehicleSelection(observerConfig.cars, 'all', TEAM_SELECTION_LIMIT)
@@ -356,7 +361,7 @@ function syncCameraZoomMode() {
       const slotTile = Array.from(root.children).find((child) => child === tile);
       if (slotTile) root.replaceChild(createFocusedCameraPlaceholder(zoomedCar), tile);
       tile.classList.add('is-zoomed');
-      focusStage.replaceChildren(tile);
+      if (focusStage.firstChild !== tile) focusStage.replaceChildren(tile);
       focusStage.hidden = false;
       focusStage.setAttribute('aria-label', `Focused CAR ${zoomedCar.displayNumber} onboard video`);
     }
@@ -593,7 +598,7 @@ function syncSelectedTeamPeers() {
 }
 
 function setTeamSelection(value, persist = false) {
-	const next = normalizeTeamVehicleSelection(observerConfig?.cars || [], value, TEAM_SELECTION_LIMIT);
+	const next = reconcileTeamVehicleSelection([], observerConfig?.cars || [], value, TEAM_SELECTION_LIMIT);
 	const changed = next.length !== selectedTeamVehicleIds.length
 		|| next.some((vehicleId, index) => vehicleId !== selectedTeamVehicleIds[index]);
 	selectedTeamVehicleIds = next;
@@ -2049,6 +2054,10 @@ function updateAnimationFrame(now) {
     raceStatusRenderedAt = now;
     for (const car of selectedTeamCars()) renderCameraTransportState(car, now);
   }
+  if (now - fleetStatusRenderedAt >= 1000) {
+    fleetStatusRenderedAt = now;
+    renderFleetDataStatus(now);
+  }
   animationFrame = requestAnimationFrame(updateAnimationFrame);
 }
 
@@ -2065,6 +2074,7 @@ function renderAll() {
   renderSituations();
   renderPitState();
   renderTeamSelectionControls();
+  renderFleetDataStatus();
   if (UI_METRICS_ENABLED) overviewRenderSampler.record(performance.now() - startedAt);
 }
 
@@ -2332,9 +2342,22 @@ function createCameraTiles() {
   const root = document.getElementById('cameraGrid');
   if (!root) return;
   const cars = selectedTeamCars();
-  root.replaceChildren(...Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => (
-    cars[index] ? createCameraTile(cars[index]) : createEmptyCameraTile(index)
-  )));
+  const focusStage = document.getElementById('cameraFocusStage');
+  const desired = Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => {
+    const car = cars[index];
+    if (!car) return root.children[index]?.classList.contains('camera-slot-empty')
+      ? root.children[index] : createEmptyCameraTile(index);
+    const tile = createCameraTile(car);
+    if (car.vehicleId === zoomedTeamVehicleId && tile.parentElement === focusStage) {
+      return Array.from(root.children).find((child) => child.dataset.vehicleId === car.vehicleId
+        && child.classList.contains('camera-focus-placeholder')) || createFocusedCameraPlaceholder(car);
+    }
+    return tile;
+  });
+  for (const [index, tile] of desired.entries()) {
+    if (root.children[index] !== tile) root.insertBefore(tile, root.children[index] || null);
+  }
+  while (root.children.length > TEAM_SELECTION_LIMIT) root.lastChild.remove();
   syncCameraZoomMode();
 }
 
@@ -2675,14 +2698,18 @@ function createRelayHTTPURL(relayHost, pathname) {
 }
 
 async function loadTeamObserverDirectory(relayHost) {
-	const response = await fetch(createRelayHTTPURL(relayHost, '/api/v1/team-observer-directory'), { cache: 'no-store' });
+	const response = await fetch(createRelayHTTPURL(relayHost, '/api/v1/team-observer-directory'), {
+    cache: 'no-store', signal: AbortSignal.timeout(FLEET_REQUEST_TIMEOUT_MS),
+  });
 	if (response.status === 204 || response.status === 404) return null;
 	if (!response.ok) throw new Error(`Team Observer directory HTTP ${response.status}`);
 	return normalizeTeamObserverDirectoryProjection(await response.json());
 }
 
 async function loadPilotDevices(relayHost) {
-	const response = await fetch(createRelayHTTPURL(relayHost, '/api/v1/pilot-devices'), { cache: 'no-store' });
+	const response = await fetch(createRelayHTTPURL(relayHost, '/api/v1/pilot-devices'), {
+    cache: 'no-store', signal: AbortSignal.timeout(FLEET_REQUEST_TIMEOUT_MS),
+  });
 	if (!response.ok) throw new Error(`Relay pilot devices HTTP ${response.status}`);
 	return normalizePilotDevicesSnapshot(await response.json());
 }
@@ -2693,11 +2720,21 @@ function fleetTopologySignature(cars) {
 	]));
 }
 
-function clearCameraNodeMaps() {
-	for (const map of [
-		cameraTitleNodesByCar, cameraTileNodesByCar, cameraEffectNodesByCar,
-		cameraZoomButtonsByCar, telemetryNodesByCar, healthNodesByCar, controlNodesByCar,
-	]) map.clear();
+function retireObserverCar(carId) {
+  clientByCar.get(carId)?.close();
+  clientByCar.delete(carId);
+  cameraTileNodesByCar.get(carId)?.remove();
+  for (const map of [
+    cameraTitleNodesByCar, cameraTileNodesByCar, cameraEffectNodesByCar,
+    cameraZoomButtonsByCar, telemetryNodesByCar, healthNodesByCar, controlNodesByCar,
+    connectionByCar, healthByCar, telemetryByCar, controlByCar, renderedTelemetryByCar,
+    vehicleEventByCar, vehicleEventHistoryByCar, pitByCar, pendingPitByCar,
+    pitMotionByCar, markerMotionByCar, markerRenderByCar, activeEffectByCar,
+  ]) map.delete(carId);
+  for (const timers of [vehicleEventTimers, carEffectTimers]) {
+    if (timers.has(carId)) window.clearTimeout(timers.get(carId));
+    timers.delete(carId);
+  }
 }
 
 function syncPersistentCarAccents() {
@@ -2720,18 +2757,17 @@ function applyTeamObserverFleet(roster = raceState?.roster || null) {
 		renderAll();
 		return false;
 	}
-	const oldCarsByVehicle = new Map((observerConfig?.cars || []).map((car) => [car.vehicleId, car]));
-	const selectionTokens = selectedTeamVehicleIds.flatMap((vehicleId) => {
-		const previous = oldCarsByVehicle.get(vehicleId);
-		return previous?.sourceId ? [vehicleId, previous.sourceId] : [vehicleId];
-	});
-	for (const client of clientByCar.values()) client.close();
-	clientByCar.clear();
-	clearCameraNodeMaps();
-	observerConfig = { ...baseObserverConfig, cars: nextCars };
-	selectedTeamVehicleIds = normalizeTeamVehicleSelection(nextCars, selectionTokens, TEAM_SELECTION_LIMIT);
-	connectionByCar.clear();
-	for (const car of nextCars) connectionByCar.set(car.carId, {
+  const previousCars = observerConfig?.cars || [];
+  const nextByCar = new Map(nextCars.map((car) => [car.carId, car]));
+  const nextSelection = reconcileTeamVehicleSelection(previousCars, nextCars, selectedTeamVehicleIds, TEAM_SELECTION_LIMIT);
+  // Close changed identities before connecting replacements; keep other peers and video nodes.
+  for (const previous of previousCars) {
+    const next = nextByCar.get(previous.carId);
+    if (!next || observerConnectionKey(previous) !== observerConnectionKey(next)) retireObserverCar(previous.carId);
+  }
+  observerConfig = { ...baseObserverConfig, cars: nextCars };
+  selectedTeamVehicleIds = nextSelection;
+	for (const car of nextCars) if (!connectionByCar.has(car.carId)) connectionByCar.set(car.carId, {
 		state: isTeamCarSelected(car) ? (car.sourceBound ? 'WAITING' : 'UNAVAILABLE') : 'DISABLED',
 		detail: isTeamCarSelected(car) ? (car.sourceBound ? 'NOT CONNECTED' : 'SOURCE UNBOUND') : 'NOT SELECTED',
 		fps: 0,
@@ -2751,29 +2787,57 @@ function applyTeamObserverFleet(roster = raceState?.roster || null) {
 	return true;
 }
 
+async function refreshFleetEndpoint(kind) {
+  const endpoint = fleetEndpointState[kind];
+  if (endpoint.inFlight) return false;
+  endpoint.inFlight = true;
+  try {
+    const value = await (kind === 'directory'
+      ? loadTeamObserverDirectory(activeRelayHost) : loadPilotDevices(activeRelayHost));
+    if (value === null) throw new Error('DIRECTORY UNAVAILABLE');
+    if (kind === 'directory') teamDirectory = value;
+    else pilotDevices = value;
+    endpoint.lastSuccessAt = performance.now();
+    endpoint.state = value.stale ? 'stale' : 'live';
+    endpoint.error = value.stale ? 'CACHED DIRECTORY IS STALE' : '';
+  } catch (error) {
+    endpoint.state = 'unavailable';
+    endpoint.error = error.name === 'TimeoutError' ? 'UPDATE TIMED OUT' : error.message;
+    if (kind === 'directory' && teamDirectory) teamDirectory = { ...teamDirectory, stale: true };
+    if (kind === 'devices' && pilotDevices) pilotDevices = {
+      ...pilotDevices, devices: pilotDevices.devices.map((device) => ({ ...device, availability: 'unknown' })),
+    };
+    console.warn(error);
+  } finally {
+    endpoint.inFlight = false;
+  }
+  return true;
+}
+
+function renderFleetDataStatus(now = performance.now()) {
+  const root = document.getElementById('fleetDataStatus');
+  if (!root) return;
+  root.hidden = UI_TEST_MODE;
+  for (const [kind, label] of [['directory', 'DIRECTORY'], ['devices', 'VEHICLES']]) {
+    const endpoint = fleetEndpointState[kind];
+    const node = document.getElementById(`fleet-${kind}-status`);
+    setTextIfChanged(node, fleetEndpointStatusText(label, endpoint, now));
+    setDatasetIfChanged(node, 'state', endpoint.state === 'live'
+      && now - endpoint.lastSuccessAt <= endpoint.maxAgeMs ? 'live' : 'degraded');
+  }
+}
+
 async function refreshTeamObserverFleet({ directory = false, devices = true } = {}) {
-	if (fleetPollInFlight || document.hidden || !activeRelayHost) return;
-	fleetPollInFlight = true;
-	try {
-		if (directory) {
-			try {
-				const nextDirectory = await loadTeamObserverDirectory(activeRelayHost);
-				teamDirectory = nextDirectory;
-			} catch (error) {
-				console.warn(error);
-			}
-		}
-		if (devices) {
-			try {
-				pilotDevices = await loadPilotDevices(activeRelayHost);
-			} catch (error) {
-				console.warn(error);
-			}
-		}
-		applyTeamObserverFleet();
-	} finally {
-		fleetPollInFlight = false;
-	}
+  if (document.hidden || !activeRelayHost) return;
+  try {
+    const refreshed = await Promise.all([
+      directory && refreshFleetEndpoint('directory'),
+      devices && refreshFleetEndpoint('devices'),
+    ]);
+    if (refreshed.some(Boolean)) applyTeamObserverFleet();
+  } finally {
+    renderFleetDataStatus();
+  }
 }
 
 function startTeamObserverFleetPolling() {
@@ -2960,18 +3024,10 @@ async function initialize() {
 		}
     const params = startupParams;
 		activeRelayHost = params.get('relayHost') || location.host;
-		if (!UI_TEST_MODE) {
-			try {
-				teamDirectory = await loadTeamObserverDirectory(activeRelayHost);
-			} catch (error) {
-				console.warn(error);
-			}
-			try {
-				pilotDevices = await loadPilotDevices(activeRelayHost);
-			} catch (error) {
-				console.warn(error);
-			}
-		}
+    if (!UI_TEST_MODE) {
+      await refreshFleetEndpoint('directory');
+      await refreshFleetEndpoint('devices');
+    }
 		observerConfig = {
 			...baseObserverConfig,
 			cars: mergeTeamObserverFleet(baseObserverConfig, teamDirectory, pilotDevices, null),

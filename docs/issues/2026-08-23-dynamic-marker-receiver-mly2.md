@@ -449,6 +449,27 @@ so 28 sources cannot remain at a profile that fails the final acceptance gate. P
 settling belong in Preflight/Prepare; Green must not begin while the node is still converging from an
 obviously excessive initial profile.
 
+## 2026-09-05: long-lived Worker failure and metrics
+
+- A sustained overload at the minimum detection rate now emits an immediate JSON stderr event
+  (`type=marker_worker_status`, `reason=capacity_exceeded`, `publication=stopped`), closes the MMO1
+  writer, and exits with code 1. A fixed profile (`--no-adaptive`) also stops when the controller
+  requests a forbidden downgrade. Reduce sources or assign another Marker Node before restarting.
+- Adaptive changes above the minimum rate continue under the existing controller policy. This
+  change does not claim a different GPU capacity or permit an automatic restart loop.
+- Report schema 4 retains whole-run distributions in fixed histograms instead of raw sample lists.
+  Quantiles round upward in 0.01 ms buckets through 200 ms; an overflow quantile uses the exact
+  observed maximum. The maximum and sample count cover the complete retained source lifetime,
+  so earlier overload is not hidden by a rolling window. `metricRetention` records the method.
+- Profile history retains 128 entries and reports the discarded count. Removed-source metrics are
+  retired at a topology generation boundary; surviving sources keep their statistics.
+- Tests exercise bounded storage, conservative historical quantiles, adaptive/fixed decisions, and
+  the main loop stopping publication with a fake reader/writer. Live GPU overload, independent-camera
+  churn, and event-length memory measurements still require physical qualification.
+- Local verification: 43 Marker unit tests passed across runtime metrics, MLY2 worker/controller,
+  frame sampler, shared mapping, and observation IPC. Relay Go tests also passed after synchronizing
+  the Observer fixes from Viewer commit `efe931bbf1e6b6b20c326b8d4d126b4191f8e903`.
+
 ## Notes
 
 - Existing MLY1 and the legacy MADSYSTEM adapter remain available for rollback during migration.

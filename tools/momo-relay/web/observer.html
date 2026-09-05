@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#050708">
   <title>Momo Team Observer</title>
-  <link rel="stylesheet" href="observer.css?v=20260828-team-observer-v21">
-  <script src="/telemetry.js?v=20260828-team-observer-v21"></script>
-  <script src="../../race-ui-performance.js?v=20260828-team-observer-v21"></script>
-  <script src="../../course-layout.js?v=20260828-team-observer-v21"></script>
-  <script type="module" src="observer.js?v=20260828-team-observer-v21"></script>
+  <link rel="stylesheet" href="observer.css?v=20260905-team-observer-v22">
+  <script src="/telemetry.js?v=20260905-team-observer-v22"></script>
+  <script src="../../race-ui-performance.js?v=20260905-team-observer-v22"></script>
+  <script src="../../course-layout.js?v=20260905-team-observer-v22"></script>
+  <script type="module" src="observer.js?v=20260905-team-observer-v22"></script>
 </head>
 <body>
   <div class="observer-app">
@@ -139,6 +139,10 @@
         <button id="teamSelectorOpen" class="team-selector-open" type="button" aria-haspopup="dialog" aria-controls="teamSelectorDrawer">
           MANAGE
         </button>
+      </div>
+      <div id="fleetDataStatus" class="fleet-data-status" aria-label="Fleet data freshness">
+        <span id="fleet-directory-status"></span>
+        <span id="fleet-devices-status"></span>
       </div>
       <section id="cameraGrid" class="camera-grid" aria-label="Selected onboard camera previews"></section>
     </section>

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
+import sys
 import time
 
 import numpy as np
@@ -19,6 +20,7 @@ from MarkerDetectionRateController import (
     DetectionWindow,
 )
 from MarkerFrameSampler import SourceFrameState, sample_latest_frames
+from MarkerRuntimeMetrics import DurationDistribution
 from MarkerLumaV2 import (
     HEIGHT,
     MAX_SOURCES,
@@ -71,6 +73,8 @@ def parse_marker_ids(value: str) -> frozenset[int]:
 
 
 def percentile(values, percent: float) -> float:
+    if isinstance(values, DurationDistribution):
+        return values.percentile(percent)
     ordered = sorted(values)
     if not ordered:
         return 0.0
@@ -87,7 +91,7 @@ class SourceMetrics:
     last_sequence: int = 0
     last_marker_ids: tuple[int, ...] = ()
     last_eligible_at: float = 0.0
-    age_ms: deque[float] = field(default_factory=lambda: deque(maxlen=3000))
+    age_ms: DurationDistribution = field(default_factory=DurationDistribution)
     marker_instances_by_id: Counter[int] = field(default_factory=Counter)
     marker_id_frames: Counter[int] = field(default_factory=Counter)
     sampling_reasons: Counter[str] = field(default_factory=Counter)
@@ -168,6 +172,8 @@ def allocate_batches(cp, source_count: int):
 
 
 def distribution(values) -> dict[str, float | int]:
+    if isinstance(values, DurationDistribution):
+        return values.report()
     return {
         "samples": len(values),
         "p50": round(percentile(values, 50), 3),
@@ -175,6 +181,27 @@ def distribution(values) -> dict[str, float | int]:
         "p99": round(percentile(values, 99), 3),
         "maximum": round(max(values, default=0.0), 3),
     }
+
+
+def enforce_detection_capacity(decision, topology, window):
+    """Emit a machine-readable terminal failure before any further IPC write."""
+    if not decision.capacity_exceeded and decision.reason != "downgrade_locked":
+        return False
+    print(json.dumps({
+        "type": "marker_worker_status",
+        "version": 1,
+        "state": "failed",
+        "reason": "capacity_exceeded",
+        "phase": topology.phase,
+        "generation": topology.generation,
+        "sourceCount": len(topology.source_ids),
+        "detectionHz": decision.detection_hz,
+        "processingP95Ms": round(window.cycle_p95_ms, 3),
+        "deadlineMissRatio": window.deadline_miss_ratio,
+        "publication": "stopped",
+        "restartCondition": "reduce_sources_or_add_marker_node_then_restart",
+    }), file=sys.stderr, flush=True)
+    return True
 
 
 def processing_duration_ms(cycle_ms: float, wait_ms: float) -> float:
@@ -414,13 +441,14 @@ def main(argv: list[str] | None = None) -> int:
         initial_detection_hz=args.initial_detection_hz,
     )
     metrics: dict[str, SourceMetrics] = {}
-    profile_history = [
+    profile_history = deque([
         {"atSeconds": 0.0, "detectionHz": controller.detection_hz, "reason": "initial"}
-    ]
+    ], maxlen=128)
+    profile_history_count = 1
     reason_counts: Counter[str] = Counter()
-    processing_window: list[float] = []
-    all_cycle_ms: list[float] = []
-    all_processing_ms: list[float] = []
+    processing_window = DurationDistribution()
+    all_cycle_ms = DurationDistribution()
+    all_processing_ms = DurationDistribution()
     deadline_misses = 0
     tick_count = 0
     detection_epochs = 0
@@ -431,9 +459,9 @@ def main(argv: list[str] | None = None) -> int:
     warmed_generation: int | None = None
     warmup_duration_ms = 0.0
     fresh_frame_waits = 0
-    fresh_frame_wait_ms: list[float] = []
+    fresh_frame_wait_ms = DurationDistribution()
     micro_batch_waits = 0
-    micro_batch_wait_ms: list[float] = []
+    micro_batch_wait_ms = DurationDistribution()
     micro_batch_added_sources = 0
     frame_event_signals = 0
     frame_event_timeouts = 0
@@ -441,19 +469,19 @@ def main(argv: list[str] | None = None) -> int:
     initial_eligible_source_samples = 0
     total_source_samples = 0
     total_deadline_misses = 0
-    batches_per_epoch: list[int] = []
-    inter_batch_skew_ms: list[float] = []
-    stage_ms: dict[str, list[float]] = {
-        "metadataRead": [],
+    batches_per_epoch = DurationDistribution()
+    inter_batch_skew_ms = DurationDistribution()
+    stage_ms = {
+        "metadataRead": DurationDistribution(),
         "freshFrameWait": fresh_frame_wait_ms,
         "microBatchWait": micro_batch_wait_ms,
-        "sharedPlaneCopy": [],
-        "h2dWall": [],
-        "detectorWall": [],
-        "observationBuild": [],
-        "ipcWrite": [],
+        "sharedPlaneCopy": DurationDistribution(),
+        "h2dWall": DurationDistribution(),
+        "detectorWall": DurationDistribution(),
+        "observationBuild": DurationDistribution(),
+        "ipcWrite": DurationDistribution(),
     }
-    profiled_stage_ms: dict[str, list[float]] = {}
+    profiled_stage_ms: dict[str, DurationDistribution] = {}
     profiled_cycles = 0
     measured_started_at = time.perf_counter()
     final_topology: Mly2Topology | None = None
@@ -504,12 +532,16 @@ def main(argv: list[str] | None = None) -> int:
                     pinned_owner, host_planes, device_planes = allocate_batches(
                         cp, len(topology.source_ids)
                     )
-                    for source_id in topology.source_ids:
-                        metrics.setdefault(source_id, SourceMetrics())
+                    # Retire metrics for removed sources at the generation boundary.
+                    metrics = {
+                        source_id: metrics[source_id] if source_id in metrics else SourceMetrics()
+                        for source_id in topology.source_ids
+                    }
                     if topology_changes > 1:
                         decision = controller.prepare(now)
                         if decision.changed:
                             writer.set_detection_hz(decision.detection_hz)
+                            profile_history_count += 1
                             profile_history.append(
                                 {
                                     "atSeconds": round(now - measured_started_at, 3),
@@ -841,7 +873,9 @@ def main(argv: list[str] | None = None) -> int:
                     if batch.profiled_stage_ms:
                         profiled_cycles += 1
                         for name, value in batch.profiled_stage_ms.items():
-                            profiled_stage_ms.setdefault(name, []).append(value)
+                            if name not in profiled_stage_ms:
+                                profiled_stage_ms[name] = DurationDistribution()
+                            profiled_stage_ms[name].append(value)
                 batches_per_epoch.append(epoch_published_batches)
                 if len(executions) > 1:
                     inter_batch_skew_ms.append(
@@ -866,20 +900,23 @@ def main(argv: list[str] | None = None) -> int:
                 now = time.perf_counter()
                 window_duration = now - window_started
                 if window_duration >= args.control_window_seconds:
+                    window = DetectionWindow(
+                        duration_seconds=window_duration,
+                        cycle_p95_ms=percentile(processing_window, 95),
+                        deadline_miss_ratio=deadline_misses / max(1, tick_count),
+                    )
                     decision = controller.observe_window(
-                        DetectionWindow(
-                            duration_seconds=window_duration,
-                            cycle_p95_ms=percentile(processing_window, 95),
-                            deadline_miss_ratio=(
-                                deadline_misses / max(1, tick_count)
-                            ),
-                        ),
+                        window,
                         now,
                         allow_downgrade=args.adaptive,
                     )
                     capacity_exceeded = capacity_exceeded or decision.capacity_exceeded
+                    if enforce_detection_capacity(decision, topology, window):
+                        capacity_exceeded = True
+                        break
                     if decision.changed:
                         writer.set_detection_hz(decision.detection_hz)
+                        profile_history_count += 1
                         profile_history.append(
                             {
                                 "atSeconds": round(now - measured_started_at, 3),
@@ -1021,10 +1058,19 @@ def main(argv: list[str] | None = None) -> int:
             "fresh source coverage below target: " + ", ".join(below)
         )
     if capacity_exceeded:
-        failure_reasons.append("capacity exceeded at 25 Hz")
+        failure_reasons.append(f"capacity exceeded at {controller.detection_hz} Hz; publication stopped")
 
     report = {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
+        "metricRetention": {
+            "scope": "whole_run",
+            "method": "bounded_upper_bound_histogram",
+            "resolutionMs": DurationDistribution.resolution_ms,
+            "limitMs": DurationDistribution.limit_ms,
+            "overflowQuantile": "observed_maximum",
+            "profileHistoryLimit": profile_history.maxlen,
+            "profileHistoryDropped": profile_history_count - len(profile_history),
+        },
         "stage": "gpu_marker_observer_mly2",
         "measuredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "inputMappingName": args.input_mapping_name,
@@ -1066,7 +1112,7 @@ def main(argv: list[str] | None = None) -> int:
             initial_eligible_source_samples / max(total_source_samples, 1), 5
         ),
         "deadlineMisses": total_deadline_misses,
-        "profileHistory": profile_history,
+        "profileHistory": list(profile_history),
         "samplingReasons": dict(sorted(reason_counts.items())),
         "markerInstances": marker_instances,
         "cycleTimeMs": cycle_time,
