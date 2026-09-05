@@ -469,6 +469,19 @@ obviously excessive initial profile.
 - Local verification: 43 Marker unit tests passed across runtime metrics, MLY2 worker/controller,
   frame sampler, shared mapping, and observation IPC. Relay Go tests also passed after synchronizing
   the Observer fixes from Viewer commit `efe931bbf1e6b6b20c326b8d4d126b4191f8e903`.
+- Virtual integration passed with five sources in
+  `tools/.artifacts/virtual-fleet-map/run-20260905T135358039Z/validation.json`: real H.264/WebRTC,
+  Native Receiver, GPU Marker IDs 1/2/3 from every source, and five distinct course positions.
+  Browser video ran at approximately 49-51 fps; replacing the fourth selected car retained the other
+  three Relay client IDs and the four-peer limit.
+- A 50 ms per-batch injected detector delay, real incoming frames, separate output mappings, and
+  one-second control windows caused the minimum-25-Hz and fixed-50-Hz workers to emit terminal
+  failure and exit 1 after 3.084/3.196 seconds. This is a fault-injection test, not a new GPU limit.
+- Thirteen warm-process samples over 120.311 seconds retained 1143.87-1143.91 MiB private memory
+  (end minus start -36 KiB). Event-length soak remains unverified.
+- The extended dummy race retained CP-1 at lap 0 after a missing/out-of-order checkpoint sequence.
+  Independent Timing recovery reproduced it; all-car clean-lap qualification is not claimed.
+  Follow-up: `momo-fpv/docs/issues/2026-09-05-timing-missing-checkpoint-recovery.md`.
 
 ## Notes
 
