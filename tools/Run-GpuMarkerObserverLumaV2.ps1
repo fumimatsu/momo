@@ -1,3 +1,4 @@
+[CmdletBinding()]
 param(
     [string]$Python,
     [string]$InputMappingName = 'Local\MomoMarkerLumaV2',
@@ -6,6 +7,8 @@ param(
     [int]$RequiredSourceCount = 0,
     [ValidateRange(0, 86400)]
     [double]$DurationSeconds = 0,
+    [ValidateRange(0, 300)]
+    [double]$WaitForMappingSeconds = 20,
     [ValidateSet(50, 40, 33, 25)]
     [int]$InitialDetectionHz = 50,
     [string]$Output,
@@ -28,6 +31,7 @@ $arguments = @(
     '--output-mapping-name', $OutputMappingName,
     '--required-source-count', $RequiredSourceCount,
     '--duration-seconds', $DurationSeconds,
+    '--wait-for-mapping-seconds', $WaitForMappingSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
     '--initial-detection-hz', $InitialDetectionHz
 )
 if ($NoAdaptive) {

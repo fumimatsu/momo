@@ -173,6 +173,24 @@ MADSYSTEM の `relayGameplayBaseUrl` も同じ Relay の HTTP URL にする。
 fresh clone には `tools/momo-relay/.toolchain/` がない。`-RebuildRelay` はこの bundled Go を
 参照するため、system Go で上記の手動 build を行った場合は `-RebuildRelay` を付けない。
 
+## Local Experience の動的 Marker 起動
+
+`momo-race-timing/tools/Start-LocalExperienceDemo.ps1` は Relay、専用 Marker Receiver、
+MLY2 GPU Observer を起動する。利用前に `momo` と `momo-race-timing` を両方更新する。
+
+- `start-mads-observer.ps1 -SkipObserver` は Native Observer の起動と WER 設定を省略する。
+  既存 Native Observer も停止する場合は `-RestartObserver` を併用する。Local Experience は
+  この組み合わせを使用する。Marker Receiver と単独 Pilot のプロセスは停止対象に含めない。
+- `Run-GpuMarkerObserverLumaV2.ps1 -WaitForMappingSeconds 120` は Mapping 待機秒数を
+  Python へ渡す。範囲は 0～300 秒、直接起動時の既定値は 20 秒。Local Experience からは
+  `-MarkerWaitForMappingSeconds` の値を渡し、既定値は 120 秒とする。
+- 両スクリプトは未定義の引数を拒否する。引数を無視して別の設定で起動しない。
+
+起動処理だけの回帰確認は `pwsh -File .\tools\Test-ObserverLaunchers.ps1` で実行する。
+プロセスとレジストリの操作を模擬するため、実機への接続や稼働中サービスの停止は行わない。
+Windows の `Invoke-RelayTests.ps1` もこの確認を含む。実機での MLY2 / MMO1 接続確認は
+引き続き [Local Experience runbook](https://github.com/fumimatsu/momo-race-timing/blob/main/docs/LOCAL_EXPERIENCE_DEMO_RUNBOOK.md) に従う。
+
 ## Race Control の配置
 
 ### Relay と同じ PC

@@ -1,3 +1,4 @@
+[CmdletBinding()]
 param(
     [string]$Device113 = '192.168.11.3',
     [string]$Device114 = '192.168.11.4',
@@ -56,6 +57,7 @@ param(
     [string]$ObserverCrashDumpDirectory = '',
     [string]$GoExecutable = $env:MOMO_GO_EXE,
     [switch]$SkipRelay,
+    [switch]$SkipObserver,
     [switch]$RestartRelay,
     [switch]$RestartObserver,
     [switch]$RebuildRelay
@@ -220,21 +222,21 @@ $resolvedObserverCrashDumpDirectory = if ([string]::IsNullOrWhiteSpace($Observer
     [System.IO.Path]::GetFullPath($ObserverCrashDumpDirectory.Trim())
 }
 
-foreach ($path in @($observerExe)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "Required executable was not found: $path"
+if (-not $SkipObserver) {
+    if (-not (Test-Path -LiteralPath $observerExe -PathType Leaf)) {
+        throw "Required executable was not found: $observerExe"
     }
-}
 
-# Native Observer のアクセス違反を Windows Error Reporting の LocalDumps で保存する。
-# 同一ユーザーの momo.exe に適用されるが、現行運用では Observer と Native Viewer を
-# 同じ実行ファイルで起動するため、原因調査には両方を残す方が有用である。
-New-Item -ItemType Directory -Path $resolvedObserverCrashDumpDirectory -Force | Out-Null
-$localDumpsKey = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\momo.exe'
-New-Item -Path $localDumpsKey -Force | Out-Null
-New-ItemProperty -Path $localDumpsKey -Name 'DumpFolder' -PropertyType ExpandString -Value $resolvedObserverCrashDumpDirectory -Force | Out-Null
-New-ItemProperty -Path $localDumpsKey -Name 'DumpCount' -PropertyType DWord -Value 10 -Force | Out-Null
-New-ItemProperty -Path $localDumpsKey -Name 'DumpType' -PropertyType DWord -Value 1 -Force | Out-Null
+    # Native Observer のアクセス違反を Windows Error Reporting の LocalDumps で保存する。
+    # 同一ユーザーの momo.exe に適用されるが、現行運用では Observer と Native Viewer を
+    # 同じ実行ファイルで起動するため、原因調査には両方を残す方が有用である。
+    New-Item -ItemType Directory -Path $resolvedObserverCrashDumpDirectory -Force | Out-Null
+    $localDumpsKey = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\momo.exe'
+    New-Item -Path $localDumpsKey -Force | Out-Null
+    New-ItemProperty -Path $localDumpsKey -Name 'DumpFolder' -PropertyType ExpandString -Value $resolvedObserverCrashDumpDirectory -Force | Out-Null
+    New-ItemProperty -Path $localDumpsKey -Name 'DumpCount' -PropertyType DWord -Value 10 -Force | Out-Null
+    New-ItemProperty -Path $localDumpsKey -Name 'DumpType' -PropertyType DWord -Value 1 -Force | Out-Null
+}
 
 $relayRunning = @(Get-CimInstance Win32_Process | Where-Object {
     $_.Name -match '^momo-local-relay-device-input(?:-v\d+)?\.exe$'
@@ -404,6 +406,15 @@ $observerRunning = @(Get-CimInstance Win32_Process | Where-Object {
     $_.Name -eq 'momo.exe' -and
     $_.CommandLine -like '*p2p-recv-multi*'
 })
+if ($SkipObserver) {
+    if ($RestartObserver) {
+        foreach ($process in $observerRunning) {
+            Stop-Process -Id $process.ProcessId -Force
+        }
+    }
+    Write-Host 'Native Observer startup skipped.'
+    return
+}
 $observerMatching = @($observerRunning | Where-Object {
     if ([string]::IsNullOrWhiteSpace($_.CommandLine)) {
         return $false
