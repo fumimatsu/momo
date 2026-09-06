@@ -31,6 +31,9 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Relay tests failed with exit code $LASTEXITCODE"
     }
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        & (Join-Path $PSScriptRoot 'Test-ObserverLaunchers.ps1')
+    }
 }
 finally {
     Pop-Location
