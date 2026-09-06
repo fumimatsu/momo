@@ -110,7 +110,8 @@ class RTCManager {
   std::shared_ptr<RTCConnection> CreateConnection(
       webrtc::PeerConnectionInterface::RTCConfiguration rtc_config,
       RTCMessageSender* sender,
-      VideoTrackReceiver* receiver = nullptr);
+      VideoTrackReceiver* receiver = nullptr,
+      std::shared_ptr<VideoTrackReceiver> receiver_owner = nullptr);
   void InitTracks(RTCConnection* conn,
                   const std::optional<std::string>& direction);
   void SetParameters();

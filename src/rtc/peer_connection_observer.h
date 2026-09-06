@@ -1,6 +1,9 @@
 #ifndef PEER_CONNECTION_OBSERVER_H_
 #define PEER_CONNECTION_OBSERVER_H_
 
+#include <memory>
+#include <utility>
+
 // WebRTC
 #include <api/peer_connection_interface.h>
 
@@ -12,8 +15,13 @@ class PeerConnectionObserver : public webrtc::PeerConnectionObserver {
  public:
   PeerConnectionObserver(RTCMessageSender* sender,
                          VideoTrackReceiver* receiver,
-                         RTCDataManager* data_manager)
-      : sender_(sender), receiver_(receiver), data_manager_(data_manager) {}
+                         RTCDataManager* data_manager,
+                         std::shared_ptr<VideoTrackReceiver> receiver_owner =
+                             nullptr)
+      : sender_(sender),
+        receiver_(receiver),
+        data_manager_(data_manager),
+        receiver_owner_(std::move(receiver_owner)) {}
   ~PeerConnectionObserver();
 
   RTCDataManager* DataManager();
@@ -40,6 +48,7 @@ class PeerConnectionObserver : public webrtc::PeerConnectionObserver {
   RTCMessageSender* sender_;
   VideoTrackReceiver* receiver_;
   RTCDataManager* data_manager_;
+  std::shared_ptr<VideoTrackReceiver> receiver_owner_;
   std::vector<webrtc::VideoTrackInterface*> video_tracks_;
 };
 

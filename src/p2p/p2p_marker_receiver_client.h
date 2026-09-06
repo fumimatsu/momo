@@ -69,7 +69,7 @@ class P2PMarkerReceiverClient
     bool queued = false;
     bool connecting = false;
     bool media_connected = false;
-    std::unique_ptr<MarkerVideoTrackReceiver> receiver;
+    std::shared_ptr<MarkerVideoTrackReceiver> receiver;
     std::shared_ptr<P2PReceiverClient> client;
     std::unique_ptr<boost::asio::steady_timer> reconnect_timer;
     std::unique_ptr<boost::asio::steady_timer> connection_timer;

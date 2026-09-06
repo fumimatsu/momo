@@ -24,6 +24,7 @@ struct P2PReceiverClientConfig {
   std::string endpoint = "ws://127.0.0.1:8080/ws";
   bool no_google_stun = false;
   VideoTrackReceiver* receiver = nullptr;
+  std::shared_ptr<VideoTrackReceiver> receiver_owner;
   // Offer を作成する前に DataChannel などを追加するためのフック。
   std::function<void(std::shared_ptr<RTCConnection>)> configure_connection;
   std::function<void()> on_connected;

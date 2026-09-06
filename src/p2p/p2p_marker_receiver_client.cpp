@@ -312,7 +312,7 @@ void P2PMarkerReceiverClient::ReplaceSources(const Manifest& manifest) {
     source.endpoint = ObserverEndpoint(source.config.observer_path);
     source.slot = index;
     source.generation = generation;
-    source.receiver = std::make_unique<MarkerVideoTrackReceiver>(
+    source.receiver = std::make_shared<MarkerVideoTrackReceiver>(
         writer_, index, generation, config_.maximum_framerate);
     source.reconnect_timer = std::make_unique<boost::asio::steady_timer>(ioc_);
     source.connection_timer = std::make_unique<boost::asio::steady_timer>(ioc_);
@@ -389,6 +389,7 @@ void P2PMarkerReceiverClient::ConnectSource(Source& source) {
   client_config.endpoint = source.endpoint;
   client_config.no_google_stun = config_.no_google_stun;
   client_config.receiver = source.receiver.get();
+  client_config.receiver_owner = source.receiver;
   client_config.on_media_connected = [weak_self, source_id, generation,
                                       attempt_id]() {
     if (const auto self = weak_self.lock()) {

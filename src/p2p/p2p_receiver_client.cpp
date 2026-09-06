@@ -208,7 +208,8 @@ void P2PReceiverClient::CreatePeerConnection() {
     rtc_config.servers.push_back(ice_server);
   }
 
-  connection_ = manager_->CreateConnection(rtc_config, this, config_.receiver);
+  connection_ = manager_->CreateConnection(rtc_config, this, config_.receiver,
+                                          config_.receiver_owner);
   if (!connection_) {
     RTC_LOG(LS_ERROR) << "Failed to create P2P receiver PeerConnection";
     NotifyDisconnected();
