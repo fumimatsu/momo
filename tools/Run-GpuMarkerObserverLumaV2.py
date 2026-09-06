@@ -209,6 +209,17 @@ def processing_duration_ms(cycle_ms: float, wait_ms: float) -> float:
     return max(0.0, cycle_ms - wait_ms)
 
 
+def processing_deadline_missed(
+    schedule_late_seconds: float, processing_ms: float, period_seconds: float
+) -> bool:
+    # Micro-batches deliberately wait until the epoch boundary for a fresh frame.
+    # That wait is not detector overload, but skipped epochs still are.
+    return (
+        schedule_late_seconds >= period_seconds
+        or processing_ms > period_seconds * 1000.0
+    )
+
+
 def pending_fresh_source_count(sampled, excluded_source_ids=frozenset()) -> int:
     return sum(
         selection.source_id not in excluded_source_ids
@@ -563,8 +574,6 @@ def main(argv: list[str] | None = None) -> int:
                 schedule_late = max(0.0, now - scheduled_at)
                 tick_missed_deadline = schedule_late >= period
                 if tick_missed_deadline:
-                    deadline_misses += 1
-                    total_deadline_misses += 1
                     skipped_periods = math.floor(schedule_late / period)
                     next_tick = scheduled_at + (skipped_periods + 1) * period
                 else:
@@ -893,7 +902,7 @@ def main(argv: list[str] | None = None) -> int:
                 processing_window.append(processing_ms)
                 all_cycle_ms.append(cycle_ms)
                 all_processing_ms.append(processing_ms)
-                if cycle_ms > period * 1000.0 and not tick_missed_deadline:
+                if processing_deadline_missed(schedule_late, processing_ms, period):
                     deadline_misses += 1
                     total_deadline_misses += 1
 

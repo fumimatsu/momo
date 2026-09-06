@@ -18,7 +18,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Python)) {
-    $candidate = Join-Path $PSScriptRoot '.artifacts\aruco-venv\Scripts\python.exe'
+    $preferred = Join-Path $PSScriptRoot '.artifacts\aruco-venv-gpu-313\Scripts\python.exe'
+    $fallback = Join-Path $PSScriptRoot '.artifacts\aruco-venv\Scripts\python.exe'
+    $candidate = if (Test-Path -LiteralPath $preferred -PathType Leaf) {
+        $preferred
+    } else {
+        $fallback
+    }
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
         throw "GPU ArUco Python was not found: $candidate"
     }

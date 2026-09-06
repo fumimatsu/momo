@@ -98,6 +98,27 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
     def test_processing_duration_never_becomes_negative(self):
         self.assertEqual(0.0, MODULE.processing_duration_ms(4.0, 5.0))
 
+    def test_fresh_frame_wait_does_not_trigger_minimum_rate_capacity_failure(self):
+        from MarkerDetectionRateController import AdaptiveDetectionRateController, DetectionWindow
+
+        controller = AdaptiveDetectionRateController(initial_detection_hz=25)
+        # Real failure shape: a 47 ms epoch, of which 36 ms waits for the
+        # other camera. Repeated boundary overruns used to stop publication.
+        processing_ms = MODULE.processing_duration_ms(47.0, 36.0)
+        missed = MODULE.processing_deadline_missed(0.007, processing_ms, 0.04)
+        for index in range(3):
+            decision = controller.observe_window(
+                DetectionWindow(5, processing_ms, float(missed)),
+                (index + 1) * 5, allow_downgrade=True,
+            )
+        self.assertFalse(decision.capacity_exceeded)
+        self.assertEqual(25, decision.detection_hz)
+
+    def test_processing_overrun_and_skipped_epoch_remain_deadline_misses(self):
+        self.assertTrue(MODULE.processing_deadline_missed(0, 41.0, 0.04))
+        self.assertTrue(MODULE.processing_deadline_missed(0.04, 3.0, 0.04))
+        self.assertFalse(MODULE.processing_deadline_missed(0, 40.0, 0.04))
+
     def test_parser_defaults_to_strict_fresh_frame_coverage(self):
         args = MODULE.build_parser().parse_args([])
 
