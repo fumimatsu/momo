@@ -6781,7 +6781,8 @@
         return true;
       }
       const token = getRoomLeaseToken();
-      roomLease = payload.lease ? { ...payload.lease, token } : roomLease;
+      const authenticated = roomLease.authenticated === true;
+      roomLease = payload.lease ? { ...payload.lease, token, authenticated } : roomLease;
       persistRoomLease();
       roomLockStatus = payload;
       roomLockHeartbeatFailures = 0;
