@@ -179,6 +179,9 @@ func (server *relayServer) observeRaceContext(envelope raceStateEnvelope, now ti
 			now,
 			envelope.RaceInfo.SessionType,
 		)
+		if updated, applied := source.vehicleHealth.observeGameplayRules(currentRunID, envelope.RaceInfo.GameplayRules, now); applied {
+			health, changed = updated, true
+		}
 		if changed {
 			source.driveGear.Store(int32(health.Gear))
 			source.broadcastVehicleGameplay(health)

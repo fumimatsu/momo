@@ -1975,6 +1975,7 @@ function displayedRaceTime(now) {
 }
 
 function renderClocks(now) {
+  setTextIfChanged(document.getElementById('raceClockLabel'), raceState?.raceInfo?.timeLimitMs > 0 ? 'TIME LEFT' : 'RACE TIME');
   setTextIfChanged(document.getElementById('raceClock'), formatDuration(displayedRaceTime(now)));
   const age = raceReceivedAt ? (now - raceReceivedAt) / 1000 : null;
   const updatedAgo = document.getElementById('updatedAgo');

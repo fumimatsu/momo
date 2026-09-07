@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGeneratedAyameRoomIDIsStableAndSafe(t *testing.T) {
@@ -316,6 +317,22 @@ func newDynamicSourceTestServer(t *testing.T) *relayServer {
 			ayameClientIDPrefix:  "momo-relay",
 			ayameRoomPrefix:      "momo-relay",
 		},
+	}
+}
+
+func TestManagedSourceInheritsFuelConsumptionSetting(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		server := newDynamicSourceTestServer(t)
+		server.sourceRuntime.fuelConsumptionDisabled = disabled
+		managed, err := server.prepareManagedSource(relayFileSource{
+			ID: "11.4", URL: "ws://127.0.0.1:8080/ws", RaceCarID: "CP-2",
+		}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := managed.relay.vehicleHealth.snapshot(time.Now()).FuelConsumptionEnabled; got == disabled {
+			t.Fatalf("disabled=%v, effective enabled=%v", disabled, got)
+		}
 	}
 }
 

@@ -432,7 +432,8 @@ type raceStateEnvelope struct {
 	Flag      string `json:"flag"`
 	Sequence  uint64 `json:"sequence"`
 	RaceInfo  struct {
-		SessionType string `json:"sessionType"`
+		SessionType   string             `json:"sessionType"`
+		GameplayRules *raceGameplayRules `json:"gameplayRules,omitempty"`
 	} `json:"raceInfo"`
 	Roster struct {
 		Participants []raceStateParticipant `json:"participants"`
@@ -645,24 +646,28 @@ type telemetryOperationsState struct {
 }
 
 type vehicleHealthOperationsState struct {
-	DamageEnabled       bool    `json:"damageEnabled"`
-	HP                  float64 `json:"hp"`
-	SpeedCap            float64 `json:"speedCap"`
-	Mode                string  `json:"mode"`
-	RecoveryMode        string  `json:"recoveryMode"`
-	Fuel                float64 `json:"fuel"`
-	FuelState           string  `json:"fuelState"`
-	Boost               float64 `json:"boost"`
-	BoostState          string  `json:"boostState"`
-	BoostRemainingMS    int64   `json:"boostRemainingMs"`
-	Gear                int     `json:"gear"`
-	Position            int     `json:"position"`
-	FieldSize           int     `json:"fieldSize"`
-	FuelRatePerSec      float64 `json:"fuelRatePerSecond"`
-	FuelRateMultiplier  float64 `json:"fuelRateMultiplier"`
-	FuelPowerScale      float64 `json:"fuelPowerScale"`
-	FuelRoughMultiplier float64 `json:"fuelRoughMultiplier"`
-	FuelBoostMultiplier float64 `json:"fuelBoostMultiplier"`
+	RaceRunID              string             `json:"raceRunId,omitempty"`
+	GameplayRules          *raceGameplayRules `json:"gameplayRules,omitempty"`
+	PitEnabled             bool               `json:"pitEnabled"`
+	DamageEnabled          bool               `json:"damageEnabled"`
+	FuelConsumptionEnabled bool               `json:"fuelConsumptionEnabled"`
+	HP                     float64            `json:"hp"`
+	SpeedCap               float64            `json:"speedCap"`
+	Mode                   string             `json:"mode"`
+	RecoveryMode           string             `json:"recoveryMode"`
+	Fuel                   float64            `json:"fuel"`
+	FuelState              string             `json:"fuelState"`
+	Boost                  float64            `json:"boost"`
+	BoostState             string             `json:"boostState"`
+	BoostRemainingMS       int64              `json:"boostRemainingMs"`
+	Gear                   int                `json:"gear"`
+	Position               int                `json:"position"`
+	FieldSize              int                `json:"fieldSize"`
+	FuelRatePerSec         float64            `json:"fuelRatePerSecond"`
+	FuelRateMultiplier     float64            `json:"fuelRateMultiplier"`
+	FuelPowerScale         float64            `json:"fuelPowerScale"`
+	FuelRoughMultiplier    float64            `json:"fuelRoughMultiplier"`
+	FuelBoostMultiplier    float64            `json:"fuelBoostMultiplier"`
 }
 
 type downstreamOperationsState struct {
@@ -1203,24 +1208,28 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 		VideoHealth: videoHealth.String(),
 		Drive:       r.driveStatusSnapshot(),
 		VehicleHealth: vehicleHealthOperationsState{
-			DamageEnabled:       health.DamageEnabled,
-			HP:                  health.HP,
-			SpeedCap:            health.SpeedCap,
-			Mode:                health.Mode,
-			RecoveryMode:        string(r.vehicleHealth.recoveryModeSnapshot()),
-			Fuel:                health.Fuel,
-			FuelState:           health.FuelState,
-			Boost:               health.Boost,
-			BoostState:          health.BoostState,
-			BoostRemainingMS:    health.BoostRemainingMS,
-			Gear:                health.Gear,
-			Position:            health.Position,
-			FieldSize:           health.FieldSize,
-			FuelRatePerSec:      health.FuelRatePerSec,
-			FuelRateMultiplier:  health.FuelRateMultiplier,
-			FuelPowerScale:      health.FuelPowerScale,
-			FuelRoughMultiplier: health.FuelRoughMultiplier,
-			FuelBoostMultiplier: health.FuelBoostMultiplier,
+			RaceRunID:              health.RaceRunID,
+			GameplayRules:          health.GameplayRules,
+			PitEnabled:             health.PitEnabled,
+			DamageEnabled:          health.DamageEnabled,
+			HP:                     health.HP,
+			SpeedCap:               health.SpeedCap,
+			Mode:                   health.Mode,
+			RecoveryMode:           string(r.vehicleHealth.recoveryModeSnapshot()),
+			Fuel:                   health.Fuel,
+			FuelState:              health.FuelState,
+			Boost:                  health.Boost,
+			BoostState:             health.BoostState,
+			BoostRemainingMS:       health.BoostRemainingMS,
+			Gear:                   health.Gear,
+			Position:               health.Position,
+			FieldSize:              health.FieldSize,
+			FuelConsumptionEnabled: health.FuelConsumptionEnabled,
+			FuelRatePerSec:         health.FuelRatePerSec,
+			FuelRateMultiplier:     health.FuelRateMultiplier,
+			FuelPowerScale:         health.FuelPowerScale,
+			FuelRoughMultiplier:    health.FuelRoughMultiplier,
+			FuelBoostMultiplier:    health.FuelBoostMultiplier,
 		},
 		Upstream: upstreamOperationsState{
 			PeerState:               peerState,
@@ -3787,6 +3796,7 @@ func main() {
 	var telemetryLogRetention time.Duration
 	var healthRecoveryModeValue string
 	var vehicleDamageEnabled bool
+	var fuelConsumptionEnabled bool
 	var fuelDriveDuration time.Duration
 	var teamObserverDirectoryCache string
 	var teamObserverDirectoryOrganization string
@@ -3820,6 +3830,7 @@ func main() {
 	flag.DurationVar(&telemetryLogRetention, "telemetry-log-retention", defaultTelemetryLogRetention, "retain telemetry NDJSON logs for this duration; clean every 2h while race is idle (0 disables cleanup)")
 	flag.StringVar(&healthRecoveryModeValue, "health-recovery-mode", strings.TrimSpace(os.Getenv("MOMO_RELAY_HEALTH_RECOVERY_MODE")), "vehicle HP recovery mode: legacy, pit-marker, hybrid, or disabled")
 	flag.BoolVar(&vehicleDamageEnabled, "vehicle-damage-enabled", true, "apply confirmed vehicle impacts to HP and forward speed limits")
+	flag.BoolVar(&fuelConsumptionEnabled, "fuel-consumption-enabled", true, "consume fuel during non-practice races; false keeps a full tank in every session")
 	flag.DurationVar(&fuelDriveDuration, "fuel-drive-duration", vehicleFuelDefaultDriveDuration, "active forward-driving time required to consume a full fuel tank")
 	flag.StringVar(&teamObserverDirectoryCache, "team-observer-directory-cache", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_CACHE")), "validated Race Directory cache used for the read-only Team Observer projection")
 	flag.StringVar(&teamObserverDirectoryOrganization, "team-observer-directory-organization", strings.TrimSpace(os.Getenv("MOMO_TEAM_OBSERVER_DIRECTORY_ORGANIZATION")), "expected organization slug for the Team Observer directory cache")
@@ -4007,18 +4018,19 @@ func main() {
 		pitEvents:             make(map[string]pitPresenceReceipt),
 		teamObserverDirectory: teamObserverDirectory,
 		sourceRuntime: relaySourceRuntime{
-			rootContext:          ctx,
-			allowObserverCommand: allowObserverCommand,
-			rtpStallTimeout:      rtpStallTimeout,
-			upstreamStartTimeout: upstreamStartTimeout,
-			healthRecoveryMode:   healthRecoveryMode,
-			vehicleDamageEnabled: vehicleDamageEnabled,
-			fuelDriveDuration:    fuelDriveDuration,
-			raceAudioService:     raceAudioService,
-			ayameSignalingURL:    strings.TrimSpace(ayameSignalingURL),
-			ayameClientIDPrefix:  strings.TrimSpace(ayameClientIDPrefix),
-			ayameSignalingKey:    strings.TrimSpace(ayameSignalingKey),
-			ayameRoomPrefix:      strings.TrimSpace(ayameRoomPrefix),
+			rootContext:             ctx,
+			allowObserverCommand:    allowObserverCommand,
+			rtpStallTimeout:         rtpStallTimeout,
+			upstreamStartTimeout:    upstreamStartTimeout,
+			healthRecoveryMode:      healthRecoveryMode,
+			vehicleDamageEnabled:    vehicleDamageEnabled,
+			fuelConsumptionDisabled: !fuelConsumptionEnabled,
+			fuelDriveDuration:       fuelDriveDuration,
+			raceAudioService:        raceAudioService,
+			ayameSignalingURL:       strings.TrimSpace(ayameSignalingURL),
+			ayameClientIDPrefix:     strings.TrimSpace(ayameClientIDPrefix),
+			ayameSignalingKey:       strings.TrimSpace(ayameSignalingKey),
+			ayameRoomPrefix:         strings.TrimSpace(ayameRoomPrefix),
 		},
 	}
 	for _, definition := range configuredDefinitions {

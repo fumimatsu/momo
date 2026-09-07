@@ -25,18 +25,19 @@ var (
 )
 
 type relaySourceRuntime struct {
-	rootContext          context.Context
-	allowObserverCommand bool
-	rtpStallTimeout      time.Duration
-	upstreamStartTimeout time.Duration
-	healthRecoveryMode   vehicleHealthRecoveryMode
-	vehicleDamageEnabled bool
-	fuelDriveDuration    time.Duration
-	raceAudioService     *raceAudioServiceClient
-	ayameSignalingURL    string
-	ayameClientIDPrefix  string
-	ayameSignalingKey    string
-	ayameRoomPrefix      string
+	rootContext             context.Context
+	allowObserverCommand    bool
+	rtpStallTimeout         time.Duration
+	upstreamStartTimeout    time.Duration
+	healthRecoveryMode      vehicleHealthRecoveryMode
+	vehicleDamageEnabled    bool
+	fuelConsumptionDisabled bool
+	fuelDriveDuration       time.Duration
+	raceAudioService        *raceAudioServiceClient
+	ayameSignalingURL       string
+	ayameClientIDPrefix     string
+	ayameSignalingKey       string
+	ayameRoomPrefix         string
 }
 
 type managedRelaySource struct {
@@ -401,6 +402,7 @@ func (server *relayServer) prepareManagedSource(definition relayFileSource, dyna
 		return nil, sourceError(http.StatusInternalServerError, "source_initialization_failed", "initialize source %q: %v", normalized.ID, err)
 	}
 	source.vehicleHealth.setDamageEnabled(server.sourceRuntime.vehicleDamageEnabled)
+	source.vehicleHealth.setFuelConsumptionEnabled(!server.sourceRuntime.fuelConsumptionDisabled)
 	source.sourceKind = normalized.SourceKind
 	source.displayName = normalized.DisplayName
 	source.recorder = server.recorder

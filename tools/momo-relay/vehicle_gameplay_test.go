@@ -167,6 +167,47 @@ func TestVehicleGameplayPracticeDoesNotConsumeFuel(t *testing.T) {
 	}
 }
 
+func TestVehicleGameplayFuelConsumptionCanBeDisabled(t *testing.T) {
+	for _, session := range []string{"race", "qualify", "practice", ""} {
+		t.Run(session, func(t *testing.T) {
+			base := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+			health := newVehicleHealthWithFuelDuration(base, 10*time.Second)
+			health.setFuelConsumptionEnabled(false)
+			health.observeRaceState(true, "rr_"+session, "green", 1, 4, base, session)
+			health.setDriveEnabled(true, base)
+			health.setRequestedGear(3, base)
+			advanceGameplayDrivingInSession(health, base, 20, session)
+			snapshot := health.snapshot(base.Add(20 * time.Second))
+			if snapshot.Fuel != 100 || snapshot.FuelRatePerSec != 0 || snapshot.FuelConsumptionEnabled {
+				t.Fatalf("fuel disabled: %#v", snapshot)
+			}
+			if snapshot.SessionType != vehicleSessionTypeState(session) || snapshot.Boost <= 0 {
+				t.Fatalf("fuel setting changed session or boost: %#v", snapshot)
+			}
+			if got := health.limitCommand("S:1500,T:2000", base.Add(20*time.Second)); got != "S:1500,T:1800" {
+				t.Fatalf("fuel disabled command = %q", got)
+			}
+			health.observeRaceState(true, "rr_next", "ready", 1, 4, base.Add(21*time.Second), "race")
+			if health.snapshot(base.Add(21 * time.Second)).FuelConsumptionEnabled {
+				t.Fatal("new run unexpectedly enabled fuel consumption")
+			}
+		})
+	}
+}
+
+func TestVehicleGameplayFuelConsumptionCanBeReenabled(t *testing.T) {
+	base := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	health := prepareGameplayHealth(base, 10*time.Second, 1, 4)
+	health.setFuelConsumptionEnabled(false)
+	advanceGameplayDriving(health, base, 5, 1, 4)
+	health.setFuelConsumptionEnabled(true)
+	advanceGameplayDriving(health, base.Add(5*time.Second), 5, 1, 4)
+	snapshot := health.snapshot(base.Add(10 * time.Second))
+	if !snapshot.FuelConsumptionEnabled || math.Abs(snapshot.Fuel-50) > 0.001 {
+		t.Fatalf("reenabled fuel = %#v", snapshot)
+	}
+}
+
 func TestVehicleGameplayQualifyConsumesFuel(t *testing.T) {
 	base := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	health := newVehicleHealthWithFuelDuration(base, 10*time.Second)

@@ -418,6 +418,11 @@ func (server *relayServer) servePitPresenceEvent(w http.ResponseWriter, req *htt
 	}
 	now := time.Now()
 	health := source.vehicleHealth.snapshot(now)
+	if health.GameplayRules != nil && !health.PitEnabled {
+		server.pitEventsMu.Unlock()
+		writePitRecoveryError(w, http.StatusConflict, "pit_disabled", "PIT is disabled for this run", 0)
+		return
+	}
 	snapshot, applyErr := source.pitPresence.applyGameplay(event, now, health)
 	if applyErr != nil {
 		server.pitEventsMu.Unlock()

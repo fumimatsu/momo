@@ -724,6 +724,12 @@ Fuelは`green`中、Race Control接続が有効で、Drive ONかつ前進指令�
 一定入力は従来どおり合計120秒の有効前進で100から0になり、`-fuel-drive-duration`で変更できる。
 アクセルの上げ下げは約1.5秒の移動平均で評価し、細かな全開・戻しを繰り返すほど消費率を最大1.6倍にする。
 一定フルアクセル自体には追加ペナルティを掛けず、Practiceでは従来どおりFuelを消費しない。
+レース形式や周回上限を変えずに FUEL 消費を止める場合は、Relay 起動時に
+`-fuel-consumption-enabled=false` を指定する。全車を満タンで開始し、レース中も消費率を 0 にする。
+既定値は `true`。動的に追加した車両にも同じ設定を適用し、次の run でも維持する。
+`/api/v1/status` の `vehicleHealth.fuelConsumptionEnabled` で実効値を確認できる
+（Practice では起動設定に関係なく `false`）。変更には Relay の再起動が必要。
+ダメージも無効にする場合は `-vehicle-damage-enabled=false` を併用する。
 Fuel 0でもPITへ戻れるよう前進PWMを1590、後退PWMを対称の1410へ制限し、完全停止にはしない。
 ダメージによる速度制限は前進だけに適用し、障害物から脱出するための後退出力は維持する。
 
@@ -765,3 +771,17 @@ CPU OpenCVとGPU-only ArUcoの同条件比較には次を使う。
 重複IDを1件へ正規化してはならない。
 既定のGPU backendは`nvcodec-gpu-batch`で、複数sourceのthreshold、connected component、
 quad抽出を1回のCUDA batchとして処理する。
+## Per-run gameplay rules (2026-09-07)
+
+Race Control can supply `raceInfo.gameplayRules` with `version: 1` and boolean
+`damageEnabled`, `fuelEnabled`, `pitEnabled`. These explicit run settings override
+the process defaults; missing rules preserve the legacy behavior. Repeated race
+snapshots do not reset vehicle resources. Rules are replaced only at a new run.
+Damage OFF does not suppress collision events used for FFB. PIT OFF rejects new
+presence and recovery requests. Explicit fuel ON also applies in Practice.
+
+Operations v3 `sources[].vehicleHealth` reports `raceRunId`, `gameplayRules`, and
+`pitEnabled` so Coordinator can confirm application before countdown.
+Update Race Control, Relay, then Coordinator together. Keep runtime credentials,
+source registry, audio and Ayame options unchanged. See the companion repository's
+`momo-race-timing/docs/OPERATIONS_QUICK_START.md` for operation and rollout steps.

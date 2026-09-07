@@ -672,6 +672,8 @@ export function formatGap(milliseconds) {
 
 export function formatStandingGap(standing) {
   if (standing?.position === 1) return 'LEADER';
+  const bestGap = finiteNumber(standing?.bestLapGapToAheadMs);
+  if (bestGap !== null) return `+${(Math.max(0, bestGap) / 1000).toFixed(3)} BEST`;
   const lapDelta = finiteNumber(standing?.lapDeltaToAhead);
   if (lapDelta !== null && lapDelta > 0) return `+${lapDelta} LAP`;
   const interval = finiteNumber(standing?.intervalToAheadMs);
@@ -703,6 +705,11 @@ export function raceClockValue(state, elapsedSinceSnapshotMs = 0, lapHistory = n
   const leader = (state.standings || []).find((standing) => standing.position === 1)
     || state.standings?.[0];
   const base = finiteNumber(leader?.allTimeMs);
+  const timeLimitMs = finiteNumber(state.raceInfo?.timeLimitMs);
+  if (timeLimitMs !== null && timeLimitMs > 0 && state.allTimeMode !== 'countdown') {
+    const advance = state.phase === 'green' && leader?.status === 'racing' ? elapsed : 0;
+    return Math.max(0, timeLimitMs - (base ?? 0) - advance);
+  }
   if (state.allTimeMode !== 'countdown') {
     const leaderIsRacing = state.phase === 'green' && leader?.status === 'racing';
     const currentLap = leaderIsRacing ? currentLapClockValue(leader, state, elapsed) : 0;

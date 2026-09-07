@@ -1648,6 +1648,7 @@
           allTimeMs: normalizeOptionalRaceNumber(entry.allTimeMs),
           raceElapsedMs,
           intervalToAheadMs: normalizeOptionalRaceNumber(entry.intervalToAheadMs),
+          bestLapGapToAheadMs: normalizeOptionalRaceNumber(entry.bestLapGapToAheadMs),
           lapDeltaToAhead: normalizeRaceLapDelta(entry.lapDeltaToAhead),
           lappingCarBehindId: typeof entry.lappingCarBehindId === 'string'
             ? entry.lappingCarBehindId.trim()
@@ -1712,9 +1713,9 @@
     const ahead = selfIndex > 0 ? rivals[selfIndex - 1] : null;
     const behind = selfIndex >= 0 && selfIndex < rivals.length - 1 ? rivals[selfIndex + 1] : null;
     const hasInterval = (ahead && (
-      self.intervalToAheadMs !== null || self.lapDeltaToAhead !== null
+      self.intervalToAheadMs !== null || self.lapDeltaToAhead !== null || self.bestLapGapToAheadMs !== null
     )) || (behind && (
-      behind.intervalToAheadMs !== null || behind.lapDeltaToAhead !== null
+      behind.intervalToAheadMs !== null || behind.lapDeltaToAhead !== null || behind.bestLapGapToAheadMs !== null
     ));
     return { self, ahead, behind, state: hasInterval ? 'live' : 'waiting' };
   }
@@ -1990,7 +1991,7 @@
     const battle = getRaceBattle();
     const state = RACE_BATTLE_DEMO ? 'demo' : battle.state;
     raceBattle.dataset.state = state;
-    setText(raceBattleState, state === 'live' ? 'LIVE' : state === 'demo' ? 'DEMO' : 'WAITING');
+    setText(raceBattleState, raceState.sessionType === 'qualify' ? 'BEST LAP GAP' : state === 'live' ? 'LIVE' : state === 'demo' ? 'DEMO' : 'WAITING');
     setText(raceBattleSelfPosition, battle.self ? `P${battle.self.position}` : '--');
     setText(raceBattleSelfName, getRaceRivalLabel(battle.self, 'YOU'));
     renderRaceBattleRival(
@@ -1999,7 +2000,7 @@
       raceBattleAheadName,
       raceBattleAheadGap,
       battle.ahead,
-      battle.self?.intervalToAheadMs ?? null,
+      (raceState.sessionType === 'qualify' ? battle.self?.bestLapGapToAheadMs : battle.self?.intervalToAheadMs) ?? null,
       battle.self?.lapDeltaToAhead ?? null,
       'NO AHEAD',
     );
@@ -2009,7 +2010,7 @@
       raceBattleBehindName,
       raceBattleBehindGap,
       battle.behind,
-      battle.behind?.intervalToAheadMs ?? null,
+      (raceState.sessionType === 'qualify' ? battle.behind?.bestLapGapToAheadMs : battle.behind?.intervalToAheadMs) ?? null,
       battle.behind?.lapDeltaToAhead ?? null,
       'NO BEHIND',
     );
@@ -2505,7 +2506,7 @@
   }
 
   function evaluateRaceAttention() {
-    if (isRaceGoalState()) {
+    if (isRaceGoalState() || raceState.sessionType === 'qualify') {
       hideRearAttention(false);
       rearAttentionTracker?.reset();
       blueFlagTracker?.reset();
@@ -2887,9 +2888,12 @@
 
   function renderRaceClock() {
     setText(raceCurrentLap, formatRaceTime(getDisplayedRaceTime(raceState.currentLapMs)));
+    const elapsed = getDisplayedRaceTime(raceState.totalTimeMs, raceState.allTimeMode);
+    const timed = raceState.timeLimitMs > 0;
+    setText(document.getElementById('raceTotalTimeLabel'), timed ? 'TIME LEFT' : 'TOTAL TIME');
     setText(
       raceTotalTime,
-      formatRaceTime(getDisplayedRaceTime(raceState.totalTimeMs, raceState.allTimeMode)),
+      formatRaceTime(timed ? Math.max(0, raceState.timeLimitMs - (elapsed ?? 0)) : elapsed),
     );
     renderRaceStartSignal();
   }
@@ -3172,6 +3176,7 @@
       position: normalizeRaceNumber(standing?.position) || null,
       fieldSize: state.standings.length,
       totalTimeMs: normalizeRaceNumber(standing?.allTimeMs),
+      timeLimitMs: normalizeRaceNumber(state.raceInfo?.timeLimitMs),
       allTimeMode: normalizeAllTimeMode(state.allTimeMode),
       currentLapMs: normalizeRaceNumber(standing?.currentLapMs),
       lastLapMs,
@@ -3695,6 +3700,7 @@
       raceState.directionStatus = 'unknown';
       raceState.startSignalMode = 'green';
       raceState.sessionType = '';
+      raceState.timeLimitMs = null;
       raceState.status = '';
       raceState.carId = '';
       raceState.identity = null;
@@ -3763,7 +3769,7 @@
     if (Object.prototype.hasOwnProperty.call(nextState, 'allTimeMode')) {
       raceState.allTimeMode = normalizeAllTimeMode(nextState.allTimeMode);
     }
-    for (const field of ['lap', 'lapCount', 'position', 'fieldSize', 'totalTimeMs',
+    for (const field of ['lap', 'lapCount', 'position', 'fieldSize', 'totalTimeMs', 'timeLimitMs',
       'currentLapMs', 'lastLapMs', 'bestLapMs', 'overallBestLapMs', 'startAtMs', 'serverTimeMs']) {
       if (Object.prototype.hasOwnProperty.call(nextState, field)) {
         raceState[field] = nextState[field] === null ? null : normalizeRaceNumber(nextState[field]);

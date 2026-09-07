@@ -52,34 +52,38 @@ const (
 )
 
 type vehicleHealthSnapshot struct {
-	DamageEnabled       bool    `json:"damageEnabled"`
-	HP                  float64 `json:"hp"`
-	SpeedCap            float64 `json:"speedCap"`
-	Mode                string  `json:"mode"`
-	Fuel                float64 `json:"fuel"`
-	FuelState           string  `json:"fuelState"`
-	Boost               float64 `json:"boost"`
-	BoostState          string  `json:"boostState"`
-	BoostRemainingMS    int64   `json:"boostRemainingMs"`
-	Gear                int     `json:"gear"`
-	NormalGearMax       int     `json:"normalGearMax"`
-	Position            int     `json:"position"`
-	FieldSize           int     `json:"fieldSize"`
-	FuelRatePerSec      float64 `json:"fuelRatePerSecond"`
-	FuelRateMultiplier  float64 `json:"fuelRateMultiplier"`
-	FuelPowerScale      float64 `json:"fuelPowerScale"`
-	FuelRoughMultiplier float64 `json:"fuelRoughMultiplier"`
-	FuelBoostMultiplier float64 `json:"fuelBoostMultiplier"`
-	ThrottleVariation   float64 `json:"throttleVariationPerSecond"`
-	RequestedThrottle   float64 `json:"requestedThrottle"`
-	EffectiveThrottle   float64 `json:"effectiveThrottle"`
-	SessionType         string  `json:"sessionType"`
-	RaceGapKnown        bool    `json:"raceGapKnown"`
-	GapToAheadMS        *int64  `json:"gapToAheadMs,omitempty"`
-	LapDeltaToAhead     *int    `json:"lapDeltaToAhead,omitempty"`
-	BoostChargeMS       int64   `json:"boostChargeMs"`
-	BoostPassiveScale   float64 `json:"boostPassiveScale"`
-	ServerTimeMS        int64   `json:"serverTimeMs"`
+	RaceRunID              string             `json:"raceRunId,omitempty"`
+	GameplayRules          *raceGameplayRules `json:"gameplayRules,omitempty"`
+	PitEnabled             bool               `json:"pitEnabled"`
+	DamageEnabled          bool               `json:"damageEnabled"`
+	FuelConsumptionEnabled bool               `json:"fuelConsumptionEnabled"`
+	HP                     float64            `json:"hp"`
+	SpeedCap               float64            `json:"speedCap"`
+	Mode                   string             `json:"mode"`
+	Fuel                   float64            `json:"fuel"`
+	FuelState              string             `json:"fuelState"`
+	Boost                  float64            `json:"boost"`
+	BoostState             string             `json:"boostState"`
+	BoostRemainingMS       int64              `json:"boostRemainingMs"`
+	Gear                   int                `json:"gear"`
+	NormalGearMax          int                `json:"normalGearMax"`
+	Position               int                `json:"position"`
+	FieldSize              int                `json:"fieldSize"`
+	FuelRatePerSec         float64            `json:"fuelRatePerSecond"`
+	FuelRateMultiplier     float64            `json:"fuelRateMultiplier"`
+	FuelPowerScale         float64            `json:"fuelPowerScale"`
+	FuelRoughMultiplier    float64            `json:"fuelRoughMultiplier"`
+	FuelBoostMultiplier    float64            `json:"fuelBoostMultiplier"`
+	ThrottleVariation      float64            `json:"throttleVariationPerSecond"`
+	RequestedThrottle      float64            `json:"requestedThrottle"`
+	EffectiveThrottle      float64            `json:"effectiveThrottle"`
+	SessionType            string             `json:"sessionType"`
+	RaceGapKnown           bool               `json:"raceGapKnown"`
+	GapToAheadMS           *int64             `json:"gapToAheadMs,omitempty"`
+	LapDeltaToAhead        *int               `json:"lapDeltaToAhead,omitempty"`
+	BoostChargeMS          int64              `json:"boostChargeMs"`
+	BoostPassiveScale      float64            `json:"boostPassiveScale"`
+	ServerTimeMS           int64              `json:"serverTimeMs"`
 }
 
 type vehicleRaceGap struct {
@@ -121,46 +125,48 @@ type pitRecoveryReceipt struct {
 type vehicleHealth struct {
 	mu sync.Mutex
 
-	damageEnabled          bool
-	hp                     float64
-	fuel                   float64
-	boost                  float64
-	boostActiveUntil       time.Time
-	requestedGear          int
-	position               int
-	fieldSize              int
-	raceGapKnown           bool
-	gapToAheadMS           int64
-	lapDeltaToAhead        int
-	fuelDriveDuration      time.Duration
-	fuelRatePerSec         float64
-	throttleVariation      float64
-	lastThrottleSample     float64
-	lastThrottleSampleAt   time.Time
-	hasThrottleSample      bool
-	requestedThrottle      float64
-	effectiveThrottle      float64
-	driveEnabled           bool
-	pitPresent             bool
-	emptyFuelLimitLatched  bool
-	raceConnected          bool
-	lastRaceStateAt        time.Time
-	lastUpdatedAt          time.Time
-	lastUnsafeAt           time.Time
-	damageEpisodeStartedAt time.Time
-	damageEpisodeDamage    float64
-	lastForwardAt          time.Time
-	lastPublishedAt        time.Time
-	lastRacePhase          string
-	lastSessionType        string
-	recoveryMode           vehicleHealthRecoveryMode
-	activeRaceRunID        string
-	pitEntryID             string
-	lastPitTick            int
-	lastPitAt              time.Time
-	pitReceipts            map[string]pitRecoveryReceipt
-	pitSeenEntries         map[string]struct{}
-	impactSeen             map[string]struct{}
+	damageEnabled           bool
+	gameplayRules           *raceGameplayRules
+	fuelConsumptionDisabled bool
+	hp                      float64
+	fuel                    float64
+	boost                   float64
+	boostActiveUntil        time.Time
+	requestedGear           int
+	position                int
+	fieldSize               int
+	raceGapKnown            bool
+	gapToAheadMS            int64
+	lapDeltaToAhead         int
+	fuelDriveDuration       time.Duration
+	fuelRatePerSec          float64
+	throttleVariation       float64
+	lastThrottleSample      float64
+	lastThrottleSampleAt    time.Time
+	hasThrottleSample       bool
+	requestedThrottle       float64
+	effectiveThrottle       float64
+	driveEnabled            bool
+	pitPresent              bool
+	emptyFuelLimitLatched   bool
+	raceConnected           bool
+	lastRaceStateAt         time.Time
+	lastUpdatedAt           time.Time
+	lastUnsafeAt            time.Time
+	damageEpisodeStartedAt  time.Time
+	damageEpisodeDamage     float64
+	lastForwardAt           time.Time
+	lastPublishedAt         time.Time
+	lastRacePhase           string
+	lastSessionType         string
+	recoveryMode            vehicleHealthRecoveryMode
+	activeRaceRunID         string
+	pitEntryID              string
+	lastPitTick             int
+	lastPitAt               time.Time
+	pitReceipts             map[string]pitRecoveryReceipt
+	pitSeenEntries          map[string]struct{}
+	impactSeen              map[string]struct{}
 }
 
 func newVehicleHealth(now time.Time) *vehicleHealth {
@@ -208,6 +214,19 @@ func (health *vehicleHealth) setRecoveryMode(mode vehicleHealthRecoveryMode) {
 	health.resetPitRecoveryLocked()
 }
 
+func (health *vehicleHealth) setFuelConsumptionEnabled(enabled bool) {
+	if health == nil {
+		return
+	}
+	health.mu.Lock()
+	defer health.mu.Unlock()
+	health.fuelConsumptionDisabled = !enabled
+	if !enabled {
+		health.fuel = vehicleFuelMaximum
+		health.fuelRatePerSec = 0
+	}
+}
+
 func (health *vehicleHealth) recoveryModeSnapshot() vehicleHealthRecoveryMode {
 	if health == nil {
 		return vehicleHealthRecoveryDefault
@@ -227,6 +246,7 @@ func (health *vehicleHealth) observeRaceRun(raceRunID string, now time.Time) {
 		return
 	}
 	health.activeRaceRunID = raceRunID
+	health.gameplayRules = nil
 	health.resetGameplayLocked(now)
 }
 
@@ -379,7 +399,7 @@ func (health *vehicleHealth) applyPitRecovery(command pitRecoveryCommand, now ti
 	health.mu.Lock()
 	defer health.mu.Unlock()
 
-	if !health.recoveryMode.allowsPitRecovery() {
+	if !health.pitEnabledLocked() {
 		return pitRecoveryApplyResult{}, &pitRecoveryApplyError{
 			StatusCode: 409,
 			Code:       "recovery_mode_not_allowed",
@@ -574,7 +594,7 @@ func (health *vehicleHealth) applyImpactDecision(decision impactShadowLogSample,
 	case damage == 0 || !decision.ProposedDamageAllowed:
 		damage = 0
 		suppressionReason = "below_damage_threshold"
-	case !health.damageEnabled:
+	case !health.damageEnabledLocked():
 		damage = 0
 		suppressionReason = "damage_disabled"
 	case !decision.context.raceActive || !health.raceGameplayActiveLocked():
@@ -738,32 +758,36 @@ func (health *vehicleHealth) advanceRecoveryLocked(now time.Time) bool {
 
 func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot {
 	snapshot := vehicleHealthSnapshot{
-		DamageEnabled:       health.damageEnabled,
-		HP:                  health.hp,
-		SpeedCap:            vehicleHealthSpeedCap(health.hp),
-		Mode:                vehicleHealthMode(health.hp),
-		Fuel:                health.fuel,
-		FuelState:           vehicleFuelState(health.fuel),
-		Boost:               health.boost,
-		BoostState:          health.boostStateLocked(now),
-		BoostRemainingMS:    maxInt64(0, health.boostActiveUntil.Sub(now).Milliseconds()),
-		Gear:                health.effectiveGearLocked(now),
-		NormalGearMax:       vehicleNormalGearMaximum,
-		Position:            health.position,
-		FieldSize:           health.fieldSize,
-		FuelRatePerSec:      health.fuelRatePerSec,
-		FuelRateMultiplier:  health.fuelRateMultiplierLocked(now),
-		FuelPowerScale:      health.fuelPowerScaleLocked(now),
-		FuelRoughMultiplier: health.fuelRoughMultiplierLocked(),
-		FuelBoostMultiplier: health.fuelBoostMultiplierLocked(now),
-		ThrottleVariation:   health.throttleVariation,
-		RequestedThrottle:   health.requestedThrottle,
-		EffectiveThrottle:   health.effectiveThrottle,
-		SessionType:         vehicleSessionTypeState(health.lastSessionType),
-		RaceGapKnown:        health.raceGapKnown,
-		BoostChargeMS:       health.boostChargeDurationLocked().Milliseconds(),
-		BoostPassiveScale:   vehicleBoostPassiveChargeScale,
-		ServerTimeMS:        now.UnixMilli(),
+		RaceRunID:              health.activeRaceRunID,
+		GameplayRules:          health.gameplayRules.clone(),
+		PitEnabled:             health.pitEnabledLocked(),
+		DamageEnabled:          health.damageEnabledLocked(),
+		FuelConsumptionEnabled: health.fuelConsumptionEnabledLocked(),
+		HP:                     health.hp,
+		SpeedCap:               vehicleHealthSpeedCap(health.hp),
+		Mode:                   vehicleHealthMode(health.hp),
+		Fuel:                   health.fuel,
+		FuelState:              vehicleFuelState(health.fuel),
+		Boost:                  health.boost,
+		BoostState:             health.boostStateLocked(now),
+		BoostRemainingMS:       maxInt64(0, health.boostActiveUntil.Sub(now).Milliseconds()),
+		Gear:                   health.effectiveGearLocked(now),
+		NormalGearMax:          vehicleNormalGearMaximum,
+		Position:               health.position,
+		FieldSize:              health.fieldSize,
+		FuelRatePerSec:         health.fuelRatePerSec,
+		FuelRateMultiplier:     health.fuelRateMultiplierLocked(now),
+		FuelPowerScale:         health.fuelPowerScaleLocked(now),
+		FuelRoughMultiplier:    health.fuelRoughMultiplierLocked(),
+		FuelBoostMultiplier:    health.fuelBoostMultiplierLocked(now),
+		ThrottleVariation:      health.throttleVariation,
+		RequestedThrottle:      health.requestedThrottle,
+		EffectiveThrottle:      health.effectiveThrottle,
+		SessionType:            vehicleSessionTypeState(health.lastSessionType),
+		RaceGapKnown:           health.raceGapKnown,
+		BoostChargeMS:          health.boostChargeDurationLocked().Milliseconds(),
+		BoostPassiveScale:      vehicleBoostPassiveChargeScale,
+		ServerTimeMS:           now.UnixMilli(),
 	}
 	if health.raceGapKnown && health.position > 1 {
 		if health.lapDeltaToAhead > 0 {
@@ -780,7 +804,8 @@ func (health *vehicleHealth) snapshotLocked(now time.Time) vehicleHealthSnapshot
 func defaultVehicleHealthSnapshot(now time.Time) vehicleHealthSnapshot {
 	return vehicleHealthSnapshot{
 		DamageEnabled: true, HP: vehicleHealthMaximum, SpeedCap: 1, Mode: "healthy",
-		Fuel: vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
+		FuelConsumptionEnabled: true,
+		Fuel:                   vehicleFuelMaximum, FuelState: "normal", BoostState: "charging",
 		Gear: 1, NormalGearMax: vehicleNormalGearMaximum, FuelRateMultiplier: 1, FuelPowerScale: vehicleFuelMinimumDriveScale,
 		FuelRoughMultiplier: 1, FuelBoostMultiplier: 1, SessionType: "unknown",
 		BoostChargeMS: vehicleBoostFallbackCharge.Milliseconds(), BoostPassiveScale: vehicleBoostPassiveChargeScale, ServerTimeMS: now.UnixMilli(),
@@ -1005,7 +1030,10 @@ func (health *vehicleHealth) resetThrottleVariationLocked() {
 }
 
 func (health *vehicleHealth) fuelConsumptionEnabledLocked() bool {
-	return health.lastSessionType != "practice"
+	if health.gameplayRules != nil {
+		return health.gameplayRules.FuelEnabled
+	}
+	return !health.fuelConsumptionDisabled && health.lastSessionType != "practice"
 }
 
 func normalizeRaceSessionType(value string) string {

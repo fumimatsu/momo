@@ -26,10 +26,12 @@
       "properties": {
         "title": { "type": "string" },
         "totalLaps": { "type": "integer", "minimum": 1 },
+        "timeLimitMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
         "track": { "type": "string" },
         "note": { "type": "string" },
         "viewerBaseUrl": { "type": "string" },
-        "sessionType": { "enum": ["practice", "qualify", "race"] }
+        "sessionType": { "enum": ["practice", "qualify", "race"] },
+        "gameplayRules": { "$ref": "#/$defs/gameplayRules" }
       }
     },
     "roster": { "$ref": "#/$defs/activeRoster" },
@@ -38,6 +40,16 @@
     "lapHistory": { "type": "array", "maxItems": 1280, "items": { "$ref": "#/$defs/lapHistory" } }
   },
   "$defs": {
+    "gameplayRules": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "damageEnabled", "fuelEnabled", "pitEnabled"],
+      "properties": {
+        "version": { "const": 1 },
+        "damageEnabled": { "type": "boolean" },
+        "fuelEnabled": { "type": "boolean" },
+        "pitEnabled": { "type": "boolean" }
+      }
+    },
     "rosterParticipant": {
       "type": "object",
       "additionalProperties": false,
@@ -115,6 +127,9 @@
         "lap": { "type": "integer", "minimum": 0 },
         "lapTimeMs": { "type": "integer", "minimum": 0 },
         "bestLapMs": { "type": "integer", "minimum": 0 },
+        "bestLapGapToAheadMs": { "type": "integer", "minimum": 0 },
+        "bestLapGapToLeaderMs": { "type": "integer", "minimum": 0 },
+        "endReason": { "enum": ["time_limit", "manual_stop"] },
         "allTimeMs": { "type": "integer", "minimum": 0 },
         "currentLapMs": { "type": "integer", "minimum": 0 },
         "intervalToAheadMs": {
