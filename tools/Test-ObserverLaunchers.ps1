@@ -57,6 +57,7 @@ function Invoke-FakeMarkerPython {
 function Test-ObserverCase {
     param([string]$CaseName, [switch]$SkipObserver, [switch]$RestartObserver, [switch]$ExistingObserver,
         [switch]$StartRelay, [switch]$MissingObserver, [switch]$UnknownOption,
+        [hashtable]$Extra = @{}, [string]$ExpectedFailure = '',
         [int]$ExpectedNativeStarts = 0, [int]$ExpectedStops = 0)
     $processes = @(
         [pscustomobject]@{ Name = 'momo.exe'; ProcessId = 41002; CommandLine = 'momo.exe p2p-marker-recv' }
@@ -77,9 +78,18 @@ function Test-ObserverCase {
         AyameRoomPrefix = ''; TelemetryLogDirectory = ''
     }
     if ($UnknownOption) { $parameters.UnknownLauncherOption = $true }
+    foreach ($key in $Extra.Keys) { $parameters[$key] = $Extra[$key] }
     $failure = ''
     try { & (Join-Path $fixtureTools 'start-mads-observer.ps1') @parameters 6>$null }
     catch { $failure = $_.Exception.Message }
+    if ($ExpectedFailure) {
+        if ($failure -notlike "*$ExpectedFailure*" -or $launcherMock.Started.Count -ne 0 -or
+            $launcherMock.Stopped.Count -ne 0 -or $launcherMock.RegistryWrites -ne 0) {
+            throw "${CaseName}: expected failure before effects, got: $failure"
+        }
+        Write-Host "PASS observer launcher: $CaseName"
+        return
+    }
     if (($UnknownOption -and $failure -notlike '*UnknownLauncherOption*') -or (-not $UnknownOption -and $failure)) {
         throw "${CaseName}: unexpected launcher result: $failure"
     }
@@ -91,6 +101,20 @@ function Test-ObserverCase {
     if (($SkipObserver -or $UnknownOption) -and $launcherMock.RegistryWrites -ne 0) { throw "${CaseName}: unnecessary WER registry write" }
     if ($ExpectedNativeStarts -gt 0 -and $nativeStarts[0].Arguments -notcontains '--shared-frame-name') {
         throw "${CaseName}: ordinary Native Observer startup changed"
+    }
+    if ($StartRelay) {
+        $relayArguments = $relayStarts[0].Arguments
+        if ($Extra.ContainsKey('DynamicSourcesOnly') -and $Extra.DynamicSourcesOnly) {
+            foreach ($flag in @('-source', '-race-car', '-config')) {
+                if ($relayArguments -contains $flag) { throw "${CaseName}: static source argument $flag remains" }
+            }
+            $registryIndex = [Array]::IndexOf($relayArguments, '-source-registry')
+            if ($registryIndex -lt 0 -or $relayArguments[$registryIndex + 1] -ne $Extra.RelaySourceRegistryPath) {
+                throw "${CaseName}: dynamic registry path was lost"
+            }
+        } elseif (@($relayArguments | Where-Object { $_ -eq '-source' }).Count -ne 4) {
+            throw "${CaseName}: legacy fixed-source startup changed"
+        }
     }
     Write-Host "PASS observer launcher: $CaseName"
 }
@@ -117,7 +141,9 @@ function Test-MarkerCase {
 }
 
 $savedCulture = [Globalization.CultureInfo]::CurrentCulture
+$savedAdminToken = $env:MOMO_RELAY_ADMIN_TOKEN
 try {
+    $env:MOMO_RELAY_ADMIN_TOKEN = 'synthetic-launcher-admin'
     Test-ObserverCase -CaseName 'skip-without-native-binary' -SkipObserver -MissingObserver
     Test-ObserverCase -CaseName 'skip-preserves-managed-observer' -SkipObserver -ExistingObserver
     Test-ObserverCase -CaseName 'skip-and-restart-stops-only-native' -SkipObserver -RestartObserver -ExistingObserver -MissingObserver -ExpectedStops 1
@@ -126,6 +152,14 @@ try {
     Test-ObserverCase -CaseName 'ordinary-native-start' -ExpectedNativeStarts 1
     Test-ObserverCase -CaseName 'ordinary-native-restart' -RestartObserver -ExistingObserver -ExpectedNativeStarts 1 -ExpectedStops 1
     Test-ObserverCase -CaseName 'unknown-option-fails-before-effects' -UnknownOption
+    $dynamic = @{ DynamicSourcesOnly = $true; RelaySourceRegistryPath = (Join-Path $testRoot 'registry.json') }
+    Test-ObserverCase -CaseName 'dynamic-start-without-fixed-sources' -SkipObserver -StartRelay -Extra $dynamic
+    Test-ObserverCase -CaseName 'dynamic-requires-registry' -SkipObserver -StartRelay `
+        -Extra @{ DynamicSourcesOnly = $true } -ExpectedFailure 'requires RelaySourceRegistryPath'
+    Test-ObserverCase -CaseName 'dynamic-rejects-config' -SkipObserver -StartRelay `
+        -Extra ($dynamic + @{ RelayConfigPath = $observerExecutable }) -ExpectedFailure 'cannot be combined'
+    Test-ObserverCase -CaseName 'dynamic-rejects-fixed-room' -SkipObserver -StartRelay `
+        -Extra ($dynamic + @{ AyamePilotRoom115 = 'existing-room' }) -ExpectedFailure 'not fixed AyamePilotRoom'
     Test-MarkerCase -CaseName 'default-wait'
     Test-MarkerCase -CaseName 'coordinator-120-seconds' -Extra @{ WaitForMappingSeconds = 120 } -ExpectedWait '120'
     Test-MarkerCase -CaseName 'zero-wait' -Extra @{ WaitForMappingSeconds = 0 } -ExpectedWait '0'
@@ -135,8 +169,9 @@ try {
     Test-MarkerCase -CaseName 'negative-wait-is-rejected' -Extra @{ WaitForMappingSeconds = -1 } -ExpectFailure
     Test-MarkerCase -CaseName 'excessive-wait-is-rejected' -Extra @{ WaitForMappingSeconds = 301 } -ExpectFailure
     Test-MarkerCase -CaseName 'unknown-option-is-rejected' -Extra @{ UnknownMarkerOption = 1 } -ExpectFailure
-    Write-Host 'Observer launchers: 16 cases passed.' -ForegroundColor Green
+    Write-Host 'Observer launchers: 20 cases passed.' -ForegroundColor Green
 } finally {
+    $env:MOMO_RELAY_ADMIN_TOKEN = $savedAdminToken
     [Globalization.CultureInfo]::CurrentCulture = $savedCulture
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
     $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'

@@ -31,6 +31,7 @@ class MarkerLumaSharedMemoryWriter {
   bool IsOpen() const;
   uint64_t ConfigureSources(const std::vector<MarkerLumaSourceConfig>& sources,
                             const std::string& manifest_revision);
+  void SetManifestRevision(const std::string& manifest_revision);
   void SetRacePhase(const std::string& phase);
   void SetConnected(size_t slot, uint64_t generation, bool connected);
   void InvalidateVideo(size_t slot, uint64_t generation);

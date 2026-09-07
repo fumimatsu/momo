@@ -2,6 +2,7 @@ import pathlib
 import struct
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from MarkerLumaV2 import (
@@ -113,6 +114,43 @@ class MarkerLumaV2Test(unittest.TestCase):
         offsets = [PLANE_OFFSET + index * PLANE_SIZE for index in range(MAX_SOURCES)]
         self.assertEqual(len(offsets), len(set(offsets)))
         self.assertEqual(MAPPING_SIZE, offsets[-1] + PLANE_SIZE)
+
+    def test_uninitialized_mapping_is_not_a_contract_failure(self):
+        self.assertIsNone(read_topology_from_buffer(bytearray(MAPPING_SIZE), attempts=1))
+
+    def test_reader_resumes_after_writer_reinitializes(self):
+        payload = make_mapping(generation=3)
+        self.assertEqual(3, read_topology_from_buffer(payload).generation)
+        payload[:] = bytes(MAPPING_SIZE)
+        struct.pack_into("<q", payload, 72, 5)
+        self.assertIsNone(read_topology_from_buffer(payload, attempts=1))
+        payload[:] = make_mapping(source_ids=("source-2",), generation=5)
+        topology = read_topology_from_buffer(payload)
+        self.assertEqual(5, topology.generation)
+        self.assertEqual(("source-2",), topology.source_ids)
+
+    def test_stable_invalid_contract_still_fails(self):
+        payload = make_mapping()
+        struct.pack_into("<H", payload, 4, VERSION + 1)
+        with self.assertRaisesRegex(RuntimeError, "unexpected MLY2 contract"):
+            read_topology_from_buffer(payload, attempts=1)
+
+    def test_contract_validation_waits_for_stable_guard(self):
+        payload = make_mapping()
+        struct.pack_into("<H", payload, 4, VERSION + 1)
+        unpack = struct.unpack_from
+        guard_reads = 0
+
+        def racing_unpack(fmt, buffer, offset):
+            nonlocal guard_reads
+            if offset == 72:
+                guard_reads += 1
+                if guard_reads == 2:
+                    struct.pack_into("<q", payload, 72, 3)
+            return unpack(fmt, buffer, offset)
+
+        with patch("MarkerLumaV2.struct.unpack_from", side_effect=racing_unpack):
+            self.assertIsNone(read_topology_from_buffer(payload, attempts=1))
 
 
 if __name__ == "__main__":

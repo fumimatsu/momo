@@ -6,6 +6,7 @@ param(
     [string]$Device116 = '192.168.11.6',
     [string]$RelayConfigPath = '',
     [string]$RelaySourceRegistryPath = $env:MOMO_RELAY_SOURCE_REGISTRY,
+    [switch]$DynamicSourcesOnly,
     [string]$RaceControlUrl = $env:MOMO_RACE_CONTROL_WS_URL,
     [string]$RaceControlViewerToken = $env:MOMO_RACE_CONTROL_VIEWER_TOKEN,
     [string]$RaceAudioServiceUrl = $env:MOMO_RACE_AUDIO_SERVICE_URL,
@@ -153,6 +154,14 @@ $resolvedRelaySourceRegistryPath = if ([string]::IsNullOrWhiteSpace($RelaySource
 }
 if (-not [string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath) -and [string]::IsNullOrWhiteSpace($env:MOMO_RELAY_ADMIN_TOKEN)) {
     throw 'MOMO_RELAY_ADMIN_TOKEN is required when RelaySourceRegistryPath is set.'
+}
+if ($DynamicSourcesOnly -and ([string]::IsNullOrWhiteSpace($resolvedRelaySourceRegistryPath) -or
+    -not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath))) {
+    throw 'DynamicSourcesOnly requires RelaySourceRegistryPath and cannot be combined with RelayConfigPath.'
+}
+if ($DynamicSourcesOnly -and @($AyamePilotRoom113, $AyamePilotRoom114, $AyamePilotRoom115, $AyamePilotRoom116 |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+    throw 'DynamicSourcesOnly uses registry room definitions or AyameRoomPrefix, not fixed AyamePilotRoom flags.'
 }
 $raceDirectoryRefreshValues = @($RaceDirectoryRefreshConfig, $RaceDirectoryRefreshScript)
 $raceDirectoryRefreshConfigured = @($raceDirectoryRefreshValues | Where-Object {
@@ -308,7 +317,7 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
             '-team-observer-directory-max-age', $TeamObserverDirectoryMaxAge.Trim()
         )
     }
-    if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
+    if ([string]::IsNullOrWhiteSpace($resolvedRelayConfigPath) -and -not $DynamicSourcesOnly) {
         $relayArgs += @(
             '-source', "11.3=ws://$Device113`:8080/ws",
             '-source', "11.4=ws://$Device114`:8080/ws",
@@ -319,7 +328,7 @@ if (-not $SkipRelay -and $relayRunning.Count -eq 0) {
             '-race-car', '11.5=CP-3',
             '-race-car', '11.6=CP-4'
         )
-    } else {
+    } elseif (-not [string]::IsNullOrWhiteSpace($resolvedRelayConfigPath)) {
         $relayArgs += '-config', $resolvedRelayConfigPath
     }
     if (-not [string]::IsNullOrWhiteSpace($RaceControlUrl)) {

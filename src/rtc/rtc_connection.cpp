@@ -173,14 +173,24 @@ void RTCConnection::CreateOffer(OnCreateSuccessFunc on_success,
                                              kOfferToReceiveMediaTrue
                                        : 0;
 
-  auto with_set_local_desc = [this, on_success = std::move(on_success)](
+  // SDP completion may arrive after CloseDetached() releases this wrapper.
+  auto with_set_local_desc = [connection = connection_,
+                             on_success = std::move(on_success)](
                                  webrtc::SessionDescriptionInterface* desc) {
+    std::unique_ptr<webrtc::SessionDescriptionInterface> owned_desc(desc);
+    if (!connection || connection->signaling_state() ==
+                           webrtc::PeerConnectionInterface::kClosed) {
+      RTC_LOG(LS_INFO) << "Discarding completed SDP for closed connection";
+      return;
+    }
     std::string sdp;
     desc->ToString(&sdp);
     RTC_LOG(LS_INFO) << "Created session description : " << sdp;
-    connection_->SetLocalDescription(
-        SetSessionDescriptionThunk::Create(nullptr, nullptr).get(), desc);
-    if (on_success) {
+    connection->SetLocalDescription(
+        SetSessionDescriptionThunk::Create(nullptr, nullptr).get(),
+        desc->Clone().release());
+    if (on_success && connection->signaling_state() !=
+                          webrtc::PeerConnectionInterface::kClosed) {
       on_success(desc);
     }
   };
@@ -213,14 +223,23 @@ void RTCConnection::SetOffer(const std::string sdp,
 
 void RTCConnection::CreateAnswer(OnCreateSuccessFunc on_success,
                                  OnCreateFailureFunc on_failure) {
-  auto with_set_local_desc = [this, on_success = std::move(on_success)](
+  auto with_set_local_desc = [connection = connection_,
+                             on_success = std::move(on_success)](
                                  webrtc::SessionDescriptionInterface* desc) {
+    std::unique_ptr<webrtc::SessionDescriptionInterface> owned_desc(desc);
+    if (!connection || connection->signaling_state() ==
+                           webrtc::PeerConnectionInterface::kClosed) {
+      RTC_LOG(LS_INFO) << "Discarding completed SDP for closed connection";
+      return;
+    }
     std::string sdp;
     desc->ToString(&sdp);
     RTC_LOG(LS_INFO) << "Created session description : " << sdp;
-    connection_->SetLocalDescription(
-        SetSessionDescriptionThunk::Create(nullptr, nullptr).get(), desc);
-    if (on_success) {
+    connection->SetLocalDescription(
+        SetSessionDescriptionThunk::Create(nullptr, nullptr).get(),
+        desc->Clone().release());
+    if (on_success && connection->signaling_state() !=
+                          webrtc::PeerConnectionInterface::kClosed) {
       on_success(desc);
     }
   };

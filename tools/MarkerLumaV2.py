@@ -77,6 +77,9 @@ def _read_topology_once(buffer) -> Mly2Topology | None:
     if first_guard & 1:
         return None
     header = _HEADER.unpack_from(buffer, 0)
+    # CreateFileMapping exposes a zeroed header before the writer initializes it.
+    if not any(header[:19]):
+        return None
     actual = (
         header[0],
         header[1],
@@ -105,19 +108,19 @@ def _read_topology_once(buffer) -> Mly2Topology | None:
         SOURCE_METADATA_SIZE,
         PLANE_SIZE,
     )
+    second_guard = struct.unpack_from("<q", buffer, 72)[0]
+    if first_guard != second_guard or second_guard & 1:
+        return None
     if actual != expected:
         raise RuntimeError(f"unexpected MLY2 contract: {actual}")
     active_sources = header[5]
     if active_sources < 0 or active_sources > MAX_SOURCES:
         raise RuntimeError(f"invalid MLY2 active source count: {active_sources}")
-    source_ids = []
+    encoded_ids = []
     for index in range(active_sources):
         offset = HEADER_SIZE + index * SOURCE_ID_SIZE
         encoded = bytes(buffer[offset : offset + SOURCE_ID_SIZE])
-        source_id = encoded.split(b"\0", 1)[0].decode("utf-8")
-        if not source_id:
-            raise RuntimeError(f"MLY2 source {index} has no ID")
-        source_ids.append(source_id)
+        encoded_ids.append(encoded)
     second_guard = struct.unpack_from("<q", buffer, 72)[0]
     second_generation = struct.unpack_from("<q", buffer, 56)[0]
     if (
@@ -126,6 +129,12 @@ def _read_topology_once(buffer) -> Mly2Topology | None:
         or header[15] != second_generation
     ):
         return None
+    source_ids = []
+    for index, encoded in enumerate(encoded_ids):
+        source_id = encoded.split(b"\0", 1)[0].decode("utf-8")
+        if not source_id:
+            raise RuntimeError(f"MLY2 source {index} has no ID")
+        source_ids.append(source_id)
     if len(source_ids) != len(set(source_ids)):
         raise RuntimeError("MLY2 source IDs are not unique")
     return Mly2Topology(

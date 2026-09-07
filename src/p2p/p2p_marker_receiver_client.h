@@ -85,7 +85,6 @@ class P2PMarkerReceiverClient
                           P2PMarkerReceiverClientConfig config);
   void PollManifests(std::stop_token stop_token);
   void ApplyManifest(Manifest manifest);
-  void ApplyPendingManifestIfAllowed();
   void ReplaceSources(const Manifest& manifest);
   void EnqueueConnection(const std::string& source_id, uint64_t generation);
   void PumpConnections();
@@ -112,7 +111,7 @@ class P2PMarkerReceiverClient
   size_t in_flight_connections_ = 0;
   std::string applied_revision_;
   std::string current_phase_;
-  std::unique_ptr<Manifest> pending_manifest_;
+  std::string deferred_revision_;
   std::jthread polling_thread_;
   std::atomic_bool started_{false};
   std::atomic_bool shutting_down_{false};

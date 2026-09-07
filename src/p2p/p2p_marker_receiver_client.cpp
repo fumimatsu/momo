@@ -254,29 +254,38 @@ void P2PMarkerReceiverClient::ApplyManifest(Manifest manifest) {
   current_phase_ = manifest.phase;
   writer_->SetRacePhase(current_phase_);
   if (manifest.revision == applied_revision_) {
-    ApplyPendingManifestIfAllowed();
+    deferred_revision_.clear();
+    return;
+  }
+  // Run/roster metadata is not a change to the source-local video transport.
+  const bool same_sources =
+      !applied_revision_.empty() &&
+      std::equal(sources_.begin(), sources_.end(), manifest.sources.begin(),
+                 manifest.sources.end(), [](const Source& current,
+                                             const ManifestSource& next) {
+                   return current.config.source_id == next.source_id &&
+                          current.config.observer_path == next.observer_path;
+                 });
+  if (same_sources) {
+    writer_->SetManifestRevision(manifest.revision);
+    for (size_t index = 0; index < sources_.size(); ++index) {
+      sources_[index].config.car_id = manifest.sources[index].car_id;
+    }
+    applied_revision_ = manifest.revision;
+    deferred_revision_.clear();
     return;
   }
   if (!applied_revision_.empty() && IsTopologyLockedPhase(current_phase_)) {
-    if (!pending_manifest_ ||
-        pending_manifest_->revision != manifest.revision) {
+    if (deferred_revision_ != manifest.revision) {
       RTC_LOG(LS_WARNING) << "Deferring marker topology " << manifest.revision
                           << " while phase is " << current_phase_;
     }
-    pending_manifest_ = std::make_unique<Manifest>(std::move(manifest));
+    deferred_revision_ = manifest.revision;
     return;
   }
+  // Always use the latest snapshot after unlock, never a superseded deferred run.
   ReplaceSources(manifest);
-  pending_manifest_.reset();
-}
-
-void P2PMarkerReceiverClient::ApplyPendingManifestIfAllowed() {
-  if (!pending_manifest_ || IsTopologyLockedPhase(current_phase_)) {
-    return;
-  }
-  Manifest manifest = std::move(*pending_manifest_);
-  pending_manifest_.reset();
-  ReplaceSources(manifest);
+  deferred_revision_.clear();
 }
 
 void P2PMarkerReceiverClient::ReplaceSources(const Manifest& manifest) {

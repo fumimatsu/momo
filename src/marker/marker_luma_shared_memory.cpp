@@ -189,8 +189,18 @@ class MarkerLumaSharedMemoryWriter::Impl {
                           << GetLastError();
     }
 
-    std::memset(view_, 0, kMappingSize);
     auto* header = Header();
+    // A reader may keep this mapping alive after the previous writer exits.
+    // Keep the seqlock odd throughout initialization, including the memset.
+    const LONG64 previous_generation =
+        header->magic == kMagic ? header->receiver_generation : 0;
+    const LONG64 initializing_guard = (header->topology_guard | 1) + 2;
+    InterlockedExchange64(&header->topology_guard, initializing_guard);
+    MemoryBarrier();
+    constexpr size_t guard_offset = offsetof(MarkerLumaHeader, topology_guard);
+    constexpr size_t after_guard = guard_offset + sizeof(LONG64);
+    std::memset(view_, 0, guard_offset);
+    std::memset(view_ + after_guard, 0, kMappingSize - after_guard);
     header->magic = kMagic;
     header->version = kVersion;
     header->header_size = static_cast<uint16_t>(kHeaderSize);
@@ -207,6 +217,10 @@ class MarkerLumaSharedMemoryWriter::Impl {
     QueryPerformanceFrequency(&frequency);
     header->qpc_frequency = frequency.QuadPart;
     header->created_unix_ns = UnixNowNs();
+    generation_.store(static_cast<uint64_t>(previous_generation) + 1);
+    header->receiver_generation = static_cast<LONG64>(generation_.load());
+    MemoryBarrier();
+    InterlockedIncrement64(&header->topology_guard);
     RTC_LOG(LS_INFO) << "MLY2 writer opened: " << mapping_name_ << " " << kWidth
                      << "x" << kHeight << " x " << kMaximumSources;
 #else
@@ -277,6 +291,23 @@ class MarkerLumaSharedMemoryWriter::Impl {
     static_cast<void>(sources);
     static_cast<void>(manifest_revision);
     return 0;
+#endif
+  }
+
+  void SetManifestRevision(const std::string& manifest_revision) {
+#if defined(_WIN32)
+    if (view_ == nullptr) {
+      return;
+    }
+    std::unique_lock<std::shared_mutex> topology_lock(topology_mutex_);
+    auto* header = Header();
+    InterlockedIncrement64(&header->topology_guard);
+    MemoryBarrier();
+    header->manifest_revision_hash = HashManifestRevision(manifest_revision);
+    MemoryBarrier();
+    InterlockedIncrement64(&header->topology_guard);
+#else
+    static_cast<void>(manifest_revision);
 #endif
   }
 
@@ -474,6 +505,11 @@ uint64_t MarkerLumaSharedMemoryWriter::ConfigureSources(
 
 void MarkerLumaSharedMemoryWriter::SetRacePhase(const std::string& phase) {
   impl_->SetRacePhase(phase);
+}
+
+void MarkerLumaSharedMemoryWriter::SetManifestRevision(
+    const std::string& manifest_revision) {
+  impl_->SetManifestRevision(manifest_revision);
 }
 
 void MarkerLumaSharedMemoryWriter::SetConnected(size_t slot,
