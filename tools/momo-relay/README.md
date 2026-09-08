@@ -104,6 +104,34 @@ PIT、BOOST使用中／満充電、燃料切れ、強い衝突の直後、明示
 
 出力は`telemetry-<relay-session>.ndjson`で、先頭に`relay_session`、各車の`drive_state`、`drive_input`、`telemetry`、`course_marker`、`boost_regen_probe`、`vehicle_event`、
 Race Controlを受信した場合の`race_state`、正常終了時の`relay_session_end`を時系列で入れる。
+
+対応するWeb Observerを開くと、選択中の車体ごとに約1秒窓の`observer_stats`も自動保存する。
+追加の保存ボタンは不要。RelayとViewer配布の両方を更新し、Observerを再読み込みする。
+ログ無効時も画面用のFPS計測は動くが、ログ送信は行わない。Native ObserverとPilotの画面情報は対象外。
+
+`observerStats`（schema 2）には画面表示と共通の`renderCallbackFps`、`videoFrameAgeMs`、
+タブの`visibility`、`visibilityChanged`、映像サイズ、接続状態を保存する。
+画面とログで1つのFPSカウンター・タイマーを使い、ログ専用の再集計は行わない。
+WebRTC統計取得・合成フレーム差分・テレメトリ受信集計は今回の機能から外す。
+WebRTC統計は今後、必要性と実端末の負荷を評価してから別途検討する。
+対応ブラウザでは映像停止時に画面もログも0fpsになり、最終フレームからの経過時間が増える。
+フレーム通知API未対応のFPSはnull、未受信の最終フレーム時刻はnullとして残す。
+
+`sourceId`、`carId`、`viewerId`、受信UTC/単調時刻、受信時のレース文脈はRelay側で付与する。
+`relayVideo`には同時点のRelay受信/書き出しAU FPSを追加する。
+`clientSampledAtUnixMs`は未同期のブラウザ時計、`windowMs`は画面集計窓の実経過時間。
+レース文脈は報告の受信時点であり、集計窓全体の所属を保証しない。
+同じ車体を見る画面を合算せず、`relaySessionId/sourceId/viewerId`ごとに連番と各窓を読む。
+タブの休止・切断・送信待ちの混雑で欠測しうる。欠番をゼロFPSで埋めない。
+
+開始通知は `observer-stats-config` / data=`"2"`。未公開のschema 1取得・受理経路は廃止し、
+ViewerとRelayを同時に更新する。診断は既存のObserver WebSocketだけで受理し、車体制御やレース確定には使用しない。
+4KiBのpayload上限、schema/数値/増加sequenceの検証、接続ごとに最大2件/秒の制限を持つ。
+不正な診断は理由を通常ログへ出して保存せず、走行接続を切らない。
+保存件数は`observerStatsRecords`、取りこぼしとI/O失敗は既存の`queueDrops/writeErrors`で確認する。
+詳細契約はViewer正本の`docs/observer-screen-logging.md`、実装・検証記録は
+[`2026-09-08-observer-screen-logging.md`](../../docs/issues/2026-09-08-observer-screen-logging.md)を参照する。
+
 `telemetry` には Relay 受信 UTC 時刻、Relay 開始からの単調経過時間、車両を示す `sourceId`、
 送信ストリームを示す `telemetrySource`、`carId`、上流接続 generation、`TEL:` 全文を含める。
 `telemetrySource` は IMU の `imu0` と ESC の `esc0` を分離して確認するために使う。DataChannel は

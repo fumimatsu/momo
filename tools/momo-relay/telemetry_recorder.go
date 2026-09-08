@@ -33,6 +33,7 @@ type telemetryRaceContext struct {
 }
 
 type telemetryRecorderStats struct {
+	ObserverStatsRecords   uint64 `json:"observerStatsRecords"`
 	TelemetryRecords       uint64 `json:"telemetryRecords"`
 	RaceStateRecords       uint64 `json:"raceStateRecords"`
 	DriveStateRecords      uint64 `json:"driveStateRecords"`
@@ -111,6 +112,10 @@ type telemetryLogRecord struct {
 	VehicleEvent    *vehicleImpactEvent     `json:"vehicleEvent,omitempty"`
 	ImpactShadow    *impactShadowLogSample  `json:"impactShadow,omitempty"`
 	Stats           *telemetryRecorderStats `json:"stats,omitempty"`
+
+	ViewerID      uint64                   `json:"viewerId,omitempty"`
+	ObserverStats *observerScreenStats     `json:"observerStats,omitempty"`
+	RelayVideo    *observerRelayVideoStats `json:"relayVideo,omitempty"`
 }
 
 // telemetryRecorder writes Relay-local, interleaved records for every source.
@@ -130,6 +135,7 @@ type telemetryRecorder struct {
 
 	raceContext atomic.Value // telemetryRaceContext
 
+	observerStatsRecords   atomic.Uint64
 	telemetryRecords       atomic.Uint64
 	raceStateRecords       atomic.Uint64
 	driveStateRecords      atomic.Uint64
@@ -498,6 +504,7 @@ func (r *telemetryRecorder) enqueue(record telemetryLogRecord) bool {
 
 func (r *telemetryRecorder) Stats() telemetryRecorderStats {
 	return telemetryRecorderStats{
+		ObserverStatsRecords:   r.observerStatsRecords.Load(),
 		TelemetryRecords:       r.telemetryRecords.Load(),
 		RaceStateRecords:       r.raceStateRecords.Load(),
 		DriveStateRecords:      r.driveStateRecords.Load(),

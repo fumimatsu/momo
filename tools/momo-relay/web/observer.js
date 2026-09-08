@@ -1,3 +1,4 @@
+import { ObserverScreenStats } from './observer-screen-stats.js?v=20260908-screen-stats-v2';
 import {
   abbreviateDriverName,
   CurrentLapClockTracker,
@@ -36,7 +37,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260905-team-observer-v22';
+} from './observer-core.js?v=20260908-team-observer-v24';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -808,9 +809,13 @@ class ObserverPeer {
     this.reconnectAttempt = 0;
     this.closed = false;
     this.generation = 0;
-    this.frameCount = 0;
-    this.frameWindowStartedAt = performance.now();
-    this.fps = 0;
+    this.fps = null;
+    this.state = 'CONNECTING';
+    this.detail = 'SIGNALING';
+    this.screenStats = null;
+    this.screenStatsLoggingEnabled = false;
+    this.screenStatsTimer = 0;
+    this.screenStatsVisibilityListener = null;
     this.videoActive = false;
     this.dataOpen = false;
     this.telemetryTracker = window.FpvTelemetry
@@ -925,6 +930,7 @@ class ObserverPeer {
     };
     const videoTransceiver = pc.addTransceiver('video', { direction: 'recvonly' });
     preferH264(videoTransceiver);
+    this.startFrameStats(generation);
     return pc;
   }
 
@@ -960,6 +966,8 @@ class ObserverPeer {
         const candidate = new RTCIceCandidate(message.ice);
         if (this.remoteDescriptionSet) await this.pc.addIceCandidate(candidate);
         else this.pendingCandidates.push(candidate);
+      } else if (message.type === 'observer-stats-config' && message.data === '2') {
+        this.screenStatsLoggingEnabled = true;
       } else if (message.type === 'telemetry') {
         this.handleTelemetryMessage(message.data);
       } else if (message.type === 'command') {
@@ -978,6 +986,31 @@ class ObserverPeer {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(message));
   }
 
+  startFrameStats(generation) {
+    if (this.screenStats) return;
+    const collector = new ObserverScreenStats(this.video);
+    this.screenStats = collector;
+    this.screenStatsVisibilityListener = () => { collector.visibilityChanged = true; };
+    document.addEventListener('visibilitychange', this.screenStatsVisibilityListener);
+    const active = () => generation === this.generation && !this.closed && this.screenStats === collector;
+    const sample = () => {
+      if (!active()) return;
+      const payload = collector.takeWindow();
+      if (payload) {
+        this.fps = payload.renderCallbackFps;
+        this.setState(this.state, this.detail);
+        payload.peerState = this.pc?.connectionState || 'unknown';
+        // Save the same sample used by the display; do not queue diagnostic traffic.
+        if (this.screenStatsLoggingEnabled && this.ws?.readyState === WebSocket.OPEN && this.ws.bufferedAmount < 16384) {
+          try { this.sendSignal({ type: 'observer-stats', data: JSON.stringify(payload) }); }
+          catch (error) { console.warn('Observer screen stats send failed', error); }
+        }
+      }
+      if (active()) this.screenStatsTimer = window.setTimeout(sample, 1000);
+    };
+    this.screenStatsTimer = window.setTimeout(sample, 1000);
+  }
+
   monitorFrames(generation) {
     if (typeof this.video.requestVideoFrameCallback !== 'function') {
       this.video.onplaying = () => {
@@ -989,27 +1022,19 @@ class ObserverPeer {
     }
     const count = () => {
       if (generation !== this.generation || this.closed) return;
-      const now = performance.now();
-      this.frameCount += 1;
+      this.screenStats?.noteFrame();
       if (!this.videoActive) {
         this.videoActive = true;
         this.setState('STREAMING', 'VIDEO ACTIVE');
       }
-      const elapsed = now - this.frameWindowStartedAt;
-      if (elapsed >= 1000) {
-        this.fps = this.frameCount * 1000 / elapsed;
-        this.frameCount = 0;
-        this.frameWindowStartedAt = now;
-        this.setState('STREAMING', 'VIDEO ACTIVE');
-      }
       this.video.requestVideoFrameCallback(count);
     };
-    this.frameCount = 0;
-    this.frameWindowStartedAt = performance.now();
     this.video.requestVideoFrameCallback(count);
   }
 
   setState(state, detail) {
+    this.state = state;
+    this.detail = detail;
     this.onState(this.car, {
       state,
       detail,
@@ -1032,11 +1057,19 @@ class ObserverPeer {
   }
 
   closeTransport() {
+    if (this.screenStatsTimer) window.clearTimeout(this.screenStatsTimer);
+    this.screenStatsTimer = 0;
+    this.screenStats = null;
+    this.screenStatsLoggingEnabled = false;
+    if (this.screenStatsVisibilityListener) {
+      document.removeEventListener('visibilitychange', this.screenStatsVisibilityListener);
+      this.screenStatsVisibilityListener = null;
+    }
     if (this.disconnectedTimer) window.clearTimeout(this.disconnectedTimer);
     this.disconnectedTimer = 0;
     this.videoActive = false;
     this.dataOpen = false;
-    this.fps = 0;
+    this.fps = null;
     this.video.onplaying = null;
     if (this.ws) {
       this.ws.onopen = null;
@@ -2375,7 +2408,7 @@ function updateCameraState(car, state) {
     status.dataset.state = String(state.state || 'waiting').toLowerCase();
   }
   const fps = document.getElementById(`camera-fps-${car.carId}`);
-  setTextIfChanged(fps, state.fps > 0 ? `${state.fps.toFixed(1)} FPS` : '-- FPS');
+  setTextIfChanged(fps, Number.isFinite(state.fps) && !state.subscriptionDisabled ? `${state.fps.toFixed(1)} FPS` : '-- FPS');
   renderCameraTransportState(car, performance.now());
   if (summaryChanged) {
     renderHeader();

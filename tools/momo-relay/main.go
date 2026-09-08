@@ -85,6 +85,9 @@ type signalMessage struct {
 }
 
 type viewer struct {
+	lastScreenStatsAt       time.Time
+	lastScreenStatsSequence uint64
+
 	id                    uint64
 	role                  string
 	clientKind            string
@@ -3438,6 +3441,11 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			if err := sendSignal(signalMessage{Type: "answer", SDP: answer.SDP}); err != nil {
 				return
 			}
+			if r.recorder != nil && role == "observer" && clientKind == "web-observer" && r.raceCarID != "" {
+				if err := sendSignal(signalMessage{Type: "observer-stats-config", Data: "2"}); err != nil {
+					return
+				}
+			}
 		case "candidate":
 			if message.ICE == nil {
 				continue
@@ -3448,6 +3456,12 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 			}
 			if err := pc.AddICECandidate(*message.ICE); err != nil {
 				log.Printf("apply viewer %d ICE candidate: %v", client.id, err)
+			}
+		case "observer-stats":
+			if remoteDescriptionSet {
+				if err := r.recordObserverScreenStats(client, message.Data, time.Now()); err != nil {
+					log.Printf("source %q viewer=%d: reject observer screen stats: %v", r.name, client.id, err)
+				}
 			}
 		case "m5-audio-subscription":
 			if client.role == "pilot" {
