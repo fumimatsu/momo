@@ -134,6 +134,45 @@ export function normalizeTeamSelection(cars, value, limit = 4) {
   return selected;
 }
 
+// Display-only history of received control commands. Missing data is a gap, never 0%.
+export class ControlInputHistory {
+  constructor() {
+    this.samples = [];
+  }
+
+  sample(now, control, staleMs = 250) {
+    const previous = this.samples.at(-1);
+    if (!Number.isFinite(now) || (previous && now - previous.at < 100)) return null;
+    const age = now - control?.receivedAt;
+    const valid = control && [control.throttle, control.brake].every(
+      (value) => Number.isFinite(value) && value >= 0 && value <= 1,
+    );
+    const active = Boolean(valid && Number.isFinite(age) && age >= 0 && age <= staleMs);
+    const sample = {
+      at: now, active, state: active ? 'live' : control ? 'stale' : 'waiting',
+      throttle: active ? control.throttle : null, brake: active ? control.brake : null,
+    };
+    this.samples = this.samples.filter((point) => point.at >= now - 8000);
+    this.samples.push(sample);
+    if (this.samples.length > 81) this.samples.splice(0, this.samples.length - 81);
+    return sample;
+  }
+
+  path(key, now) {
+    let previous = null;
+    const commands = [];
+    for (const point of this.samples) {
+      if (point.at < now - 8000 || !point.active) { previous = null; continue; }
+      const x = ((point.at - now + 8000) / 8000 * 240).toFixed(1);
+      const y = (42 - point[key] * 40).toFixed(1);
+      const connected = previous && point.at - previous.at <= 250;
+      commands.push(`${connected ? 'L' : 'M'}${x},${y}`);
+      previous = point;
+    }
+    return commands.join(' ');
+  }
+}
+
 export function parseControlCommand(message) {
   const text = String(message || '').trim();
   if (!text || text.length > 128) return null;

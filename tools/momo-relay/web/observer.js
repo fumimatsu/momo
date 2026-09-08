@@ -2,6 +2,7 @@ import { ObserverScreenStats } from './observer-screen-stats.js?v=20260908-scree
 import {
   abbreviateDriverName,
   CurrentLapClockTracker,
+  ControlInputHistory,
   RaceStateDeduplicator,
   countActiveVideos,
   currentLapClockValue,
@@ -37,7 +38,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260908-team-observer-v24';
+} from './observer-core.js?v=20260908-team-observer-v25';
 
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
@@ -51,19 +52,21 @@ if (!courseLayout?.applyToSvg || courseLayout.id !== 'experience-v1'
   throw new Error('MomoCourseLayout experience-v1 is required.');
 }
 const startupParams = new URLSearchParams(location.search);
-const UI_TEST_MODE = startupParams.get('uiTest') === '1';
+const UI_DEMO_MODE = startupParams.get('demo') === '1';
+const UI_TEST_MODE = UI_DEMO_MODE || startupParams.get('uiTest') === '1';
 const UI_TEST_CARS = raceUiPerformance.normalizeFixtureCarCount(
   startupParams.get('uiTestCars'),
-  0,
+  UI_DEMO_MODE ? 4 : 0,
   TEAM_OBSERVER_MAXIMUM_CARS,
 );
 const UI_METRICS_ENABLED = ['1', 'true', 'yes', 'on'].includes(
   String(startupParams.get('uiMetrics') || (UI_TEST_CARS > 0 ? '1' : '')).toLowerCase(),
 );
 const UI_TEST_SNAPSHOT_HZ = UI_TEST_MODE
-  ? raceUiPerformance.normalizeSnapshotRate(startupParams.get('uiSnapshotHz'), 0)
+  ? raceUiPerformance.normalizeSnapshotRate(startupParams.get('uiSnapshotHz') ?? (UI_DEMO_MODE ? 1 : 0), 0)
   : 0;
 const UI_TEST_METRICS_WARMUP_MS = 2000;
+let demoRuntime = null;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
@@ -82,7 +85,6 @@ const LEGACY_TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverCarsV1';
 const PILOT_DEVICES_POLL_MS = 5000;
 const DIRECTORY_POLL_MS = 30000;
 const FLEET_REQUEST_TIMEOUT_MS = 5000;
-const CAMERA_MOTION_SCALE_G = 1.5;
 const CAMERA_RPM_SCALE = 50_000;
 const CAMERA_SPEED_SCALE_KPH = 120;
 const CAMERA_BATTERY_WARNING_V = 7.0;
@@ -260,6 +262,7 @@ function initialTeamSelection(params) {
       TEAM_SELECTION_LIMIT,
     );
   }
+  if (UI_DEMO_MODE) return normalizeTeamVehicleSelection(observerConfig.cars, 'all', TEAM_SELECTION_LIMIT);
   const stored = loadStoredTeamSelection();
 	if (stored !== null) return reconcileTeamVehicleSelection([], observerConfig.cars, stored, TEAM_SELECTION_LIMIT);
 	const legacy = loadLegacyStoredTeamSelection();
@@ -269,7 +272,7 @@ function initialTeamSelection(params) {
 }
 
 function persistTeamSelection() {
-  try {
+  if (!UI_DEMO_MODE) try {
 		localStorage.setItem(TEAM_SELECTION_STORAGE_KEY, JSON.stringify({
 			version: 2,
 			eventSlug: teamDirectory?.event.slug || '',
@@ -555,6 +558,8 @@ function syncSelectedTeamPeers() {
     healthByCar.delete(car.carId);
     telemetryByCar.delete(car.carId);
     controlByCar.delete(car.carId);
+    const controlNodes = controlNodesByCar.get(car.carId);
+    if (controlNodes) controlNodes.history = new ControlInputHistory();
     vehicleEventByCar.delete(car.carId);
     vehicleEventHistoryByCar.delete(car.carId);
     pitByCar.delete(car.carId);
@@ -1609,7 +1614,7 @@ function renderSituations() {
 function renderHeader() {
   const connected = countActiveVideos(connectionByCar);
   const liveStatus = document.getElementById('liveStatus');
-  liveStatus.textContent = raceState ? displayRaceStatus(raceState) : connected ? 'RACE WAIT' : 'WAITING';
+  liveStatus.textContent = UI_DEMO_MODE ? 'DEMO' : raceState ? displayRaceStatus(raceState) : connected ? 'RACE WAIT' : 'WAITING';
   liveStatus.dataset.flag = String(raceState?.flag || 'none').toLowerCase();
   document.getElementById('heatValue').textContent = raceState?.raceInfo?.title || '--';
   document.getElementById('trackName').textContent = raceState?.raceInfo?.track || observerConfig.trackName;
@@ -2048,29 +2053,37 @@ function renderTelemetryDisplays() {
   }
 }
 
-function setPedalLevel(node, value) {
-  const level = Math.max(0, Math.min(1, Number(value) || 0));
-  const transform = `scaleY(${level.toFixed(3)})`;
-  if (node.style.transform !== transform) node.style.transform = transform;
-}
-
 function renderControlDisplays(now) {
   if (!observerConfig) return;
-  for (const car of observerConfig.cars) {
+  for (const car of selectedTeamCars()) {
     const nodes = controlNodesByCar.get(car.carId);
     if (!nodes) continue;
+    if (UI_TEST_MODE && !UI_DEMO_MODE && !startupParams.has('uiControlState')) {
+      const phase = (now / 1000 + selectedTeamVehicleIds.indexOf(car.vehicleId) * 1.1) % 6;
+      controlByCar.set(car.carId, {
+        throttle: phase < 4 ? Math.min(1, phase / 0.8, (4 - phase) / 0.5) : 0,
+        brake: phase >= 4 && phase < 4.7 ? Math.sin((phase - 4) / 0.7 * Math.PI) * 0.7 : 0,
+        receivedAt: now,
+      });
+    }
     const control = controlByCar.get(car.carId);
-    const active = Boolean(control && now - control.receivedAt <= CONTROL_STALE_MS);
-    const throttle = active ? control.throttle : 0;
-    const brake = active ? control.brake : 0;
-    setPedalLevel(nodes.throttle, throttle);
-    setPedalLevel(nodes.brake, brake);
-    nodes.root.dataset.active = active ? 'true' : 'false';
-    nodes.root.setAttribute('aria-label', `Throttle ${Math.round(throttle * 100)} percent, brake ${Math.round(brake * 100)} percent`);
+    const sample = nodes.history.sample(now, control, CONTROL_STALE_MS);
+    if (!sample) continue;
+    for (const key of ['throttle', 'brake']) {
+      const path = nodes.history.path(key, now);
+      if (nodes[key].getAttribute('d') !== path) nodes[key].setAttribute('d', path);
+      setTextIfChanged(nodes[`${key}Value`], sample.active ? `${Math.round(sample[key] * 100)}%` : '--');
+    }
+    nodes.root.dataset.state = sample.state;
+    setTextIfChanged(nodes.status, sample.active ? 'INPUT · 8s' : sample.state.toUpperCase());
+    nodes.root.setAttribute('aria-label', sample.active
+      ? `Control input: throttle ${Math.round(sample.throttle * 100)} percent, brake ${Math.round(sample.brake * 100)} percent. Last 8 seconds.`
+      : `Control input ${sample.state}. No current reading.`);
   }
 }
 
 function updateAnimationFrame(now) {
+  demoRuntime?.tick(now, selectedTeamCars(), observerConfig.cars);
   if (now - clockRenderedAt >= CLOCK_RENDER_INTERVAL_MS) {
     clockRenderedAt = now;
     renderClocks(now);
@@ -2151,29 +2164,25 @@ function classifyHighInstrument(value, warning, critical) {
 function createCameraVital(kind, label, unit) {
   const root = element('div', `camera-vital camera-vital-${kind}`);
   root.dataset.state = 'waiting';
-  const icon = element('i', 'camera-vital-icon');
-  icon.setAttribute('aria-hidden', 'true');
   const copy = element('span', 'camera-vital-copy');
   copy.append(element('small', '', label));
   const reading = element('strong');
   const value = element('output', '', '--');
   reading.append(value, element('em', '', unit));
   copy.append(reading);
-  root.append(icon, copy);
+  root.append(copy);
   return { root, value };
 }
 
 function createCameraResource(kind, label) {
   const root = element('div', `camera-resource camera-resource-${kind}`);
   root.dataset.state = 'waiting';
-  const icon = element('i', 'camera-resource-icon');
-  icon.setAttribute('aria-hidden', 'true');
   const name = element('span', 'camera-resource-label', label);
   const track = element('span', 'camera-resource-track');
   const fill = element('i', 'camera-resource-fill');
   track.append(fill);
   const value = element('output', '', 'WAIT');
-  root.append(icon, name, track, value);
+  root.append(name, track, value);
   return { root, fill, value };
 }
 
@@ -2271,21 +2280,27 @@ function createCameraTile(car) {
     const rate = element('strong', 'telemetry-rate', '--Hz');
     const loss = element('span', 'telemetry-loss', 'L--');
     motionStatus.append(rate, loss);
-    const motionScope = element('div', 'camera-motion-scope');
-    motionScope.setAttribute('aria-hidden', 'true');
-    motionScope.append(
-      element('i', 'camera-motion-ring'),
-      element('i', 'camera-motion-axis horizontal'),
-      element('i', 'camera-motion-axis vertical'),
-    );
-    const motionDot = element('b', 'camera-motion-dot');
-    motionScope.append(motionDot);
     const motionValues = element('div', 'camera-motion-values');
-    const lateral = element('span', 'telemetry-lateral', 'L --');
-    const forward = element('span', 'telemetry-forward', 'F --');
-    const yaw = element('span', 'telemetry-yaw', 'Y --');
-    motionValues.append(lateral, forward, yaw);
-    motionCard.append(motionStatus, motionScope, motionValues);
+    const lateral = element('output', 'telemetry-lateral', '--');
+    const forward = element('output', 'telemetry-forward', '--');
+    const yaw = element('output', 'telemetry-yaw', '--');
+    for (const [label, value] of [['LAT G', lateral], ['FWD G', forward], ['Y rad/s', yaw]]) {
+      const reading = element('span');
+      reading.append(element('small', '', label), value);
+      motionValues.append(reading);
+    }
+    const motionGauge = element('div', 'camera-motion-gauge');
+    const motionScope = svgElement('svg', { viewBox: '0 0 64 64', class: 'camera-motion-scope', 'aria-hidden': 'true' });
+    motionScope.dataset.state = 'waiting';
+    motionScope.append(
+      svgElement('circle', { cx: 32, cy: 32, r: 24, class: 'camera-motion-ring' }),
+      svgElement('circle', { cx: 32, cy: 32, r: 12, class: 'camera-motion-ring inner' }),
+      svgElement('path', { d: 'M6,32H58 M32,6V58', class: 'camera-motion-axis' }),
+    );
+    const motionDot = svgElement('circle', { cx: 32, cy: 32, r: 3.5, class: 'camera-motion-dot' });
+    motionScope.append(motionDot);
+    motionGauge.append(motionScope, element('span', 'camera-motion-scale', '±1.5 G'));
+    motionCard.append(motionGauge, motionValues, motionStatus);
 
     const powerCard = element('section', 'camera-instrument camera-power-card');
     powerCard.setAttribute('aria-label', 'ESC powertrain telemetry');
@@ -2298,8 +2313,8 @@ function createCameraTile(car) {
     rpmRow.append(rpmLabel, rpm, rpmTrack);
     const vitalRow = element('div', 'camera-vitals');
     const voltage = createCameraVital('battery', 'BAT', 'V');
-    const escTemp = createCameraVital('esc', 'ESC', '°');
-    const motorTemp = createCameraVital('motor', 'MTR', '°');
+    const escTemp = createCameraVital('esc', 'ESC', '°C');
+    const motorTemp = createCameraVital('motor', 'MTR', '°C');
     vitalRow.append(voltage.root, escTemp.root, motorTemp.root);
     powerCard.append(rpmRow, vitalRow);
 
@@ -2312,13 +2327,14 @@ function createCameraTile(car) {
     const boost = createCameraResource('boost', 'BOOST');
     resourceCard.append(resourceHead, damage.root, fuel.root, boost.root);
 
-    dashboard.append(motionCard, powerCard, resourceCard);
     telemetryNodesByCar.set(car.carId, {
       root: dashboard,
-      rate,
-      loss,
+      powerRoot: powerCard,
+      motionRoot: motionCard,
       motionScope,
       motionDot,
+      rate,
+      loss,
       lateral,
       forward,
       yaw,
@@ -2338,23 +2354,32 @@ function createCameraTile(car) {
       fuel,
       boost,
     });
-    const controls = element('div', 'camera-controls');
-    controls.dataset.active = 'false';
-    controls.setAttribute('aria-label', 'Throttle 0 percent, brake 0 percent');
-    const throttleMeter = element('span', 'camera-pedal camera-pedal-throttle');
-    const throttleTrack = element('i', 'camera-pedal-track');
-    const throttleFill = element('b', 'camera-pedal-fill');
-    throttleTrack.append(throttleFill);
-    throttleMeter.append(throttleTrack, element('em', '', 'T'));
-    const brakeMeter = element('span', 'camera-pedal camera-pedal-brake');
-    const brakeTrack = element('i', 'camera-pedal-track');
-    const brakeFill = element('b', 'camera-pedal-fill');
-    brakeTrack.append(brakeFill);
-    brakeMeter.append(brakeTrack, element('em', '', 'B'));
-    controls.append(brakeMeter, throttleMeter);
-    controlNodesByCar.set(car.carId, { root: controls, throttle: throttleFill, brake: brakeFill });
-    feed.append(video, dashboard, controls, videoState, eventFlash);
-    tile.append(head, feed);
+    const controls = element('section', 'camera-controls');
+    controls.dataset.state = 'waiting';
+    const controlHead = element('div', 'camera-control-head');
+    const controlStatus = element('span', 'camera-control-status', 'WAITING');
+    const throttleValue = element('output', '', '--');
+    const brakeValue = element('output', '', '--');
+    const throttleLabel = element('span', 'camera-control-throttle', 'THR ');
+    const brakeLabel = element('span', 'camera-control-brake', 'BRK ');
+    throttleLabel.append(throttleValue);
+    brakeLabel.append(brakeValue);
+    controlHead.append(controlStatus, throttleLabel, brakeLabel);
+    const chart = svgElement('svg', { viewBox: '0 0 240 44', preserveAspectRatio: 'none', 'aria-hidden': 'true', class: 'camera-control-chart' });
+    chart.append(svgElement('path', { d: 'M0,2H240 M0,22H240 M0,42H240', class: 'camera-control-grid' }));
+    const throttle = svgElement('path', { class: 'camera-control-line camera-control-throttle' });
+    const brake = svgElement('path', { class: 'camera-control-line camera-control-brake' });
+    chart.append(throttle, brake);
+    const chartScale = element('div', 'camera-control-scale');
+    chartScale.append(element('span', '', '0–100%'), element('span', '', '−8s → NOW'));
+    controls.append(controlHead, chart, chartScale);
+    controlNodesByCar.set(car.carId, { root: controls, throttle, brake, throttleValue, brakeValue,
+      status: controlStatus, history: new ControlInputHistory() });
+    const readings = element('div', 'camera-readings');
+    readings.append(motionCard, powerCard);
+    dashboard.append(controls, resourceCard, readings);
+    feed.append(video, videoState, eventFlash);
+    tile.append(head, feed, dashboard);
     cameraEffectNodesByCar.set(car.carId, { root: tile, badge: eventFlash });
     cameraTileNodesByCar.set(car.carId, tile);
     applyCarEffect(car.carId);
@@ -2421,6 +2446,11 @@ function renderCameraTransportState(car, now) {
   const state = connectionByCar.get(car.carId);
   const videoState = document.getElementById(`video-state-${car.carId}`);
   if (!state || !videoState) return;
+  if (UI_DEMO_MODE) {
+    setTextIfChanged(videoState, state.state === 'DEMO ERROR' ? 'DEMO / PLAYBACK ERROR' : 'DEMO / 映像・車両データはダミー');
+    videoState.dataset.state = 'demo';
+    return;
+  }
   const raceAge = raceTransport ? Math.max(0, now - raceTransport.receivedAt) : null;
   const dataText = state.subscriptionDisabled
     ? 'NOT SUBSCRIBED'
@@ -2647,16 +2677,21 @@ function renderCameraTelemetry(car, telemetry) {
   const forwardG = Number.isFinite(motion?.forwardMps2) ? motion.forwardMps2 / 9.80665 : null;
   setTextIfChanged(nodes.rate, rateHz ? `${rateHz.toFixed(0)}Hz` : '--Hz');
   setTextIfChanged(nodes.loss, Number.isInteger(missing) ? `L${missing}` : 'L--');
-  setTextIfChanged(nodes.lateral, `L ${signed(lateralG, 1)}`);
-  setTextIfChanged(nodes.forward, `F ${signed(forwardG, 1)}`);
-  setTextIfChanged(nodes.yaw, `Y ${signed(motion?.yawRateRadPerSec, 1)}`);
-  const scopeX = Number.isFinite(lateralG)
-    ? 50 + Math.max(-1, Math.min(1, lateralG / CAMERA_MOTION_SCALE_G)) * 39 : 50;
-  const scopeY = Number.isFinite(forwardG)
-    ? 50 - Math.max(-1, Math.min(1, forwardG / CAMERA_MOTION_SCALE_G)) * 39 : 50;
-  nodes.motionDot.style.left = `${scopeX.toFixed(1)}%`;
-  nodes.motionDot.style.top = `${scopeY.toFixed(1)}%`;
-  nodes.motionScope.dataset.active = motion ? 'true' : 'false';
+  setTextIfChanged(nodes.lateral, signed(lateralG, 1));
+  setTextIfChanged(nodes.forward, signed(forwardG, 1));
+  setTextIfChanged(nodes.yaw, signed(motion?.yawRateRadPerSec, 1));
+  const motionValid = Number.isFinite(lateralG) && Number.isFinite(forwardG) && !feature?.stale;
+  nodes.motionScope.dataset.state = feature?.stale ? 'stale' : motionValid ? 'active' : 'waiting';
+  if (motionValid) {
+    const scale = 21 / Math.max(1.5, Math.hypot(lateralG, forwardG));
+    nodes.motionDot.setAttribute('cx', (32 + lateralG * scale).toFixed(2));
+    nodes.motionDot.setAttribute('cy', (32 - forwardG * scale).toFixed(2));
+  }
+  const motionDescription = motionValid
+    ? `Lateral ${signed(lateralG, 2)} G, forward ${signed(forwardG, 2)} G, yaw ${signed(motion?.yawRateRadPerSec, 2)} rad/s. Outer ring 1.5 G.`
+    : feature?.stale ? 'Motion STALE' : 'Motion WAITING';
+  nodes.motionRoot.title = `${motionDescription} Telemetry ${rateHz ? `${rateHz.toFixed(0)} Hz` : 'waiting'}, missing ${missing ?? 'unknown'}.`;
+  nodes.motionRoot.setAttribute('aria-label', motionDescription);
 
   const escStream = telemetry.esc;
   const esc = escStream?.state?.esc;
@@ -2665,6 +2700,8 @@ function renderCameraTelemetry(car, telemetry) {
   const escTemperature = Number.isFinite(esc?.tc) ? esc.tc : null;
   const motorTemperature = Number.isFinite(esc?.tm) ? esc.tm : null;
   const stale = Boolean(escStream?.stale);
+  nodes.powerRoot.dataset.stale = stale ? 'true' : 'false';
+  if (stale) setTextIfChanged(nodes.loss, 'ESC STALE');
   const speedKph = rpm === null ? null : estimateVehicleSpeedKph(rpm, car.speedProfile);
   const speedAvailable = Number.isFinite(speedKph);
   setTextIfChanged(nodes.rpmLabel, car.speedProfile ? 'EST KM/H' : 'RPM');
@@ -2916,7 +2953,7 @@ function seedObserverUiTest() {
 			currentLapMs: 9100 + index * 430, lapTimeMs: 14200 + index * 510, bestLapMs: 13700 + index * 390,
 			...(index > 0 ? { intervalToAheadMs: index === 1 ? 0 : 180 + ((index % 11) * 73) } : {}),
 			sectorCount: 3, currentSector: (index % 3) + 1, lastMarkerIndex: index % 3,
-			lastMarkerRaceMs: 78000 + index * 900, raceElapsedMs: 84500,
+			lastMarkerRaceMs: 78000 + index * 900, raceElapsedMs: 84500, allTimeMs: 84500,
 			sectorTimes: [1, 2, 3].map((sector) => ({
 				sector, lastMs: 4400 + (sector * 240) + (index * 170), bestMs: 4300 + (sector * 220) + (index * 150),
 			})),
@@ -2960,11 +2997,11 @@ function seedObserverUiTest() {
 				},
 			},
 		});
-		controlByCar.set(car.carId, {
+		if (startupParams.get('uiControlState') !== 'waiting') controlByCar.set(car.carId, {
 			steering: 0,
 			throttle: [0.52, 0.88, 0.36, 0][fixtureIndex],
 			brake: [0, 0, 0.28, 0.64][fixtureIndex],
-			receivedAt: Number.POSITIVE_INFINITY,
+			receivedAt: performance.now() - 1000,
 		});
 	});
 	raceReceivedAt = performance.now();
@@ -2984,6 +3021,7 @@ function createNextObserverUiTestSnapshot() {
 				...standing,
 				currentLapMs: (Number(standing.currentLapMs) || 0) + elapsedMs,
 				raceElapsedMs,
+				allTimeMs: raceElapsedMs,
 			};
 		}
 		const completedSector = Number.isInteger(standing.currentSector) ? standing.currentSector : 1;
@@ -3001,6 +3039,7 @@ function createNextObserverUiTestSnapshot() {
 			lastMarkerRaceMs: raceElapsedMs,
 			currentLapMs: currentSector === 1 ? 0 : (Number(standing.currentLapMs) || 0) + elapsedMs,
 			raceElapsedMs,
+			allTimeMs: raceElapsedMs,
 			sectorTimes,
 		};
 	});
@@ -3095,6 +3134,21 @@ async function initialize() {
 		if (UI_TEST_MODE) {
 			seedObserverUiTest();
 			renderAll();
+			if (UI_DEMO_MODE) {
+				document.documentElement.dataset.mode = 'demo';
+				const { createObserverDemo } = await import('./observer-demo.js?v=20260908-demo-v1');
+				demoRuntime = createObserverDemo({
+					getVideo: car => document.getElementById(`video-${car.carId}`),
+					ScreenStats: ObserverScreenStats,
+					onState: updateCameraState,
+					onSample: (car, sample, now) => {
+						if (!startupParams.has('uiControlState')) controlByCar.set(car.carId, { ...sample.control, receivedAt: now });
+						handleTelemetry(car, sample.telemetry);
+						healthByCar.set(car.carId, sample.health);
+						renderCameraHealth(car, sample.health);
+					},
+				});
+			}
 			publishUiDiagnostics();
 			if (params.get('effectTest') === '1') {
 				['heavy-impact', 'boost-ready', 'pit-complete', 'overall-best'].forEach((effect, index) => {
@@ -3128,6 +3182,7 @@ async function initialize() {
 
 window.addEventListener('pagehide', () => {
   if (animationFrame) cancelAnimationFrame(animationFrame);
+  demoRuntime?.close();
   uiLongTaskTracker.stop();
   raceFallbackEnabled = false;
 	stopTeamObserverFleetPolling();
@@ -3157,6 +3212,7 @@ function getUiDiagnostics() {
     selectedCars: selectedTeamVehicleIds.length,
     markerNodes: markerNodesByCar.size,
     videoPeers: clientByCar.size,
+    demoStreams: demoRuntime?.streamCount() || 0,
     overviewRender: overviewRenderSampler.snapshot(),
     leaderboardRender: leaderboardRenderSampler.snapshot(),
     sectorRender: sectorRenderSampler.snapshot(),

@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#050708">
   <title>Momo Team Observer</title>
-  <link rel="stylesheet" href="observer.css?v=20260908-team-observer-v24">
-  <script src="/telemetry.js?v=20260908-team-observer-v24"></script>
-  <script src="../../race-ui-performance.js?v=20260908-team-observer-v24"></script>
-  <script src="../../course-layout.js?v=20260908-team-observer-v24"></script>
-  <script type="module" src="observer.js?v=20260908-team-observer-v24"></script>
+  <link rel="stylesheet" href="observer.css?v=20260908-team-observer-v25">
+  <script src="/telemetry.js?v=20260908-team-observer-v25"></script>
+  <script src="../../race-ui-performance.js?v=20260908-team-observer-v25"></script>
+  <script src="../../course-layout.js?v=20260908-team-observer-v25"></script>
+  <script type="module" src="observer.js?v=20260908-team-observer-v25"></script>
 </head>
 <body>
   <div class="observer-app">
@@ -38,6 +38,24 @@
         <strong id="lapValue">-- <em>/ --</em></strong>
       </div>
     </header>
+
+    <section class="team-monitor" aria-labelledby="teamMonitorTitle">
+      <div class="team-selection-bar">
+        <div class="team-selection-title">
+          <span class="eyebrow">FIXED DETAIL MONITOR</span>
+          <h2 id="teamMonitorTitle">TEAM CARS</h2>
+        </div>
+        <div id="teamSelectionSlots" class="team-selection-slots" aria-label="Selected team cars"></div>
+        <button id="teamSelectorOpen" class="team-selector-open" type="button" aria-haspopup="dialog" aria-controls="teamSelectorDrawer">
+          MANAGE
+        </button>
+      </div>
+      <div id="fleetDataStatus" class="fleet-data-status" aria-label="Fleet data freshness">
+        <span id="fleet-directory-status"></span>
+        <span id="fleet-devices-status"></span>
+      </div>
+      <section id="cameraGrid" class="camera-grid" aria-label="Selected onboard camera previews"></section>
+    </section>
 
     <main class="race-grid">
       <aside class="leaderboard" aria-labelledby="leaderboardTitle">
@@ -128,24 +146,6 @@
         </section>
       </aside>
     </main>
-
-    <section class="team-monitor" aria-labelledby="teamMonitorTitle">
-      <div class="team-selection-bar">
-        <div class="team-selection-title">
-          <span class="eyebrow">FIXED DETAIL MONITOR</span>
-          <h2 id="teamMonitorTitle">TEAM CARS</h2>
-        </div>
-        <div id="teamSelectionSlots" class="team-selection-slots" aria-label="Selected team cars"></div>
-        <button id="teamSelectorOpen" class="team-selector-open" type="button" aria-haspopup="dialog" aria-controls="teamSelectorDrawer">
-          MANAGE
-        </button>
-      </div>
-      <div id="fleetDataStatus" class="fleet-data-status" aria-label="Fleet data freshness">
-        <span id="fleet-directory-status"></span>
-        <span id="fleet-devices-status"></span>
-      </div>
-      <section id="cameraGrid" class="camera-grid" aria-label="Selected onboard camera previews"></section>
-    </section>
 
     <section class="situation-strip" aria-labelledby="situationTitle">
       <div class="situation-title">
