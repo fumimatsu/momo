@@ -1,5 +1,26 @@
 # Local Relay Web UI 運用
 
+## Cloudflare Spectator P0
+
+`cmd/momo-spectator-bridge`は、Relayの1車両を読み取り専用購読してH.264を外部SFUへ転送するGo子プロセス。親のNode PublisherとCloudflare APIはViewer/Cloudflareの各repoが正本。再エンコード・録画は行わない。
+
+```powershell
+# このtools/momo-relayディレクトリで、repoのResolve-GoExecutable.ps1で発見したGoを使用
+go build -o <private-output>/momo-spectator-bridge.exe ./cmd/momo-spectator-bridge
+```
+
+Node親が`-relay-url ws://<relay>/ws?device=<source>`を渡し、stdinへanswer/lease、stdoutでoffer/TEL/AUDを交換する。stdin EOFまたは15秒lease切れでpeerを閉じる。H.264 RTP queueは512packets・100ms上限、PLI/FIRは最大毎秒1回で上流へ転送。
+
+新client `role=observer&client=spectator-publisher`は、`allowObserverCommand=true`でも操縦コマンドを拒否する。M5音声のbounded queue 8を専用clientに割当。通常web-observerの音声受信は従来どおり無効。
+
+`momo-virtual-source`のcapture replayはAUD1/8kHz/IMA/84byteを再生し、TEL sequenceはsrcごとに採番する。IMU/ESC混在で偽の欠損を作らない。2026-09-09は実走収録960×528/50fpsを8ソースで再生し、実SFU経由でその中から最大4映像を選択した。操作・計時・IMU/ESC/AUDは合成値。実車/60fps/外部回線/会場負荷は別途検証。
+
+通常のRelay/ObserverランチャーはPublisherを自動起動しない。外向きSFU接続は明示起動したGo Bridgeだけ。新しい音声キューは専用clientにのみ割り当て、通常Pilot/Observerの操縦許可・音声購読条件・記録処理は維持する。LAN画面の共有部品はViewerのクリーンなcommitから`tools/sync-relay-viewer.ps1`で同期する。
+
+公開操作/設定/期限の正本は[Viewer](https://github.com/fumimatsu/momo-fpv-viewer/tree/main/variants/spectator)、認可/回収は[専用Worker](https://github.com/fumimatsu/cloudflare-line-echo-bot/tree/master/services/spectator)。車両PublisherとRace Publisherは手動起動から2時間で終了し、Relay/レース運営にはこの制限を適用しない。
+
+配布後の確認: `tools/Invoke-RelayTests.ps1`の全Go packageとWindows20件に成功。Publisherなしの別Relay＋virtual Momoで、LAN4映像・拡大・解除時の他3本継続・全解除/reload・8台目選択、20台fixtureの入れ替え/320pxを確認。外部HTTP/WSS要求とJavaScript例外は0。実PilotのOFF/ON負荷比較は未実施。
+
 ## Race Recorder
 
 Race Operations Consoleから録画方針を一体操作し、メディア保存を独立プロセスへ隔離する。

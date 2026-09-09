@@ -138,7 +138,19 @@ func loadReplayManifest(path string) (map[string]playbackProfile, error) {
 func normalizeReplayTelemetrySchedule(sourceID string, schedule []timedReplayMessage) ([]timedReplayMessage, error) {
 	result := make([]timedReplayMessage, len(schedule))
 	bootIDs := [2]string{replayBootID(sourceID, 0), replayBootID(sourceID, 1)}
+	audioSequence := 0
+	telemetrySequences := make(map[string]int)
 	for index, message := range schedule {
+		if strings.HasPrefix(message.data, "AUD:") {
+			var err error
+			message.data, message.alternateData, err = replayAudio(message.data, bootIDs, audioSequence)
+			if err != nil {
+				return nil, fmt.Errorf("audio record %d: %w", index, err)
+			}
+			audioSequence++
+			result[index] = message
+			continue
+		}
 		body := strings.TrimSpace(strings.TrimPrefix(message.data, "TEL:"))
 		if body == message.data {
 			return nil, fmt.Errorf("telemetry record %d does not start with TEL:", index)
@@ -147,10 +159,15 @@ func normalizeReplayTelemetrySchedule(sourceID string, schedule []timedReplayMes
 		if err := json.Unmarshal([]byte(body), &payload); err != nil {
 			return nil, fmt.Errorf("decode telemetry record %d: %w", index, err)
 		}
+		stream, ok := payload["src"].(string)
+		if !ok || stream == "" {
+			return nil, fmt.Errorf("telemetry record %d has no source identity", index)
+		}
+		telemetrySequences[stream]++
 		messageData := [2]string{}
 		for variant := range bootIDs {
 			payload["boot"] = bootIDs[variant]
-			payload["seq"] = index + 1
+			payload["seq"] = telemetrySequences[stream]
 			payload["t_us"] = message.offset.Microseconds()
 			encoded, err := json.Marshal(payload)
 			if err != nil {

@@ -605,7 +605,10 @@ html[data-mode="demo"] .live-state strong { color: var(--yellow); }
 .team-replacement-choices button.car-accent { border-left: 3px solid var(--car); }
 .team-replacement-choices button:hover, .team-replacement-choices button:focus-visible { border-color: var(--cyan); outline: none; }
 .team-replacement-choices .team-replacement-cancel { color: var(--muted); }
-.team-selector-list { min-height: 0; overflow-y: auto; }
+.team-selector-head { grid-row: 1; }
+.team-replacement-panel { grid-row: 2; }
+.team-selector-list { grid-row: 3; min-height: 0; overflow-y: auto; }
+.team-selector-footer { grid-row: 4; }
 .team-selector-row { --car: #7f9096; display: grid; grid-template-columns: minmax(0, 1fr) 82px 86px; align-items: center; gap: 8px; width: 100%; min-height: 58px; padding: 8px 16px; border-bottom: 1px solid var(--line-soft); color: var(--text); text-align: left; content-visibility: auto; contain-intrinsic-block-size: 58px; }
 .team-selector-row.is-selected { background: color-mix(in srgb, var(--car) 10%, transparent); box-shadow: inset 3px 0 var(--car); }
 .team-selector-row:hover, .team-selector-row:focus-visible { background-color: rgba(255, 255, 255, .05); outline: 1px solid var(--cyan); outline-offset: -2px; }

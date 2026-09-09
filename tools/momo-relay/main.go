@@ -1806,7 +1806,7 @@ func (r *relay) broadcastTelemetry(message webrtc.DataChannelMessage) {
 	r.viewersMu.RLock()
 	defer r.viewersMu.RUnlock()
 	for _, client := range r.viewers {
-		if client.role == "pilot" && isM5AudioMessage(message) && client.audioWS != nil {
+		if (client.role == "pilot" || client.clientKind == "spectator-publisher") && isM5AudioMessage(message) && client.audioWS != nil {
 			if client.audioSubscribed.Load() {
 				enqueueLatestTelemetry(client.audioWS, string(message.Data))
 			}
@@ -2466,7 +2466,7 @@ func sendDataChannel(channel *webrtc.DataChannel, message webrtc.DataChannelMess
 }
 
 func (r *relay) viewerCommandAllowed(client *viewer) bool {
-	return effectiveRelaySourceKind(r.sourceKind) == relaySourceKindVehicle &&
+	return client.clientKind != "spectator-publisher" && effectiveRelaySourceKind(r.sourceKind) == relaySourceKindVehicle &&
 		(client.role == "pilot" || r.allowObserverCommand)
 }
 
@@ -3156,7 +3156,11 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	clientKind := req.URL.Query().Get("client")
-	if clientKind != "web-observer" && clientKind != "web-pilot" && clientKind != "recorder" {
+	if clientKind == "spectator-publisher" && role != "observer" {
+		http.Error(w, "spectator publisher must be an observer", http.StatusForbidden)
+		return
+	}
+	if clientKind != "web-observer" && clientKind != "web-pilot" && clientKind != "recorder" && clientKind != "spectator-publisher" {
 		clientKind = ""
 	}
 	client := &viewer{id: r.nextID.Add(1), role: role, clientKind: clientKind, remoteAddr: req.RemoteAddr}
@@ -3197,7 +3201,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	}
 	viewerDataDone := make(chan struct{})
 	defer close(viewerDataDone)
-	if role == "pilot" || clientKind == "web-observer" {
+	if role == "pilot" || clientKind == "web-observer" || clientKind == "spectator-publisher" {
 		client.telemetryWS = make(chan string, 1)
 		client.telemetryStateWS = newSourceLatestTelemetryQueue()
 		client.gameplayWS = make(chan string, gameplayWebSocketQueueSize)
@@ -3206,13 +3210,14 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 	if clientKind == "web-pilot" {
 		client.raceWS = make(chan string, 1)
 	}
-	if clientKind == "web-observer" {
+	if clientKind == "web-observer" || clientKind == "spectator-publisher" {
 		client.commandWS = make(chan string, 1)
 	}
-	if role == "pilot" {
+	if role == "pilot" || clientKind == "spectator-publisher" {
 		client.audioWS = make(chan string, 8)
+		client.audioSubscribed.Store(clientKind == "spectator-publisher")
 	}
-	if role == "pilot" || clientKind == "web-observer" {
+	if role == "pilot" || clientKind == "web-observer" || clientKind == "spectator-publisher" {
 		go func() {
 			for {
 				select {
@@ -3425,7 +3430,7 @@ func (r *relay) serveViewerWS(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 			r.addViewer(client)
-			if clientKind == "web-observer" || clientKind == "web-pilot" {
+			if clientKind == "web-observer" || clientKind == "web-pilot" || clientKind == "spectator-publisher" {
 				if err := r.sendInitialWebDownlinkState(sendSignal); err != nil {
 					log.Printf("source %q: send initial web downlink state: %v", r.name, err)
 					return

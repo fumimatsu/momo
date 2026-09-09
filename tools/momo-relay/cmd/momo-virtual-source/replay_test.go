@@ -70,3 +70,24 @@ func TestKeyframeAtOrAfterWrapsToNextAvailableKeyframe(t *testing.T) {
 		t.Fatalf("wrapped keyframe=%d want=0", got)
 	}
 }
+
+func TestReplayInterleavedStreamsHaveIndependentSequences(t *testing.T) {
+	schedule := []timedReplayMessage{
+		{data: `TEL:{"src":"imu0"}`},
+		{data: `TEL:{"src":"esc0"}`},
+		{data: `TEL:{"src":"imu0"}`},
+	}
+	result, err := normalizeReplayTelemetrySchedule("car-1", schedule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []float64{1, 1, 2} {
+		var p map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(result[i].data, "TEL:")), &p); err != nil {
+			t.Fatal(err)
+		}
+		if p["seq"] != want {
+			t.Fatalf("record %d sequence=%v want=%v", i, p["seq"], want)
+		}
+	}
+}

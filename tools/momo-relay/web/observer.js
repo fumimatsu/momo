@@ -1,3 +1,6 @@
+import { ObserverSelection, TEAM_VIDEO_LIMIT } from './observer-selection.js';
+import { mountObserverRaceLayout } from './observer-race-layout.js';
+import { createObserverCameraTile } from './observer-camera.js';
 import { ObserverScreenStats } from './observer-screen-stats.js?v=20260908-screen-stats-v2';
 import {
   abbreviateDriverName,
@@ -40,6 +43,7 @@ import {
   TEAM_OBSERVER_MAXIMUM_CARS,
 } from './observer-core.js?v=20260908-team-observer-v25';
 
+mountObserverRaceLayout(document.getElementById('observerRacePanels'));
 const raceUiPerformance = window.MomoRaceUiPerformance;
 if (!raceUiPerformance?.createObserverCars || !raceUiPerformance?.createSvgPathLookup
     || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler
@@ -78,7 +82,7 @@ const MARKER_RENDER_INTERVAL_MS = 1000 / 30;
 const TELEMETRY_RENDER_INTERVAL_MS = 100;
 const CONTROL_STALE_MS = 250;
 const TRANSPORT_RENDER_INTERVAL_MS = 250;
-const TEAM_SELECTION_LIMIT = 4;
+const TEAM_SELECTION_LIMIT = TEAM_VIDEO_LIMIT;
 const LEADERBOARD_POSITION_CHANGE_HOLD_MS = 2200;
 const TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverVehiclesV2';
 const LEGACY_TEAM_SELECTION_STORAGE_KEY = 'momoTeamObserverCarsV1';
@@ -176,9 +180,7 @@ let leaderboardSignature = '';
 let sectorRowsSignature = '';
 let timingRowsSignature = '';
 let situationsSignature = '';
-let teamSelectionSignature = '';
 let selectedTeamVehicleIds = [];
-let pendingTeamVehicleId = '';
 let zoomedTeamVehicleId = '';
 let activeRelayHost = '';
 let teamPeersEnabled = false;
@@ -290,22 +292,7 @@ function persistTeamSelection() {
   history.replaceState(null, '', url);
 }
 
-function openTeamSelector() {
-  const backdrop = document.getElementById('teamSelectorBackdrop');
-  if (!backdrop) return;
-  backdrop.hidden = false;
-  renderTeamSelectionControls();
-  document.getElementById('teamSelectorClose')?.focus();
-}
-
-function closeTeamSelector() {
-  const backdrop = document.getElementById('teamSelectorBackdrop');
-  if (!backdrop) return;
-  backdrop.hidden = true;
-	pendingTeamVehicleId = '';
-  renderTeamSelectionControls();
-  document.getElementById('teamSelectorOpen')?.focus();
-}
+function openTeamSelector() { teamSelector.open(); }
 
 function focusTeamCar(car) {
   const tile = cameraTileNodesByCar.get(car?.carId);
@@ -414,139 +401,23 @@ function syncTeamSelectionDecorations() {
   }
 }
 
-function renderTeamReplacementPanel() {
-  const panel = document.getElementById('teamReplacementPanel');
-  if (!panel) return;
-	const candidate = observerConfig?.cars.find((car) => car.vehicleId === pendingTeamVehicleId);
-  panel.hidden = !candidate;
-  panel.replaceChildren();
-  if (!candidate) return;
-  panel.append(element('strong', '', `REPLACE WITH CAR ${candidate.displayNumber}`));
-  const choices = element('div', 'team-replacement-choices');
-  selectedTeamCars().forEach((car, index) => {
-    const button = applyCarAccent(
-      element('button', 'car-accent', `SLOT ${index + 1} / CAR ${car.displayNumber}`),
-      car,
-    );
-    button.type = 'button';
-    button.addEventListener('click', () => {
-			const next = [...selectedTeamVehicleIds];
-			next[index] = candidate.vehicleId;
-			pendingTeamVehicleId = '';
-      setTeamSelection(next, true);
-    });
-    choices.append(button);
-  });
-  const cancel = element('button', 'team-replacement-cancel', 'CANCEL');
-  cancel.type = 'button';
-  cancel.addEventListener('click', () => {
-		pendingTeamVehicleId = '';
-    renderTeamSelectionControls();
-  });
-  choices.append(cancel);
-  panel.append(choices);
-}
-
+const teamSelector = new ObserverSelection({
+  onChange: ids => setTeamSelection(ids, true),
+  onFocus: id => focusTeamCar(observerConfig?.cars.find(c => c.vehicleId === id)),
+});
 function renderTeamSelectionControls() {
   if (!observerConfig) return;
-  const orderedCars = standingsByConfiguredCar(observerConfig.cars, raceState);
-  const signature = JSON.stringify({
-    cars: orderedCars.map(({ car, standing }) => [
-      car.vehicleId, car.carId, car.displayNumber, car.color, carName(car, standing), car.device,
-      car.directoryStatus, car.availability, car.sourceBound, standing?.status || '',
-      connectionByCar.get(car.carId)?.state || '', isTeamCarSelected(car),
-    ]),
-    selected: selectedTeamVehicleIds,
-    pending: pendingTeamVehicleId,
-    directoryStale: Boolean(teamDirectory?.stale),
-  });
-  if (signature === teamSelectionSignature) return;
-  teamSelectionSignature = signature;
-  const slots = document.getElementById('teamSelectionSlots');
-  if (slots) {
-    const cars = selectedTeamCars();
-    slots.replaceChildren(...Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => {
-      const car = cars[index];
-      const slot = element('div', `team-selection-slot${car ? ' is-filled' : ''}`);
-      if (!car) {
-        const empty = element('button', 'team-slot-main', `SLOT ${index + 1}`);
-        empty.type = 'button';
-        empty.setAttribute('aria-label', `Select a car for slot ${index + 1}`);
-        empty.addEventListener('click', openTeamSelector);
-        slot.append(empty);
-        return slot;
-      }
-      applyCarAccent(slot, car);
-      const standing = standingByCar.get(car.carId);
-      const main = element('button', 'team-slot-main');
-      main.type = 'button';
-      main.append(
-        element('strong', '', `#${car.displayNumber}`),
-        element('span', '', carName(car, standing)),
-      );
-      main.addEventListener('click', () => focusTeamCar(car));
-      const remove = element('button', 'team-slot-remove', '×');
-      remove.type = 'button';
-      remove.setAttribute('aria-label', `Remove CAR ${car.displayNumber} from team monitor`);
-      remove.addEventListener('click', () => {
-				setTeamSelection(selectedTeamVehicleIds.filter((vehicleId) => vehicleId !== car.vehicleId), true);
-      });
-      slot.append(main, remove);
-      return slot;
-    }));
-  }
-
-  const list = document.getElementById('teamSelectorList');
-  if (list) {
-    list.replaceChildren(...orderedCars.map(({ car, standing }) => {
-      const selected = isTeamCarSelected(car);
-      const row = applyCarAccent(
-        element('button', `team-selector-row${selected ? ' is-selected' : ''}`),
-        car,
-      );
-      row.type = 'button';
-      row.setAttribute('aria-pressed', selected ? 'true' : 'false');
-      const identity = element('span', 'team-selector-identity');
-      identity.append(element('strong', '', `#${car.displayNumber}`), element('span', '', carName(car, standing)));
-      const connection = connectionByCar.get(car.carId);
-      row.append(
-        identity,
-			element('span', 'team-selector-device', car.device || 'SOURCE UNBOUND'),
-			element('em', '', selected ? connection?.state || 'SELECTED'
-				: car.directoryStatus === 'maintenance' ? 'MAINTENANCE'
-					: standing ? 'RACING' : String(car.availability || 'AVAILABLE').toUpperCase()),
-      );
-      row.addEventListener('click', () => {
-        if (selected) {
-					setTeamSelection(selectedTeamVehicleIds.filter((vehicleId) => vehicleId !== car.vehicleId), true);
-          return;
-        }
-        requestTeamCar(car);
-      });
-      return row;
-    }));
-  }
-  setTextIfChanged(
-    document.getElementById('teamSelectionCount'),
-		`${selectedTeamVehicleIds.length} / ${TEAM_SELECTION_LIMIT} SELECTED${teamDirectory?.stale ? ' · DIRECTORY STALE' : ''}`,
-  );
-  renderTeamReplacementPanel();
+  const rows = standingsByConfiguredCar(observerConfig.cars, raceState).map(({ car, standing }) => ({
+    id: car.vehicleId, number: `#${car.displayNumber}`, name: carName(car, standing), color: car.color,
+    detail: car.device || 'SOURCE UNBOUND',
+    status: isTeamCarSelected(car) ? connectionByCar.get(car.carId)?.state || 'SELECTED'
+      : car.directoryStatus === 'maintenance' ? 'MAINTENANCE'
+        : standing ? 'RACING' : String(car.availability || 'AVAILABLE').toUpperCase(),
+  }));
+  teamSelector.update(rows, selectedTeamVehicleIds, teamDirectory?.stale ? 'DIRECTORY STALE' : '');
   syncTeamSelectionDecorations();
 }
-
-function requestTeamCar(car) {
-  if (!car) return;
-  if (isTeamCarSelected(car)) {
-    focusTeamCar(car);
-    return;
-  }
-	if (selectedTeamVehicleIds.length < TEAM_SELECTION_LIMIT) {
-		setTeamSelection([...selectedTeamVehicleIds, car.vehicleId], true);
-    return;
-  }
-	pendingTeamVehicleId = car.vehicleId;
-  openTeamSelector();
-}
+function requestTeamCar(car) { if (car) teamSelector.request(car.vehicleId); }
 
 function syncSelectedTeamPeers() {
   const selectedCarIds = new Set(selectedTeamCars().map((car) => car.carId));
@@ -608,7 +479,6 @@ function setTeamSelection(value, persist = false) {
 	const changed = next.length !== selectedTeamVehicleIds.length
 		|| next.some((vehicleId, index) => vehicleId !== selectedTeamVehicleIds[index]);
 	selectedTeamVehicleIds = next;
-	pendingTeamVehicleId = '';
   if (changed) {
     syncSelectedTeamPeers();
     for (const car of selectedTeamCars()) renderedTelemetryByCar.delete(car.carId);
@@ -2161,31 +2031,6 @@ function classifyHighInstrument(value, warning, critical) {
   return 'normal';
 }
 
-function createCameraVital(kind, label, unit) {
-  const root = element('div', `camera-vital camera-vital-${kind}`);
-  root.dataset.state = 'waiting';
-  const copy = element('span', 'camera-vital-copy');
-  copy.append(element('small', '', label));
-  const reading = element('strong');
-  const value = element('output', '', '--');
-  reading.append(value, element('em', '', unit));
-  copy.append(reading);
-  root.append(copy);
-  return { root, value };
-}
-
-function createCameraResource(kind, label) {
-  const root = element('div', `camera-resource camera-resource-${kind}`);
-  root.dataset.state = 'waiting';
-  const name = element('span', 'camera-resource-label', label);
-  const track = element('span', 'camera-resource-track');
-  const fill = element('i', 'camera-resource-fill');
-  track.append(fill);
-  const value = element('output', '', 'WAIT');
-  root.append(name, track, value);
-  return { root, fill, value };
-}
-
 function renderCameraHealth(car, health = healthByCar.get(car.carId)) {
   const nodes = healthNodesByCar.get(car.carId);
   if (!nodes) return;
@@ -2233,157 +2078,18 @@ function renderCameraHealthDisplays() {
 }
 
 function createCameraTile(car) {
-    const cached = cameraTileNodesByCar.get(car.carId);
-    if (cached) return cached;
-    const tile = applyCarAccent(element('article', 'camera-tile'), car);
-    tile.dataset.carId = car.carId;
-    tile.dataset.vehicleId = car.vehicleId;
-    const head = element('div', 'camera-head');
-    const title = element('strong', '', `CAR ${car.displayNumber} `);
-		const driver = element('span', '', car.driver || car.vehicleName || car.device || 'SOURCE UNBOUND');
-    title.append(driver);
-    cameraTitleNodesByCar.set(car.carId, { root: title, driver });
-    const status = element('span', '', '');
-    status.id = `camera-status-${car.carId}`;
-    status.append(element('i'), document.createTextNode('WAITING'));
-    const fps = element('em', '', '-- FPS');
-    fps.id = `camera-fps-${car.carId}`;
-    const zoomButton = element('button', 'camera-zoom-toggle');
-    zoomButton.type = 'button';
-    zoomButton.setAttribute('aria-pressed', 'false');
-    zoomButton.setAttribute('aria-label', `Enlarge CAR ${car.displayNumber} onboard video`);
-    zoomButton.title = 'Enlarge camera';
-    zoomButton.append(element('span', 'camera-zoom-icon'));
-    zoomButton.addEventListener('click', () => toggleCameraZoom(car));
-    cameraZoomButtonsByCar.set(car.carId, zoomButton);
-    head.append(title, status, fps, zoomButton);
-    const feed = element('div', 'camera-feed');
-    feed.addEventListener('dblclick', () => toggleCameraZoom(car));
-    const video = document.createElement('video');
-    video.id = `video-${car.carId}`;
-    video.autoplay = true;
-    video.muted = true;
-    video.playsInline = true;
-    video.classList.toggle('video-flipped', car.flip);
-    video.setAttribute('aria-label', `CAR ${car.displayNumber} onboard video`);
-    const videoState = element('span', 'video-state', 'WAITING FOR RELAY');
-    videoState.id = `video-state-${car.carId}`;
-    const eventFlash = element('strong', 'camera-event-flash');
-    eventFlash.hidden = true;
-    const dashboard = element('div', 'camera-dashboard');
-    dashboard.id = `camera-dashboard-${car.carId}`;
-    dashboard.dataset.active = 'false';
-
-    const motionCard = element('section', 'camera-instrument camera-motion-card');
-    motionCard.setAttribute('aria-label', 'Vehicle acceleration and yaw');
-    const motionStatus = element('div', 'camera-motion-status');
-    const rate = element('strong', 'telemetry-rate', '--Hz');
-    const loss = element('span', 'telemetry-loss', 'L--');
-    motionStatus.append(rate, loss);
-    const motionValues = element('div', 'camera-motion-values');
-    const lateral = element('output', 'telemetry-lateral', '--');
-    const forward = element('output', 'telemetry-forward', '--');
-    const yaw = element('output', 'telemetry-yaw', '--');
-    for (const [label, value] of [['LAT G', lateral], ['FWD G', forward], ['Y rad/s', yaw]]) {
-      const reading = element('span');
-      reading.append(element('small', '', label), value);
-      motionValues.append(reading);
-    }
-    const motionGauge = element('div', 'camera-motion-gauge');
-    const motionScope = svgElement('svg', { viewBox: '0 0 64 64', class: 'camera-motion-scope', 'aria-hidden': 'true' });
-    motionScope.dataset.state = 'waiting';
-    motionScope.append(
-      svgElement('circle', { cx: 32, cy: 32, r: 24, class: 'camera-motion-ring' }),
-      svgElement('circle', { cx: 32, cy: 32, r: 12, class: 'camera-motion-ring inner' }),
-      svgElement('path', { d: 'M6,32H58 M32,6V58', class: 'camera-motion-axis' }),
-    );
-    const motionDot = svgElement('circle', { cx: 32, cy: 32, r: 3.5, class: 'camera-motion-dot' });
-    motionScope.append(motionDot);
-    motionGauge.append(motionScope, element('span', 'camera-motion-scale', '±1.5 G'));
-    motionCard.append(motionGauge, motionValues, motionStatus);
-
-    const powerCard = element('section', 'camera-instrument camera-power-card');
-    powerCard.setAttribute('aria-label', 'ESC powertrain telemetry');
-    const rpmRow = element('div', 'camera-rpm camera-speed');
-    const rpmLabel = element('span', '', car.speedProfile ? 'EST KM/H' : 'RPM');
-    const rpm = element('output', '', '--');
-    const rpmTrack = element('span', 'camera-rpm-track');
-    const rpmFill = element('i', 'camera-rpm-fill');
-    rpmTrack.append(rpmFill);
-    rpmRow.append(rpmLabel, rpm, rpmTrack);
-    const vitalRow = element('div', 'camera-vitals');
-    const voltage = createCameraVital('battery', 'BAT', 'V');
-    const escTemp = createCameraVital('esc', 'ESC', '°C');
-    const motorTemp = createCameraVital('motor', 'MTR', '°C');
-    vitalRow.append(voltage.root, escTemp.root, motorTemp.root);
-    powerCard.append(rpmRow, vitalRow);
-
-    const resourceCard = element('section', 'camera-instrument camera-resource-card');
-    resourceCard.setAttribute('aria-label', 'Damage, fuel and boost status');
-    const resourceHead = element('div', 'camera-resource-head');
-    resourceHead.append(element('span', '', 'VEHICLE'), element('strong', 'camera-gear', 'G--'));
-    const damage = createCameraResource('damage', 'DMG');
-    const fuel = createCameraResource('fuel', 'FUEL');
-    const boost = createCameraResource('boost', 'BOOST');
-    resourceCard.append(resourceHead, damage.root, fuel.root, boost.root);
-
-    telemetryNodesByCar.set(car.carId, {
-      root: dashboard,
-      powerRoot: powerCard,
-      motionRoot: motionCard,
-      motionScope,
-      motionDot,
-      rate,
-      loss,
-      lateral,
-      forward,
-      yaw,
-      rpmLabel,
-      rpm,
-      rpmFill,
-      voltage: voltage.value,
-      voltageRoot: voltage.root,
-      escTemp: escTemp.value,
-      escTempRoot: escTemp.root,
-      motorTemp: motorTemp.value,
-      motorTempRoot: motorTemp.root,
-    });
-    healthNodesByCar.set(car.carId, {
-      gear: resourceHead.lastChild,
-      damage,
-      fuel,
-      boost,
-    });
-    const controls = element('section', 'camera-controls');
-    controls.dataset.state = 'waiting';
-    const controlHead = element('div', 'camera-control-head');
-    const controlStatus = element('span', 'camera-control-status', 'WAITING');
-    const throttleValue = element('output', '', '--');
-    const brakeValue = element('output', '', '--');
-    const throttleLabel = element('span', 'camera-control-throttle', 'THR ');
-    const brakeLabel = element('span', 'camera-control-brake', 'BRK ');
-    throttleLabel.append(throttleValue);
-    brakeLabel.append(brakeValue);
-    controlHead.append(controlStatus, throttleLabel, brakeLabel);
-    const chart = svgElement('svg', { viewBox: '0 0 240 44', preserveAspectRatio: 'none', 'aria-hidden': 'true', class: 'camera-control-chart' });
-    chart.append(svgElement('path', { d: 'M0,2H240 M0,22H240 M0,42H240', class: 'camera-control-grid' }));
-    const throttle = svgElement('path', { class: 'camera-control-line camera-control-throttle' });
-    const brake = svgElement('path', { class: 'camera-control-line camera-control-brake' });
-    chart.append(throttle, brake);
-    const chartScale = element('div', 'camera-control-scale');
-    chartScale.append(element('span', '', '0–100%'), element('span', '', '−8s → NOW'));
-    controls.append(controlHead, chart, chartScale);
-    controlNodesByCar.set(car.carId, { root: controls, throttle, brake, throttleValue, brakeValue,
-      status: controlStatus, history: new ControlInputHistory() });
-    const readings = element('div', 'camera-readings');
-    readings.append(motionCard, powerCard);
-    dashboard.append(controls, resourceCard, readings);
-    feed.append(video, videoState, eventFlash);
-    tile.append(head, feed, dashboard);
-    cameraEffectNodesByCar.set(car.carId, { root: tile, badge: eventFlash });
-    cameraTileNodesByCar.set(car.carId, tile);
-    applyCarEffect(car.carId);
-    return tile;
+  const cached = cameraTileNodesByCar.get(car.carId);
+  if (cached) return cached;
+  const view = createObserverCameraTile(car, { onZoom: toggleCameraZoom });
+  cameraTitleNodesByCar.set(car.carId, view.title);
+  cameraZoomButtonsByCar.set(car.carId, view.zoomButton);
+  telemetryNodesByCar.set(car.carId, view.telemetry);
+  healthNodesByCar.set(car.carId, view.health);
+  controlNodesByCar.set(car.carId, { ...view.control, history: new ControlInputHistory() });
+  cameraEffectNodesByCar.set(car.carId, view.effect);
+  cameraTileNodesByCar.set(car.carId, view.tile);
+  applyCarEffect(car.carId);
+  return view.tile;
 }
 
 function createEmptyCameraTile(index) {
@@ -3117,20 +2823,9 @@ async function initialize() {
       fps: 0, videoActive: false, dataOpen: false,
       subscriptionDisabled: !isTeamCarSelected(car),
     });
-		document.getElementById('teamSelectorOpen')?.addEventListener('click', openTeamSelector);
-		document.getElementById('teamSelectorClose')?.addEventListener('click', closeTeamSelector);
-		document.getElementById('teamSelectionClear')?.addEventListener('click', () => setTeamSelection([], true));
-		document.getElementById('teamSelectorBackdrop')?.addEventListener('click', (event) => {
-			if (event.target === event.currentTarget) closeTeamSelector();
-		});
-		window.addEventListener('keydown', (event) => {
-			if (event.key !== 'Escape') return;
-			if (!document.getElementById('teamSelectorBackdrop')?.hidden) {
-				closeTeamSelector();
-				return;
-			}
-			if (zoomedTeamVehicleId) setCameraZoom('');
-		});
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && zoomedTeamVehicleId) setCameraZoom('');
+    });
 		if (UI_TEST_MODE) {
 			seedObserverUiTest();
 			renderAll();
