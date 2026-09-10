@@ -25,17 +25,17 @@ func raceAudioQualifyingProgressForStanding(session string, standing *raceAudioS
 }
 
 func raceAudioQualifyingEvent(runID, carID string, serial uint64, progress raceAudioQualifyingProgress) raceAudioEvent {
-	english := fmt.Sprintf("Qualifying P %d.", progress.Position)
-	japanese := fmt.Sprintf("予選%d位。", progress.Position)
+	english := fmt.Sprintf("P %d.", progress.Position)
+	japanese := fmt.Sprintf("%d位。", progress.Position)
 	if progress.Position == 1 {
-		english, japanese = "Qualifying leader.", "予選トップ。"
+		english, japanese = "Leading.", "トップ。"
 	} else if progress.HasGap {
 		if progress.GapMS == 0 {
-			english += fmt.Sprintf(" Best lap tied with P %d.", progress.Position-1)
+			english += fmt.Sprintf(" Tied with P %d.", progress.Position-1)
 			japanese += fmt.Sprintf("%d位と同タイム。", progress.Position-1)
 		} else {
-			english += fmt.Sprintf(" Best lap gap to P %d, %s seconds.", progress.Position-1, raceAudioEnglishLapTime(progress.GapMS))
-			japanese += fmt.Sprintf("%d位のベストとの差、%d.%03d秒。", progress.Position-1, progress.GapMS/1000, progress.GapMS%1000)
+			english += fmt.Sprintf(" Gap to P %d, %s seconds.", progress.Position-1, raceAudioEnglishLapTime(progress.GapMS))
+			japanese += fmt.Sprintf("%d位との差、%d.%03d秒。", progress.Position-1, progress.GapMS/1000, progress.GapMS%1000)
 		}
 	}
 	return raceAudioEvent{

@@ -21,8 +21,8 @@ func TestQualifyingAudioTracksBestTargetsAndCombinesLap(t *testing.T) {
 	first := qualifyingAudioState("q1", "green", 3, 6350, 150, history)
 	events := detector.observe(first, "CP-1")
 	if len(events) != 1 || events[0].Kind != "qualifying_update" ||
-		events[0].JapaneseText != "1周目、6.350。自己ベスト更新。予選3位。2位のベストとの差、0.150秒。" ||
-		!strings.Contains(events[0].EnglishText, "Best lap gap to P 2, 0 point one five zero seconds.") {
+		events[0].JapaneseText != "1周目、6.350。自己ベスト更新。3位。2位との差、0.150秒。" ||
+		!strings.Contains(events[0].EnglishText, "Gap to P 2, 0 point one five zero seconds.") {
 		t.Fatalf("first measured lap: %+v", events)
 	}
 	if got := detector.observe(first, "CP-1"); len(got) != 0 {
@@ -30,22 +30,22 @@ func TestQualifyingAudioTracksBestTargetsAndCombinesLap(t *testing.T) {
 	}
 	// An upper-ranked driver's improvement changes the target without changing rank.
 	events = detector.observe(qualifyingAudioState("q1", "green", 3, 6350, 175, history), "CP-1")
-	if len(events) != 1 || events[0].JapaneseText != "予選3位。2位のベストとの差、0.175秒。" {
+	if len(events) != 1 || events[0].JapaneseText != "3位。2位との差、0.175秒。" {
 		t.Fatalf("new target: %+v", events)
 	}
 	// Losing a rank reports the updated best-lap target, never physical proximity.
 	events = detector.observe(qualifyingAudioState("q1", "green", 4, 6350, 50, history), "CP-1")
-	if len(events) != 1 || events[0].JapaneseText != "予選4位。3位のベストとの差、0.050秒。" {
+	if len(events) != 1 || events[0].JapaneseText != "4位。3位との差、0.050秒。" {
 		t.Fatalf("rank lost: %+v", events)
 	}
 	history = append(history, raceAudioLapHistory{CarID: "CP-1", Lap: 2, LapTimeMS: 6450})
 	events = detector.observe(qualifyingAudioState("q1", "green", 4, 6350, 50, history), "CP-1")
-	if len(events) != 1 || events[0].Kind != "lap_complete" || strings.Contains(events[0].JapaneseText, "予選") {
+	if len(events) != 1 || events[0].Kind != "lap_complete" || strings.Contains(events[0].JapaneseText, "位") {
 		t.Fatalf("unchanged best keeps ordinary lap speech: %+v", events)
 	}
 	history = append(history, raceAudioLapHistory{CarID: "CP-1", Lap: 3, LapTimeMS: 6000, Achievement: "overall_best"})
 	events = detector.observe(qualifyingAudioState("q1", "green", 1, 6000, nil, history), "CP-1")
-	if len(events) != 1 || !strings.HasSuffix(events[0].JapaneseText, "全体ベスト更新。予選トップ。") {
+	if len(events) != 1 || !strings.HasSuffix(events[0].JapaneseText, "全体ベスト更新。トップ。") {
 		t.Fatalf("leader: %+v", events)
 	}
 	if !raceAudioBrowserLocalEvent(events[0].Kind) {
@@ -59,9 +59,9 @@ func TestQualifyingAudioNeverInventsAnUnmeasuredOrMissingGap(t *testing.T) {
 		gap  any
 		want string
 	}{
-		{0, 0, ""}, {6000, nil, "予選2位。"}, {6000, -1, "予選2位。"},
-		{6000, 6000, "予選2位。"}, {6000, 0, "予選2位。1位と同タイム。"},
-		{6000, 1, "予選2位。1位のベストとの差、0.001秒。"},
+		{0, 0, ""}, {6000, nil, "2位。"}, {6000, -1, "2位。"},
+		{6000, 6000, "2位。"}, {6000, 0, "2位。1位と同タイム。"},
+		{6000, 1, "2位。1位との差、0.001秒。"},
 	} {
 		detector := raceAudioDetector{}
 		detector.observe(qualifyingAudioState("q", "green", 2, 0, nil, nil), "CP-1")
