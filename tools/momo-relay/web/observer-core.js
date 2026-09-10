@@ -1,3 +1,14 @@
+// Session identity is explicit; clocks and position values remain authority-owned.
+const SESSION_VIEWS = Object.freeze({
+  race: Object.freeze({ label: 'RACE', orderTitle: 'RACE ORDER', ranking: 'progress' }),
+  practice: Object.freeze({ label: 'PRACTICE', orderTitle: 'PRACTICE ORDER', ranking: 'progress' }),
+  qualify: Object.freeze({ label: 'QUALIFY', orderTitle: 'BEST LAP ORDER', ranking: 'best_lap' }),
+});
+const UNKNOWN_SESSION_VIEW = Object.freeze({ label: 'UNKNOWN', orderTitle: 'SESSION ORDER', ranking: 'unknown' });
+export function raceSessionView(sessionType) {
+  return Object.hasOwn(SESSION_VIEWS, sessionType) ? SESSION_VIEWS[sessionType] : UNKNOWN_SESSION_VIEW;
+}
+
 const HEALTH_MODES = new Set(['healthy', 'damaged', 'critical', 'limp']);
 const FUEL_STATES = new Set(['normal', 'low', 'empty']);
 const BOOST_STATES = new Set(['charging', 'ready', 'active']);

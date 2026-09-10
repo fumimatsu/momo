@@ -37,6 +37,7 @@ import {
   parseVehicleHealth,
   projectCourseProgress,
   raceClockValue,
+  raceSessionView,
   raceParticipantCars,
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
@@ -1482,6 +1483,8 @@ function renderSituations() {
 }
 
 function renderHeader() {
+  const session = raceSessionView(raceState?.raceInfo?.sessionType);
+  setTextIfChanged(document.getElementById('leaderboardTitle'), session.orderTitle);
   const connected = countActiveVideos(connectionByCar);
   const liveStatus = document.getElementById('liveStatus');
   liveStatus.textContent = UI_DEMO_MODE ? 'DEMO' : raceState ? displayRaceStatus(raceState) : connected ? 'RACE WAIT' : 'WAITING';
