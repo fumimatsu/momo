@@ -152,13 +152,15 @@ type raceAudioLapHistory struct {
 }
 
 type raceAudioStanding struct {
-	CarID              string `json:"carId"`
-	Position           int    `json:"position"`
-	Status             string `json:"status"`
-	Lap                int    `json:"lap"`
-	LappingCarBehindID string `json:"lappingCarBehindId"`
-	LappingGapMS       int    `json:"lappingGapMs"`
-	DirectionStatus    string `json:"directionStatus"`
+	BestLapMS           *int   `json:"bestLapMs"`
+	BestLapGapToAheadMS *int   `json:"bestLapGapToAheadMs"`
+	CarID               string `json:"carId"`
+	Position            int    `json:"position"`
+	Status              string `json:"status"`
+	Lap                 int    `json:"lap"`
+	LappingCarBehindID  string `json:"lappingCarBehindId"`
+	LappingGapMS        int    `json:"lappingGapMs"`
+	DirectionStatus     string `json:"directionStatus"`
 }
 
 type raceAudioState struct {
@@ -178,18 +180,20 @@ type raceAudioState struct {
 }
 
 type raceAudioDetector struct {
-	mu            sync.Mutex
-	initialized   bool
-	runID         string
-	carID         string
-	phase         string
-	flag          string
-	direction     string
-	sessionType   string
-	position      int
-	blueFlagCarID string
-	finished      bool
-	seenLaps      map[string]struct{}
+	qualifying       raceAudioQualifyingProgress
+	qualifyingSerial uint64
+	mu               sync.Mutex
+	initialized      bool
+	runID            string
+	carID            string
+	phase            string
+	flag             string
+	direction        string
+	sessionType      string
+	position         int
+	blueFlagCarID    string
+	finished         bool
+	seenLaps         map[string]struct{}
 }
 
 type raceAudioRaceContext struct {
@@ -268,6 +272,18 @@ func (queue *raceAudioJobQueue) enqueue(job raceAudioJob) (bool, []raceAudioJob)
 		retained := queue.jobs[:0]
 		for _, candidate := range queue.jobs {
 			if candidate.job.event.Priority < job.event.Priority {
+				dropped = append(dropped, candidate.job)
+				continue
+			}
+			retained = append(retained, candidate)
+		}
+		queue.jobs = retained
+	}
+	// Keep only the latest pending qualifying target for this recipient.
+	if job.event.Kind == "qualifying_update" {
+		retained := queue.jobs[:0]
+		for _, candidate := range queue.jobs {
+			if candidate.job.event.Kind == "qualifying_update" && candidate.job.targetClientID == job.targetClientID {
 				dropped = append(dropped, candidate.job)
 				continue
 			}
@@ -673,6 +689,8 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		detector.direction = "unknown"
 		detector.sessionType = ""
 		detector.position = 0
+		detector.qualifying = raceAudioQualifyingProgress{}
+		detector.qualifyingSerial = 0
 		detector.blueFlagCarID = ""
 		detector.finished = false
 		detector.seenLaps = make(map[string]struct{})
@@ -688,6 +706,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	}
 	sort.Slice(histories, func(left, right int) bool { return histories[left].Lap < histories[right].Lap })
 	standing := raceAudioStandingForCar(state, carID)
+	qualifying := raceAudioQualifyingProgressForStanding(sessionType, standing)
 	standingPosition := 0
 	standingStatus := ""
 	directionStatus := "unknown"
@@ -713,6 +732,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		detector.direction = directionStatus
 		detector.sessionType = sessionType
 		detector.position = standingPosition
+		detector.qualifying = qualifying
 		detector.blueFlagCarID = blueFlagCarID
 		detector.initialized = true
 		return nil
@@ -819,6 +839,20 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		standingPosition > 0 && previousPosition > 0 && standingPosition != previousPosition && len(events) == 0 {
 		events = append(events, raceAudioPositionEvent(runID, carID, previousPosition, standingPosition))
 	}
+	if !safetyActive && !isFinished && standingStatus == "racing" && phase == "green" && previousPhase == "green" &&
+		sessionType == "qualify" && detector.sessionType == "qualify" &&
+		qualifying.Position > 0 && qualifying != detector.qualifying {
+		detector.qualifyingSerial++
+		update := raceAudioQualifyingEvent(runID, carID, detector.qualifyingSerial, qualifying)
+		// One spoken message when a newly completed lap also updates the target.
+		if last := len(events) - 1; last >= 0 && events[last].Kind == "lap_complete" {
+			update.EnglishText = strings.TrimRight(events[last].EnglishText, ".") + ". " + update.EnglishText
+			update.JapaneseText = strings.TrimRight(events[last].JapaneseText, "。") + "。" + update.JapaneseText
+			events[last] = update
+		} else {
+			events = append(events, update)
+		}
+	}
 	if !detector.finished && isFinished {
 		finalLapTimeMS := 0
 		if len(histories) > 0 {
@@ -838,6 +872,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	detector.direction = directionStatus
 	detector.sessionType = sessionType
 	detector.position = standingPosition
+	detector.qualifying = qualifying
 	detector.blueFlagCarID = blueFlagCarID
 	detector.finished = detector.finished || isFinished
 	sort.SliceStable(events, func(left, right int) bool {
@@ -1264,7 +1299,7 @@ func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEve
 func raceAudioBrowserLocalEvent(kind string) bool {
 	switch kind {
 	case "lap_complete", "pit_service_complete", "gap_ahead", "gap_behind",
-		"race_start", "race_paused", "race_resumed", "position_change", "blue_flag",
+		"race_start", "race_paused", "race_resumed", "position_change", "qualifying_update", "blue_flag",
 		"yellow_flag", "red_flag", "wrong_way",
 		"fuel_low", "fuel_critical", "fuel_empty", "damage_critical":
 		return true

@@ -28,7 +28,7 @@
   }
   const raceAnnouncer = window.MomoRaceAnnouncer;
   if (!raceAnnouncer?.buildLapAnnouncement || !raceAnnouncer?.buildRaceSummary ||
-      !raceAnnouncer?.buildSafetyAnnouncement ||
+      !raceAnnouncer?.buildSafetyAnnouncement || !raceAnnouncer?.buildQualifyingAnnouncement ||
       !raceAnnouncer?.selectPreferredVoice ||
 			!raceAnnouncer?.playSignal || !raceAnnouncer?.normalizeRemoteLanguage ||
 			!raceAnnouncer?.buildRemotePreference || !raceAnnouncer?.buildRemoteCalloutRequest ||
@@ -359,7 +359,7 @@
   }
   const RACE_ANNOUNCE_ENABLED = getBooleanParam('raceAnnounce', true);
   const RACE_ANNOUNCE_LANGUAGE_STORAGE_KEY = 'momoRaceAnnounceLanguage';
-  const raceAnnounceLanguageParam = getStringParam('raceAnnounceLang', 'off');
+  const raceAnnounceLanguageParam = getStringParam(['raceAnnounceLang'], 'off');
   const hasRaceAnnounceLanguageParam = new URLSearchParams(window.location.search).has('raceAnnounceLang');
   let raceAnnounceLanguage = raceAnnouncer.normalizeRemoteLanguage(
     hasRaceAnnounceLanguageParam
@@ -367,7 +367,7 @@
       : readRaceAnnouncementLanguagePreference() || raceAnnounceLanguageParam,
     RACE_ANNOUNCE_ENABLED,
   );
-  const RACE_ANNOUNCE_VOICE = getStringParam('raceAnnounceVoice', '');
+  const RACE_ANNOUNCE_VOICE = getStringParam(['raceAnnounceVoice'], '');
   const RACE_ANNOUNCE_RATE = Math.max(0.5, Math.min(2.5, getNumberParam('raceAnnounceRate', 1.04)));
   const RACE_ANNOUNCE_VOLUME = Math.max(0, Math.min(1, getNumberParamAllowZero('raceAnnounceVolume', 0.95)));
 	const RACE_RADIO_CUE_VOLUME = Math.max(
@@ -1582,7 +1582,9 @@
           return null;
         }
         const lap = normalizeRaceNumber(typeof entry === 'number' ? index + 1 : entry.lap) || index + 1;
-        return { lap, timeMs };
+        const achievement = entry?.achievement === 'personal_best' || entry?.achievement === 'overall_best'
+          ? entry.achievement : '';
+        return { lap, timeMs, achievement };
       })
       .filter((entry) => entry !== null)
       .sort((left, right) => right.lap - left.lap);
@@ -1729,6 +1731,7 @@
     element.classList.toggle('is-missing', !isAvailable);
     element.dataset.gapState = !isAvailable || gapMs === null
       ? 'none'
+      : raceState.sessionType === 'qualify' ? 'normal'
       : gapMs <= RACE_REAR_CRITICAL_GAP_MS
         ? 'critical'
         : gapMs <= RACE_REAR_WARNING_GAP_MS ? 'pressure' : 'normal';
@@ -2001,7 +2004,7 @@
       raceBattleAheadGap,
       battle.ahead,
       (raceState.sessionType === 'qualify' ? battle.self?.bestLapGapToAheadMs : battle.self?.intervalToAheadMs) ?? null,
-      battle.self?.lapDeltaToAhead ?? null,
+      raceState.sessionType === 'qualify' ? null : battle.self?.lapDeltaToAhead ?? null,
       'NO AHEAD',
     );
     renderRaceBattleRival(
@@ -2011,7 +2014,7 @@
       raceBattleBehindGap,
       battle.behind,
       (raceState.sessionType === 'qualify' ? battle.behind?.bestLapGapToAheadMs : battle.behind?.intervalToAheadMs) ?? null,
-      battle.behind?.lapDeltaToAhead ?? null,
+      raceState.sessionType === 'qualify' ? null : battle.behind?.lapDeltaToAhead ?? null,
       'NO BEHIND',
     );
     renderRaceSectors();
@@ -3476,7 +3479,7 @@
 	}
 
   function requestPilotCallout() {
-    if (raceState.flag === 'yellow' || raceState.flag === 'red' ||
+    if (raceState.sessionType === 'qualify' || raceState.flag === 'yellow' || raceState.flag === 'red' ||
         raceState.directionStatus === 'wrong_way') {
       pilotCalloutPlanner.clear(activeRaceRunId);
       return false;
@@ -3635,7 +3638,18 @@
     return announcement ? speakRaceLapAnnouncement(announcement) : false;
   }
 
-  function announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState) {
+  function getRaceQualifyingAnnouncement() {
+    const self = raceState.rivals.find(row => row.carId === raceState.carId);
+    return raceAnnouncer.buildQualifyingAnnouncement({
+      sessionType: raceState.sessionType,
+      position: self?.position,
+      bestLapMs: self?.bestLapMs,
+      bestLapGapToAheadMs: self?.bestLapGapToAheadMs,
+      language: raceAnnounceLanguage,
+    });
+  }
+
+  function announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState, qualifyingUpdate) {
     if (raceState.phaseCode === 'idle' || raceState.phaseCode === 'ready') {
       lastRaceLapAnnouncementKey = '';
       stopRaceAnnouncement();
@@ -3671,7 +3685,10 @@
 		if (remoteRaceAudioEnabled) {
 			return;
 		}
-    speakRaceLapAnnouncement(nextAnnouncement);
+    const text = qualifyingUpdate
+      ? `${nextAnnouncement.text.replace(/[.。]+$/, '')}${raceAnnounceLanguage === 'ja-JP' ? '。' : '. '}${qualifyingUpdate.text}`
+      : nextAnnouncement.text;
+    return speakRaceLapAnnouncement({ ...nextAnnouncement, text });
   }
 
   function setRaceState(nextState) {
@@ -3683,6 +3700,8 @@
     }
     const hadPreviousRaceState = raceState.sampledAt > 0;
     const previousAnnouncement = getRaceLapAnnouncement();
+    const previousQualifying = getRaceQualifyingAnnouncement();
+    const previousSessionType = raceState.sessionType;
     const previousFlag = raceState.flag;
     const previousDirectionStatus = raceState.directionStatus;
     updateRaceClockOffset(nextState);
@@ -3803,7 +3822,17 @@
     renderRaceHud();
     syncRaceMilestone(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
     syncRaceStartSignalSound(!hadPreviousRaceState || nextState.reset === true);
-    announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true);
+    const nextQualifying = getRaceQualifyingAnnouncement();
+    const qualifyingUpdate = hadPreviousRaceState && nextState.reset !== true &&
+      previousSessionType === 'qualify' &&
+      previousPhaseCode === 'green' && raceState.phaseCode === 'green' &&
+      raceState.status === 'racing' && raceState.flag !== 'yellow' && raceState.flag !== 'red' &&
+      raceState.directionStatus !== 'wrong_way' && nextQualifying &&
+      nextQualifying.key !== previousQualifying?.key ? nextQualifying : null;
+    const lapSpoken = announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true, qualifyingUpdate);
+    if (qualifyingUpdate && !lapSpoken && !remoteRaceAudioEnabled) {
+      speakRaceLapAnnouncement(qualifyingUpdate);
+    }
     announceRaceSafetyIfChanged(
       previousFlag,
       previousDirectionStatus,
