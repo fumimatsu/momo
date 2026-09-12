@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260912-ui-render-v1';
+  const PILOT_BUILD_ID = '20260912-input-profiles-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -82,40 +82,8 @@
   const GAMEPAD_PROFILE_STORAGE_KEY = getGamepadProfileStorageKey();
   const GAMEPAD_PROFILE = loadGamepadProfile();
   const GAMEPAD_ENABLED = getBooleanParam('gamepad', true);
-  const GAMEPAD_INDEX = getNumberParamWithProfile('gamepadIndex', 'index', 0, true);
-  const GAMEPAD_STEERING_AXIS = getNumberParamWithProfile('gamepadSteeringAxis', 'steeringAxis', 0, true);
-  const GAMEPAD_STEERING_INVERT = getBooleanParamWithProfile('gamepadSteeringInvert', 'steeringInvert', false);
-  const GAMEPAD_STEERING_DEADZONE = getNumberParamWithProfile('gamepadSteeringDeadzone', 'steeringDeadzone', 0.03);
-  const GAMEPAD_STEERING_CENTER = getNumberParamWithProfile('gamepadSteeringCenter', 'steeringCenter', 0);
-  const GAMEPAD_STEERING_LEFT = getNumberParamWithProfile('gamepadSteeringLeft', 'steeringLeft', -1);
-  const GAMEPAD_STEERING_RIGHT = getNumberParamWithProfile('gamepadSteeringRight', 'steeringRight', 1);
-  const GAMEPAD_STEERING_CALIBRATED =
-    hasNumberParamWithProfile('gamepadSteeringCenter', 'steeringCenter') &&
-    hasNumberParamWithProfile('gamepadSteeringLeft', 'steeringLeft') &&
-    hasNumberParamWithProfile('gamepadSteeringRight', 'steeringRight');
-  const GAMEPAD_STEERING_GAIN = getEffectiveSteeringGain(
-    getNumberParamWithProfile('gamepadSteeringGain', 'steeringGain', GAMEPAD_STEERING_CALIBRATED ? 1.0 : 3.75),
-    GAMEPAD_STEERING_CALIBRATED,
-  );
-  const GAMEPAD_THROTTLE_AXIS = getNumberParamWithProfile('gamepadThrottleAxis', 'throttleAxis', 5, true);
-  const GAMEPAD_THROTTLE_BUTTON = getNumberParamWithProfile('gamepadThrottleButton', 'throttleButton', -1, true);
-  const GAMEPAD_THROTTLE_INVERT = getBooleanParamWithProfile('gamepadThrottleInvert', 'throttleInvert', false);
-  const GAMEPAD_THROTTLE_IDLE = getNumberParamWithProfile('gamepadThrottleIdle', 'throttleIdle', 1);
-  const GAMEPAD_THROTTLE_PRESSED = getNumberParamWithProfile('gamepadThrottlePressed', 'throttlePressed', -1);
-  const GAMEPAD_THROTTLE_IDLE_CONFIGURED = hasNumberParamWithProfile('gamepadThrottleIdle', 'throttleIdle');
-  const GAMEPAD_BRAKE_AXIS = getNumberParamWithProfile('gamepadBrakeAxis', 'brakeAxis', 6, true);
-  const GAMEPAD_BRAKE_BUTTON = getNumberParamWithProfile('gamepadBrakeButton', 'brakeButton', -1, true);
-  const GAMEPAD_BRAKE_INVERT = getBooleanParamWithProfile('gamepadBrakeInvert', 'brakeInvert', false);
-  const GAMEPAD_BRAKE_IDLE = getNumberParamWithProfile('gamepadBrakeIdle', 'brakeIdle', 1);
-  const GAMEPAD_BRAKE_PRESSED = getNumberParamWithProfile('gamepadBrakePressed', 'brakePressed', -1);
-  const GAMEPAD_BRAKE_IDLE_CONFIGURED = hasNumberParamWithProfile('gamepadBrakeIdle', 'brakeIdle');
-  const GAMEPAD_PEDAL_DEADZONE = getNumberParamWithProfile('gamepadPedalDeadzone', 'pedalDeadzone', 0.05);
-  const GAMEPAD_DRIVE_BUTTON = getNumberParamWithProfile('gamepadDriveButton', 'driveButton', 8, true);
   const GAMEPAD_DRIVE_BUTTON_ENABLED = getBooleanParam('gamepadDriveButtonEnabled', true);
-  const GAMEPAD_PADDLE_LEFT_BUTTON = getNumberParamWithProfile('gamepadPaddleLeftButton', 'paddleLeftButton', 0, true);
-  const GAMEPAD_PADDLE_RIGHT_BUTTON = getNumberParamWithProfile('gamepadPaddleRightButton', 'paddleRightButton', 1, true);
-  const GAMEPAD_FFB_PRESET_BUTTON = getNumberParamWithProfile('gamepadFfbPresetButton', 'ffbPresetButton', -1, true);
-  const GAMEPAD_MENU_BUTTON = getNumberParamWithProfile('gamepadMenuButton', 'menuButton', -1, true);
+  let gamepadInput = readGamepadInputSettings();
   const OSD_UPDATE_INTERVAL_MS = getNumberParam('osdMs', 100);
   const DRIVE_HUD_RENDER_INTERVAL_MS = 1000 / 30;
   const DC_PING_ENABLED = getBooleanParam('dcPing', false);
@@ -123,6 +91,14 @@
   // ffbTest は過去の検証 URL 向けの互換名。通常は gamepad.html の ffbEnabled を使う。
   const FFB_ENABLED = getBooleanParamWithProfile('ffbEnabled', 'ffbEnabled', getBooleanParam('ffbTest', true));
   const FFB_BRIDGE_URL = getStringParam('ffbUrl', GAMEPAD_PROFILE?.ffbBridgeUrl || 'ws://127.0.0.1:24725');
+  const inputProfileApi = window.MomoInputProfileBridge;
+  const pcInputClient = inputProfileApi.createClient(FFB_BRIDGE_URL);
+  let inputProfileCheckGeneration = -1;
+  let inputProfilePads = [];
+  let inputProfileSelectedKey = '';
+  const inputProfileExplicitIndex = getUrlParams().has('gamepadIndex');
+  let inputProfileBlockedReason = '';
+  let inputProfileSaveBusy = false;
   const FFB_BASE_FRICTION = Math.max(0, Math.min(1.0, getNumberParamWithProfile('ffbBaseFriction', 'ffbBaseFriction', 0.28)));
   const FFB_PARKING_FRICTION = Math.max(0, Math.min(1.0, getNumberParamWithProfile('ffbParkingFriction', 'ffbParkingFriction', 0.08)));
   const FFB_BASE_DAMPER = Math.max(0, Math.min(1.0, getNumberParamWithProfile('ffbBaseDamper', 'ffbBaseDamper', 0.05)));
@@ -839,8 +815,8 @@
   let activeRaceSafetyNotificationId = '';
   let activeRaceDirectionNotificationId = '';
   const gamepadPedalIdle = {
-    throttle: GAMEPAD_THROTTLE_IDLE,
-    brake: GAMEPAD_BRAKE_IDLE,
+    throttle: gamepadInput.throttleIdle,
+    brake: gamepadInput.brakeIdle,
   };
 
   function getUrlParams() {
@@ -951,6 +927,72 @@
   function normalizeControlUiMode(value) {
     const mode = String(value || '').toLowerCase();
     return ['auto', 'manual', 'drive', 'test'].includes(mode) ? mode : 'auto';
+  }
+
+  // Re-evaluate input settings only when a matching wheel profile is applied with Drive Off.
+  function readGamepadInputSettings() {
+    const GAMEPAD_INDEX = getNumberParamWithProfile('gamepadIndex', 'index', 0, true);
+    const GAMEPAD_STEERING_AXIS = getNumberParamWithProfile('gamepadSteeringAxis', 'steeringAxis', 0, true);
+    const GAMEPAD_STEERING_INVERT = getBooleanParamWithProfile('gamepadSteeringInvert', 'steeringInvert', false);
+    const GAMEPAD_STEERING_DEADZONE = getNumberParamWithProfile('gamepadSteeringDeadzone', 'steeringDeadzone', 0.03);
+    const GAMEPAD_STEERING_CENTER = getNumberParamWithProfile('gamepadSteeringCenter', 'steeringCenter', 0);
+    const GAMEPAD_STEERING_LEFT = getNumberParamWithProfile('gamepadSteeringLeft', 'steeringLeft', -1);
+    const GAMEPAD_STEERING_RIGHT = getNumberParamWithProfile('gamepadSteeringRight', 'steeringRight', 1);
+    const GAMEPAD_STEERING_CALIBRATED =
+      hasNumberParamWithProfile('gamepadSteeringCenter', 'steeringCenter') &&
+      hasNumberParamWithProfile('gamepadSteeringLeft', 'steeringLeft') &&
+      hasNumberParamWithProfile('gamepadSteeringRight', 'steeringRight');
+    const GAMEPAD_STEERING_GAIN = getEffectiveSteeringGain(
+      getNumberParamWithProfile('gamepadSteeringGain', 'steeringGain', GAMEPAD_STEERING_CALIBRATED ? 1.0 : 3.75),
+      GAMEPAD_STEERING_CALIBRATED,
+    );
+    const GAMEPAD_THROTTLE_AXIS = getNumberParamWithProfile('gamepadThrottleAxis', 'throttleAxis', 5, true);
+    const GAMEPAD_THROTTLE_BUTTON = getNumberParamWithProfile('gamepadThrottleButton', 'throttleButton', -1, true);
+    const GAMEPAD_THROTTLE_INVERT = getBooleanParamWithProfile('gamepadThrottleInvert', 'throttleInvert', false);
+    const GAMEPAD_THROTTLE_IDLE = getNumberParamWithProfile('gamepadThrottleIdle', 'throttleIdle', 1);
+    const GAMEPAD_THROTTLE_PRESSED = getNumberParamWithProfile('gamepadThrottlePressed', 'throttlePressed', -1);
+    const GAMEPAD_THROTTLE_IDLE_CONFIGURED = hasNumberParamWithProfile('gamepadThrottleIdle', 'throttleIdle');
+    const GAMEPAD_BRAKE_AXIS = getNumberParamWithProfile('gamepadBrakeAxis', 'brakeAxis', 6, true);
+    const GAMEPAD_BRAKE_BUTTON = getNumberParamWithProfile('gamepadBrakeButton', 'brakeButton', -1, true);
+    const GAMEPAD_BRAKE_INVERT = getBooleanParamWithProfile('gamepadBrakeInvert', 'brakeInvert', false);
+    const GAMEPAD_BRAKE_IDLE = getNumberParamWithProfile('gamepadBrakeIdle', 'brakeIdle', 1);
+    const GAMEPAD_BRAKE_PRESSED = getNumberParamWithProfile('gamepadBrakePressed', 'brakePressed', -1);
+    const GAMEPAD_BRAKE_IDLE_CONFIGURED = hasNumberParamWithProfile('gamepadBrakeIdle', 'brakeIdle');
+    const GAMEPAD_PEDAL_DEADZONE = getNumberParamWithProfile('gamepadPedalDeadzone', 'pedalDeadzone', 0.05);
+    const GAMEPAD_DRIVE_BUTTON = getNumberParamWithProfile('gamepadDriveButton', 'driveButton', 8, true);
+    const GAMEPAD_PADDLE_LEFT_BUTTON = getNumberParamWithProfile('gamepadPaddleLeftButton', 'paddleLeftButton', 0, true);
+    const GAMEPAD_PADDLE_RIGHT_BUTTON = getNumberParamWithProfile('gamepadPaddleRightButton', 'paddleRightButton', 1, true);
+    const GAMEPAD_FFB_PRESET_BUTTON = getNumberParamWithProfile('gamepadFfbPresetButton', 'ffbPresetButton', -1, true);
+    const GAMEPAD_MENU_BUTTON = getNumberParamWithProfile('gamepadMenuButton', 'menuButton', -1, true);
+    return {
+      index: GAMEPAD_INDEX,
+      steeringAxis: GAMEPAD_STEERING_AXIS,
+      steeringInvert: GAMEPAD_STEERING_INVERT,
+      steeringDeadzone: GAMEPAD_STEERING_DEADZONE,
+      steeringCenter: GAMEPAD_STEERING_CENTER,
+      steeringLeft: GAMEPAD_STEERING_LEFT,
+      steeringRight: GAMEPAD_STEERING_RIGHT,
+      steeringCalibrated: GAMEPAD_STEERING_CALIBRATED,
+      steeringGain: GAMEPAD_STEERING_GAIN,
+      throttleAxis: GAMEPAD_THROTTLE_AXIS,
+      throttleButton: GAMEPAD_THROTTLE_BUTTON,
+      throttleInvert: GAMEPAD_THROTTLE_INVERT,
+      throttleIdle: GAMEPAD_THROTTLE_IDLE,
+      throttlePressed: GAMEPAD_THROTTLE_PRESSED,
+      throttleIdleConfigured: GAMEPAD_THROTTLE_IDLE_CONFIGURED,
+      brakeAxis: GAMEPAD_BRAKE_AXIS,
+      brakeButton: GAMEPAD_BRAKE_BUTTON,
+      brakeInvert: GAMEPAD_BRAKE_INVERT,
+      brakeIdle: GAMEPAD_BRAKE_IDLE,
+      brakePressed: GAMEPAD_BRAKE_PRESSED,
+      brakeIdleConfigured: GAMEPAD_BRAKE_IDLE_CONFIGURED,
+      pedalDeadzone: GAMEPAD_PEDAL_DEADZONE,
+      driveButton: GAMEPAD_DRIVE_BUTTON,
+      paddleLeftButton: GAMEPAD_PADDLE_LEFT_BUTTON,
+      paddleRightButton: GAMEPAD_PADDLE_RIGHT_BUTTON,
+      ffbPresetButton: GAMEPAD_FFB_PRESET_BUTTON,
+      menuButton: GAMEPAD_MENU_BUTTON,
+    };
   }
 
   function getGamepadProfileStorageKey() {
@@ -6162,8 +6204,104 @@
     if (!GAMEPAD_ENABLED || !navigator.getGamepads) {
       return null;
     }
-    const gamepad = navigator.getGamepads()[GAMEPAD_INDEX];
+    const gamepad = navigator.getGamepads()[gamepadInput.index];
     return gamepad && gamepad.connected ? gamepad : null;
+  }
+
+  function setPcInputStatus(text) {
+    const status = document.getElementById('pcInputStatus');
+    if (status && status.textContent !== text) status.textContent = text;
+    const save = document.getElementById('btnSavePcInput');
+    if (save) save.disabled = pcInputClient.state !== 'ready' || inputProfileSaveBusy || driveRequested;
+  }
+
+  function syncPcInputProfile() {
+    if (!GAMEPAD_ENABLED || calibrationState) return true;
+    if (pcInputClient.state === 'loading' || pcInputClient.state === 'idle') {
+      inputProfileBlockedReason = 'PC共通設定を確認中…';
+      setPcInputStatus(inputProfileBlockedReason);
+      return false;
+    }
+    if (pcInputClient.state === 'error') {
+      inputProfileBlockedReason = `PC共通設定エラー: ${pcInputClient.detail}`;
+      setPcInputStatus(inputProfileBlockedReason);
+      return false;
+    }
+    const pads = navigator.getGamepads?.() || [];
+    // Inspect topology without parsing identities, rebuilding settings or touching the DOM each frame.
+    if (inputProfileCheckGeneration === pcInputClient.generation && pads.length === inputProfilePads.length
+        && inputProfilePads.every((p, i) => p.id === pads[i]?.id && p.index === pads[i]?.index
+          && p.axes === pads[i]?.axes.length && p.buttons === pads[i]?.buttons.length
+          && p.mapping === pads[i]?.mapping && p.connected === pads[i]?.connected)) return !inputProfileBlockedReason;
+    let pad = pads[gamepadInput.index];
+    if (!inputProfileExplicitIndex) {
+      const connected = Array.from(pads).filter(p => p?.connected);
+      pad = connected.find(p => inputProfileApi.normalizedId(p.id) === inputProfileApi.normalizedId(GAMEPAD_PROFILE.id))
+        || connected.find(p => pcInputClient.profileFor(p)) || connected[0];
+    }
+    const selectedKey = `${pad?.id}|${pad?.index}|${pad?.axes.length}|${pad?.buttons.length}|${pad?.mapping}|${pad?.connected}`;
+    const sameSelection = inputProfileCheckGeneration === pcInputClient.generation && selectedKey === inputProfileSelectedKey;
+    inputProfileCheckGeneration = pcInputClient.generation;
+    inputProfilePads = Array.from(pads, p => ({ id: p?.id, index: p?.index, axes: p?.axes.length,
+      buttons: p?.buttons.length, mapping: p?.mapping, connected: p?.connected }));
+    if (sameSelection) return !inputProfileBlockedReason;
+    inputProfileSelectedKey = selectedKey;
+    // Changing the selected controller neutralizes the old command. Connecting an unused pad does not.
+    if (driveRequested) setDriveEnabled(false);
+    inputProfileBlockedReason = '';
+    if (!pad?.connected) {
+      setPcInputStatus(pcInputClient.state === 'ready' ? 'PC共通設定: ハンコンのボタンを押すと照合します。'
+        : `ブラウザ保存のみ: ${pcInputClient.detail}`);
+      return true; // Keyboard-only operation remains available.
+    }
+    const shared = pcInputClient.profileFor(pad);
+    if (shared) {
+      Object.assign(GAMEPAD_PROFILE, inputProfileApi.apply(shared, GAMEPAD_PROFILE, pad));
+      gamepadInput = readGamepadInputSettings();
+      gamepadPedalIdle.throttle = gamepadInput.throttleIdle;
+      gamepadPedalIdle.brake = gamepadInput.brakeIdle;
+      try {
+        window.localStorage.setItem(GAMEPAD_PROFILE_STORAGE_KEY, JSON.stringify(GAMEPAD_PROFILE));
+        const override = Array.from(getUrlParams().keys()).some(k => /^gamepad(?:Steering|Throttle|Brake|Pedal|DriveButton$|Paddle|MenuButton$|FfbPresetButton$)/.test(k));
+        setPcInputStatus(`PC共通設定を適用${override ? '（URLの入力指定を優先）' : ''}: ${pad.id}`);
+      } catch (_) { setPcInputStatus(`PC共通設定を適用（ブラウザへの控えの保存は失敗）: ${pad.id}`); }
+      recordEvent('PC input profile applied', shared.key);
+    } else if (inputProfileApi.normalizedId(GAMEPAD_PROFILE.id) !== inputProfileApi.normalizedId(pad.id)
+        || (GAMEPAD_PROFILE.inputProfileKey && GAMEPAD_PROFILE.inputProfileKey !== inputProfileApi.keyFor(pad))) {
+      inputProfileBlockedReason = 'このハンコンの設定がありません。Guided Calibrationで設定してください。';
+      setPcInputStatus(inputProfileBlockedReason);
+    } else {
+      try {
+        inputProfileApi.fromMapping(GAMEPAD_PROFILE, pad);
+        GAMEPAD_PROFILE.index = pad.index;
+        gamepadInput = readGamepadInputSettings();
+        setPcInputStatus(pcInputClient.state === 'ready'
+          ? 'ブラウザ保存を使用中。「PC共通に保存」で別のRelay・車体でも使えます。'
+          : `ブラウザ保存のみ: ${pcInputClient.detail}`);
+      } catch (_) {
+        inputProfileBlockedReason = 'ブラウザの入力設定が未完成か不正です。Guided Calibrationで設定してください。';
+        setPcInputStatus(inputProfileBlockedReason);
+      }
+    }
+    if (!inputProfileBlockedReason) {
+      gamepadButtonState.clear();
+      for (let index = 0; index < pad.buttons.length; index++) gamepadButtonState.set(index, getGamepadButtonPressed(pad, index));
+    }
+    return !inputProfileBlockedReason;
+  }
+
+  async function saveCurrentPcInput() {
+    if (inputProfileSaveBusy || driveRequested || calibrationState) return;
+    inputProfileSaveBusy = true;
+    setPcInputStatus('PC共通設定を保存中…');
+    try {
+      const effective = { ...GAMEPAD_PROFILE };
+      for (const field of inputProfileApi.fields) effective[field] = gamepadInput[field];
+      await pcInputClient.save(effective, getActiveGamepad());
+      inputProfileCheckGeneration = -1;
+      syncPcInputProfile();
+    } catch (error) { setPcInputStatus(`保存できませんでした: ${error.message}`); }
+    finally { inputProfileSaveBusy = false; document.getElementById('btnSavePcInput').disabled = pcInputClient.state !== 'ready'; }
   }
 
   function getFreshImuState(nowMs = performance.now()) {
@@ -6254,6 +6392,10 @@
   function setDriveEnabled(enabled) {
     if (!enabled) {
       imuDriveCalibration.stop();
+      return;
+    }
+    if (inputProfileSaveBusy || !syncPcInputProfile()) {
+      recordEvent('drive blocked', inputProfileBlockedReason || 'input profile save in progress');
       return;
     }
     const latest = getFreshImuState();
@@ -6453,19 +6595,19 @@
     if (!gamepad) {
       return;
     }
-    if ((GAMEPAD_THROTTLE_AXIS >= 0 || GAMEPAD_THROTTLE_BUTTON >= 0) && !GAMEPAD_THROTTLE_IDLE_CONFIGURED) {
+    if ((gamepadInput.throttleAxis >= 0 || gamepadInput.throttleButton >= 0) && !gamepadInput.throttleIdleConfigured) {
       gamepadPedalIdle.throttle = getGamepadPedalValue(
         gamepad,
-        GAMEPAD_THROTTLE_AXIS,
-        GAMEPAD_THROTTLE_BUTTON,
+        gamepadInput.throttleAxis,
+        gamepadInput.throttleButton,
         gamepadPedalIdle.throttle,
       );
     }
-    if ((GAMEPAD_BRAKE_AXIS >= 0 || GAMEPAD_BRAKE_BUTTON >= 0) && !GAMEPAD_BRAKE_IDLE_CONFIGURED) {
+    if ((gamepadInput.brakeAxis >= 0 || gamepadInput.brakeButton >= 0) && !gamepadInput.brakeIdleConfigured) {
       gamepadPedalIdle.brake = getGamepadPedalValue(
         gamepad,
-        GAMEPAD_BRAKE_AXIS,
-        GAMEPAD_BRAKE_BUTTON,
+        gamepadInput.brakeAxis,
+        gamepadInput.brakeButton,
         gamepadPedalIdle.brake,
       );
     }
@@ -6485,20 +6627,20 @@
       ? pressed - idle
       : fallbackPressed - idle;
     const normalized = (raw - idle) / (Math.abs(span) >= 0.001 ? span : 1);
-    return applyDeadzone(Math.max(0, Math.min(1, normalized)), GAMEPAD_PEDAL_DEADZONE);
+    return applyDeadzone(Math.max(0, Math.min(1, normalized)), gamepadInput.pedalDeadzone);
   }
 
   function normalizeSteeringAxis(value) {
-    const raw = GAMEPAD_STEERING_INVERT ? -value : value;
-    const center = GAMEPAD_STEERING_INVERT ? -GAMEPAD_STEERING_CENTER : GAMEPAD_STEERING_CENTER;
-    const left = GAMEPAD_STEERING_INVERT ? -GAMEPAD_STEERING_RIGHT : GAMEPAD_STEERING_LEFT;
-    const right = GAMEPAD_STEERING_INVERT ? -GAMEPAD_STEERING_LEFT : GAMEPAD_STEERING_RIGHT;
+    const raw = gamepadInput.steeringInvert ? -value : value;
+    const center = gamepadInput.steeringInvert ? -gamepadInput.steeringCenter : gamepadInput.steeringCenter;
+    const left = gamepadInput.steeringInvert ? -gamepadInput.steeringRight : gamepadInput.steeringLeft;
+    const right = gamepadInput.steeringInvert ? -gamepadInput.steeringLeft : gamepadInput.steeringRight;
     const leftSpan = Math.max(0.001, Math.abs(center - left));
     const rightSpan = Math.max(0.001, Math.abs(right - center));
     const normalized = raw < center
       ? -Math.min(1, Math.abs(raw - center) / leftSpan)
       : Math.min(1, Math.abs(raw - center) / rightSpan);
-    return Math.max(-1, Math.min(1, applyDeadzone(normalized, GAMEPAD_STEERING_DEADZONE) * GAMEPAD_STEERING_GAIN));
+    return Math.max(-1, Math.min(1, applyDeadzone(normalized, gamepadInput.steeringDeadzone) * gamepadInput.steeringGain));
   }
 
   function formatGamepadStatus(gamepad, steering, throttle, brake) {
@@ -6507,22 +6649,22 @@
   }
 
   function applyGamepadCommand(gamepad) {
-    const rawSteering = getGamepadAxis(gamepad, GAMEPAD_STEERING_AXIS);
+    const rawSteering = getGamepadAxis(gamepad, gamepadInput.steeringAxis);
     const steering = normalizeSteeringAxis(rawSteering);
-    const throttle = GAMEPAD_THROTTLE_AXIS >= 0 || GAMEPAD_THROTTLE_BUTTON >= 0
+    const throttle = gamepadInput.throttleAxis >= 0 || gamepadInput.throttleButton >= 0
       ? normalizePedalAxis(
-        getGamepadPedalValue(gamepad, GAMEPAD_THROTTLE_AXIS, GAMEPAD_THROTTLE_BUTTON, gamepadPedalIdle.throttle),
-        GAMEPAD_THROTTLE_INVERT,
+        getGamepadPedalValue(gamepad, gamepadInput.throttleAxis, gamepadInput.throttleButton, gamepadPedalIdle.throttle),
+        gamepadInput.throttleInvert,
         gamepadPedalIdle.throttle,
-        GAMEPAD_THROTTLE_PRESSED
+        gamepadInput.throttlePressed
       )
       : 0;
-    const brake = GAMEPAD_BRAKE_AXIS >= 0 || GAMEPAD_BRAKE_BUTTON >= 0
+    const brake = gamepadInput.brakeAxis >= 0 || gamepadInput.brakeButton >= 0
       ? normalizePedalAxis(
-        getGamepadPedalValue(gamepad, GAMEPAD_BRAKE_AXIS, GAMEPAD_BRAKE_BUTTON, gamepadPedalIdle.brake),
-        GAMEPAD_BRAKE_INVERT,
+        getGamepadPedalValue(gamepad, gamepadInput.brakeAxis, gamepadInput.brakeButton, gamepadPedalIdle.brake),
+        gamepadInput.brakeInvert,
         gamepadPedalIdle.brake,
-        GAMEPAD_BRAKE_PRESSED
+        gamepadInput.brakePressed
       )
       : 0;
 
@@ -6546,7 +6688,8 @@
     if (!GAMEPAD_ENABLED) {
       return;
     }
-    const gamepad = getActiveGamepad();
+    if (!syncPcInputProfile()) return;
+    const gamepad = calibrationState ? getCalibrationGamepad() : getActiveGamepad();
     if (!gamepad) {
       if (gamepadSeen && performance.now() - lastGamepadAt > 500) {
         lastGamepadStatus = 'gamepad lost';
@@ -6562,7 +6705,7 @@
       updateControlUiMode();
       return;
     }
-    if (GAMEPAD_MENU_BUTTON >= 0 && getGamepadButtonRisingEdge(gamepad, GAMEPAD_MENU_BUTTON)) {
+    if (gamepadInput.menuButton >= 0 && getGamepadButtonRisingEdge(gamepad, gamepadInput.menuButton)) {
       toggleMenu();
       return;
     }
@@ -6570,14 +6713,14 @@
       updateControlUiMode();
       return;
     }
-    if (GAMEPAD_DRIVE_BUTTON_ENABLED && getGamepadButtonRisingEdge(gamepad, GAMEPAD_DRIVE_BUTTON)) {
+    if (GAMEPAD_DRIVE_BUTTON_ENABLED && getGamepadButtonRisingEdge(gamepad, gamepadInput.driveButton)) {
       toggleDrive();
     }
-    if (getGamepadButtonRisingEdge(gamepad, GAMEPAD_PADDLE_LEFT_BUTTON)) {
+    if (getGamepadButtonRisingEdge(gamepad, gamepadInput.paddleLeftButton)) {
       setThrottleGear(currentGear - 1);
       recordEvent('gamepad paddle', 'left');
     }
-    if (getGamepadButtonRisingEdge(gamepad, GAMEPAD_PADDLE_RIGHT_BUTTON)) {
+    if (getGamepadButtonRisingEdge(gamepad, gamepadInput.paddleRightButton)) {
 			if (currentGear >= RC_GEAR_COUNT) {
 				requestBoostActivation();
 			} else {
@@ -6585,7 +6728,7 @@
 			}
       recordEvent('gamepad paddle', 'right');
     }
-    if (GAMEPAD_FFB_PRESET_BUTTON >= 0 && getGamepadButtonRisingEdge(gamepad, GAMEPAD_FFB_PRESET_BUTTON)) {
+    if (gamepadInput.ffbPresetButton >= 0 && getGamepadButtonRisingEdge(gamepad, gamepadInput.ffbPresetButton)) {
       cycleFfbPreset();
     }
     if (rcDriveEnabled) {
@@ -8252,7 +8395,7 @@
       return null;
     }
     const gamepads = Array.from(navigator.getGamepads()).filter(Boolean);
-    return gamepads.find((gamepad) => gamepad.index === GAMEPAD_INDEX && gamepad.connected)
+    return gamepads.find((gamepad) => gamepad.index === gamepadInput.index && gamepad.connected)
       || gamepads.find((gamepad) => gamepad.connected)
       || null;
   }
@@ -8328,6 +8471,7 @@
       ffbBridgeUrl: 'ws://127.0.0.1:24725',
       reverseMin: 1300,
       ...GAMEPAD_PROFILE,
+      inputProfileKey: undefined,
       id: gamepad.id || '',
       index: gamepad.index,
       profileKey: identity.key,
@@ -8385,7 +8529,7 @@
     }
     setText(calibrationVisualKey, complete ? 'SAVE' : step.visualKey || '');
     calibrationInstruction.textContent = complete
-      ? 'Save & ReloadまたはEnterで保存し、Viewerを再読み込みします。Driveは再読み込み後もOFFです。'
+      ? `${pcInputClient.state === 'ready' ? 'PC共通設定とブラウザに' : 'このブラウザにのみ'}保存し、Viewerを再読み込みします。Driveは再読み込み後もOFFです。`
       : step.button
         ? `${step.instruction} Sキーでもスキップできます。`
         : `${step.instruction} Record CurrentまたはEnterで記録します。`;
@@ -8402,6 +8546,7 @@
   }
 
   function startCalibrationWizard() {
+    if (inputProfileSaveBusy) return;
     const gamepad = getCalibrationGamepad();
     menuGrid.hidden = true;
     calibrationWizard.hidden = false;
@@ -8437,6 +8582,7 @@
   }
 
   function closeCalibrationWizard() {
+    if (inputProfileSaveBusy) return;
     calibrationState = null;
     calibrationButtonState.clear();
     if (calibrationWizard) {
@@ -8454,6 +8600,7 @@
   }
 
   function backCalibrationStep() {
+    if (inputProfileSaveBusy) return;
     if (!calibrationState || calibrationState.stepIndex <= 0
       || calibrationState.stepIndex >= CALIBRATION_STEPS.length) {
       return;
@@ -8479,6 +8626,7 @@
   }
 
   function captureCalibrationStep() {
+    if (inputProfileSaveBusy) return;
     if (!calibrationState) {
       startCalibrationWizard();
       return;
@@ -8617,6 +8765,7 @@
   }
 
   function skipCalibrationStep() {
+    if (inputProfileSaveBusy) return;
     if (!calibrationState) return;
     const step = CALIBRATION_STEPS[calibrationState.stepIndex];
     if (!step?.optional) {
@@ -8681,17 +8830,27 @@
     return '';
   }
 
-  function saveCalibrationMapping() {
-    const mapping = calibrationState?.mapping;
-    if (!mapping) {
+  async function saveCalibrationMapping() {
+    if (inputProfileSaveBusy) return;
+    if (!calibrationState?.mapping) {
       return;
     }
+    const mapping = { ...calibrationState.mapping };
     const validationError = validateCalibrationMapping(mapping);
     if (validationError) {
       calibrationError.textContent = validationError;
       return;
     }
+    inputProfileSaveBusy = true;
+    calibrationError.textContent = '設定を保存中…';
     try {
+      if (pcInputClient.state === 'loading' || pcInputClient.state === 'error')
+        throw new Error(pcInputClient.detail || 'PC共通設定の確認完了を待ってください。');
+      if (pcInputClient.state === 'ready') {
+        const pad = getCalibrationGamepad();
+        const saved = await pcInputClient.save(mapping, pad);
+        mapping.inputProfileKey = saved.key;
+      }
       window.localStorage?.setItem(GAMEPAD_PROFILE_STORAGE_KEY, JSON.stringify(mapping));
       const profileApi = window.FpvGamepadProfiles;
       if (profileApi?.load && profileApi?.saveProfile && mapping.profileKey) {
@@ -8705,7 +8864,7 @@
       window.location.reload();
     } catch (error) {
       calibrationError.textContent = `保存に失敗しました: ${error.message || error}`;
-    }
+    } finally { inputProfileSaveBusy = false; }
   }
 
   function openInputSetup() {
@@ -8727,6 +8886,7 @@
     }
     url.searchParams.set('viewer', 'relay-pilot');
     url.searchParams.set('relayPilotPath', 'flat');
+    url.searchParams.set('ffbUrl', FFB_BRIDGE_URL);
     const returnUrl = new URL(location.href);
     returnUrl.searchParams.delete('pilotTicket');
     returnUrl.searchParams.delete('sessionTicket');
@@ -8820,6 +8980,7 @@
   btnMenuClose?.addEventListener('click', () => setMenuOpen(false));
   btnCarSelect?.addEventListener('click', openGarage);
   btnStartCalibration?.addEventListener('click', startCalibrationWizard);
+  document.getElementById('btnSavePcInput')?.addEventListener('click', saveCurrentPcInput);
   btnCalibrationCapture?.addEventListener('click', captureCalibrationStep);
   btnCalibrationSkip?.addEventListener('click', skipCalibrationStep);
   btnCalibrationBack?.addEventListener('click', backCalibrationStep);
@@ -8941,24 +9102,26 @@
       motion: getMotionSnapshot(),
       gamepad: {
         enabled: GAMEPAD_ENABLED,
-        index: GAMEPAD_INDEX,
-        steeringAxis: GAMEPAD_STEERING_AXIS,
-        steeringInvert: GAMEPAD_STEERING_INVERT,
-        steeringGain: GAMEPAD_STEERING_GAIN,
-        steeringDeadzone: GAMEPAD_STEERING_DEADZONE,
-        throttleAxis: GAMEPAD_THROTTLE_AXIS,
-        throttleButton: GAMEPAD_THROTTLE_BUTTON,
-        throttleInvert: GAMEPAD_THROTTLE_INVERT,
-        brakeAxis: GAMEPAD_BRAKE_AXIS,
-        brakeButton: GAMEPAD_BRAKE_BUTTON,
-        brakeInvert: GAMEPAD_BRAKE_INVERT,
-        pedalDeadzone: GAMEPAD_PEDAL_DEADZONE,
-        driveButton: GAMEPAD_DRIVE_BUTTON,
-        paddleLeftButton: GAMEPAD_PADDLE_LEFT_BUTTON,
-        paddleRightButton: GAMEPAD_PADDLE_RIGHT_BUTTON,
-        ffbPresetButton: GAMEPAD_FFB_PRESET_BUTTON,
-        menuButton: GAMEPAD_MENU_BUTTON,
+        index: gamepadInput.index,
+        steeringAxis: gamepadInput.steeringAxis,
+        steeringInvert: gamepadInput.steeringInvert,
+        steeringGain: gamepadInput.steeringGain,
+        steeringDeadzone: gamepadInput.steeringDeadzone,
+        throttleAxis: gamepadInput.throttleAxis,
+        throttleButton: gamepadInput.throttleButton,
+        throttleInvert: gamepadInput.throttleInvert,
+        brakeAxis: gamepadInput.brakeAxis,
+        brakeButton: gamepadInput.brakeButton,
+        brakeInvert: gamepadInput.brakeInvert,
+        pedalDeadzone: gamepadInput.pedalDeadzone,
+        driveButton: gamepadInput.driveButton,
+        paddleLeftButton: gamepadInput.paddleLeftButton,
+        paddleRightButton: gamepadInput.paddleRightButton,
+        ffbPresetButton: gamepadInput.ffbPresetButton,
+        menuButton: gamepadInput.menuButton,
         profileId: GAMEPAD_PROFILE.id || '',
+        pcProfileState: pcInputClient.state,
+        pcProfileError: pcInputClient.detail || inputProfileBlockedReason || null,
       },
       ffb: {
         enabled: FFB_ENABLED,
@@ -9119,6 +9282,8 @@
   updateHostUi(getEndpointHostName());
   startRoomLockStatusMonitor();
   startGamepadPoller();
+  if (GAMEPAD_ENABLED) pcInputClient.load().then(() => { inputProfileCheckGeneration = -1; syncPcInputProfile(); });
+  else setPcInputStatus('ハンコン入力は無効です。');
   updateGearUi();
   updateControlUiMode();
   if (DRIVE_UI_TEST_HEALTH >= 0 && DRIVE_UI_TEST_HEALTH <= 100) {

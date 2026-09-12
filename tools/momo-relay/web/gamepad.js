@@ -58,6 +58,11 @@ let profileStore = profileApi.load(window.localStorage, profileScope);
 let legacyMapping = null;
 let currentLanguage = loadLanguage();
 let roomLeaseHeartbeatTimer = 0;
+let pcInputClient = null;
+let pcInputEditing = false;
+let pcInputSaving = false;
+const pcInputStatusEl = document.getElementById('pcInputStatus');
+const reloadPcInputEl = document.getElementById('reloadPcInput');
 
 const translations = {
   en: {
@@ -352,6 +357,9 @@ function selectGamepad(gamepad, force = false) {
     vendorId: identity.vendorId,
     productId: identity.productId
   });
+  pcInputEditing = false;
+  const shared = pcInputClient?.profileFor(gamepad);
+  if (shared) Object.assign(mapping, window.MomoInputProfileBridge.apply(shared, mapping, gamepad));
   selectedGamepadIndex = gamepad.index;
   selectedProfileKey = identity.key;
   migrateSavedMapping();
@@ -497,6 +505,15 @@ function buildViewerUrl() {
   }
   if (!targetDevice && !relayHost) {
     url.search = "";
+  }
+  if (relayPilotTarget && pcInputClient?.state === 'ready') {
+    // Open Viewer saves first. Do not freeze PC calibration or a USB index into the next car URL.
+    for (const target of [params, url.searchParams]) {
+      for (const key of Array.from(target.keys())) {
+        if (/^gamepad(?:Index|Profile|Steering|Throttle|Brake|Pedal|DriveButton$|Paddle|MenuButton$|FfbPresetButton$)/.test(key)) target.delete(key);
+      }
+    }
+    params.set('ffbUrl', pageParams.get('ffbUrl') || mapping.ffbBridgeUrl || 'ws://127.0.0.1:24725');
   }
   url.hash = params.toString();
   return url.toString();
@@ -858,31 +875,66 @@ function assignInput(field, index) {
   assignStatusEl.textContent = `${fieldLabel(field)} = ${index}`;
 }
 
-function saveMapping() {
-  syncMappingFromOptions();
-  const gamepad = getSelectedGamepad();
-  if (gamepad) {
-    const identity = profileApi.parseGamepadIdentity(gamepad.id);
-    selectedProfileKey = identity.key;
-    Object.assign(mapping, {
-      id: gamepad.id || "",
-      index: gamepad.index,
-      profileKey: identity.key,
-      vendorId: identity.vendorId,
-      productId: identity.productId
-    });
-    profileStore = profileApi.saveProfile(
-      window.localStorage,
-      profileStore,
-      identity.key,
-      mapping,
-      profileScope
-    );
-    profileStatusEl.textContent = `${identity.label} / ${t("profileLoaded")}`;
-  }
-  window.localStorage?.setItem(scopedLegacyStorageKey, JSON.stringify(mapping));
-  updateMappingOutput();
-  assignStatusEl.textContent = t("savedForViewer");
+async function saveMapping({ browserOnly = false } = {}) {
+  if (pcInputSaving) return false;
+  pcInputSaving = true;
+  saveMappingEl.disabled = true;
+  try {
+    syncMappingFromOptions();
+    const gamepad = getSelectedGamepad();
+    const savedMapping = { ...mapping };
+    if (pcInputClient && !browserOnly) {
+      if (pcInputClient.state === 'loading' || pcInputClient.state === 'error')
+        throw new Error(pcInputClient.detail || 'PC共通設定の確認完了を待ってください。');
+      if (pcInputClient.state === 'ready') {
+        const saved = await pcInputClient.save(savedMapping, gamepad);
+        savedMapping.inputProfileKey = saved.key;
+      }
+    }
+    if (gamepad) {
+      const identity = profileApi.parseGamepadIdentity(gamepad.id);
+      selectedProfileKey = identity.key;
+      Object.assign(savedMapping, {
+        id: gamepad.id || "",
+        index: gamepad.index,
+        profileKey: identity.key,
+        vendorId: identity.vendorId,
+        productId: identity.productId
+      });
+      profileStore = profileApi.saveProfile(
+        window.localStorage,
+        profileStore,
+        identity.key,
+        savedMapping,
+        profileScope
+      );
+      profileStatusEl.textContent = `${identity.label} / ${t("profileLoaded")}`;
+    }
+    window.localStorage?.setItem(scopedLegacyStorageKey, JSON.stringify(savedMapping));
+    updateMappingOutput();
+    assignStatusEl.textContent = pcInputClient?.state === 'ready' && !browserOnly ? 'PC共通設定とブラウザに保存しました。' : t("savedForViewer");
+    return true;
+  } catch (error) {
+    assignStatusEl.textContent = `保存できませんでした: ${error.message}`;
+    return false;
+  } finally { pcInputSaving = false; saveMappingEl.disabled = false; }
+}
+
+async function loadPcInput() {
+  if (!relayPilotTarget || pcInputSaving) return;
+  pcInputClient = window.MomoInputProfileBridge.createClient(pageParams.get('ffbUrl') || mapping.ffbBridgeUrl || 'ws://127.0.0.1:24725');
+  pcInputStatusEl.hidden = reloadPcInputEl.hidden = false;
+  reloadPcInputEl.disabled = true;
+  pcInputStatusEl.textContent = 'PC共通設定を確認中…';
+  await pcInputClient.load();
+  reloadPcInputEl.disabled = false;
+  if (pcInputClient.state === 'ready') {
+    if (!pcInputEditing) selectGamepad(getSelectedGamepad(), true);
+    pcInputStatusEl.textContent = pcInputEditing ? 'PC共通設定を取得しました。編集中のため、適用する場合は「読み直す」を押してください。'
+      : '入力設定はこのPCのハンコンごとに保存します。車体への出力調整とFFB強度はブラウザに保存します。';
+  } else pcInputStatusEl.textContent = pcInputClient.state === 'error'
+    ? `PC共通設定エラー（保存を停止）: ${pcInputClient.detail}`
+    : `ブラウザ保存のみ: ${pcInputClient.detail}`;
 }
 
 function clearSavedMapping() {
@@ -1020,7 +1072,8 @@ async function captureGamepad(label, button) {
     assignStatusEl.textContent = `${t("captureFailed")}: ${label}`;
     return;
   }
-  saveMapping();
+  // Diagnostic captures can be partial. Only explicit Save/Open Viewer publishes a complete PC profile.
+  if (!await saveMapping({ browserOnly: true })) return;
   try {
     await fetch(getCaptureUrl(), {
       method: "POST",
@@ -1090,6 +1143,7 @@ window.addEventListener("pagehide", () => {
 });
 
 padsEl.addEventListener("pointerdown", (event) => {
+  pcInputEditing = true;
   const selectButton = event.target.closest("button[data-select-gamepad]");
   if (selectButton) {
     event.preventDefault();
@@ -1129,12 +1183,18 @@ copyMappingEl.addEventListener("click", async () => {
 saveMappingEl.addEventListener("click", () => {
   saveMapping();
 });
+openViewerEl.addEventListener('click', async event => {
+  if (!relayPilotTarget || !pcInputClient) return;
+  event.preventDefault();
+  if (await saveMapping()) window.location.assign(buildViewerUrl());
+});
 
 clearMappingEl.addEventListener("click", () => {
   clearSavedMapping();
 });
 
 Object.values(optionInputs).forEach((input) => {
+  input.addEventListener('input', () => { pcInputEditing = true; });
   input.addEventListener("input", updateMappingOutput);
   input.addEventListener("change", updateMappingOutput);
 });
@@ -1147,6 +1207,12 @@ captureButtons.forEach((button) => {
 });
 
 loadSavedMapping();
+if (relayPilotTarget) {
+  loadPcInput();
+  reloadPcInputEl.addEventListener('click', () => { pcInputEditing = false; loadPcInput(); });
+  clearMappingEl.removeAttribute('data-i18n');
+  clearMappingEl.textContent = 'ブラウザ保存を削除（PC共通設定は保持）';
+}
 syncOptionsFromMapping();
 applyLanguage();
 startActiveRoomLeaseHeartbeat();

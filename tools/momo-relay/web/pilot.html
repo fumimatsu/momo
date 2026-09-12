@@ -2843,6 +2843,13 @@
       font-size: 12px;
     }
 
+    .menu-input-status {
+      margin: 12px 0 0;
+      color: #aec0ca;
+      font: 500 14px/1.6 "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+      overflow-wrap: anywhere;
+    }
+
     .menu-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4938,8 +4945,10 @@
           <div class="menu-actions">
             <button id="btnStartCalibration" class="wide primary-action" type="button">Guided Calibration</button>
             <button id="btnInputSetup" class="wide" type="button">Advanced Input</button>
+            <button id="btnSavePcInput" class="wide" type="button">現在の入力設定をPC共通に保存</button>
             <button id="btnDebug" class="wide" type="button">Debug</button>
           </div>
+          <p id="pcInputStatus" class="menu-input-status" role="status">PC共通設定を確認中…</p>
         </section>
       </div>
 
@@ -5140,25 +5149,29 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260912-ui-render-v1"></script>
+    <script src="../../telemetry.js?v=20260912-input-profiles-v1"></script>
     <script
-      src="./imu-drive-calibration.js?v=20260912-ui-render-v1"
-      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260912-ui-render-v1'"
+      src="./imu-drive-calibration.js?v=20260912-input-profiles-v1"
+      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260912-input-profiles-v1'"
     ></script>
-    <script src="../../m5-audio.js?v=20260912-ui-render-v1"></script>
+    <script src="../../m5-audio.js?v=20260912-input-profiles-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260912-ui-render-v1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260912-ui-render-v1'"
+      src="./gamepad-profile.js?v=20260912-input-profiles-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260912-input-profiles-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260912-ui-render-v1"></script>
-    <script src="./race-battle.js?v=20260912-ui-render-v1"></script>
-    <script src="./pilot-callout-planner.js?v=20260912-ui-render-v1"></script>
-    <script src="./browser-kokoro-client.js?v=20260912-ui-render-v1"></script>
-    <script src="./notification-controller.js?v=20260912-ui-render-v1"></script>
-    <script src="../../race-announcer.js?v=20260912-ui-render-v1"></script>
-    <script src="../../race-ui-performance.js?v=20260912-ui-render-v1"></script>
-    <script src="../../course-layout.js?v=20260912-ui-render-v1"></script>
-    <script src="./pilot.js?v=20260912-ui-render-v1"></script>
+    <script
+      src="./input-profile-bridge.js?v=20260912-input-profiles-v1"
+      onerror="this.onerror=null;this.src='../../input-profile-bridge.js?v=20260912-input-profiles-v1'"
+    ></script>
+    <script src="./ffb-bridge.js?v=20260912-input-profiles-v1"></script>
+    <script src="./race-battle.js?v=20260912-input-profiles-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260912-input-profiles-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260912-input-profiles-v1"></script>
+    <script src="./notification-controller.js?v=20260912-input-profiles-v1"></script>
+    <script src="../../race-announcer.js?v=20260912-input-profiles-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260912-input-profiles-v1"></script>
+    <script src="../../course-layout.js?v=20260912-input-profiles-v1"></script>
+    <script src="./pilot.js?v=20260912-input-profiles-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>

@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/fumimatsu/momo-fpv-viewer",
-  "sourceCommit": "95ffdf4a9a3883ce95aa47b07d1d5d680e094542",
+  "sourceCommit": "93bd2752bb0e4a3d80d7a64cac0dd2307eb2efdf",
   "sourceDirty": false,
   "variant": "relay-pilot",
   "target": "relay-web",
@@ -28,6 +28,7 @@
     "gamepad.html",
     "gamepad.js",
     "gamepad-profile.js",
+    "input-profile-bridge.js",
     "manifest.json",
     "icon.svg",
     "apple-touch-icon.png",

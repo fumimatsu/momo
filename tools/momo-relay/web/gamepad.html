@@ -354,6 +354,8 @@
     <button id="clearMapping" type="button" data-i18n="clearMapping">Clear saved</button>
     <a id="openViewer" class="viewer-link" href="./viewer.html" target="_blank" rel="noreferrer" data-i18n="openViewer">Open Viewer</a>
     <div id="profileStatus" class="profile-status"></div>
+    <div id="pcInputStatus" class="profile-status" role="status" hidden></div>
+    <button id="reloadPcInput" type="button" hidden>PC共通設定を読み直す（編集中の入力設定を戻す）</button>
     <div id="assignStatus" class="assign-status"></div>
   </div>
   <div class="toolbar mapping-options">
@@ -396,7 +398,8 @@
     <h2 data-i18n="generatedMapping">Generated mapping</h2>
     <pre id="mappingOutput">{}</pre>
   </section>
-  <script src="./gamepad-profile.js?v=20260815-ffb-default-v1"></script>
-  <script src="./gamepad.js?v=20260815-ffb-default-v1"></script>
+  <script src="./gamepad-profile.js?v=20260912-input-profiles-v1"></script>
+  <script src="./input-profile-bridge.js?v=20260912-input-profiles-v1"></script>
+  <script src="./gamepad.js?v=20260912-input-profiles-v1"></script>
 </body>
 </html>
