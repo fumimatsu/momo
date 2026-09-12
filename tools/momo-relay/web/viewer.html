@@ -2782,8 +2782,10 @@
       inset: 0;
       z-index: 30;
       overflow: auto;
-      background: rgba(0, 3, 6, 0.58);
-      backdrop-filter: blur(7px) saturate(0.72);
+      background: rgba(0, 0, 0, 0.64);
+      backdrop-filter: none;
+      color: #edf1f3;
+      font-family: "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
       pointer-events: auto;
     }
 
@@ -2793,22 +2795,22 @@
 
     .menu-sheet {
       width: 100%;
-      min-height: min(54vh, 620px);
-      max-height: min(88vh, 820px);
+      min-height: 0;
+      max-height: 88vh;
       overflow: auto;
-      padding: calc(24px + env(safe-area-inset-top)) max(24px, calc((100vw - 1180px) / 2)) 28px;
-      border-bottom: 1px solid rgba(128, 219, 235, 0.4);
-      background: rgba(4, 10, 14, 0.94);
-      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.58);
+      padding: calc(24px + env(safe-area-inset-top)) max(24px, calc((100vw - 1120px) / 2)) 32px;
+      border-bottom: 1px solid #34424b;
+      background: #13191d;
+      box-shadow: none;
     }
 
     .menu-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
-      padding-bottom: 17px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+      gap: 16px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #303a43;
     }
 
     .menu-kicker,
@@ -2823,36 +2825,45 @@
 
     .menu-title {
       margin: 4px 0 0;
-      font: 800 28px/1.05 Impact, "Arial Narrow", sans-serif;
+      font: 650 26px/1.2 "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+      letter-spacing: 0;
+    }
+
+    .menu-kicker,
+    .menu-section-title {
+      color: #aec0ca;
+      font-size: 12px;
+      font-weight: 650;
       letter-spacing: 0;
     }
 
     .menu-context {
-      color: rgba(232, 245, 248, 0.65);
+      margin-right: 16px;
+      color: #a9b9c3;
       font-size: 12px;
     }
 
     .menu-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0 28px;
-      margin-top: 20px;
+      gap: 0 24px;
+      margin-top: 24px;
     }
 
     .menu-section {
       min-width: 0;
-      padding: 0 0 20px;
+      padding: 0;
     }
 
     .menu-section + .menu-section {
-      border-left: 1px solid rgba(255, 255, 255, 0.12);
-      padding-left: 28px;
+      border-left: 1px solid #303a43;
+      padding-left: 24px;
     }
 
     .menu-actions {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 9px;
+      gap: 10px;
       margin-top: 12px;
     }
 
@@ -2860,42 +2871,92 @@
       grid-column: 1 / -1;
     }
 
-    .menu-actions button {
-      min-height: 42px;
+    .menu-sheet button {
+      min-height: 44px;
+      border: 1px solid #3b4b56;
+      border-radius: 4px;
+      background: #202a31;
+      color: #edf1f3;
+      font: 600 14px "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+      opacity: 1;
+      box-shadow: none;
+      text-shadow: none;
       overflow-wrap: anywhere;
     }
 
-    .menu-actions button[aria-pressed="true"] {
-      border-color: rgba(88, 255, 153, 0.82);
-      background: rgba(0, 126, 61, 0.52);
-      color: #ffffff;
+    .menu-sheet button:disabled { opacity: 0.45; }
+
+    .menu-sheet :is(button, select, input):focus-visible {
+      outline: 2px solid #56a8c2;
+      outline-offset: 2px;
+    }
+
+    .menu-sheet button:not(:disabled):hover { border-color: #86adbd; }
+
+    .menu-sheet .menu-actions button[aria-pressed="true"] {
+      border-color: #51846b;
+      background: #1c3830;
+      color: #e5f9eb;
     }
 
     .menu-actions .primary-action {
-      border-color: rgba(73, 210, 235, 0.72);
-      background: rgba(13, 111, 132, 0.38);
+      border-color: #4f95aa;
+      background: #203e49;
     }
 
     .menu-actions .mic-control {
       grid-column: 1 / -1;
       margin: 0;
       padding-top: 4px;
+      gap: 10px;
+      align-items: center;
     }
 
     .menu-field {
       display: grid;
       gap: 5px;
-      color: rgba(232, 245, 248, 0.68);
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
+      color: #b7c8d2;
+      font-size: 12px;
+      font-weight: 600;
     }
 
     .menu-field select {
       width: 100%;
-      min-height: 42px;
+      min-height: 44px;
       padding: 0 10px;
-      background: rgba(7, 15, 19, 0.78);
+      border-color: #3b4b56;
+      border-radius: 4px;
+      background: #202a31;
+      font: 14px "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+    }
+
+    .menu-sheet input[type="range"] { height: 32px; min-width: 0; }
+    .menu-sheet input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px;
+      border: 0;
+      background: #657c89;
+      box-shadow: none;
+    }
+    .menu-sheet input[type="range"]::-webkit-slider-thumb {
+      width: 18px;
+      height: 18px;
+      margin-top: -7px;
+      border: 1px solid #a1c2d0;
+      background: #c5d8e1;
+      box-shadow: none;
+    }
+    .menu-sheet input[type="range"]::-moz-range-track {
+      height: 4px;
+      border: 0;
+      background: #657c89;
+      box-shadow: none;
+    }
+    .menu-sheet input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border: 1px solid #a1c2d0;
+      background: #c5d8e1;
+      box-shadow: none;
     }
 
     .calibration-wizard {
@@ -3423,8 +3484,10 @@
         grid-template-columns: 1fr;
       }
 
+      .menu-grid { row-gap: 20px; }
+
       .menu-section + .menu-section {
-        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        border-top: 1px solid #303a43;
         border-left: 0;
         padding-top: 18px;
         padding-left: 0;
@@ -4455,35 +4518,69 @@
 
     .vehicle-status-cluster .vehicle-vitals {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(0, 1fr));
       width: 100%;
       gap: 5px;
+      font-family: "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+      text-shadow: 0 1px 2px #000;
     }
 
     .vehicle-status-cluster .vehicle-vital {
-      grid-template-columns: 23px minmax(0, 1fr);
-      grid-template-rows: 10px 19px;
-      min-height: 39px;
-      padding: 4px 5px 4px 4px;
+      grid-template-columns: 18px minmax(0, 1fr);
+      grid-template-rows: 12px 27px;
+      gap: 3px 5px;
+      min-height: 54px;
+      padding: 6px;
       border: 0;
-      background: linear-gradient(112deg, rgba(1, 8, 12, 0.2), rgba(6, 18, 28, 0.08));
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.08);
+      border-top: 1px solid rgba(190, 211, 221, 0.26);
+      border-radius: 3px;
+      background: rgba(8, 15, 20, 0.8);
+      box-shadow: none;
       clip-path: none;
     }
 
     .vehicle-status-cluster .vehicle-vital::after { display: none; }
 
-    .vehicle-status-cluster .vehicle-vital-icon { width: 15px; height: 15px; }
-    .vehicle-status-cluster .vehicle-vital-icon.battery { width: 16px; height: 9px; }
-    .vehicle-status-cluster .vehicle-vital-label { font-size: 6px; }
-    .vehicle-status-cluster .vehicle-vital-reading output { min-width: 27px; font-size: 14px; }
-    .vehicle-status-cluster .vehicle-vital-reading small { font-size: 7px; }
+    .vehicle-status-cluster .vehicle-vital:is([data-state="warning"], [data-state="critical"]) {
+      border-top-color: var(--vital-color);
+    }
+    .vehicle-status-cluster .vehicle-vital-icon {
+      grid-row: 1;
+      width: 13px;
+      height: 13px;
+      box-shadow: none;
+      filter: none;
+    }
+    .vehicle-status-cluster .vehicle-vital-icon.battery { width: 14px; height: 9px; }
+    .vehicle-status-cluster .vehicle-vital-label {
+      color: #b6c7d0;
+      font-size: 8px;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+    .vehicle-status-cluster .vehicle-vital-reading {
+      grid-column: 1 / -1;
+      align-self: center;
+      gap: 3px;
+      padding-right: 23px;
+    }
+    .vehicle-status-cluster .vehicle-vital-reading output {
+      min-width: 0;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-align: left;
+    }
+    .vehicle-status-cluster #vehicleVoltageValue { font-size: 25px; }
+    .vehicle-status-cluster .vehicle-vital-reading small { font-size: 9px; color: #bbcbd4; font-weight: 500; }
     .vehicle-status-cluster .vehicle-vital-status {
       position: absolute;
-      top: 4px;
-      right: 4px;
+      top: auto;
+      bottom: 7px;
+      right: 6px;
       display: block;
-      font-size: 6px;
+      font-size: 7px;
+      letter-spacing: 0;
       writing-mode: horizontal-tb;
     }
 
