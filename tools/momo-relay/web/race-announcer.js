@@ -359,7 +359,61 @@
     return true;
   }
 
+  // Observe authoritative samples only; the HUD's interpolation never triggers voice.
+  function createRemainingTimeTracker() {
+    let previous = null;
+    let identity = '';
+    let consumedMinute = -1;
+    function observe(state, carId, language = 'ja-JP', now = Date.now()) {
+      const self = Array.isArray(state?.standings) ? state.standings.find(row => row?.carId === (state.viewerCarId || carId)) : null;
+      const limit = state?.raceInfo?.timeLimitMs;
+      const mode = state?.raceInfo?.sessionType;
+      const elapsed = self?.allTimeMs;
+      const valid = state?.type === 'race_state' && state.version === 2 &&
+        typeof state.raceRunId === 'string' && state.raceRunId.trim() &&
+        typeof self?.carId === 'string' && self.carId.trim() &&
+        ['practice', 'qualify'].includes(mode) && state.allTimeMode === 'elapsed' &&
+        Number.isSafeInteger(limit) && limit > 0 && limit <= 86400000 &&
+        Number.isSafeInteger(elapsed) && elapsed >= 0 &&
+        Number.isSafeInteger(state.sequence) && state.sequence >= 0 &&
+        Number.isSafeInteger(state.serverTimeMs) && state.serverTimeMs > 0;
+      if (!valid) { previous = null; return null; }
+      const key = JSON.stringify([state.raceRunId, self.carId, mode, limit]);
+      const minute = Math.floor(elapsed / 60000);
+      const current = {key, minute, elapsed, sequence: state.sequence, serverTimeMs: state.serverTimeMs, now,
+        eligible: state.phase === 'green' && self.status === 'racing' &&
+          !['yellow', 'red'].includes(state.flag) && self.directionStatus !== 'wrong_way'};
+      if (previous?.key === key && (current.sequence < previous.sequence || current.serverTimeMs <= previous.serverTimeMs)) return null;
+      if (identity !== key) { identity = key; consumedMinute = -1; }
+      const fresh = previous?.key === key && current.eligible && previous.eligible &&
+        now >= previous.now && now - previous.now <= 3500 &&
+        current.serverTimeMs - previous.serverTimeMs <= 3500 &&
+        elapsed >= previous.elapsed && elapsed - previous.elapsed <= 3500 &&
+        minute === previous.minute + 1 && minute > consumedMinute && elapsed - minute * 60000 <= 3500;
+      previous = current;
+      consumedMinute = Math.max(consumedMinute, minute);
+      const seconds = Math.ceil((limit - minute * 60000) / 1000);
+      if (!fresh || minute < 1 || seconds <= 0 || elapsed >= limit) return null;
+      const minutes = Math.floor(seconds / 60), tail = seconds % 60;
+      const text = language === 'ja-JP'
+        ? `残り${minutes ? `${minutes}分` : ''}${tail ? `${tail}秒` : ''}。`
+        : `${[minutes ? `${minutes} minute${minutes === 1 ? '' : 's'}` : '', tail ? `${tail} second${tail === 1 ? '' : 's'}` : ''].filter(Boolean).join(' ')} remaining.`;
+      return {kind: 'time_remaining', priority: 60, text,
+        remainingTime: {raceRunId: state.raceRunId, carId: self.carId, sessionType: mode,
+          timeLimitMs: limit, minute, expiresAtMs: state.serverTimeMs + 10000}};
+    }
+    function isCurrent(timer, now = Date.now()) {
+      return Boolean(timer && previous?.eligible && now >= previous.now && now - previous.now <= 3500 &&
+        previous.key === JSON.stringify([timer.raceRunId, timer.carId, timer.sessionType, timer.timeLimitMs]) &&
+        previous.minute === timer.minute && previous.elapsed < timer.timeLimitMs &&
+        Number.isSafeInteger(timer.expiresAtMs) &&
+        previous.serverTimeMs + now - previous.now < timer.expiresAtMs);
+    }
+    return {observe, isCurrent};
+  }
+
   return Object.freeze({
+    createRemainingTimeTracker,
     buildSafetyAnnouncement,
     buildRemoteCalloutRequest,
     buildRemotePreference,
