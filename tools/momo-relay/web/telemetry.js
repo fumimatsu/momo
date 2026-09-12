@@ -597,15 +597,19 @@
     }
 
     ingest(payload, arrivalMs) {
+      // Only accepted tracker payloads enter here. A new boot or withdrawn axis
+      // mapping invalidates derived state immediately, including event-first boots.
+      const stored = this.streams.get(payload?.src) || null;
+      if (stored && stored.boot !== payload.boot) this.streams.delete(payload.src);
       if (payload?.k === 'e') {
         return this.ingestEvent(payload, arrivalMs);
       }
       const motion = deriveVehicleMotion(payload);
       if (!motion || !Number.isFinite(arrivalMs)) {
+        if (payload?.k === 's') this.streams.delete(payload.src);
         return null;
       }
 
-      const stored = this.streams.get(payload.src) || null;
       const previous = stored?.boot === payload.boot ? stored : null;
       const elapsedSeconds = previous
         ? clamp((payload.t_us - previous.tUs) / 1000000, 0.001, 0.25)
@@ -909,7 +913,7 @@
           ? stream.state.q
           : null;
         const sourceStale = escQuality
-          ? escQuality.ok !== true || escQuality.age > staleThresholdMs
+          ? escQuality.ok !== true || escQuality.age + stateAgeMs > staleThresholdMs
           : false;
         return {
           ...stream,

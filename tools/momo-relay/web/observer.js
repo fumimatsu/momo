@@ -700,7 +700,6 @@ class ObserverPeer {
     this.motionFeatures = window.FpvTelemetry
       ? new window.FpvTelemetry.MotionFeatureExtractor()
       : null;
-    this.latestMotion = null;
     this.vehicleEvents = window.FpvTelemetry
       ? new window.FpvTelemetry.RelayEventInbox()
       : null;
@@ -736,15 +735,20 @@ class ObserverPeer {
     const arrivalMs = performance.now();
     const result = this.telemetryTracker.ingest(message, arrivalMs);
     if (!result.accepted) return;
-    const nextMotion = this.motionFeatures?.ingest(result.payload, arrivalMs) || null;
-    if (nextMotion) this.latestMotion = nextMotion;
-    const snapshot = this.telemetryTracker.getSnapshot(arrivalMs);
-    this.onTelemetry(this.car, {
-      motion: this.latestMotion,
+    this.motionFeatures?.ingest(result.payload, arrivalMs);
+    this.onTelemetry(this.car, this.getTelemetrySnapshot(arrivalMs));
+  }
+
+  getTelemetrySnapshot(now) {
+    const snapshot = this.telemetryTracker.getSnapshot(now);
+    const primary = snapshot.primary;
+    const motion = primary ? this.motionFeatures?.getSnapshot(primary.src, now) : null;
+    return {
+      motion: motion?.boot === primary?.boot ? motion : null,
       primary: snapshot.primary,
       esc: snapshot.primaryEsc,
       counters: snapshot.counters,
-    });
+    };
   }
 
   handleCommandMessage(message) {
@@ -1916,13 +1920,21 @@ function renderClocks(now) {
   }
 }
 
-function renderTelemetryDisplays() {
+function renderTelemetryDisplays(now = performance.now()) {
   if (!observerConfig) return;
-  for (const car of observerConfig.cars) {
-    const telemetry = telemetryByCar.get(car.carId);
-    if (!telemetry || renderedTelemetryByCar.get(car.carId) === telemetry) continue;
+  for (const car of selectedTeamCars()) {
+    const received = telemetryByCar.get(car.carId);
+    if (!received) continue;
+    // Freshness advances even when the transport stops. Keep DOM writes bounded
+    // to new input or freshness transitions, using the receiver's own clock rules.
+    const telemetry = clientByCar.get(car.carId)?.getTelemetrySnapshot(now) || received;
+    const rendered = renderedTelemetryByCar.get(car.carId);
+    if (rendered?.received === received && rendered.motionStale === telemetry.motion?.stale
+        && rendered.escStale === telemetry.esc?.stale) continue;
     renderCameraTelemetry(car, telemetry);
-    renderedTelemetryByCar.set(car.carId, telemetry);
+    renderedTelemetryByCar.set(car.carId, {
+      received, motionStale: telemetry.motion?.stale, escStale: telemetry.esc?.stale,
+    });
   }
 }
 
@@ -1967,7 +1979,7 @@ function updateAnimationFrame(now) {
   }
   if (now - telemetryRenderedAt >= TELEMETRY_RENDER_INTERVAL_MS) {
     telemetryRenderedAt = now;
-    renderTelemetryDisplays();
+    renderTelemetryDisplays(now);
     renderControlDisplays(now);
   }
   if (observerConfig && now - raceStatusRenderedAt >= TRANSPORT_RENDER_INTERVAL_MS) {
@@ -2097,6 +2109,7 @@ function createCameraTile(car) {
 
 function createEmptyCameraTile(index) {
   const tile = element('article', 'camera-tile camera-slot-empty');
+  tile.dataset.slotIndex = String(index);
   const button = element('button', 'camera-slot-select');
   button.type = 'button';
   button.setAttribute('aria-label', `Select a car for team monitor slot ${index + 1}`);
@@ -2113,7 +2126,9 @@ function createCameraTiles() {
   const focusStage = document.getElementById('cameraFocusStage');
   const desired = Array.from({ length: TEAM_SELECTION_LIMIT }, (_, index) => {
     const car = cars[index];
+    // Retiring a rebound source removes its tile before this pass, shifting empty nodes.
     if (!car) return root.children[index]?.classList.contains('camera-slot-empty')
+      && root.children[index].dataset.slotIndex === String(index)
       ? root.children[index] : createEmptyCameraTile(index);
     const tile = createCameraTile(car);
     if (car.vehicleId === zoomedTeamVehicleId && tile.parentElement === focusStage) {

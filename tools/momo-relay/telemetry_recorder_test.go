@@ -353,6 +353,7 @@ func TestRelayRecordsOnlyTELTextMessages(t *testing.T) {
 		t.Fatalf("newTelemetryRecorderWithQueue() error = %v", err)
 	}
 	source := newStatusTestRelay("11.3", "CP-1")
+	source.upstreamGeneration.Store(2)
 	source.recorder = recorder
 
 	source.driveLoggingEnabled.Store(true)
@@ -383,6 +384,7 @@ func TestRelayDriveStateGatesTelemetryAndRejectsObservers(t *testing.T) {
 		t.Fatalf("newTelemetryRecorderWithQueue() error = %v", err)
 	}
 	source := newStatusTestRelay("11.3", "CP-1")
+	source.upstreamGeneration.Store(3)
 	source.viewers = make(map[uint64]*viewer)
 	source.recorder = recorder
 	pilot := &viewer{id: 7, role: "pilot"}

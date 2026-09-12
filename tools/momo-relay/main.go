@@ -352,6 +352,7 @@ type relay struct {
 	telemetryBinaryTEL            atomic.Uint64
 	telemetryBinaryAudio          atomic.Uint64
 	telemetryOther                atomic.Uint64
+	telemetryStaleUpstream        atomic.Uint64
 	fuelCommandGeneration         atomic.Uint64
 	vehicleColorCommandGeneration atomic.Uint64
 	vehicleColorMu                sync.Mutex
@@ -642,10 +643,11 @@ type upstreamOperationsState struct {
 // DataChannel の payload 種別を source ごとに数える。音声追加後に TEL が
 // binary 化されていないかを、実走中でも安全に切り分けるための診断値。
 type telemetryOperationsState struct {
-	TextTEL     uint64 `json:"textTel"`
-	BinaryTEL   uint64 `json:"binaryTel"`
-	BinaryAudio uint64 `json:"binaryAudio"`
-	Other       uint64 `json:"other"`
+	StaleUpstream uint64 `json:"staleUpstream"`
+	TextTEL       uint64 `json:"textTel"`
+	BinaryTEL     uint64 `json:"binaryTel"`
+	BinaryAudio   uint64 `json:"binaryAudio"`
+	Other         uint64 `json:"other"`
 }
 
 type vehicleHealthOperationsState struct {
@@ -1245,10 +1247,11 @@ func (r *relay) statusSnapshot(now time.Time) sourceOperationsState {
 			StartTimeoutMs:          r.upstreamStartTimeout.Milliseconds(),
 		},
 		Telemetry: telemetryOperationsState{
-			TextTEL:     r.telemetryTextTEL.Load(),
-			BinaryTEL:   r.telemetryBinaryTEL.Load(),
-			BinaryAudio: r.telemetryBinaryAudio.Load(),
-			Other:       r.telemetryOther.Load(),
+			StaleUpstream: r.telemetryStaleUpstream.Load(),
+			TextTEL:       r.telemetryTextTEL.Load(),
+			BinaryTEL:     r.telemetryBinaryTEL.Load(),
+			BinaryAudio:   r.telemetryBinaryAudio.Load(),
+			Other:         r.telemetryOther.Load(),
 		},
 		Downstream: r.downstreamStatusSnapshot(now),
 		Recovery: recoveryOperationsState{
@@ -2007,6 +2010,12 @@ func normalizeTelemetryMessage(message webrtc.DataChannelMessage) (webrtc.DataCh
 }
 
 func (r *relay) handleUpstreamTelemetry(message webrtc.DataChannelMessage, generation uint64) {
+	// Retired DataChannel callbacks must not feed gameplay, recordings or viewers.
+	// Capability checks alone are too late: impact classification mutates state first.
+	if generation == 0 || r.upstreamGeneration.Load() != generation {
+		r.telemetryStaleUpstream.Add(1)
+		return
+	}
 	normalized, raw, isTEL, wasBinaryTEL := normalizeTelemetryMessage(message)
 	if isTEL {
 		now := time.Now()

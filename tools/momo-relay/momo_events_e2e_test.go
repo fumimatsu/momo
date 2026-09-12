@@ -30,6 +30,7 @@ func TestMomoEventsDataChannelEndToEnd(t *testing.T) {
 	}
 
 	now := time.Now()
+	source.upstreamGeneration.Store(1)
 	source.vehicleHealth.observeRaceState(true, "rr_events_e2e", "green", 1, 2, now)
 	source.resetVehicleEvents("rr_events_e2e")
 	if !source.vehicleEvents.add(vehicleImpactEvent{

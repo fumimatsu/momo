@@ -829,6 +829,7 @@ func TestVenueSourceNeverAllowsViewerCommands(t *testing.T) {
 
 func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
 	source := newStatusTestRelay("11.5", "CP-3")
+	source.upstreamGeneration.Store(1)
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}"), IsString: true}, 1)
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("TEL:{\"v\":1}")}, 1)
 	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte("AUD:1,boot,1,0,payload")}, 1)
@@ -837,6 +838,41 @@ func TestTelemetryDiagnosticsClassifiesTextAndBinaryFrames(t *testing.T) {
 	telemetry := source.statusSnapshot(time.Now()).Telemetry
 	if telemetry.TextTEL != 1 || telemetry.BinaryTEL != 1 || telemetry.BinaryAudio != 1 || telemetry.Other != 1 {
 		t.Fatalf("telemetry diagnostics = %#v", telemetry)
+	}
+}
+
+func TestRetiredUpstreamCannotFeedImpactWindowOrDownstream(t *testing.T) {
+	source := newStatusTestRelay("11.3", "CP-1")
+	source.upstreamGeneration.Store(2)
+	source.impactShadow = newImpactShadowTracker()
+	source.vehicleHealth.observeRaceState(true, "generation-test", "green", 1, 2, time.Now())
+	client := &viewer{id: 7, role: "pilot", telemetryWS: make(chan string, 16)}
+	source.addViewer(client)
+	motion := `TEL:{"v":2,"k":"s","src":"imu0","boot":"12345678","seq":1,"t_us":50000,"m":{"a":[4,0.2,0.1],"y":0.1},"q":{"p":50000,"f":["flu_axes"]}}`
+	impact := `TEL:{"v":2,"k":"e","src":"imu0","boot":"12345678","seq":2,"t_us":100000,"e":{"n":"impact_candidate","m":13,"a":[1,0,0],"j":300}}`
+	for _, raw := range []string{motion, impact, "AUD:1,12345678,1,0,payload"} {
+		source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(raw), IsString: true}, 1)
+	}
+	if len(source.impactShadow.samples) != 0 || len(source.impactShadow.pending) != 0 {
+		t.Fatal("retired connection fed the current impact classification window")
+	}
+	if len(client.telemetryWS) != 0 {
+		t.Fatal("retired connection was forwarded to a current viewer")
+	}
+	if source.statusSnapshot(time.Now()).Telemetry.StaleUpstream != 3 {
+		t.Fatal("retired telemetry rejection must be observable in source status")
+	}
+	// Prove the guard has not disabled the current connection.
+	source.handleUpstreamTelemetry(webrtc.DataChannelMessage{Data: []byte(motion), IsString: true}, 2)
+	if len(source.impactShadow.samples) != 1 {
+		t.Fatal("current connection did not reach the production impact tracker")
+	}
+	found := false
+	for len(client.telemetryWS) > 0 {
+		found = (<-client.telemetryWS == motion) || found
+	}
+	if !found {
+		t.Fatal("current telemetry did not reach the viewer")
 	}
 }
 

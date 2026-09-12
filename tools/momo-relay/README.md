@@ -158,6 +158,11 @@ ViewerとRelayを同時に更新する。診断は既存のObserver WebSocketだ
 `telemetrySource` は IMU の `imu0` と ESC の `esc0` を分離して確認するために使う。DataChannel は
 unreliable なため、ログは Relay へ届いた sample だけを表す。M5 の `boot` と `seq` から欠損を検出する。
 
+上流再接続後に退役済みDataChannelから届くメッセージは、衝突判定・記録・再配信の前で拒否する。
+source statusの `telemetry.staleUpstream` はその拒否件数（TEL以外も含む）。これは接続generationの
+分離であり、同一接続内のTEL sequence・軸定義・完全schema検証を保証するものではない。
+残るconsumer契約の検証課題は、`momo-fpv/docs/issues/2026-09-12-relay-telemetry-admission.md` を参照。
+
 ```powershell
 $log = (Get-ChildItem 'E:\fpv-telemetry-logs\telemetry-*.ndjson' |
   Sort-Object LastWriteTime | Select-Object -Last 1).FullName

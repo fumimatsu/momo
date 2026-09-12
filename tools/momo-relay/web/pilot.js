@@ -669,7 +669,6 @@
     ? new window.FpvTelemetry.RelayEventInbox()
     : null;
   let latestMotion = null;
-  let latestEsc = null;
   let displayedVehicleSpeedKph = null;
   let lastVehicleSpeedSourceAt = null;
   let vehicleHealth = null;
@@ -4707,9 +4706,7 @@
         },
       };
     }
-    const tracked = telemetryTracker?.getSnapshot(nowMs).primaryEsc;
-    if (tracked) latestEsc = tracked;
-    return latestEsc;
+    return telemetryTracker?.getSnapshot(nowMs).primaryEsc || null;
   }
 
   function normalizeMotorMechanicalRpm(rpm) {
@@ -5075,7 +5072,6 @@
     if (telemetryResult?.accepted) {
       imuDriveCalibration.ingest(telemetryResult.payload, arrivalMs);
       latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
-      latestEsc = telemetryTracker.getSnapshot(arrivalMs).primaryEsc || latestEsc;
     }
     updateTelemetryUi();
     const motion = getMotionSnapshot();
