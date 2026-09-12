@@ -775,6 +775,7 @@
 	let browserKokoroActiveSource = null;
 	let browserKokoroActiveEventId = '';
 	const remoteRaceAudioTracker = raceAnnouncer.createRemoteAudioTracker();
+  const remainingTimeTracker = raceAnnouncer.createRemainingTimeTracker();
   const pilotCalloutPlanner = pilotCalloutModule.createPlanner({
     now: () => performance.now(),
     warningGapMs: RACE_REAR_WARNING_GAP_MS,
@@ -3280,11 +3281,17 @@
 		if (state.idle) setM5AudioDucking(1, prompt?.ducking?.releaseMs || 250);
 		const fallbackText = prompt?.fallbackText?.[raceAnnounceLanguage]
 			|| prompt?.fallbackText?.['en-US'];
-		if (fallbackText && state.idle) speakRaceLapAnnouncement({ text: fallbackText });
+		if (fallbackText && state.idle && (prompt?.kind !== 'time_remaining' ||
+			remainingTimeTracker.isCurrent(prompt.remainingTime))) speakRaceLapAnnouncement({ text: fallbackText });
 		recordEvent('browser Kokoro fallback', browserKokoroFailure);
 	}
 
 	async function playBrowserKokoroAudio(prompt, generated) {
+		if (prompt.kind === 'time_remaining' && !remainingTimeTracker.isCurrent(prompt.remainingTime)) {
+			const state = remoteRaceAudioTracker.finish(prompt.promptId);
+			if (state.idle) setM5AudioDucking(1, 250);
+			return;
+		}
 		const context = getRaceSignalAudioContext();
 		if (!context) throw new Error('AudioContext is unavailable');
 		await context.resume?.();
@@ -3414,6 +3421,11 @@
 			recordEvent('race audio capabilities', `${payload.state || 'unknown'} ${payload.language || ''}`.trim());
 			return true;
 		}
+		if (payload.kind === 'time_remaining' && !remainingTimeTracker.isCurrent(payload.remainingTime)) {
+			const state = remoteRaceAudioTracker.finish(payload.eventId);
+			if (state.idle) setM5AudioDucking(1, 250);
+			return true;
+		}
 		if (payload.state === 'queued' || payload.state === 'ready') {
 			remoteRaceAudioEnabled = true;
 			const state = remoteRaceAudioTracker.queue(payload.eventId);
@@ -3426,6 +3438,8 @@
 			const prompt = {
 				...payload.prompt,
 				promptId: payload.eventId,
+				kind: payload.kind,
+				remainingTime: payload.remainingTime,
 				priority: Number(payload.priority) || 0,
 				fallbackText: payload.fallbackText,
 				ducking: payload.ducking,
@@ -3648,7 +3662,7 @@
     });
   }
 
-  function announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState, qualifyingUpdate) {
+  function announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState, qualifyingUpdate, remainingUpdate) {
     if (raceState.phaseCode === 'idle' || raceState.phaseCode === 'ready') {
       lastRaceLapAnnouncementKey = '';
       stopRaceAnnouncement();
@@ -3684,9 +3698,9 @@
 		if (remoteRaceAudioEnabled) {
 			return;
 		}
-    const text = qualifyingUpdate
-      ? `${nextAnnouncement.text.replace(/[.。]+$/, '')}${raceAnnounceLanguage === 'ja-JP' ? '。' : '. '}${qualifyingUpdate.text}`
-      : nextAnnouncement.text;
+    const parts = [remainingUpdate?.text, nextAnnouncement.text, qualifyingUpdate?.text].filter(Boolean);
+    const text = parts.map((part, index) => index === parts.length - 1 ? part :
+      part.replace(/[.。]+$/, '') + (raceAnnounceLanguage === 'ja-JP' ? '。' : '. ')).join('');
     return speakRaceLapAnnouncement({ ...nextAnnouncement, text });
   }
 
@@ -3697,6 +3711,7 @@
     if (!acceptRaceStateV2(nextState)) {
       return true;
     }
+    const remainingUpdate = remainingTimeTracker.observe(nextState, RACE_CAR_ID, raceAnnounceLanguage);
     const hadPreviousRaceState = raceState.sampledAt > 0;
     const previousAnnouncement = getRaceLapAnnouncement();
     const previousQualifying = getRaceQualifyingAnnouncement();
@@ -3828,9 +3843,10 @@
       raceState.status === 'racing' && raceState.flag !== 'yellow' && raceState.flag !== 'red' &&
       raceState.directionStatus !== 'wrong_way' && nextQualifying &&
       nextQualifying.key !== previousQualifying?.key ? nextQualifying : null;
-    const lapSpoken = announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true, qualifyingUpdate);
-    if (qualifyingUpdate && !lapSpoken && !remoteRaceAudioEnabled) {
-      speakRaceLapAnnouncement(qualifyingUpdate);
+    const lapSpoken = announceRaceLapIfChanged(previousAnnouncement, hadPreviousRaceState && nextState.reset !== true, qualifyingUpdate, remainingUpdate);
+    if ((qualifyingUpdate || remainingUpdate) && !lapSpoken && !remoteRaceAudioEnabled) {
+      speakRaceLapAnnouncement({text: [remainingUpdate?.text, qualifyingUpdate?.text].filter(Boolean)
+        .join(raceAnnounceLanguage === 'ja-JP' ? '' : ' ')});
     }
     announceRaceSafetyIfChanged(
       previousFlag,

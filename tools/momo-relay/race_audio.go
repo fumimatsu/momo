@@ -99,27 +99,29 @@ type raceAudioClip struct {
 }
 
 type raceAudioEvent struct {
-	EventID      string
-	Kind         string
-	Priority     int
-	EnglishText  string
-	JapaneseText string
+	RemainingTime *raceAudioRemainingTime
+	EventID       string
+	Kind          string
+	Priority      int
+	EnglishText   string
+	JapaneseText  string
 }
 
 type raceAudioMetadata struct {
-	Type         string                  `json:"type"`
-	Version      int                     `json:"version"`
-	State        string                  `json:"state"`
-	EventID      string                  `json:"eventId,omitempty"`
-	Kind         string                  `json:"kind,omitempty"`
-	Priority     int                     `json:"priority,omitempty"`
-	Language     string                  `json:"language,omitempty"`
-	DurationMS   int                     `json:"durationMs,omitempty"`
-	FallbackText map[string]string       `json:"fallbackText,omitempty"`
-	Ducking      *raceAudioDucking       `json:"ducking,omitempty"`
-	Modes        []string                `json:"modes,omitempty"`
-	Prompt       *raceAudioBrowserPrompt `json:"prompt,omitempty"`
-	Error        string                  `json:"error,omitempty"`
+	RemainingTime *raceAudioRemainingTime `json:"remainingTime,omitempty"`
+	Type          string                  `json:"type"`
+	Version       int                     `json:"version"`
+	State         string                  `json:"state"`
+	EventID       string                  `json:"eventId,omitempty"`
+	Kind          string                  `json:"kind,omitempty"`
+	Priority      int                     `json:"priority,omitempty"`
+	Language      string                  `json:"language,omitempty"`
+	DurationMS    int                     `json:"durationMs,omitempty"`
+	FallbackText  map[string]string       `json:"fallbackText,omitempty"`
+	Ducking       *raceAudioDucking       `json:"ducking,omitempty"`
+	Modes         []string                `json:"modes,omitempty"`
+	Prompt        *raceAudioBrowserPrompt `json:"prompt,omitempty"`
+	Error         string                  `json:"error,omitempty"`
 }
 
 type raceAudioDucking struct {
@@ -152,6 +154,7 @@ type raceAudioLapHistory struct {
 }
 
 type raceAudioStanding struct {
+	AllTimeMS           *int64 `json:"allTimeMs"`
 	BestLapMS           *int   `json:"bestLapMs"`
 	BestLapGapToAheadMS *int   `json:"bestLapGapToAheadMs"`
 	CarID               string `json:"carId"`
@@ -164,14 +167,18 @@ type raceAudioStanding struct {
 }
 
 type raceAudioState struct {
-	Type        string `json:"type"`
-	Version     int    `json:"version"`
-	RaceID      string `json:"raceId"`
-	RaceRunID   string `json:"raceRunId"`
-	Phase       string `json:"phase"`
-	Flag        string `json:"flag"`
-	ViewerCarID string `json:"viewerCarId"`
-	RaceInfo    struct {
+	AllTimeMode  string `json:"allTimeMode"`
+	Sequence     *int64 `json:"sequence"`
+	ServerTimeMS *int64 `json:"serverTimeMs"`
+	Type         string `json:"type"`
+	Version      int    `json:"version"`
+	RaceID       string `json:"raceId"`
+	RaceRunID    string `json:"raceRunId"`
+	Phase        string `json:"phase"`
+	Flag         string `json:"flag"`
+	ViewerCarID  string `json:"viewerCarId"`
+	RaceInfo     struct {
+		TimeLimitMS *int64 `json:"timeLimitMs"`
 		TotalLaps   int    `json:"totalLaps"`
 		SessionType string `json:"sessionType"`
 	} `json:"raceInfo"`
@@ -180,6 +187,7 @@ type raceAudioState struct {
 }
 
 type raceAudioDetector struct {
+	remaining        raceAudioRemainingTracker
 	qualifying       raceAudioQualifyingProgress
 	qualifyingSerial uint64
 	mu               sync.Mutex
@@ -279,11 +287,11 @@ func (queue *raceAudioJobQueue) enqueue(job raceAudioJob) (bool, []raceAudioJob)
 		}
 		queue.jobs = retained
 	}
-	// Keep only the latest pending qualifying target for this recipient.
-	if job.event.Kind == "qualifying_update" {
+	// Keep only the latest pending target/time cue for this recipient.
+	if job.event.Kind == "qualifying_update" || job.event.Kind == "time_remaining" {
 		retained := queue.jobs[:0]
 		for _, candidate := range queue.jobs {
-			if candidate.job.event.Kind == "qualifying_update" && candidate.job.targetClientID == job.targetClientID {
+			if candidate.job.event.Kind == job.event.Kind && candidate.job.targetClientID == job.targetClientID {
 				dropped = append(dropped, candidate.job)
 				continue
 			}
@@ -652,10 +660,12 @@ func raceAudioBlueFlagCarID(state raceAudioState, self *raceAudioStanding, previ
 func (detector *raceAudioDetector) observe(message string, configuredCarID string) []raceAudioEvent {
 	payload := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(message), "RACE:"))
 	if payload == "" {
+		detector.invalidateRemaining()
 		return nil
 	}
 	var state raceAudioState
 	if err := json.Unmarshal([]byte(payload), &state); err != nil || state.Type != "race_state" || state.Version != 2 {
+		detector.invalidateRemaining()
 		return nil
 	}
 	carID := strings.TrimSpace(state.ViewerCarID)
@@ -663,10 +673,12 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 		carID = strings.TrimSpace(configuredCarID)
 	}
 	if carID == "" {
+		detector.invalidateRemaining()
 		return nil
 	}
 	runID := strings.TrimSpace(state.RaceRunID)
 	if runID == "" {
+		detector.invalidateRemaining()
 		runID = strings.TrimSpace(state.RaceID)
 	}
 	if runID == "" {
@@ -721,6 +733,7 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	safetyActive := flag == "yellow" || flag == "red" || directionStatus == "wrong_way"
 	isFinished := strings.EqualFold(strings.TrimSpace(state.Phase), "finished") || standingStatus == "finished"
 	blueFlagCarID := raceAudioBlueFlagCarID(state, standing, detector.blueFlagCarID)
+	remainingEvent := detector.remaining.observe(state, carID, time.Now())
 	if !detector.initialized {
 		for _, history := range histories {
 			detector.seenLaps[raceAudioLapKey(runID, carID, history.Lap, history.LapTimeMS)] = struct{}{}
@@ -743,6 +756,9 @@ func (detector *raceAudioDetector) observe(message string, configuredCarID strin
 	previousPosition := detector.position
 	previousBlueFlagCarID := detector.blueFlagCarID
 	events := make([]raceAudioEvent, 0, 3)
+	if remainingEvent != nil {
+		events = append(events, *remainingEvent)
+	}
 	for _, history := range histories {
 		key := raceAudioLapKey(runID, carID, history.Lap, history.LapTimeMS)
 		if _, exists := detector.seenLaps[key]; exists {
@@ -1299,7 +1315,7 @@ func (source *raceAudioSource) enqueueCallout(client *viewer, event raceAudioEve
 func raceAudioBrowserLocalEvent(kind string) bool {
 	switch kind {
 	case "lap_complete", "pit_service_complete", "gap_ahead", "gap_behind",
-		"race_start", "race_paused", "race_resumed", "position_change", "qualifying_update", "blue_flag",
+		"race_start", "race_paused", "race_resumed", "position_change", "qualifying_update", "time_remaining", "blue_flag",
 		"yellow_flag", "red_flag", "wrong_way",
 		"fuel_low", "fuel_critical", "fuel_empty", "damage_critical":
 		return true
@@ -1314,6 +1330,9 @@ func (source *raceAudioSource) dispatch(parent context.Context, job raceAudioJob
 		return
 	}
 	event := job.event
+	if !source.detector.remainingEventCurrent(event, time.Now()) {
+		return
+	}
 	language := client.raceAudioLanguageValue(source.service.defaultLanguage)
 	if language == "off" || client.raceAudio.Load() == nil {
 		return
@@ -1324,6 +1343,10 @@ func (source *raceAudioSource) dispatch(parent context.Context, job raceAudioJob
 		ctx, cancel := context.WithTimeout(parent, raceAudioSynthesisTimeout)
 		prompt, err := source.service.prepare(ctx, event, language)
 		cancel()
+		if !source.detector.remainingEventCurrent(event, time.Now()) {
+			source.relay.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("ended", language, event, 0, ""))
+			return
+		}
 		if err != nil {
 			log.Printf("source %q: prepare browser race audio event %q: %v", source.relay.name, event.EventID, err)
 			source.relay.sendRaceAudioMetadata(client,
@@ -1344,6 +1367,10 @@ func (source *raceAudioSource) dispatch(parent context.Context, job raceAudioJob
 	ctx, cancel := context.WithTimeout(parent, raceAudioSynthesisTimeout)
 	clip, durationMS, err := source.service.synthesize(ctx, event, language)
 	cancel()
+	if !source.detector.remainingEventCurrent(event, time.Now()) {
+		source.relay.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("ended", language, event, 0, ""))
+		return
+	}
 	if err != nil {
 		log.Printf("source %q: synthesize race audio event %q: %v", source.relay.name, event.EventID, err)
 		source.relay.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("failed", language, event, 0, "synthesis_failed"))
@@ -1366,14 +1393,15 @@ func (source *raceAudioSource) dispatch(parent context.Context, job raceAudioJob
 
 func raceAudioMetadataForEvent(state string, language string, event raceAudioEvent, durationMS int, errorCode string) raceAudioMetadata {
 	return raceAudioMetadata{
-		Type:       "race_audio",
-		Version:    raceAudioProtocolVersion,
-		State:      state,
-		EventID:    event.EventID,
-		Kind:       event.Kind,
-		Priority:   event.Priority,
-		Language:   language,
-		DurationMS: durationMS,
+		RemainingTime: event.RemainingTime,
+		Type:          "race_audio",
+		Version:       raceAudioProtocolVersion,
+		State:         state,
+		EventID:       event.EventID,
+		Kind:          event.Kind,
+		Priority:      event.Priority,
+		Language:      language,
+		DurationMS:    durationMS,
 		FallbackText: map[string]string{
 			"en-US": event.EnglishText,
 			"ja-JP": event.JapaneseText,
@@ -1460,6 +1488,10 @@ func (r *relay) runRaceAudioTrack(client *viewer) {
 			if current == nil {
 				select {
 				case clip := <-client.raceAudioQueue:
+					if !r.raceAudio.detector.remainingEventCurrent(clip.event, time.Now()) {
+						r.sendRaceAudioMetadata(client, raceAudioMetadataForEvent("ended", client.raceAudioLanguageValue(r.raceAudio.service.defaultLanguage), clip.event, 0, ""))
+						continue
+					}
 					current = &clip
 					packetIndex = 0
 					language := client.raceAudioLanguageValue(r.raceAudio.service.defaultLanguage)
