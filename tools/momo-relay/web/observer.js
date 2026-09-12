@@ -42,7 +42,7 @@ import {
   reconstructRaceElapsedMs,
   standingsByConfiguredCar,
   TEAM_OBSERVER_MAXIMUM_CARS,
-} from './observer-core.js?v=20260908-team-observer-v25';
+} from './observer-core.js?v=20260912-ui-render-v1';
 
 mountObserverRaceLayout(document.getElementById('observerRacePanels'));
 const raceUiPerformance = window.MomoRaceUiPerformance;
@@ -204,7 +204,7 @@ function element(tag, className, text) {
 }
 
 function applyCarAccent(node, car) {
-  if (node && car?.color) node.style.setProperty('--car', car.color);
+  if (node && car?.color && node.style.getPropertyValue('--car') !== car.color) node.style.setProperty('--car', car.color);
   return node;
 }
 
@@ -392,12 +392,12 @@ function syncTeamSelectionDecorations() {
   for (const car of observerConfig?.cars || []) {
     const selected = isTeamCarSelected(car);
     const leader = leaderboardNodesByCar.get(car.carId);
-    leader?.classList.toggle('is-team-selected', selected);
-    leader?.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    if (leader && leader.classList.contains('is-team-selected') !== selected) leader.classList.toggle('is-team-selected', selected);
+    setAttributeIfChanged(leader, 'aria-pressed', selected ? 'true' : 'false');
     const markerNodes = markerNodesByCar.get(car.carId);
     const marker = markerNodes?.marker;
-    marker?.classList.toggle('is-team-selected', selected);
-    marker?.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    if (marker && marker.classList.contains('is-team-selected') !== selected) marker.classList.toggle('is-team-selected', selected);
+    setAttributeIfChanged(marker, 'aria-pressed', selected ? 'true' : 'false');
     updateTrackMarkerDensity(markerNodes, selected, observerConfig.cars.length);
   }
 }
@@ -507,12 +507,12 @@ function applyCarEffect(carId) {
     markerNodesByCar.get(carId)?.marker,
   ]) {
     if (!node) continue;
-    if (name) node.dataset.effect = name;
-    else delete node.dataset.effect;
+    if (name) setDatasetIfChanged(node, 'effect', name);
+    else if (node.dataset.effect !== undefined) delete node.dataset.effect;
   }
   const badge = cameraEffectNodesByCar.get(carId)?.badge;
   if (badge) {
-    badge.hidden = !effect;
+    if (badge.hidden !== !effect) badge.hidden = !effect;
     setTextIfChanged(badge, effect?.label || '');
   }
 }
@@ -1120,6 +1120,9 @@ function captureLeaderboardRowPositions() {
   for (const [carId, nodes] of leaderboardContentByCar) {
     if (!nodes.row.isConnected) continue;
     positions.set(carId, nodes.row.getBoundingClientRect().top);
+  }
+  // Read all visual positions before cancelling animations or changing styles.
+  for (const nodes of leaderboardContentByCar.values()) {
     nodes.reorderAnimation?.cancel();
     nodes.reorderAnimation = null;
     nodes.row.style.zIndex = '';
@@ -1129,11 +1132,15 @@ function captureLeaderboardRowPositions() {
 
 function animateLeaderboardReorder(previousPositions) {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const movements = [];
   for (const [carId, previousTop] of previousPositions) {
     const nodes = leaderboardContentByCar.get(carId);
     if (!nodes?.row.isConnected) continue;
     const deltaY = previousTop - nodes.row.getBoundingClientRect().top;
     if (Math.abs(deltaY) < 1) continue;
+    movements.push({ nodes, deltaY });
+  }
+  for (const { nodes, deltaY } of movements) {
     nodes.row.style.zIndex = '2';
     const animation = nodes.row.animate([
       { transform: `translateY(${deltaY}px)` },
@@ -1176,7 +1183,10 @@ function renderLeaderboard() {
   }));
   if (signature === leaderboardSignature) return;
   const startedAt = UI_METRICS_ENABLED ? performance.now() : 0;
-  const previousPositions = captureLeaderboardRowPositions();
+  const orderChanged = root.children.length !== rows.length
+    || rows.some(({ car }, index) => root.children[index] !== leaderboardContentByCar.get(car.carId)?.row);
+  const previousPositions = orderChanged && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ? captureLeaderboardRowPositions() : new Map();
   leaderboardSignature = signature;
   let previousScrollTop = null;
   const preserveScroll = () => {
@@ -1491,15 +1501,17 @@ function renderHeader() {
   setTextIfChanged(document.getElementById('leaderboardTitle'), session.orderTitle);
   const connected = countActiveVideos(connectionByCar);
   const liveStatus = document.getElementById('liveStatus');
-  liveStatus.textContent = UI_DEMO_MODE ? 'DEMO' : raceState ? displayRaceStatus(raceState) : connected ? 'RACE WAIT' : 'WAITING';
-  liveStatus.dataset.flag = String(raceState?.flag || 'none').toLowerCase();
-  document.getElementById('heatValue').textContent = raceState?.raceInfo?.title || '--';
-  document.getElementById('trackName').textContent = raceState?.raceInfo?.track || observerConfig.trackName;
+  setTextIfChanged(liveStatus, UI_DEMO_MODE ? 'DEMO' : raceState ? displayRaceStatus(raceState) : connected ? 'RACE WAIT' : 'WAITING');
+  setDatasetIfChanged(liveStatus, 'flag', String(raceState?.flag || 'none').toLowerCase());
+  setTextIfChanged(document.getElementById('heatValue'), raceState?.raceInfo?.title || '--');
+  setTextIfChanged(document.getElementById('trackName'), raceState?.raceInfo?.track || observerConfig.trackName);
   const leader = (raceState?.standings || []).find((standing) => standing.position === 1);
   const totalLaps = raceState?.raceInfo?.totalLaps;
-  document.getElementById('lapValue').innerHTML = `${leader?.lap ?? '--'} <em>/ ${totalLaps ?? '--'}</em>`;
+  const lapValue = document.getElementById('lapValue');
+  const lapMarkup = `${leader?.lap ?? '--'} <em>/ ${totalLaps ?? '--'}</em>`;
+  if (lapValue.innerHTML !== lapMarkup) lapValue.innerHTML = lapMarkup;
   const panelCount = document.getElementById('panelCount');
-  panelCount.textContent = `${connected}/${TEAM_SELECTION_LIMIT} VIDEO`;
+  setTextIfChanged(panelCount, `${connected}/${TEAM_SELECTION_LIMIT} VIDEO`);
 	panelCount.dataset.state = selectedTeamVehicleIds.length > 0 && connected === selectedTeamVehicleIds.length
     ? 'all' : connected > 0 ? 'partial' : 'none';
 }
@@ -1548,6 +1560,7 @@ function createTrackMarkers() {
     const nodes = { marker, hit, confidence, core, label, title, labelKey: '' };
     updateTrackMarkerDensity(nodes, selected, observerConfig.cars.length);
     markerNodesByCar.set(car.carId, nodes);
+    applyCarEffect(car.carId);
     return marker;
   }));
 }
@@ -1643,6 +1656,10 @@ function setDatasetIfChanged(node, name, value) {
   if (node && node.dataset[name] !== value) node.dataset[name] = value;
 }
 
+function setAttributeIfChanged(node, name, value) {
+  if (node && node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+
 function rebuildRaceViewCache() {
   const standings = Array.isArray(raceState?.standings) ? raceState.standings : [];
   standingByCar = new Map(standings.map((standing) => [standing.carId, standing]));
@@ -1733,7 +1750,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
   if (!motion || motion.entryId !== pit?.entryId) return null;
   const running = raceState?.phase === 'green' && standing?.status === 'racing';
   const serviceProgress = observerConfig.motion.pitServiceProgress;
-  const servicePoint = pitPath.getPointAtLength(serviceProgress * pitLength);
+  const servicePoint = pointOnCourse(pitPath, pitLength, serviceProgress);
 
   if (pit?.present) {
     if (motion.phase === 'pit-entry') {
@@ -1741,7 +1758,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
       const duration = observerConfig.motion.pitEntryMs;
       const progress = duration > 0 ? Math.min(1, elapsed / duration) : 1;
       const eased = 1 - ((1 - progress) ** 3);
-      const point = pitPath.getPointAtLength((serviceProgress * eased) * pitLength);
+      const point = pointOnCourse(pitPath, pitLength, serviceProgress * eased);
       if (progress >= 1) motion.phase = 'pit-service';
       return {
         x: point.x,
@@ -1769,7 +1786,7 @@ function markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath
     const progress = Math.min(1, elapsed / observerConfig.motion.pitExitMs);
     const eased = 1 - ((1 - progress) ** 2);
     const pitProgress = serviceProgress + ((1 - serviceProgress) * eased);
-    const point = pitPath.getPointAtLength(pitProgress * pitLength);
+    const point = pointOnCourse(pitPath, pitLength, pitProgress);
     if (progress >= 1) {
       motion.phase = 'track-after-pit';
       motion.elapsedMs = 0;
@@ -1840,8 +1857,8 @@ function renderMarkerTarget(nodes, car, index, target, now) {
     rendered.y = target.y;
   }
   const [offsetX, offsetY] = raceUiPerformance.markerOffset(index, observerConfig.cars.length);
-  marker.removeAttribute('hidden');
-  marker.setAttribute('transform', `translate(${(rendered.x + offsetX).toFixed(2)} ${(rendered.y + offsetY).toFixed(2)})`);
+  if (marker.hasAttribute('hidden')) marker.removeAttribute('hidden');
+  setAttributeIfChanged(marker, 'transform', `translate(${(rendered.x + offsetX).toFixed(2)} ${(rendered.y + offsetY).toFixed(2)})`);
   if (marker.dataset.motionState !== target.state) marker.dataset.motionState = target.state;
   const selected = isTeamCarSelected(car);
   const radius = String(selected
@@ -1862,19 +1879,18 @@ function updateTrackMarkers(now) {
     const marker = nodes?.marker;
     const standing = standingByCar.get(car.carId);
     if (!marker || !standing) {
-      marker?.setAttribute('hidden', '');
+      setAttributeIfChanged(marker, 'hidden', '');
       return;
     }
     let target = markerTargetInPit(car, standing, now, coursePath, courseLength, pitPath, pitLength);
     if (!target) target = markerTargetOnTrack(car, standing, now, coursePath, courseLength);
     if (!target) {
-      marker.setAttribute('hidden', '');
+      setAttributeIfChanged(marker, 'hidden', '');
       return;
     }
-    marker.dataset.sector = Number.isInteger(standing.currentSector) ? String(standing.currentSector) : '';
+    setDatasetIfChanged(marker, 'sector', Number.isInteger(standing.currentSector) ? String(standing.currentSector) : '');
     renderMarkerTarget(nodes, car, index, target, now);
     updateTrackMarkerLabel(nodes, car, standing);
-    applyCarEffect(car.carId);
   });
   if (UI_METRICS_ENABLED) {
     markerRenderSampler.record(performance.now() - startedAt);

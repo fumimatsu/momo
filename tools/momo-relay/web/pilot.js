@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const PILOT_BUILD_ID = '20260831-calibration-optional1';
+  const PILOT_BUILD_ID = '20260912-ui-render-v1';
   const raceUiPerformance = window.MomoRaceUiPerformance;
   if (!raceUiPerformance?.createRaceFixture || !raceUiPerformance?.createSvgPathLookup
       || !raceUiPerformance?.pointAtProgress || !raceUiPerformance?.createDurationSampler) {
@@ -702,6 +702,11 @@
   let driveHudRenderFrame = null;
   let driveHudLastRenderedAt = 0;
   let driveHudLastRenderKey = '';
+  let telemetryUiDirty = false;
+  let vehicleResourceLayoutFrame = null;
+  let vehicleResourceResizeObserver = null;
+  let racePositionNumberNode = null;
+  let racePositionTotalNode = null;
   let controlUiModeKey = '';
   const vehicleVitalStates = {
     voltage: 'waiting',
@@ -862,7 +867,7 @@
     const isUltrawide = width / Math.max(height, 1) >= 2;
     const ultrawideBoost = isUltrawide ? 1.12 : 1;
     const scale = Math.max(1, Math.min(3, ultrawideBoost * 1.5 * width / 1920, ultrawideBoost * 1.5 * height / 1080));
-    document.documentElement.style.setProperty('--osd-scale', scale.toFixed(4));
+    setStylePropertyIfChanged(document.documentElement, '--osd-scale', scale.toFixed(4));
     window.requestAnimationFrame(() => {
       const driveHudHeight = driveHud?.offsetHeight || 0;
       const scaledOverflow = driveHudHeight * Math.max(0, scale - 1);
@@ -889,11 +894,21 @@
 		const connectionTop = driveHudConnection.getBoundingClientRect().top;
 		const resourceHeight = vehicleResourceHud.offsetHeight * effectiveScale;
 		if (!Number.isFinite(connectionTop) || resourceHeight <= 0) return;
-		document.documentElement.style.setProperty(
+		setStylePropertyIfChanged(document.documentElement,
 			'--vehicle-resource-bottom',
 			`${Math.max(132, Math.round(height - connectionTop - resourceHeight))}px`,
 		);
 	}
+
+  // Resource values do not change placement. Measure only when the HUD's size,
+  // visibility or viewport changes, outside the telemetry receive callback.
+  function scheduleVehicleResourceLayout() {
+    if (vehicleResourceLayoutFrame !== null) return;
+    vehicleResourceLayoutFrame = window.requestAnimationFrame(() => {
+      vehicleResourceLayoutFrame = null;
+      updateVehicleResourcePosition();
+    });
+  }
 
   function scheduleRaceBattleLayout() {
     if (raceBattleLayoutFrame !== null) {
@@ -1184,6 +1199,7 @@
     btnDebug.textContent = enabled ? 'Debug On' : 'Debug';
     btnDebug.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     updateHostUi();
+    updateTelemetryUi();
   }
 
   function toggleDebugOsd() {
@@ -1519,6 +1535,12 @@
     if (element.style.getPropertyValue(name) !== next) {
       element.style.setProperty(name, next);
     }
+  }
+
+  function setOutputValueIfChanged(element, value) {
+    if (!element) return;
+    const next = String(value);
+    if (element.value !== next) element.value = next;
   }
 
   function setClassStateIfChanged(element, name, enabled) {
@@ -3039,15 +3061,23 @@
       raceState.bestLapMs,
       raceState.overallBestLapMs,
     ));
-    if (racePosition) {
-      racePosition.replaceChildren(document.createTextNode(position));
-      const total = document.createElement('em');
-      total.textContent = `/${fieldSize}`;
-      racePosition.append(total);
-      scheduleRaceBattleLayout();
-    }
+    renderRacePosition(position, fieldSize);
     renderRaceBattle();
     renderRaceLapHistory();
+  }
+
+  function renderRacePosition(position, fieldSize) {
+    if (!racePosition) return;
+    if (!racePositionNumberNode) {
+      racePositionNumberNode = document.createTextNode('');
+      racePositionTotalNode = document.createElement('em');
+      racePosition.replaceChildren(racePositionNumberNode, racePositionTotalNode);
+    }
+    const total = `/${fieldSize}`;
+    if (racePositionNumberNode.nodeValue === position && racePositionTotalNode.textContent === total) return;
+    racePositionNumberNode.nodeValue = position;
+    setText(racePositionTotalNode, total);
+    scheduleRaceBattleLayout();
   }
 
   function displayRacePhase(phase) {
@@ -4114,8 +4144,19 @@
   }
 
   function updateTelemetryUi() {
+    // Ingestion/calibration/capture stay synchronous; only presentation waits
+    // for the existing HUD frame budget and consumes the latest accepted state.
+    telemetryUiDirty = true;
+    updateDriveHud();
+  }
+
+  function renderTelemetryUi(now) {
+    updateVehicleVitals(now);
+    updateMotionUi();
+    if (!isDebugOsdEnabled()) return;
     setText(telemetryState, getTelemetryStatus());
-    updateVehicleVitals();
+    const deviceStatus = formatTelemetryDeviceStatus(parseTelemetryFields(lastTelemetry));
+    if (deviceStatus) setText(deviceState, deviceStatus);
   }
 
   function loadM5AudioPreference() {
@@ -5090,13 +5131,6 @@
       latestMotion = motionExtractor?.ingest(telemetryResult.payload, arrivalMs) || latestMotion;
     }
     updateTelemetryUi();
-    const motion = getMotionSnapshot();
-    updateMotionUi(motion);
-
-    const deviceStatus = formatTelemetryDeviceStatus(parseTelemetryFields(message));
-    if (deviceStatus) {
-      setText(deviceState, deviceStatus);
-    }
     if (window.fpvCpuShadowCapture?.running === true) {
       dispatchShadowCaptureEvent('telemetry', {
         arrival_ms: arrivalMs,
@@ -5162,7 +5196,7 @@
 
   function updateMotionUi(motion = getMotionSnapshot()) {
     updateDriveGmeter(motion);
-    if (!motionState) return;
+    if (!motionState || !isDebugOsdEnabled()) return;
     if (!motion) {
       setText(motionState, 'waiting for flu_axes');
       return;
@@ -5184,20 +5218,19 @@
 
   function updateDriveGmeter(motion) {
     if (!driveGmeter || !driveGmeterDot) return;
-    driveGmeter.hidden = !G_METER_ENABLED;
-    if (driveGmeterScale) {
-      driveGmeterScale.textContent = `${G_METER_FULL_SCALE_G.toFixed(1)}G`;
-    }
+    if (driveGmeter.hidden !== !G_METER_ENABLED) driveGmeter.hidden = !G_METER_ENABLED;
+    if (!G_METER_ENABLED) return;
+    setText(driveGmeterScale, `${G_METER_FULL_SCALE_G.toFixed(1)}G`);
     const forwardMps2 = Number(motion?.motion?.forwardMps2);
     const lateralMps2 = Number(motion?.motion?.lateralMps2);
     const hasMotion = motion && !motion.stale
       && Number.isFinite(forwardMps2) && Number.isFinite(lateralMps2);
     if (!hasMotion) {
-      driveGmeter.dataset.state = motion?.stale ? 'stale' : 'waiting';
-      driveGmeter.dataset.saturated = 'false';
-      driveGmeter.style.setProperty('--g-x', '0px');
-      driveGmeter.style.setProperty('--g-y', '0px');
-      driveGmeter.setAttribute('aria-label', motion?.stale
+      setDatasetIfChanged(driveGmeter, 'state', motion?.stale ? 'stale' : 'waiting');
+      setDatasetIfChanged(driveGmeter, 'saturated', 'false');
+      setStylePropertyIfChanged(driveGmeter, '--g-x', '0px');
+      setStylePropertyIfChanged(driveGmeter, '--g-y', '0px');
+      setAttributeIfChanged(driveGmeter, 'aria-label', motion?.stale
         ? 'G meter telemetry stale'
         : 'G meter waiting for vehicle telemetry');
       return;
@@ -5209,11 +5242,11 @@
     const x = Math.max(-1, Math.min(1, leftG / G_METER_FULL_SCALE_G));
     const y = Math.max(-1, Math.min(1, forwardG / G_METER_FULL_SCALE_G));
     const saturated = Math.abs(forwardG) > G_METER_FULL_SCALE_G || Math.abs(leftG) > G_METER_FULL_SCALE_G;
-    driveGmeter.dataset.state = 'active';
-    driveGmeter.dataset.saturated = String(saturated);
-    driveGmeter.style.setProperty('--g-x', `${(x * G_METER_DOT_RADIUS_PX).toFixed(1)}px`);
-    driveGmeter.style.setProperty('--g-y', `${(y * G_METER_DOT_RADIUS_PX).toFixed(1)}px`);
-    driveGmeter.setAttribute(
+    setDatasetIfChanged(driveGmeter, 'state', 'active');
+    setDatasetIfChanged(driveGmeter, 'saturated', String(saturated));
+    setStylePropertyIfChanged(driveGmeter, '--g-x', `${(x * G_METER_DOT_RADIUS_PX).toFixed(1)}px`);
+    setStylePropertyIfChanged(driveGmeter, '--g-y', `${(y * G_METER_DOT_RADIUS_PX).toFixed(1)}px`);
+    setAttributeIfChanged(driveGmeter,
       'aria-label',
       `G meter longitudinal ${formatGmeterValue(forwardG)}, lateral left ${formatGmeterValue(leftG)}`,
     );
@@ -5374,21 +5407,21 @@
 
 	function setVehicleResourceLevel(fill, value) {
 		const level = Math.max(0, Math.min(1, value / 100));
-		fill?.style.setProperty('--resource-level', String(level));
-		fill?.style.setProperty('--resource-empty', `${((1 - level) * 100).toFixed(1)}%`);
+		setStylePropertyIfChanged(fill, '--resource-level', level.toFixed(3));
+		setStylePropertyIfChanged(fill, '--resource-empty', `${((1 - level) * 100).toFixed(1)}%`);
 	}
 
 	function renderVehicleResourceRecoveryValues(hp, fuel) {
 		if (Number.isFinite(hp)) {
 			vehicleResourceDisplay.hp = hp;
 			setVehicleResourceLevel(vehicleResourceHpFill, hp);
-			if (vehicleResourceHpValue) vehicleResourceHpValue.value = `${Math.round(hp)}`;
+			setOutputValueIfChanged(vehicleResourceHpValue, Math.round(hp));
 		}
 		if (Number.isFinite(fuel)) {
 			vehicleResourceDisplay.fuel = fuel;
 			setVehicleResourceLevel(vehicleResourceFuelFill, fuel);
 			if (vehicleResourceFuelValue) {
-				vehicleResourceFuelValue.value = fuel <= 0.05 ? 'EMPTY' : `${Math.round(fuel)}`;
+				setOutputValueIfChanged(vehicleResourceFuelValue, fuel <= 0.05 ? 'EMPTY' : Math.round(fuel));
 			}
 		}
 	}
@@ -5526,9 +5559,11 @@
 
 	function updateVehicleHealthUi(impact = false) {
 		if (!vehicleHealth || !vehicleResourceHud || !vehicleResourceHp) return;
-		vehicleResourceHud.hidden = false;
-		updateVehicleResourcePosition();
-		vehicleResourceHp.dataset.state = vehicleHealth.mode;
+		if (vehicleResourceHud.hidden) {
+			vehicleResourceHud.hidden = false;
+			scheduleVehicleResourceLayout();
+		}
+		setDatasetIfChanged(vehicleResourceHp, 'state', vehicleHealth.mode);
 		setText(vehicleResourceHpStatus, {
 			healthy: 'OK',
 			damaged: 'WARN',
@@ -5546,20 +5581,20 @@
 			updateVehicleResourceRecoveryDisplay(vehicleHealth.hp, vehicleResourceDisplay.fuel);
 			return;
 		}
-		vehicleResourceFuel.dataset.state = vehicleGameplay.fuelState;
+		setDatasetIfChanged(vehicleResourceFuel, 'state', vehicleGameplay.fuelState);
 		updateVehicleResourceRecoveryDisplay(vehicleHealth.hp, vehicleGameplay.fuel);
-		vehicleResourceBoost.dataset.state = vehicleGameplay.boostState;
+		setDatasetIfChanged(vehicleResourceBoost, 'state', vehicleGameplay.boostState);
 		setVehicleResourceLevel(vehicleResourceBoostFill, vehicleGameplay.boost);
 		if (vehicleResourceBoostValue) {
 			if (vehicleGameplay.boostState === 'active') {
-				vehicleResourceBoostValue.value = `${(vehicleGameplay.boostRemainingMs / 1000).toFixed(1)}s`;
+				setOutputValueIfChanged(vehicleResourceBoostValue, `${(vehicleGameplay.boostRemainingMs / 1000).toFixed(1)}s`);
 			} else if (vehicleGameplay.boostState === 'ready') {
-				vehicleResourceBoostValue.value = 'READY';
+				setOutputValueIfChanged(vehicleResourceBoostValue, 'READY');
 			} else {
-				vehicleResourceBoostValue.value = `${Math.round(vehicleGameplay.boost)}`;
+				setOutputValueIfChanged(vehicleResourceBoostValue, Math.round(vehicleGameplay.boost));
 			}
 		}
-		vehicleResourceHud.setAttribute(
+		setAttributeIfChanged(vehicleResourceHud,
 			'aria-label',
 			`Damage ${Math.round(vehicleGameplay.hp)}, fuel ${Math.round(vehicleGameplay.fuel)}, boost ${Math.round(vehicleGameplay.boost)}`,
 		);
@@ -5742,6 +5777,10 @@
     driveHudRenderFrame = null;
     driveHudLastRenderedAt = now;
     renderDriveHud();
+    if (telemetryUiDirty) {
+      telemetryUiDirty = false;
+      renderTelemetryUi(now);
+    }
   }
 
   function renderDriveHud() {
@@ -8146,7 +8185,6 @@
     window.setInterval(() => {
       updateTimerUi();
       updateTelemetryUi();
-      updateMotionUi();
       imuDriveCalibration.tick();
     }, OSD_UPDATE_INTERVAL_MS);
   }
@@ -9053,12 +9091,21 @@
   updateOsdScale();
   window.addEventListener('resize', updateOsdScale);
   window.visualViewport?.addEventListener('resize', updateOsdScale);
+  vehicleResourceResizeObserver = new ResizeObserver(scheduleVehicleResourceLayout);
+  for (const node of [driveHud, vehicleResourceHud]) {
+    if (node) vehicleResourceResizeObserver.observe(node);
+  }
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       visibleSince = performance.now();
     }
   });
   window.addEventListener('pagehide', () => {
+    vehicleResourceResizeObserver?.disconnect();
+    if (vehicleResourceLayoutFrame !== null) window.cancelAnimationFrame(vehicleResourceLayoutFrame);
+    if (driveHudRenderFrame !== null) window.cancelAnimationFrame(driveHudRenderFrame);
+    vehicleResourceLayoutFrame = null;
+    driveHudRenderFrame = null;
     stopRaceAnnouncement();
 		browserKokoroClient?.shutdown();
     raceMapLongTaskTracker.stop();

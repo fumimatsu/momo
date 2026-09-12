@@ -21,6 +21,7 @@
       --osd-scale: 1;
       --drive-hud-bottom: 20px;
       --vehicle-resource-bottom: 132px;
+      --hud-surface: linear-gradient(112deg, rgba(1, 8, 12, 0.54), rgba(6, 18, 28, 0.32));
       color-scheme: dark;
       font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
       background: #050608;
@@ -1229,7 +1230,7 @@
     .race-battle,
     .race-history {
       border-color: rgba(151, 211, 230, 0.28);
-      background: linear-gradient(112deg, rgba(1, 8, 12, 0.2), rgba(6, 18, 28, 0.08));
+      background: var(--hud-surface);
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.08);
       backdrop-filter: none;
     }
@@ -3727,7 +3728,7 @@
       overflow: hidden;
       border: 0;
       border-radius: 3px;
-      background: linear-gradient(112deg, rgba(1, 8, 12, 0.34), rgba(6, 18, 28, 0.12));
+      background: var(--hud-surface);
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16), inset 0 1px rgba(255, 255, 255, 0.06);
       clip-path: none;
       backdrop-filter: none;
@@ -5042,25 +5043,25 @@
     </section>
   </section>
 
-    <script src="../../telemetry.js?v=20260831-calibration-optional1"></script>
+    <script src="../../telemetry.js?v=20260912-ui-render-v1"></script>
     <script
-      src="./imu-drive-calibration.js?v=20260831-calibration-optional1"
-      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260831-calibration-optional1'"
+      src="./imu-drive-calibration.js?v=20260912-ui-render-v1"
+      onerror="this.onerror=null;this.src='../../imu-drive-calibration.js?v=20260912-ui-render-v1'"
     ></script>
-    <script src="../../m5-audio.js?v=20260831-calibration-optional1"></script>
+    <script src="../../m5-audio.js?v=20260912-ui-render-v1"></script>
     <script
-      src="./gamepad-profile.js?v=20260831-calibration-optional1"
-      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260831-calibration-optional1'"
+      src="./gamepad-profile.js?v=20260912-ui-render-v1"
+      onerror="this.onerror=null;this.src='../../gamepad-profile.js?v=20260912-ui-render-v1'"
     ></script>
-    <script src="./ffb-bridge.js?v=20260831-calibration-optional1"></script>
-    <script src="./race-battle.js?v=20260831-calibration-optional1"></script>
-    <script src="./pilot-callout-planner.js?v=20260831-calibration-optional1"></script>
-    <script src="./browser-kokoro-client.js?v=20260831-calibration-optional1"></script>
-    <script src="./notification-controller.js?v=20260831-calibration-optional1"></script>
-    <script src="../../race-announcer.js?v=20260831-calibration-optional1"></script>
-    <script src="../../race-ui-performance.js?v=20260831-calibration-optional1"></script>
-    <script src="../../course-layout.js?v=20260831-calibration-optional1"></script>
-    <script src="./pilot.js?v=20260831-calibration-optional1"></script>
+    <script src="./ffb-bridge.js?v=20260912-ui-render-v1"></script>
+    <script src="./race-battle.js?v=20260912-ui-render-v1"></script>
+    <script src="./pilot-callout-planner.js?v=20260912-ui-render-v1"></script>
+    <script src="./browser-kokoro-client.js?v=20260912-ui-render-v1"></script>
+    <script src="./notification-controller.js?v=20260912-ui-render-v1"></script>
+    <script src="../../race-announcer.js?v=20260912-ui-render-v1"></script>
+    <script src="../../race-ui-performance.js?v=20260912-ui-render-v1"></script>
+    <script src="../../course-layout.js?v=20260912-ui-render-v1"></script>
+    <script src="./pilot.js?v=20260912-ui-render-v1"></script>
     <!-- fpv-diagnostic-scripts -->
 </body>
 </html>
