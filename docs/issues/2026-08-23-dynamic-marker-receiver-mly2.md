@@ -451,6 +451,9 @@ obviously excessive initial profile.
 
 ## 2026-09-05: long-lived Worker failure and metrics
 
+The default stop policy below remains unchanged. An explicit site-selected best-effort mode was
+added on 2026-09-13; see [Marker capacity continuation](2026-09-13-marker-best-effort-capacity.md).
+
 - A sustained overload at the minimum detection rate now emits an immediate JSON stderr event
   (`type=marker_worker_status`, `reason=capacity_exceeded`, `publication=stopped`), closes the MMO1
   writer, and exits with code 1. A fixed profile (`--no-adaptive`) also stops when the controller

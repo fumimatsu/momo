@@ -151,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
     )
     parser.add_argument(
+        "--capacity-policy",
+        choices=("stop", "continue"),
+        default="stop",
+        help="At sustained minimum-rate overload, stop (default) or warn and continue best-effort; continue requires adaptive mode",
+    )
+    parser.add_argument(
         "--allowed-marker-ids",
         type=parse_marker_ids,
         default=DEFAULT_ALLOWED_MARKER_IDS,
@@ -183,14 +189,15 @@ def distribution(values) -> dict[str, float | int]:
     }
 
 
-def enforce_detection_capacity(decision, topology, window):
-    """Emit a machine-readable terminal failure before any further IPC write."""
+def enforce_detection_capacity(decision, topology, window, capacity_policy="stop"):
+    """Report overload without hiding degraded timing in explicit best-effort mode."""
     if not decision.capacity_exceeded and decision.reason != "downgrade_locked":
         return False
-    print(json.dumps({
+    stop = capacity_policy != "continue"
+    status = {
         "type": "marker_worker_status",
         "version": 1,
-        "state": "failed",
+        "state": "failed" if stop else "degraded",
         "reason": "capacity_exceeded",
         "phase": topology.phase,
         "generation": topology.generation,
@@ -198,10 +205,13 @@ def enforce_detection_capacity(decision, topology, window):
         "detectionHz": decision.detection_hz,
         "processingP95Ms": round(window.cycle_p95_ms, 3),
         "deadlineMissRatio": window.deadline_miss_ratio,
-        "publication": "stopped",
-        "restartCondition": "reduce_sources_or_add_marker_node_then_restart",
-    }), file=sys.stderr, flush=True)
-    return True
+        "publication": "stopped" if stop else "continuing_best_effort",
+        "capacityPolicy": capacity_policy,
+    }
+    if stop:
+        status["restartCondition"] = "reduce_sources_or_add_marker_node_then_restart"
+    print(json.dumps(status), file=sys.stderr, flush=True)
+    return stop
 
 
 def processing_duration_ms(cycle_ms: float, wait_ms: float) -> float:
@@ -424,6 +434,8 @@ def execute_detection_batch(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.capacity_policy == "continue" and not args.adaptive:
+        parser.error("--capacity-policy continue requires --adaptive")
     if args.duration_seconds < 0 or args.wait_for_mapping_seconds < 0:
         parser.error("duration and mapping wait must be zero or positive")
     if args.status_interval_seconds <= 0 or args.control_window_seconds <= 0:
@@ -466,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     published_batches = 0
     marker_instances = 0
     capacity_exceeded = False
+    capacity_stopped = False
     topology_changes = 0
     warmed_generation: int | None = None
     warmup_duration_ms = 0.0
@@ -920,8 +933,9 @@ def main(argv: list[str] | None = None) -> int:
                         allow_downgrade=args.adaptive,
                     )
                     capacity_exceeded = capacity_exceeded or decision.capacity_exceeded
-                    if enforce_detection_capacity(decision, topology, window):
+                    if enforce_detection_capacity(decision, topology, window, args.capacity_policy):
                         capacity_exceeded = True
+                        capacity_stopped = True
                         break
                     if decision.changed:
                         writer.set_detection_hz(decision.detection_hz)
@@ -1067,7 +1081,8 @@ def main(argv: list[str] | None = None) -> int:
             "fresh source coverage below target: " + ", ".join(below)
         )
     if capacity_exceeded:
-        failure_reasons.append(f"capacity exceeded at {controller.detection_hz} Hz; publication stopped")
+        outcome = "publication stopped" if capacity_stopped else "continued best-effort (target not guaranteed)"
+        failure_reasons.append(f"capacity exceeded; {outcome}")
 
     report = {
         "schemaVersion": 4,
@@ -1099,6 +1114,8 @@ def main(argv: list[str] | None = None) -> int:
         "profilingMode": args.profiling_mode,
         "profiledCycles": profiled_cycles,
         "capacityExceeded": capacity_exceeded,
+        "capacityPolicy": args.capacity_policy,
+        "capacityStopped": capacity_stopped,
         "inputReady": input_ready,
         "throughputPassed": throughput_passed,
         "sourceCoveragePassed": source_coverage_passed,

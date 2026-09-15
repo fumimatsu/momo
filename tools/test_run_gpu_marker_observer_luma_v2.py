@@ -58,6 +58,55 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
         self.assertEqual('', output.getvalue())
 
     def test_main_closes_writer_and_returns_failure_after_capacity_event(self):
+        result, writer, writes, errors = self.run_capacity_scenario("stop")
+        self.assertEqual(1, result)
+        self.assertTrue(writer.closed)
+        self.assertEqual(1, len(writes))
+        self.assertIn('"publication": "stopped"', errors)
+
+    def test_main_continues_writing_after_capacity_event_when_opted_in(self):
+        result, writer, writes, errors = self.run_capacity_scenario("continue")
+        # Finite-run quality validation still fails; continuation does not claim capacity.
+        self.assertEqual(1, result)
+        self.assertTrue(writer.closed)
+        self.assertGreater(len(writes), 1)
+        self.assertIn('"state": "degraded"', errors)
+        self.assertIn('"publication": "continuing_best_effort"', errors)
+        self.assertNotIn('"publication": "stopped"', errors)
+
+    def test_continue_policy_requires_adaptive_mode(self):
+        with patch.object(MODULE, 'GpuArucoDetector') as detector, \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            MODULE.main(['--no-adaptive', '--capacity-policy', 'continue'])
+        self.assertEqual(2, error.exception.code)
+        detector.assert_not_called()
+
+    def test_continue_policy_downgrades_to_25_and_preserves_overload_evidence(self):
+        from MarkerDetectionRateController import AdaptiveDetectionRateController, DetectionWindow
+        controller = AdaptiveDetectionRateController(hold_seconds=0)
+        topology = MODULE.Mly2Topology(1, 10_000_000, 'green', 1, ('one',))
+        output = io.StringIO()
+        now = 0
+        with contextlib.redirect_stderr(output):
+            for expected_hz in (40, 33, 25, 25):
+                for _ in range(3):
+                    now += 5
+                    window = DetectionWindow(5, 1000 / controller.detection_hz, 0.2)
+                    decision = controller.observe_window(window, now, True)
+                    self.assertFalse(MODULE.enforce_detection_capacity(
+                        decision, topology, window, 'continue',
+                    ))
+                self.assertEqual(expected_hz, decision.detection_hz)
+        self.assertTrue(decision.capacity_exceeded)
+        state = json.loads(output.getvalue())
+        self.assertEqual(25, state['detectionHz'])
+        self.assertEqual('degraded', state['state'])
+        self.assertNotIn('restartCondition', state)
+        healthy = controller.observe_window(DetectionWindow(5, 5, 0), now + 5, True)
+        self.assertFalse(healthy.capacity_exceeded)
+        self.assertEqual(25, healthy.detection_hz)
+
+    def run_capacity_scenario(self, policy):
         from MarkerDetectionRateController import RateDecision
         topology = MODULE.Mly2Topology(1, 10_000_000, 'green', 1, ('one',))
         sampled = [SimpleNamespace(source_id='one', reason='no_video', eligible=False)]
@@ -79,6 +128,7 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
             detection_hz=25,
             observe_window=lambda *_args, **_kwargs: RateDecision(25, False, True, 'capacity_exceeded'),
         )
+        errors = io.StringIO()
         with patch.object(MODULE, 'GpuArucoDetector', return_value=SimpleNamespace(cp=None)), \
              patch.object(MODULE, 'AdaptiveDetectionRateController', return_value=controller), \
              patch.object(MODULE, 'open_reader', return_value=reader_context), \
@@ -86,11 +136,12 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
              patch.object(MODULE, 'allocate_batches', return_value=(None, None, None)), \
              patch.object(MODULE, 'read_sampling_state', return_value=([None], {}, sampled)), \
              patch.object(MODULE.time, 'perf_counter', side_effect=lambda: next(clock)), \
-             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            result = MODULE.main(['--warmup-iterations', '0', '--control-window-seconds', '0.01'])
-        self.assertEqual(1, result)
-        self.assertTrue(writer.closed)
-        self.assertEqual(1, len(writes))
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            result = MODULE.main([
+                '--warmup-iterations', '0', '--control-window-seconds', '0.01',
+                '--duration-seconds', '10', '--capacity-policy', policy,
+            ])
+        return result, writer, writes, errors.getvalue()
 
     def test_processing_duration_excludes_frame_wait(self):
         self.assertAlmostEqual(3.25, MODULE.processing_duration_ms(18.25, 15.0))
@@ -125,6 +176,7 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
         self.assertEqual(5.0, args.fresh_frame_wait_ms)
         self.assertEqual(0.95, args.minimum_fresh_tick_ratio)
         self.assertEqual("sampled", args.profiling_mode)
+        self.assertEqual("stop", args.capacity_policy)
 
     def test_micro_batch_waits_for_live_duplicate_sources(self):
         sampled = [
