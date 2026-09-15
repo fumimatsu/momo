@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import math
 from pathlib import Path
@@ -20,7 +20,8 @@ from MarkerDetectionRateController import (
     DEFAULT_PROFILES_HZ,
     DetectionWindow,
 )
-from MarkerFrameSampler import SourceFrameState, sample_latest_frames
+from MarkerFrameSampler import SampledSource, SourceFrameState, sample_latest_frames
+from MarkerMetadataGap import MetadataGapTracker
 from MarkerRuntimeMetrics import DurationDistribution
 from MarkerLumaV2 import (
     HEIGHT,
@@ -46,10 +47,10 @@ DEFAULT_PROFILES = DEFAULT_PROFILES_HZ
 DEFAULT_FRESH_FRAME_WAIT_MS = 5.0
 DEFAULT_MINIMUM_FRESH_TICK_RATIO = 0.95
 WAITABLE_SAMPLING_REASONS = frozenset(
-    {"duplicate_or_rollback", "skewed"}
+    {"duplicate_or_rollback", "skewed", "metadata_pending"}
 )
 INVALIDATING_SAMPLING_REASONS = frozenset(
-    {"no_video", "stale", "future_timestamp"}
+    {"no_video", "stale", "future_timestamp", "metadata_timeout", "generation_changed"}
 )
 
 
@@ -296,15 +297,31 @@ def read_sampling_state(
     last_detected_sequences: dict[str, int],
     maximum_age_ticks: int,
     maximum_skew_ticks: int,
+    metadata_gaps: MetadataGapTracker,
 ):
     snapshots = reader.read_sources(topology)
     sample_tick = reader.query_performance_counter()
+    return classify_sampling_state(snapshots, sample_tick, topology,
+                                   last_detected_sequences, maximum_age_ticks,
+                                   maximum_skew_ticks, metadata_gaps)
+
+
+def classify_sampling_state(snapshots, sample_tick, topology,
+                            last_detected_sequences, maximum_age_ticks,
+                            maximum_skew_ticks, metadata_gaps):
     states = []
+    overrides = {}
     snapshots_by_id: dict[str, Mly2SourceSnapshot] = {}
     for slot_index, source_id in enumerate(topology.source_ids):
         snapshot = snapshots[slot_index]
-        if snapshot is None:
-            states.append(SourceFrameState(source_id, 0, 0, False))
+        reason = metadata_gaps.classify(source_id, snapshot, sample_tick, maximum_age_ticks)
+        if reason is not None:
+            overrides[source_id] = reason
+            # Cached metadata is used only to identify an invalidation, never to detect.
+            cached = metadata_gaps.snapshots.get(source_id)
+            if cached is not None:
+                snapshots_by_id[source_id] = cached
+            states.append(SourceFrameState(source_id, cached.source_sequence if cached else 0, 0, False))
             continue
         snapshots_by_id[source_id] = snapshot
         states.append(
@@ -324,7 +341,19 @@ def read_sampling_state(
         maximum_age_ticks,
         maximum_skew_ticks,
     )
+    sampled = [replace(s, reason=overrides[s.source_id])
+               if s.source_id in overrides else s for s in sampled]
     return snapshots, snapshots_by_id, sampled
+
+
+def publish_invalid_batch(writer, topology, snapshots_by_id, sampled, metadata_gaps):
+    at_unix_ns = time.time_ns()
+    observations = build_invalid_observations(topology, snapshots_by_id, sampled, at_unix_ns)
+    if not observations:
+        return 0
+    writer.write(at_unix_ns, observations, batch_flags=BATCH_PARTIAL)
+    metadata_gaps.acknowledge_invalid(observations, sampled)
+    return 1
 
 
 def build_invalid_observations(
@@ -342,13 +371,16 @@ def build_invalid_observations(
         if selection.reason not in INVALIDATING_SAMPLING_REASONS:
             continue
         snapshot = snapshots_by_id.get(selection.source_id)
+        # The existing sequence-zero contract resets all qualifier modes. A timeout
+        # is terminal, unlike a short pending read or elapsed-mode video suspension.
+        terminal_reset = selection.reason in {"metadata_timeout", "generation_changed"}
         observations.append(
             SourceObservation(
                 source_index=source_indexes[selection.source_id],
                 source_id=selection.source_id,
-                source_sequence=(snapshot.source_sequence if snapshot else 0),
+                source_sequence=(snapshot.source_sequence if snapshot and not terminal_reset else 0),
                 frame_received_at_unix_ns=(
-                    snapshot.received_unix_ns if snapshot else 0
+                    snapshot.received_unix_ns if snapshot and not terminal_reset else 0
                 ),
                 detected_at_unix_ns=detected_at_unix_ns,
                 video_valid=False,
@@ -564,6 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     measured_started_at = time.perf_counter()
     final_topology: Mly2Topology | None = None
     frame_event_available = False
+    metadata_gaps = MetadataGapTracker()
 
     try:
         with open_reader(
@@ -601,11 +634,35 @@ def main(argv: list[str] | None = None) -> int:
                 current_topology = reader.read_topology()
                 if current_topology is None:
                     reason_counts["unstable_topology"] += 1
+                    if topology is not None:
+                        _, by_id, unknown = classify_sampling_state(
+                            [None] * len(topology.source_ids),
+                            reader.query_performance_counter(), topology,
+                            last_detected_sequences,
+                            int(topology.qpc_frequency * args.maximum_frame_age_ms / 1000),
+                            0, metadata_gaps,
+                        )
+                        published_batches += publish_invalid_batch(
+                            writer, topology, by_id, unknown, metadata_gaps,
+                        )
+                        if now - last_status_at >= args.status_interval_seconds:
+                            health = metadata_gaps.take_report(topology.generation, time.time_ns())
+                            if health:
+                                print(json.dumps(health), flush=True)
+                            last_status_at = now
                     next_tick = now + 1.0 / controller.detection_hz
                     continue
                 preparation_transition = is_preparation_transition(topology, current_topology)
                 if topology is None or current_topology.generation != topology.generation:
+                    if topology is not None:
+                        # Clear the old generation before warmup or any new detections.
+                        changed = [SampledSource(s, 0, False, None, "generation_changed")
+                                   for s in topology.source_ids]
+                        published_batches += publish_invalid_batch(
+                            writer, topology, {}, changed, metadata_gaps,
+                        )
                     topology = current_topology
+                    metadata_gaps.change_generation(topology.generation)
                     final_topology = topology
                     topology_changes += 1
                     last_detected_sequences.clear()
@@ -692,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
                         last_detected_sequences,
                         maximum_age_ticks,
                         maximum_skew_ticks,
+                        metadata_gaps,
                     )
                     metadata_read_ms += (
                         time.perf_counter() - metadata_started
@@ -850,9 +908,14 @@ def main(argv: list[str] | None = None) -> int:
                     published_batches += 1
                     epoch_published_batches += 1
 
+                if invalid_observations:
+                    metadata_gaps.acknowledge_invalid(invalid_observations, sampled)
+                if execution is not None:
+                    metadata_gaps.acknowledge_valid(execution.processed_source_ids)
                 processed_source_ids = set(
                     execution.processed_source_ids if execution is not None else ()
                 )
+                processed_source_ids.update(o.source_id for o in invalid_observations)
                 late_metadata_read_ms = 0.0
                 late_shared_copy_ms = 0.0
                 late_wait_ms = 0.0
@@ -870,11 +933,25 @@ def main(argv: list[str] | None = None) -> int:
                             last_detected_sequences,
                             maximum_age_ticks,
                             maximum_skew_ticks,
+                            metadata_gaps,
                         )
                     )
                     late_metadata_read_ms += (
                         time.perf_counter() - late_metadata_started
                     ) * 1000.0
+                    # Late micro-batches must also publish expiry/disconnection.
+                    late_invalid_count = publish_invalid_batch(
+                        writer, topology, late_snapshots_by_id,
+                        [s for s in late_sampled if s.source_id not in processed_source_ids],
+                        metadata_gaps,
+                    )
+                    published_batches += late_invalid_count
+                    epoch_published_batches += late_invalid_count
+                    if late_invalid_count:
+                        processed_source_ids.update(
+                            s.source_id for s in late_sampled
+                            if s.reason in INVALIDATING_SAMPLING_REASONS
+                        )
                     late_selected = [
                         selection
                         for selection in late_sampled
@@ -925,6 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
                                 processed_source_ids.update(
                                     late_execution.processed_source_ids
                                 )
+                                metadata_gaps.acknowledge_valid(late_execution.processed_source_ids)
                             continue
                     pending_count = pending_fresh_source_count(
                         late_sampled, processed_source_ids
@@ -1039,6 +1117,9 @@ def main(argv: list[str] | None = None) -> int:
                     window_started = now
 
                 if now - last_status_at >= args.status_interval_seconds:
+                    health = metadata_gaps.take_report(topology.generation, time.time_ns())
+                    if health:
+                        print(json.dumps(health), flush=True)
                     print(
                         f"sources={len(topology.source_ids)} "
                         f"eligible={len(eligible)} hz={controller.detection_hz} "
@@ -1050,6 +1131,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
 
+    health = metadata_gaps.take_report(final_topology.generation if final_topology else 0, time.time_ns())
+    if health:
+        print(json.dumps(health), flush=True)
     elapsed = time.perf_counter() - measured_started_at
     source_ids = list(final_topology.source_ids) if final_topology else []
     required_count = args.required_source_count or len(source_ids)

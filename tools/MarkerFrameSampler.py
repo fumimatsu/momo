@@ -48,6 +48,11 @@ def sample_latest_frames(
             preliminary.append(
                 SampledSource(source.source_id, source.source_sequence, False, None, "future_timestamp")
             )
+        elif age_ticks > maximum_age_ticks:
+            # A frozen sequence is waitable only while its last image is fresh.
+            preliminary.append(
+                SampledSource(source.source_id, source.source_sequence, False, age_ticks, "stale")
+            )
         elif source.source_sequence <= last_detected_sequences.get(source.source_id, 0):
             preliminary.append(
                 SampledSource(
@@ -57,10 +62,6 @@ def sample_latest_frames(
                     age_ticks,
                     "duplicate_or_rollback",
                 )
-            )
-        elif age_ticks > maximum_age_ticks:
-            preliminary.append(
-                SampledSource(source.source_id, source.source_sequence, False, age_ticks, "stale")
             )
         else:
             preliminary.append(
