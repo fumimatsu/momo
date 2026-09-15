@@ -11,7 +11,7 @@ param(
     [string]$CommandReplayJsonl = '',
     [ValidateRange(1, 32)]
     [int]$CarCount = 5,
-    [ValidateSet(25, 33, 40, 50)]
+    [ValidateSet(10, 15, 20, 25, 33, 40, 50)]
     [int]$DetectionHz = 50,
     [bool]$AdaptiveDetection = $true,
     [ValidateRange(1, 16)]

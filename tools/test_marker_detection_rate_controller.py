@@ -55,10 +55,10 @@ class MarkerDetectionRateControllerTest(unittest.TestCase):
         self.assertEqual(40, decision.detection_hz)
         self.assertEqual("hold", decision.reason)
 
-    def test_reports_capacity_exceeded_at_25_hz(self):
+    def test_reports_capacity_exceeded_only_at_10_hz(self):
         controller = AdaptiveDetectionRateController(hold_seconds=0)
         now = 0.0
-        for expected_hz in (40, 33, 25):
+        for expected_hz in (40, 33, 25, 20, 15, 10):
             for _ in range(3):
                 now += 5
                 period_ms = 1000.0 / controller.detection_hz
@@ -71,11 +71,47 @@ class MarkerDetectionRateControllerTest(unittest.TestCase):
 
         for _ in range(3):
             now += 5
-            decision = controller.observe_window(DetectionWindow(5.0, 35.0, 0.1), now, True)
+            decision = controller.observe_window(DetectionWindow(5.0, 90.0, 0.1), now, True)
 
         self.assertFalse(decision.changed)
         self.assertTrue(decision.capacity_exceeded)
         self.assertEqual("capacity_exceeded", decision.reason)
+
+    def test_recovers_to_stable_25_when_p95_is_26_ms(self):
+        controller = AdaptiveDetectionRateController()
+        for now in range(5, 125, 5):
+            period_ms = 1000 / controller.detection_hz
+            decision = controller.observe_window(
+                DetectionWindow(5, 26.36, 0.13 if period_ms < 26.36 else 0), now, True,
+            )
+        self.assertEqual(25, decision.detection_hz)
+        self.assertFalse(decision.capacity_exceeded)
+        self.assertEqual("stable", decision.reason)
+
+    def test_single_overload_window_does_not_lower_rate(self):
+        controller = AdaptiveDetectionRateController()
+        controller.observe_window(DetectionWindow(5, 50, 0.5), 5, True)
+        decision = controller.observe_window(DetectionWindow(5, 5, 0), 10, True)
+        self.assertEqual(50, decision.detection_hz)
+        self.assertEqual(0, controller.consecutive_overload_windows)
+
+    def test_missing_input_cannot_accumulate_upgrade_headroom(self):
+        controller = AdaptiveDetectionRateController(initial_detection_hz=10)
+        for now in range(5, 125, 5):
+            controller.observe_window(DetectionWindow(5, 1, 0, input_ready=False), now, True)
+        self.assertEqual(0, controller.healthy_seconds)
+        self.assertEqual(10, controller.prepare(125).detection_hz)
+
+    def test_topology_change_discards_health_and_overload_evidence(self):
+        controller = AdaptiveDetectionRateController(initial_detection_hz=25)
+        for now in range(5, 65, 5):
+            controller.observe_window(DetectionWindow(5, 5, 0), now, True)
+        controller.reset_evidence()
+        self.assertEqual(25, controller.prepare(65).detection_hz)
+        controller.observe_window(DetectionWindow(5, 50, 0.1), 70, True)
+        controller.reset_evidence()
+        self.assertEqual(0, controller.consecutive_overload_windows)
+        self.assertEqual(25, controller.detection_hz)
 
     def test_upgrades_only_when_prepare_is_called_after_healthy_period(self):
         controller = AdaptiveDetectionRateController(hold_seconds=0)

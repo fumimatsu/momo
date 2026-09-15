@@ -9,8 +9,10 @@ param(
     [double]$DurationSeconds = 0,
     [ValidateRange(0, 300)]
     [double]$WaitForMappingSeconds = 20,
-    [ValidateSet(50, 40, 33, 25)]
+    [ValidateSet(50, 40, 33, 25, 20, 15, 10)]
     [int]$InitialDetectionHz = 50,
+    [ValidateSet('auto', 'stop', 'continue')]
+    [string]$CapacityPolicy = 'auto',
     [string]$Output,
     [switch]$NoAdaptive
 )
@@ -38,7 +40,8 @@ $arguments = @(
     '--required-source-count', $RequiredSourceCount,
     '--duration-seconds', $DurationSeconds,
     '--wait-for-mapping-seconds', $WaitForMappingSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
-    '--initial-detection-hz', $InitialDetectionHz
+    '--initial-detection-hz', $InitialDetectionHz,
+    '--capacity-policy', $CapacityPolicy
 )
 if ($NoAdaptive) {
     $arguments += '--no-adaptive'

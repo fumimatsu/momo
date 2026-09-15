@@ -138,6 +138,17 @@ class MarkerObservationIpcTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "positive"):
                 writer.set_detection_hz(0)
 
+    def test_writer_keeps_publishing_at_all_lower_adaptive_profiles(self):
+        mapping_name = rf"Local\MomoMarkerObservationTest-{uuid.uuid4()}"
+        with MarkerObservationSharedMemoryWriter(mapping_name, 25) as writer:
+            for sequence, hz in enumerate((20, 15, 10), start=1):
+                writer.set_detection_hz(hz)
+                source = SourceObservation(0, 'test-car', sequence, 800, 900, True, 1,
+                                           [MarkerDetection(1, 0.5, 0.5, 0.1)])
+                self.assertEqual(sequence, writer.write(1000, [source]))
+                self.assertEqual(hz, struct.unpack_from('<I', writer.mapping, 36)[0])
+                self.assertEqual(sequence, struct.unpack_from('<q', writer.mapping, 24)[0])
+
 
 if __name__ == "__main__":
     unittest.main()

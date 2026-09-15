@@ -1,6 +1,7 @@
 import importlib.util
 import contextlib
 import io
+import itertools
 import json
 import pathlib
 import sys
@@ -81,14 +82,14 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
         self.assertEqual(2, error.exception.code)
         detector.assert_not_called()
 
-    def test_continue_policy_downgrades_to_25_and_preserves_overload_evidence(self):
+    def test_continue_policy_downgrades_to_10_and_preserves_overload_evidence(self):
         from MarkerDetectionRateController import AdaptiveDetectionRateController, DetectionWindow
         controller = AdaptiveDetectionRateController(hold_seconds=0)
         topology = MODULE.Mly2Topology(1, 10_000_000, 'green', 1, ('one',))
         output = io.StringIO()
         now = 0
         with contextlib.redirect_stderr(output):
-            for expected_hz in (40, 33, 25, 25):
+            for expected_hz in (40, 33, 25, 20, 15, 10, 10):
                 for _ in range(3):
                     now += 5
                     window = DetectionWindow(5, 1000 / controller.detection_hz, 0.2)
@@ -99,33 +100,59 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
                 self.assertEqual(expected_hz, decision.detection_hz)
         self.assertTrue(decision.capacity_exceeded)
         state = json.loads(output.getvalue())
-        self.assertEqual(25, state['detectionHz'])
+        self.assertEqual(10, state['detectionHz'])
         self.assertEqual('degraded', state['state'])
         self.assertNotIn('restartCondition', state)
         healthy = controller.observe_window(DetectionWindow(5, 5, 0), now + 5, True)
         self.assertFalse(healthy.capacity_exceeded)
-        self.assertEqual(25, healthy.detection_hz)
+        self.assertEqual(10, healthy.detection_hz)
 
-    def run_capacity_scenario(self, policy):
+    def test_main_retries_upgrade_once_at_same_vehicle_ready_not_in_fixed_mode(self):
+        from MarkerDetectionRateController import RateDecision
+        for adaptive, expected_calls in ((True, 1), (False, 0)):
+            with self.subTest(adaptive=adaptive):
+                phases = ('green', 'green', 'ready', 'ready', 'countdown', 'green')
+                topologies = [MODULE.Mly2Topology(1, 10_000_000, phase, 1, ('one',)) for phase in phases]
+                calls = []
+                controller = SimpleNamespace(
+                    detection_hz=25,
+                    reset_evidence=lambda: None,
+                    observe_window=lambda *_args, **_kwargs: RateDecision(25, False, False, 'stable'),
+                )
+                def prepare(now):
+                    calls.append(now)
+                    controller.detection_hz = 33
+                    return RateDecision(33, True, False, 'prepare_upgrade')
+                controller.prepare = prepare
+                _, writer, _, _ = self.run_capacity_scenario('auto', topologies, controller, adaptive)
+                self.assertEqual(expected_calls, len(calls))
+                self.assertEqual([33] if adaptive else [], writer.rates)
+
+    def run_capacity_scenario(self, policy, topologies=None, controller=None, adaptive=True):
         from MarkerDetectionRateController import RateDecision
         topology = MODULE.Mly2Topology(1, 10_000_000, 'green', 1, ('one',))
         sampled = [SimpleNamespace(source_id='one', reason='no_video', eligible=False)]
         clock = iter(index * 0.1 for index in range(10_000))
-        reader = SimpleNamespace(frame_event_available=False, read_topology=lambda: topology)
+        topologies = topologies or [topology]
+        topology_stream = itertools.chain(topologies, itertools.repeat(topologies[-1]))
+        reader = SimpleNamespace(frame_event_available=False, read_topology=lambda: next(topology_stream))
         reader_context = contextlib.nullcontext(reader)
         writes = []
         class Writer:
             closed = False
+            def __init__(self): self.rates = []
             def __enter__(self): return self
             def __exit__(self, *_): self.closed = True
+            def set_detection_hz(self, hz): self.rates.append(hz)
             def write(self, *args, **kwargs):
                 self.assert_open()
                 writes.append(args)
             def assert_open(self):
                 if self.closed: raise AssertionError('write after close')
         writer = Writer()
-        controller = SimpleNamespace(
+        controller = controller or SimpleNamespace(
             detection_hz=25,
+            reset_evidence=lambda: None,
             observe_window=lambda *_args, **_kwargs: RateDecision(25, False, True, 'capacity_exceeded'),
         )
         errors = io.StringIO()
@@ -140,7 +167,7 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
             result = MODULE.main([
                 '--warmup-iterations', '0', '--control-window-seconds', '0.01',
                 '--duration-seconds', '10', '--capacity-policy', policy,
-            ])
+            ] + ([] if adaptive else ['--no-adaptive']))
         return result, writer, writes, errors.getvalue()
 
     def test_processing_duration_excludes_frame_wait(self):
@@ -176,7 +203,62 @@ class GpuMarkerObserverLumaV2Test(unittest.TestCase):
         self.assertEqual(5.0, args.fresh_frame_wait_ms)
         self.assertEqual(0.95, args.minimum_fresh_tick_ratio)
         self.assertEqual("sampled", args.profiling_mode)
-        self.assertEqual("stop", args.capacity_policy)
+        self.assertTrue(args.adaptive)
+        self.assertEqual(50, args.initial_detection_hz)
+        self.assertEqual("auto", args.capacity_policy)
+        self.assertEqual("continue", MODULE.resolve_capacity_policy(args.capacity_policy, args.adaptive))
+
+    def test_fixed_mode_keeps_stop_policy_and_lower_initial_rates_are_valid(self):
+        args = MODULE.build_parser().parse_args(['--no-adaptive'])
+        self.assertEqual("stop", MODULE.resolve_capacity_policy(args.capacity_policy, args.adaptive))
+        self.assertEqual("stop", MODULE.resolve_capacity_policy("stop", True))
+        for hz in (20, 15, 10):
+            args = MODULE.build_parser().parse_args(['--initial-detection-hz', str(hz)])
+            self.assertEqual(hz, args.initial_detection_hz)
+
+    def test_same_vehicle_next_ready_is_preparation_not_every_ready_tick(self):
+        def topology(phase, generation=1, sources=('one', 'two')):
+            return MODULE.Mly2Topology(generation, 10_000_000, phase, 1, sources)
+        for phase in ('green', 'finished', 'aborted', 'idle'):
+            self.assertTrue(MODULE.is_preparation_transition(topology(phase), topology('ready')))
+        for previous, current in (
+            (None, topology('ready')),
+            (topology('ready'), topology('ready')),
+            (topology('ready'), topology('countdown')),
+            (topology('countdown'), topology('green')),
+            (topology('green'), topology('ready', generation=2)),
+            (topology('green'), topology('ready', sources=('three',))),
+        ):
+            self.assertFalse(MODULE.is_preparation_transition(previous, current))
+
+    def test_window_readiness_requires_all_sources_and_real_epoch_rate(self):
+        from collections import Counter
+        counts = Counter(one=125, two=125)
+        ready = MODULE.window_input_ready
+        self.assertTrue(ready(('one', 'two'), counts, 125, 5, 25, 0.95))
+        self.assertFalse(ready(('one', 'two'), Counter(one=125), 125, 5, 25, 0.95))
+        self.assertFalse(ready(('one', 'two'), counts, 125, 60, 25, 0.95))
+        self.assertFalse(ready((), Counter(), 125, 5, 25, 0.95))
+
+    def test_window_report_separates_measured_rate_from_next_profile_and_fresh_sources(self):
+        from collections import Counter
+        from MarkerDetectionRateController import RateDecision, DetectionWindow
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            MODULE.report_detection_window(
+                MODULE.Mly2Topology(1, 10_000_000, 'green', 1, ('one', 'two')),
+                DetectionWindow(5, 35, 0.2, input_ready=False),
+                25, RateDecision(20, True, False, 'overload_downgrade'),
+                120, Counter(one=100, two=110),
+            )
+        status = json.loads(output.getvalue())
+        self.assertEqual(25, status['measuredDetectionHz'])
+        self.assertEqual(20, status['detectionHz'])
+        self.assertEqual(24, status['effectiveEpochHz'])
+        self.assertEqual([20, 22], [s['effectiveDetectionHz'] for s in status['sources']])
+        self.assertEqual('overload_downgrade', status['reason'])
+        self.assertGreater(status['atUnixNs'], 0)
+        self.assertFalse(status['inputReady'])
 
     def test_micro_batch_waits_for_live_duplicate_sources(self):
         sampled = [

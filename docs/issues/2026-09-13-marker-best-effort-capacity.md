@@ -1,5 +1,9 @@
 # Marker 過負荷時の継続優先モード
 
+> 以下は9月13日の導入・復旧記録。9月15日以降の既定値と下限は
+> [自動降格・継続の標準化](2026-09-15-marker-adaptive-default.md) を参照。
+> 現在は50 Hz開始・10 Hzまで自動降格・下限警告継続が標準。
+
 - Type: enhancement
 - Status: implementation verified for handoff; full-event qualification pending
 

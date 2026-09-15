@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 
-DEFAULT_PROFILES_HZ = (50, 40, 33, 25)
+DEFAULT_PROFILES_HZ = (50, 40, 33, 25, 20, 15, 10)
 
 
 @dataclass(frozen=True)
@@ -9,6 +9,7 @@ class DetectionWindow:
     duration_seconds: float
     cycle_p95_ms: float
     deadline_miss_ratio: float
+    input_ready: bool = True
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,8 @@ class AdaptiveDetectionRateController:
             or window.deadline_miss_ratio > self.deadline_miss_limit
         )
         healthy = (
-            utilization < self.upgrade_utilization_limit
+            window.input_ready
+            and utilization < self.upgrade_utilization_limit
             and window.deadline_miss_ratio < self.upgrade_deadline_miss_limit
         )
 
@@ -119,6 +121,11 @@ class AdaptiveDetectionRateController:
         self.hold_until = now_seconds + self.hold_seconds
         self.capacity_exceeded = False
         return self._decision(True, "prepare_upgrade")
+
+    def reset_evidence(self) -> None:
+        """Do not carry capacity evidence across receiver/source generations."""
+        self.consecutive_overload_windows = 0
+        self.healthy_seconds = 0.0
 
     def _decision(self, changed: bool, reason: str) -> RateDecision:
         return RateDecision(

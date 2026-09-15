@@ -17,6 +17,7 @@ import numpy as np
 from GpuArucoDetector import GpuArucoDetector
 from MarkerDetectionRateController import (
     AdaptiveDetectionRateController,
+    DEFAULT_PROFILES_HZ,
     DetectionWindow,
 )
 from MarkerFrameSampler import SourceFrameState, sample_latest_frames
@@ -41,7 +42,7 @@ from MarkerObservationIpc import (
 
 RESERVED_MARKER_IDS = frozenset({17, 34, 37})
 DEFAULT_ALLOWED_MARKER_IDS = frozenset(set(range(50)) - RESERVED_MARKER_IDS)
-DEFAULT_PROFILES = (50, 40, 33, 25)
+DEFAULT_PROFILES = DEFAULT_PROFILES_HZ
 DEFAULT_FRESH_FRAME_WAIT_MS = 5.0
 DEFAULT_MINIMUM_FRESH_TICK_RATIO = 0.95
 WAITABLE_SAMPLING_REASONS = frozenset(
@@ -152,9 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--capacity-policy",
-        choices=("stop", "continue"),
-        default="stop",
-        help="At sustained minimum-rate overload, stop (default) or warn and continue best-effort; continue requires adaptive mode",
+        choices=("auto", "stop", "continue"),
+        default="auto",
+        help="auto (default): warn and continue at the adaptive floor; stop in fixed-rate mode. Explicit continue requires adaptive mode",
     )
     parser.add_argument(
         "--allowed-marker-ids",
@@ -212,6 +213,57 @@ def enforce_detection_capacity(decision, topology, window, capacity_policy="stop
         status["restartCondition"] = "reduce_sources_or_add_marker_node_then_restart"
     print(json.dumps(status), file=sys.stderr, flush=True)
     return stop
+
+
+def resolve_capacity_policy(policy: str, adaptive: bool) -> str:
+    if policy == "auto":
+        return "continue" if adaptive else "stop"
+    return policy
+
+
+def is_preparation_transition(previous, current) -> bool:
+    # A new run with unchanged vehicles does not increment MLY2 generation.
+    return (
+        previous is not None
+        and previous.generation == current.generation
+        and previous.source_ids == current.source_ids
+        and previous.phase != "ready"
+        and current.phase == "ready"
+    )
+
+
+def window_input_ready(source_ids, source_frames, ticks, duration, detection_hz, minimum_ratio):
+    # Missing cameras or idle/slow epochs are not evidence of upgrade headroom.
+    return (
+        bool(source_ids)
+        and ticks / duration >= detection_hz * minimum_ratio
+        and all(source_frames[source_id] / max(1, ticks) >= minimum_ratio for source_id in source_ids)
+    )
+
+
+def report_detection_window(topology, window, measured_hz, decision, ticks, source_frames):
+    print(json.dumps({
+        "type": "marker_detection_window",
+        "version": 1,
+        "atUnixNs": time.time_ns(),
+        "generation": topology.generation,
+        "phase": topology.phase,
+        "sourceCount": len(topology.source_ids),
+        "durationSeconds": round(window.duration_seconds, 3),
+        "measuredDetectionHz": measured_hz,
+        "detectionHz": decision.detection_hz,
+        "processingP95Ms": round(window.cycle_p95_ms, 3),
+        "deadlineMissRatio": window.deadline_miss_ratio,
+        "effectiveEpochHz": round(ticks / window.duration_seconds, 3),
+        "inputReady": window.input_ready,
+        "reason": decision.reason,
+        "sources": [{
+            "sourceId": source_id,
+            "detectedFrames": source_frames[source_id],
+            "effectiveDetectionHz": round(source_frames[source_id] / window.duration_seconds, 3),
+            "freshTickRatio": round(source_frames[source_id] / max(1, ticks), 5),
+        } for source_id in topology.source_ids],
+    }), flush=True)
 
 
 def processing_duration_ms(cycle_ms: float, wait_ms: float) -> float:
@@ -434,6 +486,7 @@ def execute_detection_batch(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.capacity_policy = resolve_capacity_policy(args.capacity_policy, args.adaptive)
     if args.capacity_policy == "continue" and not args.adaptive:
         parser.error("--capacity-policy continue requires --adaptive")
     if args.duration_seconds < 0 or args.wait_for_mapping_seconds < 0:
@@ -474,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     all_processing_ms = DurationDistribution()
     deadline_misses = 0
     tick_count = 0
+    window_source_frames: Counter[str] = Counter()
     detection_epochs = 0
     published_batches = 0
     marker_instances = 0
@@ -530,7 +584,8 @@ def main(argv: list[str] | None = None) -> int:
 
             print(
                 f"Dynamic Marker Observer: input={args.input_mapping_name} "
-                f"output={args.output_mapping_name} adaptive={args.adaptive}",
+                f"output={args.output_mapping_name} adaptive={args.adaptive} "
+                f"initialHz={controller.detection_hz} capacityPolicy={args.capacity_policy}",
                 flush=True,
             )
 
@@ -548,6 +603,7 @@ def main(argv: list[str] | None = None) -> int:
                     reason_counts["unstable_topology"] += 1
                     next_tick = now + 1.0 / controller.detection_hz
                     continue
+                preparation_transition = is_preparation_transition(topology, current_topology)
                 if topology is None or current_topology.generation != topology.generation:
                     topology = current_topology
                     final_topology = topology
@@ -561,18 +617,13 @@ def main(argv: list[str] | None = None) -> int:
                         source_id: metrics[source_id] if source_id in metrics else SourceMetrics()
                         for source_id in topology.source_ids
                     }
-                    if topology_changes > 1:
-                        decision = controller.prepare(now)
-                        if decision.changed:
-                            writer.set_detection_hz(decision.detection_hz)
-                            profile_history_count += 1
-                            profile_history.append(
-                                {
-                                    "atSeconds": round(now - measured_started_at, 3),
-                                    "detectionHz": decision.detection_hz,
-                                    "reason": decision.reason,
-                                }
-                            )
+                    controller.reset_evidence()
+                    processing_window.clear()
+                    window_source_frames.clear()
+                    deadline_misses = 0
+                    tick_count = 0
+                    window_started = now
+                    next_tick = now
                     print(
                         f"MLY2 generation={topology.generation} "
                         f"phase={topology.phase} sources={len(topology.source_ids)}",
@@ -581,6 +632,29 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     topology = current_topology
                     final_topology = topology
+
+                if args.adaptive and preparation_transition:
+                    decision = controller.prepare(now)
+                    print(json.dumps({
+                        "type": "marker_rate_preparation", "version": 1,
+                        "atUnixNs": time.time_ns(), "generation": topology.generation,
+                        "phase": topology.phase, "detectionHz": decision.detection_hz,
+                        "reason": decision.reason,
+                    }), flush=True)
+                    if decision.changed:
+                        writer.set_detection_hz(decision.detection_hz)
+                        profile_history_count += 1
+                        profile_history.append({
+                            "atSeconds": round(now - measured_started_at, 3),
+                            "detectionHz": decision.detection_hz,
+                            "reason": decision.reason,
+                        })
+                        processing_window.clear()
+                        window_source_frames.clear()
+                        deadline_misses = 0
+                        tick_count = 0
+                        window_started = now
+                        next_tick = now
 
                 period = 1.0 / controller.detection_hz
                 scheduled_at = next_tick
@@ -694,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
                         for source_id in topology.source_ids:
                             metrics[source_id] = SourceMetrics()
                         processing_window.clear()
+                        window_source_frames.clear()
                         all_cycle_ms.clear()
                         all_processing_ms.clear()
                         deadline_misses = 0
@@ -889,6 +964,7 @@ def main(argv: list[str] | None = None) -> int:
                     len(batch.processed_source_ids) for batch in executions
                 )
                 for batch in executions:
+                    window_source_frames.update(batch.processed_source_ids)
                     marker_instances += batch.marker_instances
                     for name, value in batch.stage_ms.items():
                         stage_ms[name].append(value)
@@ -922,15 +998,23 @@ def main(argv: list[str] | None = None) -> int:
                 now = time.perf_counter()
                 window_duration = now - window_started
                 if window_duration >= args.control_window_seconds:
+                    measured_hz = controller.detection_hz
                     window = DetectionWindow(
                         duration_seconds=window_duration,
                         cycle_p95_ms=percentile(processing_window, 95),
                         deadline_miss_ratio=deadline_misses / max(1, tick_count),
+                        input_ready=window_input_ready(
+                            topology.source_ids, window_source_frames, tick_count,
+                            window_duration, measured_hz, args.minimum_fresh_tick_ratio,
+                        ),
                     )
                     decision = controller.observe_window(
                         window,
                         now,
                         allow_downgrade=args.adaptive,
+                    )
+                    report_detection_window(
+                        topology, window, measured_hz, decision, tick_count, window_source_frames,
                     )
                     capacity_exceeded = capacity_exceeded or decision.capacity_exceeded
                     if enforce_detection_capacity(decision, topology, window, args.capacity_policy):
@@ -949,6 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         next_tick = now + 1.0 / decision.detection_hz
                     processing_window.clear()
+                    window_source_frames.clear()
                     deadline_misses = 0
                     tick_count = 0
                     window_started = now

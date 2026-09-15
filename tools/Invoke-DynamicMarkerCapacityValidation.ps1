@@ -10,7 +10,7 @@ param(
     [int]$MeasurementSeconds = 30,
     [ValidateRange(5, 600)]
     [int]$SourceReadyTimeoutSeconds = 120,
-    [ValidateSet(50, 40, 33, 25)]
+    [ValidateSet(50, 40, 33, 25, 20, 15, 10)]
     [int]$InitialDetectionHz = 50,
     [ValidateRange(1, 8)]
     [int]$ConnectParallelism = 4,
@@ -261,6 +261,7 @@ try {
             '--required-source-count', "$count",
             '--duration-seconds', "$MeasurementSeconds",
             '--initial-detection-hz', "$InitialDetectionHz",
+            '--capacity-policy', 'stop',
             '--output', $reportPath
         )
         if ($NoAdaptive) {
